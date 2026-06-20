@@ -1,0 +1,33 @@
+# Unreal Engine
+Binaries/
+Intermediate/
+Saved/
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.sln.DotSettings
+
+# Build artifacts
+*.a
+*.lib
+*.o
+*.obj
+*.exe
+*.dll
+*.dylib
+*.so
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Python cache
+__pycache__/
+*.pyc

@@ -1,0 +1,29 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SWG Emu Network Client",
+	"Description": "SOE UDP protocol implementation for Star Wars Galaxies EMU client. Handles session management, packet encryption/compression, message dispatch, and object lifecycle.",
+	"Category": "Networking",
+	"CreatedBy": "SWG Emu Team",
+	"CreatedByURL": "https://github.com/swgemu",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SWGEmu",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
+		}
+	]
+}
