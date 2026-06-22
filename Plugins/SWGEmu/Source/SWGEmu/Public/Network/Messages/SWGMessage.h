@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "../SWGPacket.h"
+#include "Network/SWGPacket.h"
 
 /**
  * FSWGMessage wraps a game-layer message packet (after the SOE protocol layer has

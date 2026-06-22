@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "SWGNetMessage.h"
+#include "Network/Messages/SWGNetMessage.h"
 
 struct FSWGMessage;
 

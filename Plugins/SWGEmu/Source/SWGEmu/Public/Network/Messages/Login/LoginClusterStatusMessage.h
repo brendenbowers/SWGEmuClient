@@ -1,8 +1,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "../SWGNetMessage.h"
-#include "../../Objects/ServerDetails.h"
+#include "Network/Messages/SWGNetMessage.h"
+#include "Network/Objects/ServerDetails.h"
 
 struct FSWGMessage;
 
