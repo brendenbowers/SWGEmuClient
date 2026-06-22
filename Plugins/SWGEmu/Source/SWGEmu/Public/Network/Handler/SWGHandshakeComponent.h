@@ -41,4 +41,10 @@ private:
 
 	/** Parse SessionResponse: key + MaxPacketSize, enable encryption, complete handshake. */
 	void HandleSessionResponse(FBitReader& Packet);
+
+	/** Handle incoming NetStatRequest: respond with NetStatResponse. */
+	void HandleNetStatRequest(FBitReader& Packet);
+
+	/** Handle incoming Disconnect: mark session as disconnected. */
+	void HandleDisconnect(FBitReader& Packet);
 };

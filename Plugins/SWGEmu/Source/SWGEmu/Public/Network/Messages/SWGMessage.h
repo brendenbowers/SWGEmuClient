@@ -38,6 +38,30 @@ struct FSWGMessage
 	FString ReadUnicodeString();
 	void    Skip(int32 NumBytes);
 
+	// ── Archive-style operators — proxy to packet ──────────────────
+	FSWGMessage& operator<<(uint8& Value)    { Packet << Value; return *this; }
+	FSWGMessage& operator<<(int16& Value)    { Packet << Value; return *this; }
+	FSWGMessage& operator<<(uint16& Value)   { Packet << Value; return *this; }
+	FSWGMessage& operator<<(int32& Value)    { Packet << Value; return *this; }
+	FSWGMessage& operator<<(uint32& Value)   { Packet << Value; return *this; }
+	FSWGMessage& operator<<(int64& Value)    { Packet << Value; return *this; }
+	FSWGMessage& operator<<(uint64& Value)   { Packet << Value; return *this; }
+	FSWGMessage& operator<<(float& Value)    { Packet << Value; return *this; }
+	FSWGMessage& operator<<(FString& Value)  { Packet << Value; return *this; }
+	FSWGMessage& operator<<(bool& Value)     { Packet << Value; return *this; }
+
+	// ── Alternate >> syntax (convention varies; both work) ──────────
+	FSWGMessage& operator>>(uint8& Value)    { Packet << Value; return *this; }
+	FSWGMessage& operator>>(int16& Value)    { Packet << Value; return *this; }
+	FSWGMessage& operator>>(uint16& Value)   { Packet << Value; return *this; }
+	FSWGMessage& operator>>(int32& Value)    { Packet << Value; return *this; }
+	FSWGMessage& operator>>(uint32& Value)   { Packet << Value; return *this; }
+	FSWGMessage& operator>>(int64& Value)    { Packet << Value; return *this; }
+	FSWGMessage& operator>>(uint64& Value)   { Packet << Value; return *this; }
+	FSWGMessage& operator>>(float& Value)    { Packet << Value; return *this; }
+	FSWGMessage& operator>>(FString& Value)  { Packet << Value; return *this; }
+	FSWGMessage& operator>>(bool& Value)     { Packet << Value; return *this; }
+
 	// ── Utility ───────────────────────────────────────────────────
 	int32   GetRemaining() const;
 	bool    IsAtEnd() const;

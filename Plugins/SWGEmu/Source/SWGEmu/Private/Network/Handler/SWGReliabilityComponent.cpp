@@ -92,8 +92,10 @@ void FSWGReliabilityComponent::HandleDataChannel(FBitReader& Packet)
 	if (IncomingSeq != InSeqNext)
 	{
 		UE_LOG(LogTemp, Verbose,
-			TEXT("FSWGReliabilityComponent: DataChannel seq=%u expected=%u — dropped"),
+			TEXT("FSWGReliabilityComponent: DataChannel seq=%u expected=%u — out of order"),
 			IncomingSeq.Get(), InSeqNext.Get());
+		// Send DataOrder to inform server of what we're expecting
+		SendDataOrder(InSeqNext.Get());
 		return;
 	}
 
@@ -133,8 +135,10 @@ void FSWGReliabilityComponent::HandleDataFrag(FBitReader& Packet)
 	if (IncomingSeq != InSeqNext)
 	{
 		UE_LOG(LogTemp, Verbose,
-			TEXT("FSWGReliabilityComponent: DataFrag seq=%u expected=%u — dropped"),
+			TEXT("FSWGReliabilityComponent: DataFrag seq=%u expected=%u — out of order"),
 			IncomingSeq.Get(), InSeqNext.Get());
+		// Send DataOrder to inform server of what we're expecting
+		SendDataOrder(InSeqNext.Get());
 		return;
 	}
 
@@ -274,6 +278,16 @@ void FSWGReliabilityComponent::SendDataAck(uint16 Sequence)
 	Ack.WriteByte((uint8)(Sequence >> 8));
 	Ack.WriteByte((uint8)(Sequence & 0xFF));
 	Session->OutgoingUnreliable.Enqueue(MoveTemp(Ack));
+}
+
+void FSWGReliabilityComponent::SendDataOrder(uint16 Sequence)
+{
+	FSWGPacket Order;
+	Order.WriteByte(0x00);
+	Order.WriteByte(static_cast<uint8>(ESWGSessionOp::DataOrder1));
+	Order.WriteByte((uint8)(Sequence >> 8));
+	Order.WriteByte((uint8)(Sequence & 0xFF));
+	Session->OutgoingUnreliable.Enqueue(MoveTemp(Order));
 }
 
 void FSWGReliabilityComponent::UnbundleMessages(const uint8* Data, int32 Len)

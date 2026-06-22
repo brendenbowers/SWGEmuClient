@@ -6,7 +6,10 @@
 #include "Network/SWGSession.h"
 #include "Network/SWGSocketReader.h"
 #include "Network/Handler/SWGPacketHandler.h"
+#include "Network/Messages/SWGMessageOp.h"
 #include "Network/Messages/SWGMessage.h"
+#include "Network/Messages/SWGNetMessage.h"
+#include "Network/Messages/SWGMessageRegistry.h"
 #include "SWGNetworkSubsystem.generated.h"
 
 class FSocket;
@@ -69,14 +72,32 @@ public:
 
 	// ── Message Handling ──────────────────────────────────────────
 
-	/** Fired on the game thread for every fully reassembled game message. */
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMessageReceived, const FSWGMessage&);
+	/** Fired on the game thread for every constructed typed message. */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMessageReceived, const FSWGNetMessage&);
 	FOnMessageReceived OnMessageReceived;
 
-	using FMessageHandler = TFunction<void(const FSWGMessage&)>;
+	using FMessageHandler = TFunction<void(const FSWGNetMessage&)>;
 
-	/** Register a callback for a specific message opcode. */
+	/** Register a typed handler for a specific message opcode. The concrete type is cast internally. */
 	void RegisterMessageHandler(uint32 Opcode, FMessageHandler&& Handler);
+
+	/**
+	 * Register a typed handler that receives the concrete message type directly.
+	 *
+	 * Example:
+	 *   Net->RegisterMessageHandler<FLoginClusterStatusMessage>(
+	 *       ESWGMessageOp::LoginClusterStatus,
+	 *       [](const FLoginClusterStatusMessage& Msg) { ... });
+	 */
+	template<typename T>
+	void RegisterMessageHandler(ESWGMessageOp Opcode, TFunction<void(const T&)> Handler)
+	{
+		RegisterMessageHandler(static_cast<uint32>(Opcode),
+			[Handler](const FSWGNetMessage& Msg)
+			{
+				Handler(static_cast<const T&>(Msg));
+			});
+	}
 
 	// ── Outgoing ─────────────────────────────────────────────────
 
@@ -94,13 +115,13 @@ public:
 	uint32 GetEncryptionKey() const { return Session.EncryptionKey; }
 
 private:
-	FSocket*                    Socket         = nullptr;
-	FSWGSession                 Session;
-	TUniquePtr<FSWGPacketHandler>  PacketHandler;
-	TUniquePtr<FSWGSocketReader>   ReaderRunnable;
-	FRunnableThread*               ReaderThread   = nullptr;
+	FSocket*						Socket         = nullptr;
+	FSWGSession						Session;
+	TUniquePtr<FSWGPacketHandler>	PacketHandler;
+	TUniquePtr<FSWGSocketReader>	ReaderRunnable;
+	FRunnableThread*				ReaderThread   = nullptr;
 
-	TMap<uint32, FMessageHandler> MessageHandlers;
+	TMap<uint32, FMessageHandler>	MessageHandlers;
 
 	// ── Internal ──────────────────────────────────────────────────
 

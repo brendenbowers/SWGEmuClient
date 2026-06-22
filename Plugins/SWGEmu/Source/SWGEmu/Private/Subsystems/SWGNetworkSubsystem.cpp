@@ -2,6 +2,7 @@
 #include "Network/Handler/SWGPacketHandler.h"
 #include "Network/SWGSocketReader.h"
 #include "Network/SWGSessionOp.h"
+#include "Network/Messages/SWGMessageRegistry.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "HAL/RunnableThread.h"
@@ -147,14 +148,22 @@ void USWGNetworkSubsystem::Disconnect()
 	if (!IsConnected())
 		return;
 
-	// Send a SOE Disconnect packet.
+	// Send a SOE Disconnect packet: [0x00][0x05][connID(4 LE)][reason(2)]
 	FSWGPacket DiscoPacket;
 	DiscoPacket.WriteByte(0x00);
 	DiscoPacket.WriteByte(static_cast<uint8>(ESWGSessionOp::Disconnect));
+
+	// ConnID — little-endian (what we sent in SessionRequest)
+	const uint32 ConnID = Session.ConnectionID;
+	DiscoPacket.WriteByte((uint8)((ConnID >> 0) & 0xFF));
+	DiscoPacket.WriteByte((uint8)((ConnID >> 8) & 0xFF));
+	DiscoPacket.WriteByte((uint8)((ConnID >> 16) & 0xFF));
+	DiscoPacket.WriteByte((uint8)((ConnID >> 24) & 0xFF));
+
+	// Reason code — 0x0600
+	DiscoPacket.WriteByte(0x06);
 	DiscoPacket.WriteByte(0x00);
-	DiscoPacket.WriteByte(0x00);
-	DiscoPacket.WriteByte(0x00);
-	DiscoPacket.WriteByte(0x00);
+
 	SendPacketThroughPipeline(DiscoPacket);
 
 	StopIOThreads();
@@ -268,16 +277,21 @@ void USWGNetworkSubsystem::ProcessIncomingMessages()
 	FSWGPacket Pkt;
 	while (Session.IncomingMessages.Dequeue(Pkt))
 	{
-		FSWGMessage Msg(Pkt);
-		OnMessageReceived.Broadcast(Msg);
+		FSWGMessage Reader(Pkt);
+		const uint32 Opcode = Reader.Opcode;
 
-		if (FMessageHandler* HandlerFn = MessageHandlers.Find(Msg.Opcode))
+		TUniquePtr<FSWGNetMessage> Msg = FSWGMessageRegistry::Get().Create(Opcode, Reader);
+		if (!Msg)
 		{
-			(*HandlerFn)(Msg);
+			UE_LOG(LogTemp, Verbose, TEXT("SWGNetworkSubsystem: no registered message for opcode 0x%08X"), Opcode);
+			continue;
 		}
-		else
+
+		OnMessageReceived.Broadcast(*Msg);
+
+		if (FMessageHandler* HandlerFn = MessageHandlers.Find(Opcode))
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("SWGNetworkSubsystem: unhandled opcode 0x%08X"), Msg.Opcode);
+			(*HandlerFn)(*Msg);
 		}
 	}
 }

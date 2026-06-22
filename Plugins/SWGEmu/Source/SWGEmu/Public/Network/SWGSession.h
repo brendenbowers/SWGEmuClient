@@ -29,8 +29,9 @@ enum class ESWGSessionState : uint8
 struct FSWGSession
 {
 	// ── Connection parameters (set by HandshakeComponent on SessionResponse) ──
-	uint32 EncryptionKey  = 0;
-	uint32 MaxPacketSize  = 496;
+	uint32 ConnectionID    = 0;
+	uint32 EncryptionKey   = 0;
+	uint32 MaxPacketSize   = 496;
 	uint32 WindowResendSize = 32;
 
 	ESWGSessionState State = ESWGSessionState::Disconnected;

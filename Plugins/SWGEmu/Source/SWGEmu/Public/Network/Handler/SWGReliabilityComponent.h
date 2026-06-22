@@ -62,6 +62,7 @@ private:
 	void HandleMultiPacket(FBitReader& Packet);
 	void HandleRetransmits(float DeltaTime);
 	void SendDataAck(uint16 Sequence);
+	void SendDataOrder(uint16 Sequence);
 	void UnbundleMessages(const uint8* Data, int32 Len);
 
 	/** Consume and return the next outgoing sequence number (wraps at 0xFFFF). */

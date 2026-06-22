@@ -4,6 +4,7 @@
 #include "Network/SWGSession.h"
 #include "Network/SWGPacket.h"
 #include "EncryptionComponent.h"
+#include "HAL/PlatformTime.h"
 
 FSWGHandshakeComponent::FSWGHandshakeComponent(FSWGSession* InSession, FSWGEncryptionComponent* InEncryption)
 	: HandlerComponent(FName(TEXT("SWGHandshake")))
@@ -31,9 +32,22 @@ void FSWGHandshakeComponent::Incoming(FBitReader& Packet)
 
 	const uint8* Data = Packet.GetData();
 
-	if (SWGIsSessionPacket(Data, NumBytes) && SWGGetSessionOp(Data) == ESWGSessionOp::SessionResponse)
+	if (!SWGIsSessionPacket(Data, NumBytes))
+		return;
+
+	const ESWGSessionOp Op = SWGGetSessionOp(Data);
+
+	if (Op == ESWGSessionOp::SessionResponse)
 	{
 		HandleSessionResponse(Packet);
+	}
+	else if (Op == ESWGSessionOp::NetStatRequest)
+	{
+		HandleNetStatRequest(Packet);
+	}
+	else if (Op == ESWGSessionOp::Disconnect)
+	{
+		HandleDisconnect(Packet);
 	}
 }
 
@@ -86,6 +100,7 @@ void FSWGHandshakeComponent::SendSessionRequest()
 	Pkt.bCompressed = false;
 
 	Session->State = ESWGSessionState::Connecting;
+	Session->ConnectionID = ConnID;
 	Session->OutgoingUnreliable.Enqueue(MoveTemp(Pkt));
 }
 
@@ -157,4 +172,36 @@ void FSWGHandshakeComponent::HandleSessionResponse(FBitReader& Packet)
 
 	// Signal the pipeline that the handshake is complete.
 	Initialized();
+}
+
+void FSWGHandshakeComponent::HandleNetStatRequest(FBitReader& Packet)
+{
+	const uint8* Data = Packet.GetData();
+	const int32 NumBytes = (int32)Packet.GetNumBytes();
+
+	// NetStatRequest format: [0x00][0x07][tick(2 BE)][stats...]
+	if (NumBytes < 4)
+		return;
+
+	const uint16 Tick = ((uint16)Data[2] << 8) | (uint16)Data[3];
+
+	// Respond with NetStatResponse: [0x00][0x08][tick(2 BE)][stats]
+	// For now, minimal response: just echo back the tick.
+	FSWGPacket Response;
+	Response.WriteByte(0x00);
+	Response.WriteByte(static_cast<uint8>(ESWGSessionOp::NetStatResponse));
+	Response.WriteByte((uint8)(Tick >> 8));
+	Response.WriteByte((uint8)(Tick & 0xFF));
+	Response.bEncrypted = false;
+	Response.bCompressed = false;
+
+	Session->OutgoingUnreliable.Enqueue(MoveTemp(Response));
+	Session->LastPingReceived = (uint64)(FPlatformTime::Seconds() * 1000.0);
+}
+
+void FSWGHandshakeComponent::HandleDisconnect(FBitReader& Packet)
+{
+	// Server is closing the connection.
+	UE_LOG(LogTemp, Log, TEXT("FSWGHandshakeComponent: received Disconnect from server"));
+	Session->State = ESWGSessionState::Disconnected;
 }

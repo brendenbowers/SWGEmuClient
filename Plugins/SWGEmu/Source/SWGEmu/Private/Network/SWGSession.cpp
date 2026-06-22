@@ -2,6 +2,7 @@
 
 void FSWGSession::Reset()
 {
+	ConnectionID     = 0;
 	EncryptionKey    = 0;
 	MaxPacketSize    = 496;
 	WindowResendSize = 32;
