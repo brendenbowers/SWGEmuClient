@@ -40,7 +40,6 @@ void FSWGSocketWriter::Stop()
 
 void FSWGSocketWriter::ProcessOutgoingMessages()
 {
-	// TODO: Dequeue and transmit
 }
 
 void FSWGSocketWriter::HandleRetransmits()
@@ -55,7 +54,6 @@ void FSWGSocketWriter::SendSessionRequest(uint32 CRCSeed, uint32 ConnectionID)
 
 void FSWGSocketWriter::SendPacket(const FSWGPacket& Packet, bool bReliable)
 {
-	// TODO: Prepare packet for transmission
 }
 
 void FSWGSocketWriter::SendPing()

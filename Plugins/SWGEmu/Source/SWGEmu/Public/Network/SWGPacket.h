@@ -1,57 +1,79 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Serialization/Archive.h"
 
 /**
- * FSWGPacket represents a raw SOE protocol packet buffer with read/write cursors.
+ * FSWGPacket — SOE protocol packet buffer.
  *
- * The SOE protocol uses big-endian (network byte order) on the wire. All integer
- * reads/writes automatically swap bytes via NETWORK_ORDER macros.
+ * Derives from FArchive so that Phase 2 game messages can serialize with
+ * operator<< (ArForceByteSwapping = true gives big-endian wire order on x86).
  *
+ * FArchive is a single-cursor streaming type: you are either saving (writing)
+ * or loading (reading). The single private cursor `Pos` replaces the old
+ * ReadIndex / WriteIndex pair:
+ *
+ *   Writing:   FSWGPacket Pkt;               // starts in saving mode
+ *              Pkt.WriteByte(0x00);           // or Pkt << MyUInt32;
+ *              // Data[0..Pos-1] holds the written bytes
+ *
+ *   Reading:   Pkt.SetReadMode();            // Seek(0), flip to loading
+ *              uint32 V; Pkt << V;            // big-endian read
+ *
+ * The `Data` member is public so that handlers and the reliability component
+ * can append raw bytes (e.g. fragment reassembly) without going through the
+ * cursor. Direct array manipulation does not advance Pos — callers set the
+ * mode and position explicitly with SetReadMode() / SetWriteMode() / Seek().
  */
-struct FSWGPacket
+struct FSWGPacket : public FArchive
 {
-	// Raw packet data
+	// Raw packet bytes. Public so handlers can Append / MoveTemp / index directly.
 	TArray<uint8> Data;
 
-	// Cursor positions
-	int32 ReadIndex = 0;
-	int32 WriteIndex = 0;
-
-	// Packet flags
-	bool bEncrypted = false;
-	bool bCompressed = false;
-	uint32 CRC = 0;
-
-	// Timing for reliability tracking
+	// Packet metadata (not wire data)
+	bool   bEncrypted  = false;
+	bool   bCompressed = false;
+	uint32 CRC         = 0;
 	uint64 TimeCreated = 0;
-	uint64 TimeSent = 0;
-	uint32 Resends = 0;
+	uint64 TimeSent    = 0;
+	uint32 Resends     = 0;
 
-	// Construction
+	// ── Construction ──────────────────────────────────────────────
 	FSWGPacket();
-	explicit FSWGPacket(int32 Size);
-	FSWGPacket(const uint8* Bytes, int32 Len);
+	FSWGPacket(const uint8* Bytes, int32 Len); // Loads existing bytes, starts in read mode
 
-	// Capacity and sizing
-	void SetSize(int32 NewSize);
-	void ShrinkToWriteIndex();
+	// ── Mode ─────────────────────────────────────────────────────
+	/** Switch to read mode and seek back to byte 0. */
+	void SetReadMode()  { SetIsLoading(true);  SetIsSaving(false); Pos = 0; }
+	/** Switch to write mode (position stays where it is). */
+	void SetWriteMode() { SetIsLoading(false); SetIsSaving(true); }
+
+	// ── FArchive interface ────────────────────────────────────────
+	virtual FString GetArchiveName() const override { return TEXT("FSWGPacket"); }
+	virtual void    Serialize(void* V, int64 Length) override;
+	virtual int64   Tell()    override { return Pos; }
+	virtual void    Seek(int64 InPos) override { Pos = InPos; }
+	virtual int64   TotalSize() override { return (int64)Data.Num(); }
+
+	// ── Sizing ────────────────────────────────────────────────────
+	/** Trim Data to however many bytes have been written (Pos). */
+	void ShrinkToEnd();
 	void Reset();
 
-	// ── Read Helpers ──────────────────────────────────────────
-	uint8 ReadByte();
-	int16 ReadInt16();
-	uint16 ReadUInt16();
-	int32 ReadInt32();
-	uint32 ReadUInt32();
-	int64 ReadInt64();
-	uint64 ReadUInt64();
-	float ReadFloat();
+	// ── Typed read helpers (big-endian) ──────────────────────────
+	uint8   ReadByte();
+	int16   ReadInt16();
+	uint16  ReadUInt16();
+	int32   ReadInt32();
+	uint32  ReadUInt32();
+	int64   ReadInt64();
+	uint64  ReadUInt64();
+	float   ReadFloat();
 	FString ReadAsciiString();
 	FString ReadUnicodeString();
-	void Skip(int32 NumBytes);
+	void    Skip(int32 NumBytes);
 
-	// ── Write Helpers ─────────────────────────────────────────
+	// ── Typed write helpers (big-endian) ─────────────────────────
 	void WriteByte(uint8 Value);
 	void WriteInt16(int16 Value);
 	void WriteUInt16(uint16 Value);
@@ -63,13 +85,13 @@ struct FSWGPacket
 	void WriteAsciiString(const FString& Value);
 	void WriteUnicodeString(const FString& Value);
 
-	// Utility
-	int32 GetSize() const { return Data.Num(); }
-	int32 GetRemaining() const { return Data.Num() - ReadIndex; }
-	bool IsAtEnd() const { return ReadIndex >= Data.Num(); }
+	// ── Utility ───────────────────────────────────────────────────
+	int32 GetSize()      const { return Data.Num(); }
+	int32 GetRemaining() const { return Data.Num() - (int32)Pos; }
+	bool  IsAtEnd()      const { return Pos >= (int64)Data.Num(); }
 
 	FString ToString() const;
 
 private:
-	void EnsureCapacity(int32 NumBytesNeeded);
+	int64 Pos = 0; // Single FArchive-style cursor
 };

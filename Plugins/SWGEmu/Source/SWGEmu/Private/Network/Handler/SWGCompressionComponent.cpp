@@ -79,14 +79,46 @@ void FSWGCompressionComponent::Incoming(FBitReader& Packet)
 
 void FSWGCompressionComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits)
 {
-	// If the caller has marked this packet as not compressible (e.g. handshake packets),
-	// skip compression and append the disabled flag.
-	// Phase 1: never compress regardless — full zlib outgoing is Phase 2.
-	// In Phase 2: compress here, set Traits.bIsCompressed = true, flag = SWGCompressionFlagEnabled.
-	(void)Traits.bAllowCompression; // consulted in Phase 2
-	Traits.bIsCompressed = false;
 
 	uint8 Flag = SWGCompressionFlagDisabled;
+	if (!Traits.bAllowCompression)
+	{
+		Packet.Serialize(&Flag, 1);
+		return;
+	}
+
+	const int32 NumBytes    = (int32)Packet.GetNumBytes();
+	const uint8* RawData    = Packet.GetData();
+	const int32 StartOffset = (int32)SWGGetPayloadStartOffset(RawData);
+	const int32 PayloadLen  = NumBytes - StartOffset;
+
+	if (PayloadLen <= 0)
+	{
+		Packet.Serialize(&Flag, 1);
+		return;
+	}
+
+	// Copy header bytes before resetting Packet (Reset() would invalidate RawData).
+	TArray<uint8> Header(RawData, StartOffset);
+
+	// Try to compress the payload region. Compress() returns 0 if compression
+	// would increase the size, so we use that as the no-benefit signal.
+	TArray<uint8> CompressedBuf;
+	CompressedBuf.SetNumUninitialized(NumBytes + 64);
+
+	const int32 CompressedLen = FSWGCrypto::Compress(
+		RawData + StartOffset, PayloadLen,
+		CompressedBuf.GetData(), CompressedBuf.Num());
+
+	if (CompressedLen > 0)
+	{
+		// Compression helped — rebuild packet: [header][compressed_payload][0x01]
+		Packet.Reset();
+		Packet.Serialize(Header.GetData(), StartOffset);
+		Packet.Serialize(CompressedBuf.GetData(), CompressedLen);
+		Flag = SWGCompressionFlagEnabled;
+	}
+
 	Packet.Serialize(&Flag, 1);
 }
 

@@ -33,6 +33,15 @@ public:
 	/** Tick components that need it (e.g. reliability resends). */
 	void Tick(float DeltaTime);
 
+	/**
+	 * Kick off the handshake: calls NotifyHandshakeBegin on any component that
+	 * requires one (i.e. FSWGHandshakeComponent). Must be called after Initialize()
+	 * and before the first Send/Recv. The handshake component queues a SessionRequest
+	 * to Session->OutgoingUnreliable; flush that queue to the socket to start the
+	 * SOE session exchange.
+	 */
+	void TriggerHandshake();
+
 	/** Sum of reserved bits across components — validate against the 496-byte SOE MTU. */
 	int32 GetTotalReservedPacketBits() const;
 

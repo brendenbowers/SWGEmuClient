@@ -5,7 +5,7 @@
 #include "Tickable.h"
 #include "Network/SWGSession.h"
 #include "Network/SWGSocketReader.h"
-#include "Network/SWGSocketWriter.h"
+#include "Network/Handler/SWGPacketHandler.h"
 #include "Network/Messages/SWGMessage.h"
 #include "SWGNetworkSubsystem.generated.h"
 
@@ -13,21 +13,16 @@ class FSocket;
 class FRunnableThread;
 
 /**
- * USWGNetworkSubsystem is the main entry point for the SWG Emu networking plugin.
+ * USWGNetworkSubsystem — main entry point for the SWGEmu networking plugin.
  *
- * Responsibilities:
- * - Manage UDP socket lifecycle (create, connect, disconnect)
- * - Own the SWG session state and reliability tracking
- * - Spawn and manage socket reader/writer background threads
- * - Dispatch incoming messages to registered handlers
- * - Provide C++ / Blueprint APIs for sending messages
- *
- * This is a GameInstanceSubsystem, so it persists across level loads
- * and is tied to the game instance lifetime.
+ * Owns the UDP socket, session state, and the FSWGPacketHandler pipeline.
+ * A single background thread (FSWGSocketReader) receives datagrams and pushes
+ * them through the pipeline. Outgoing packets are drained tick-driven from the
+ * game thread (mirrors UIpNetDriver::TickFlush), so no writer thread is needed.
  *
  * Usage:
  *   USWGNetworkSubsystem* Net = GetGameInstance()->GetSubsystem<USWGNetworkSubsystem>();
- *   Net->Connect("loginserver.swgemu.com", 44453);
+ *   Net->Connect("loginserver.swgemu.com", 44453, Error);
  */
 UCLASS()
 class SWGEMU_API USWGNetworkSubsystem : public UGameInstanceSubsystem, public FTickableGameObject
@@ -36,8 +31,8 @@ class SWGEMU_API USWGNetworkSubsystem : public UGameInstanceSubsystem, public FT
 
 public:
 	USWGNetworkSubsystem();
-	// Defined in the .cpp so TUniquePtr members can see the complete
-	// FSWGSocketReader / FSWGSocketWriter types when destroyed.
+	// Out-of-line dtor so TUniquePtr<FSWGSocketReader> / TUniquePtr<FSWGPacketHandler>
+	// see complete types at destruction.
 	virtual ~USWGNetworkSubsystem() override;
 
 	// USubsystem interface
@@ -49,106 +44,78 @@ public:
 	virtual TStatId GetStatId() const override;
 	virtual bool IsTickable() const override;
 
-	// ── Connection Lifecycle ──────────────────────────────────
+	// ── Connection Lifecycle ──────────────────────────────────────
+
 	/**
-	 * Establish a UDP connection to the server.
+	 * Establish a UDP connection to the SOE server.
 	 *
-	 * This performs the SOE handshake (SessionRequest → SessionResponse).
-	 * Returns when connected or an error occurs.
+	 * Sends a SessionRequest, blocks until SessionResponse arrives (handshake
+	 * complete) or the timeout expires.
 	 *
-	 * @param HostAddress    Server IP or hostname (e.g., "loginserver.swgemu.com")
-	 * @param Port           Server port (e.g., 44453 for login, 44463 for zone)
-	 * @param OutError       [optional] Set to error message on failure
-	 * @return               True if connected, false otherwise
+	 * @param HostAddress  Server IP or hostname.
+	 * @param Port         Server port (44453 login, 44463 zone).
+	 * @param OutError     Set to an error description on failure.
+	 * @return             True if handshake completed successfully.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Network")
 	bool Connect(const FString& HostAddress, int32 Port, FString& OutError);
 
-	/**
-	 * Cleanly disconnect from the server (sends Disconnect packet).
-	 */
+	/** Send a SOE Disconnect packet and clean up resources. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Network")
 	void Disconnect();
 
-	/**
-	 * Check if currently connected to the server.
-	 */
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|Network")
 	bool IsConnected() const;
 
-	// ── Message Handlers ──────────────────────────────────────
-	/**
-	 * Delegate fired when a message is received and dispatched.
-	 * C++ code can bind to this to listen for all messages.
-	 */
+	// ── Message Handling ──────────────────────────────────────────
+
+	/** Fired on the game thread for every fully reassembled game message. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMessageReceived, const FSWGMessage&);
 	FOnMessageReceived OnMessageReceived;
 
-	/**
-	 * Register a handler for a specific message opcode.
-	 *
-	 * @param Opcode  The message opcode (ESWGMessageOp)
-	 * @param Handler Callback function
-	 */
 	using FMessageHandler = TFunction<void(const FSWGMessage&)>;
+
+	/** Register a callback for a specific message opcode. */
 	void RegisterMessageHandler(uint32 Opcode, FMessageHandler&& Handler);
 
-	// ── Outgoing Messages ─────────────────────────────────────
+	// ── Outgoing ─────────────────────────────────────────────────
+
 	/**
 	 * Queue a game message for transmission.
 	 *
-	 * @param Message     The message packet (opcode should be set)
-	 * @param bReliable   If true, use DataChannel1 (with sequence/ACK); false for unreliable
+	 * @param Message   Pre-built packet (caller sets op/payload).
+	 * @param bReliable If true, uses DataChannel1 (sequence-tracked); false for unreliable.
 	 */
 	void SendMessage(const FSWGPacket& Message, bool bReliable = true);
 
-	// ── Session State ─────────────────────────────────────────
-	/**
-	 * Get the current session state (for debugging/UI).
-	 */
-	ESWGSessionState GetSessionState() const { return Session.State; }
+	// ── Session Accessors ─────────────────────────────────────────
 
-	/**
-	 * Get the encryption key (used by crypto functions).
-	 */
+	ESWGSessionState GetSessionState() const { return Session.State; }
 	uint32 GetEncryptionKey() const { return Session.EncryptionKey; }
 
 private:
-	// Socket and networking
-	FSocket* Socket = nullptr;
+	FSocket*                    Socket         = nullptr;
+	FSWGSession                 Session;
+	TUniquePtr<FSWGPacketHandler>  PacketHandler;
+	TUniquePtr<FSWGSocketReader>   ReaderRunnable;
+	FRunnableThread*               ReaderThread   = nullptr;
 
-	// Session state (shared with reader/writer threads)
-	FSWGSession Session;
-
-	// Background threads
-	TUniquePtr<FSWGSocketReader> ReaderRunnable;
-	TUniquePtr<FSWGSocketWriter> WriterRunnable;
-	FRunnableThread* ReaderThread = nullptr;
-	FRunnableThread* WriterThread = nullptr;
-
-	// Message dispatch table
 	TMap<uint32, FMessageHandler> MessageHandlers;
 
-	// ── Internal Methods ──────────────────────────────────────
-	/**
-	 * Process all messages in the incoming queue and dispatch to handlers.
-	 * Called from Tick.
-	 */
+	// ── Internal ──────────────────────────────────────────────────
+
+	/** Drain OutgoingUnreliable + OutgoingReliable, run each through the handler, send. */
+	void FlushOutgoingQueues();
+
+	/** Dequeue IncomingMessages and dispatch to registered handlers. */
 	void ProcessIncomingMessages();
 
-	/**
-	 * Perform SOE SessionRequest/SessionResponse handshake.
-	 * Called during Connect.
-	 */
-	bool PerformHandshake();
-
-	/**
-	 * Spawn the background reader and writer threads.
-	 */
-	void StartIOThreads();
-
-	/**
-	 * Stop and clean up the background threads.
-	 */
+	/** Stop and join the reader thread; destroys the handler. */
 	void StopIOThreads();
+
+	/**
+	 * Send the raw bytes of a pre-built FSWGPacket through the handler pipeline
+	 * (Reliability → Compression → Encryption → CRC) and transmit via socket.
+	 */
+	void SendPacketThroughPipeline(const FSWGPacket& Pkt);
 };

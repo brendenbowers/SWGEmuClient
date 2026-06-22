@@ -1,108 +1,46 @@
 #include "Network/Messages/SWGMessage.h"
 
-FSWGMessage::FSWGMessage(const FSWGPacket& Packet)
-	: Data(Packet.Data), ReadIndex(6), Opcode(PeekOpcode(Packet))
+FSWGMessage::FSWGMessage(const FSWGPacket& InPacket)
+	: Packet(InPacket)
 {
+	// Read opcode before setting cursor position.
+	Opcode = PeekOpcode(Packet);
+
+	// Position cursor at payload start: skip 2-byte session sub-type + 4-byte opcode.
+	Packet.SetReadMode();
+	Packet.Skip(6);
 }
 
-uint32 FSWGMessage::PeekOpcode(const FSWGPacket& Packet)
+uint32 FSWGMessage::PeekOpcode(const FSWGPacket& Pkt)
 {
-	if (Packet.Data.Num() < 6)
+	if (Pkt.Data.Num() < 6)
 		return 0;
 
-	uint32 Op;
-	FMemory::Memcpy(&Op, Packet.Data.GetData() + 2, sizeof(uint32));
-	return NETWORK_ORDER32(Op);
+	// Read 4 bytes at offset 2 through a temporary packet so FArchive handles
+	// the big-endian conversion — no NETWORK_ORDER macros needed.
+	FSWGPacket Reader(Pkt.Data.GetData() + 2, 4);
+	return Reader.ReadUInt32();
 }
 
-int16 FSWGMessage::ReadInt16()
-{
-	if (ReadIndex + 2 > Data.Num()) return 0;
-	int16 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(int16));
-	ReadIndex += 2;
-	return NETWORK_ORDER16(Value);
-}
+// ── Read helpers — all delegate to Packet ────────────────────────────────────
 
-uint16 FSWGMessage::ReadUInt16()
-{
-	if (ReadIndex + 2 > Data.Num()) return 0;
-	uint16 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(uint16));
-	ReadIndex += 2;
-	return NETWORK_ORDER16(Value);
-}
+uint8   FSWGMessage::ReadByte()          { return Packet.ReadByte(); }
+int16   FSWGMessage::ReadInt16()         { return Packet.ReadInt16(); }
+uint16  FSWGMessage::ReadUInt16()        { return Packet.ReadUInt16(); }
+int32   FSWGMessage::ReadInt32()         { return Packet.ReadInt32(); }
+uint32  FSWGMessage::ReadUInt32()        { return Packet.ReadUInt32(); }
+int64   FSWGMessage::ReadInt64()         { return Packet.ReadInt64(); }
+uint64  FSWGMessage::ReadUInt64()        { return Packet.ReadUInt64(); }
+float   FSWGMessage::ReadFloat()         { return Packet.ReadFloat(); }
+FString FSWGMessage::ReadAsciiString()   { return Packet.ReadAsciiString(); }
+FString FSWGMessage::ReadUnicodeString() { return Packet.ReadUnicodeString(); }
+void    FSWGMessage::Skip(int32 N)       { Packet.Skip(N); }
 
-int32 FSWGMessage::ReadInt32()
-{
-	if (ReadIndex + 4 > Data.Num()) return 0;
-	int32 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(int32));
-	ReadIndex += 4;
-	return NETWORK_ORDER32(Value);
-}
-
-uint32 FSWGMessage::ReadUInt32()
-{
-	if (ReadIndex + 4 > Data.Num()) return 0;
-	uint32 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(uint32));
-	ReadIndex += 4;
-	return NETWORK_ORDER32(Value);
-}
-
-int64 FSWGMessage::ReadInt64()
-{
-	if (ReadIndex + 8 > Data.Num()) return 0;
-	int64 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(int64));
-	ReadIndex += 8;
-	return NETWORK_ORDER64(Value);
-}
-
-uint64 FSWGMessage::ReadUInt64()
-{
-	if (ReadIndex + 8 > Data.Num()) return 0;
-	uint64 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(uint64));
-	ReadIndex += 8;
-	return NETWORK_ORDER64(Value);
-}
-
-float FSWGMessage::ReadFloat()
-{
-	int32 Raw = ReadInt32();
-	float FloatVal;
-	FMemory::Memcpy(&FloatVal, &Raw, sizeof(float));
-	return FloatVal;
-}
-
-FString FSWGMessage::ReadAsciiString()
-{
-	uint16 Len = ReadUInt16();
-	if (ReadIndex + Len > Data.Num()) return FString();
-
-	TArray<ANSICHAR> Buf;
-	Buf.SetNum(Len + 1);
-	FMemory::Memcpy(Buf.GetData(), Data.GetData() + ReadIndex, Len);
-	Buf[Len] = '\0';
-	ReadIndex += Len;
-
-	return FString(ANSI_TO_TCHAR(Buf.GetData()));
-}
-
-FString FSWGMessage::ReadUnicodeString()
-{
-	uint16 Len = ReadUInt16();
-	if (ReadIndex + (Len * 2) > Data.Num()) return FString();
-
-	FString Result(Len, reinterpret_cast<const TCHAR*>(Data.GetData() + ReadIndex));
-	ReadIndex += Len * 2;
-	return Result;
-}
+int32   FSWGMessage::GetRemaining() const { return Packet.GetRemaining(); }
+bool    FSWGMessage::IsAtEnd() const      { return Packet.IsAtEnd(); }
 
 FString FSWGMessage::ToString() const
 {
-	return FString::Printf(TEXT("FSWGMessage(Opcode=0x%08X, ReadIdx=%d, Size=%d)"),
-		Opcode, ReadIndex, Data.Num());
+	return FString::Printf(TEXT("FSWGMessage(Opcode=0x%08X, Remaining=%d, Size=%d)"),
+		Opcode, GetRemaining(), Packet.GetSize());
 }

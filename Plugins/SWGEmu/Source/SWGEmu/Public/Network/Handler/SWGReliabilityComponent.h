@@ -2,20 +2,24 @@
 
 #include "CoreMinimal.h"
 #include "PacketHandler.h"
+#include "Net/Util/SequenceNumber.h"
 
 struct FSWGSession;
 struct FSWGPacket;
 
+/** 16-bit SOE sequence number with correct modular wrap-around arithmetic. */
+using FSWGSeqNum = TSequenceNumber<16, uint16>;
+
 /**
- * FSWGReliabilityComponent — SOE reliability stage (the big one).
+ * FSWGReliabilityComponent — SOE reliability stage.
  *
- * Owns the sequence/ACK window, fragment reassembly, and multi-packet unbundling.
- * Modeled on UE's ReliabilityHandlerComponent (sequence tracking, buffered-resend list,
- * and a resend timer driven from Tick()).
+ * Owns all sequence/ACK/window/fragment state so that FSWGSession only
+ * needs to hold connection parameters and the inter-thread message queues.
  *
- * Outgoing: buffer DataChannel/DataFrag packets for resend.
- * Incoming: retire ACK'd packets, deliver in-order, reassemble fragments and multi-packets,
- *           then push finished payloads to the session's IncomingMessages queue.
+ * Outgoing: buffer DataChannel/DataFrag packets in the resend window.
+ * Incoming: retire ACK'd packets, deliver in-order, reassemble fragments and
+ *           multi-packets, then push finished payloads to Session.IncomingMessages.
+ * Tick:     resend unacked window packets past the retransmit interval.
  */
 class FSWGReliabilityComponent : public HandlerComponent
 {
@@ -33,31 +37,33 @@ public:
 private:
 	FSWGSession* Session;
 
-	// TODO: Phase 1 - move reliability state here from FSWGSession:
-	//   OutSeqNext, InSeqNext, LastSeqAcked, WindowPackets, WindowLock,
-	//   FragTotalSize, FragCurrentSize, FragBuffer, OutgoingReliable, IncomingMessages.
+	// ── Sequence state (moved from FSWGSession) ───────────────────────────────
+	FSWGSeqNum OutSeqNext;   // Next outgoing sequence number to assign
+	FSWGSeqNum InSeqNext;    // Next incoming sequence number expected
+	uint32     LastSeqAcked = 0;
 
-	/** Remove ACK'd packets from the resend window. */
+	// ── Reliability window ────────────────────────────────────────────────────
+	TArray<FSWGPacket> WindowPackets; // Sent but not yet ACK'd
+	FCriticalSection   WindowLock;
+
+	// ── Fragment reassembly ───────────────────────────────────────────────────
+	uint32       FragTotalSize   = 0;
+	uint32       FragCurrentSize = 0;
+	TArray<uint8> FragBuffer;
+
+	// ── Tick throttle ─────────────────────────────────────────────────────────
+	double LastRetransmitCheckTime = 0.0;
+
+	// ── Helpers ───────────────────────────────────────────────────────────────
+
 	void HandleDataAck(FBitReader& Packet);
-
-	/** Deliver an in-order DataChannel payload and emit a DataAck. */
 	void HandleDataChannel(FBitReader& Packet);
-
-	/** Accumulate a fragment; push the full message when complete. */
 	void HandleDataFrag(FBitReader& Packet);
-
-	/** Unbundle a multi-packet into its sub-packets. */
 	void HandleMultiPacket(FBitReader& Packet);
-
-	/** Resend unacked window packets past the resend interval (from Tick). */
 	void HandleRetransmits(float DeltaTime);
-
-	/** Build and queue a DataAck1 for the given sequence number. */
 	void SendDataAck(uint16 Sequence);
-
-	/** Unbundle a DataChannel 0x0019 multi-message block into IncomingMessages. */
 	void UnbundleMessages(const uint8* Data, int32 Len);
 
-	/** Timestamp (ms) of last retransmit check; used to avoid tight-looping in Tick. */
-	double LastRetransmitCheckTime = 0.0;
+	/** Consume and return the next outgoing sequence number (wraps at 0xFFFF). */
+	uint16 GetNextOutSeq() { return (OutSeqNext++).Get(); }
 };

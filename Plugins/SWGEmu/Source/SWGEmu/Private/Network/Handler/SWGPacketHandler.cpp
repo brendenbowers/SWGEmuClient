@@ -25,7 +25,7 @@ void FSWGPacketHandler::Initialize()
 	auto Encryption  = MakeShared<FSWGEncryptionComponent>(Session);
 	auto Compression = MakeShared<FSWGCompressionComponent>(Session);
 	auto Reliability = MakeShared<FSWGReliabilityComponent>(Session);
-	auto Handshake   = MakeShared<FSWGHandshakeComponent>(Session, Encryption.Get());
+	auto Handshake   = MakeShared<FSWGHandshakeComponent>(Session, &Encryption.Get());
 
 	Components.Empty();
 	Components.Add(Crc);
@@ -75,6 +75,15 @@ void FSWGPacketHandler::Tick(float DeltaTime)
 	{
 		if (Comp.IsValid())
 			Comp->Tick(DeltaTime);
+	}
+}
+
+void FSWGPacketHandler::TriggerHandshake()
+{
+	for (TSharedPtr<HandlerComponent>& Comp : Components)
+	{
+		if (Comp.IsValid())
+			Comp->NotifyHandshakeBegin();
 	}
 }
 

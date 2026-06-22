@@ -1,243 +1,225 @@
 #include "Network/SWGPacket.h"
 
-FSWGPacket::FSWGPacket()
-	: Data()
-{
-	Data.SetNumZeroed(496);
-}
+// ── Constructors ──────────────────────────────────────────────────────────────
 
-FSWGPacket::FSWGPacket(int32 Size)
-	: Data()
+FSWGPacket::FSWGPacket()
 {
-	Data.SetNumZeroed(Size);
+	SetIsSaving(true);
+	ArForceByteSwapping = true; // SOE wire format is big-endian; operator<< uses this
 }
 
 FSWGPacket::FSWGPacket(const uint8* Bytes, int32 Len)
-	: Data(Bytes, Len), WriteIndex(Len)
 {
+	Data.Append(Bytes, Len);
+	SetIsLoading(true);
+	ArForceByteSwapping = true;
+	Pos = 0;
 }
 
-void FSWGPacket::SetSize(int32 NewSize)
+// ── FArchive::Serialize ───────────────────────────────────────────────────────
+
+void FSWGPacket::Serialize(void* V, int64 Length)
 {
-	Data.SetNum(NewSize);
-	if (ReadIndex > NewSize) ReadIndex = NewSize;
-	if (WriteIndex > NewSize) WriteIndex = NewSize;
+	const int32 ByteLen = (int32)Length;
+	if (IsLoading())
+	{
+		if (Pos + ByteLen > (int64)Data.Num())
+		{
+			SetError();
+			return;
+		}
+		FMemory::Memcpy(V, Data.GetData() + Pos, ByteLen);
+	}
+	else
+	{
+		if (Pos + ByteLen > (int64)Data.Num())
+			Data.SetNum((int32)(Pos + ByteLen) + 64);
+		FMemory::Memcpy(Data.GetData() + Pos, V, ByteLen);
+	}
+	Pos += ByteLen;
 }
 
-void FSWGPacket::ShrinkToWriteIndex()
+// ── Sizing ────────────────────────────────────────────────────────────────────
+
+void FSWGPacket::ShrinkToEnd()
 {
-	Data.SetNum(WriteIndex);
+	Data.SetNum((int32)Pos);
 }
 
 void FSWGPacket::Reset()
 {
-	ReadIndex = 0;
-	WriteIndex = 0;
-	bEncrypted = false;
+	Pos         = 0;
+	bEncrypted  = false;
 	bCompressed = false;
-	CRC = 0;
+	CRC         = 0;
 	TimeCreated = 0;
-	TimeSent = 0;
-	Resends = 0;
+	TimeSent    = 0;
+	Resends     = 0;
+	SetIsSaving(true);
 }
 
-// ──────────────────────────────────────────────────────────────
-// Read Helpers
-// ──────────────────────────────────────────────────────────────
+// ── Read helpers ──────────────────────────────────────────────────────────────
+// operator<< on FArchive reads bytes into the variable then byte-swaps in place
+// (because ArForceByteSwapping = true). We just need to ensure we're in loading mode.
 
 uint8 FSWGPacket::ReadByte()
 {
-	return (ReadIndex < Data.Num()) ? Data[ReadIndex++] : 0;
+	uint8 V = 0;
+	Serialize(&V, 1); // single byte — no swap needed
+	return V;
 }
 
 int16 FSWGPacket::ReadInt16()
 {
-	if (ReadIndex + 2 > Data.Num()) return 0;
-	int16 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(int16));
-	ReadIndex += 2;
-	return NETWORK_ORDER16(Value);
+	int16 V = 0;
+	*this << V;
+	return V;
 }
 
 uint16 FSWGPacket::ReadUInt16()
 {
-	if (ReadIndex + 2 > Data.Num()) return 0;
-	uint16 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(uint16));
-	ReadIndex += 2;
-	return NETWORK_ORDER16(Value);
+	uint16 V = 0;
+	*this << V;
+	return V;
 }
 
 int32 FSWGPacket::ReadInt32()
 {
-	if (ReadIndex + 4 > Data.Num()) return 0;
-	int32 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(int32));
-	ReadIndex += 4;
-	return NETWORK_ORDER32(Value);
+	int32 V = 0;
+	*this << V;
+	return V;
 }
 
 uint32 FSWGPacket::ReadUInt32()
 {
-	if (ReadIndex + 4 > Data.Num()) return 0;
-	uint32 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(uint32));
-	ReadIndex += 4;
-	return NETWORK_ORDER32(Value);
+	uint32 V = 0;
+	*this << V;
+	return V;
 }
 
 int64 FSWGPacket::ReadInt64()
 {
-	if (ReadIndex + 8 > Data.Num()) return 0;
-	int64 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(int64));
-	ReadIndex += 8;
-	return NETWORK_ORDER64(Value);
+	int64 V = 0;
+	*this << V;
+	return V;
 }
 
 uint64 FSWGPacket::ReadUInt64()
 {
-	if (ReadIndex + 8 > Data.Num()) return 0;
-	uint64 Value;
-	FMemory::Memcpy(&Value, Data.GetData() + ReadIndex, sizeof(uint64));
-	ReadIndex += 8;
-	return NETWORK_ORDER64(Value);
+	uint64 V = 0;
+	*this << V;
+	return V;
 }
 
 float FSWGPacket::ReadFloat()
 {
-	int32 Raw = ReadInt32();
-	float FloatVal;
-	FMemory::Memcpy(&FloatVal, &Raw, sizeof(float));
-	return FloatVal;
+	float V = 0.f;
+	*this << V;
+	return V;
 }
 
 FString FSWGPacket::ReadAsciiString()
 {
-	// Pascal-style: uint16 length + characters (no null terminator)
-	uint16 Len = ReadUInt16();
-	if (ReadIndex + Len > Data.Num()) return FString();
+	uint16 Len = 0;
+	*this << Len; // big-endian length prefix
+	if (IsError() || Pos + Len > (int64)Data.Num())
+	{
+		SetError();
+		return FString();
+	}
 
 	TArray<ANSICHAR> Buf;
 	Buf.SetNum(Len + 1);
-	FMemory::Memcpy(Buf.GetData(), Data.GetData() + ReadIndex, Len);
+	Serialize(Buf.GetData(), Len);
 	Buf[Len] = '\0';
-	ReadIndex += Len;
-
 	return FString(ANSI_TO_TCHAR(Buf.GetData()));
 }
 
 FString FSWGPacket::ReadUnicodeString()
 {
-	// Pascal-style: uint16 length + UTF-16 characters
-	uint16 Len = ReadUInt16();
-	if (ReadIndex + (Len * 2) > Data.Num()) return FString();
+	uint16 Len = 0;
+	*this << Len;
+	if (IsError() || Pos + (int64)(Len * 2) > (int64)Data.Num())
+	{
+		SetError();
+		return FString();
+	}
 
-	FString Result(Len, reinterpret_cast<const TCHAR*>(Data.GetData() + ReadIndex));
-	ReadIndex += Len * 2;
+	FString Result(Len, reinterpret_cast<const TCHAR*>(Data.GetData() + Pos));
+	Pos += Len * 2;
 	return Result;
 }
 
 void FSWGPacket::Skip(int32 NumBytes)
 {
-	ReadIndex += NumBytes;
-	if (ReadIndex > Data.Num()) ReadIndex = Data.Num();
+	Pos = FMath::Min(Pos + NumBytes, (int64)Data.Num());
 }
 
-// ──────────────────────────────────────────────────────────────
-// Write Helpers
-// ──────────────────────────────────────────────────────────────
+// ── Write helpers ─────────────────────────────────────────────────────────────
+// operator<< on FArchive byte-swaps the value then calls Serialize, giving
+// big-endian output. We accept the value by copy so operator<< can modify it.
 
 void FSWGPacket::WriteByte(uint8 Value)
 {
-	EnsureCapacity(1);
-	Data[WriteIndex++] = Value;
+	Serialize(&Value, 1);
 }
 
 void FSWGPacket::WriteInt16(int16 Value)
 {
-	Value = NETWORK_ORDER16(Value);
-	EnsureCapacity(2);
-	FMemory::Memcpy(Data.GetData() + WriteIndex, &Value, sizeof(int16));
-	WriteIndex += 2;
+	*this << Value;
 }
 
 void FSWGPacket::WriteUInt16(uint16 Value)
 {
-	Value = NETWORK_ORDER16(Value);
-	EnsureCapacity(2);
-	FMemory::Memcpy(Data.GetData() + WriteIndex, &Value, sizeof(uint16));
-	WriteIndex += 2;
+	*this << Value;
 }
 
 void FSWGPacket::WriteInt32(int32 Value)
 {
-	Value = NETWORK_ORDER32(Value);
-	EnsureCapacity(4);
-	FMemory::Memcpy(Data.GetData() + WriteIndex, &Value, sizeof(int32));
-	WriteIndex += 4;
+	*this << Value;
 }
 
 void FSWGPacket::WriteUInt32(uint32 Value)
 {
-	Value = NETWORK_ORDER32(Value);
-	EnsureCapacity(4);
-	FMemory::Memcpy(Data.GetData() + WriteIndex, &Value, sizeof(uint32));
-	WriteIndex += 4;
+	*this << Value;
 }
 
 void FSWGPacket::WriteInt64(int64 Value)
 {
-	Value = NETWORK_ORDER64(Value);
-	EnsureCapacity(8);
-	FMemory::Memcpy(Data.GetData() + WriteIndex, &Value, sizeof(int64));
-	WriteIndex += 8;
+	*this << Value;
 }
 
 void FSWGPacket::WriteUInt64(uint64 Value)
 {
-	Value = NETWORK_ORDER64(Value);
-	EnsureCapacity(8);
-	FMemory::Memcpy(Data.GetData() + WriteIndex, &Value, sizeof(uint64));
-	WriteIndex += 8;
+	*this << Value;
 }
 
 void FSWGPacket::WriteFloat(float Value)
 {
-	int32 Raw;
-	FMemory::Memcpy(&Raw, &Value, sizeof(float));
-	WriteInt32(Raw);
+	*this << Value;
 }
 
 void FSWGPacket::WriteAsciiString(const FString& Value)
 {
 	FTCHARToUTF8 Converted(*Value);
-	int32 Len = Converted.Length();
-	WriteUInt16((uint16)Len);
-	EnsureCapacity(Len);
-	FMemory::Memcpy(Data.GetData() + WriteIndex, (const uint8*)Converted.Get(), Len);
-	WriteIndex += Len;
+	const int32 Len = Converted.Length();
+	uint16 Len16 = (uint16)Len;
+	*this << Len16; // big-endian length
+	Serialize(const_cast<ANSICHAR*>(Converted.Get()), Len);
 }
 
 void FSWGPacket::WriteUnicodeString(const FString& Value)
 {
-	int32 Len = Value.Len();
-	WriteUInt16((uint16)Len);
-	EnsureCapacity(Len * 2);
-	FMemory::Memcpy(Data.GetData() + WriteIndex, *Value, Len * 2);
-	WriteIndex += Len * 2;
+	const int32 Len = Value.Len();
+	uint16 Len16 = (uint16)Len;
+	*this << Len16;
+	// TCHAR may be 2 or 4 bytes depending on platform; SOE expects UTF-16 (2-byte)
+	Serialize(const_cast<TCHAR*>(*Value), Len * 2);
 }
 
 FString FSWGPacket::ToString() const
 {
-	return FString::Printf(TEXT("FSWGPacket(Size=%d, ReadIdx=%d, WriteIdx=%d, Encrypted=%d, Compressed=%d)"),
-		Data.Num(), ReadIndex, WriteIndex, bEncrypted ? 1 : 0, bCompressed ? 1 : 0);
-}
-
-void FSWGPacket::EnsureCapacity(int32 NumBytesNeeded)
-{
-	if (WriteIndex + NumBytesNeeded > Data.Num())
-	{
-		Data.SetNum(WriteIndex + NumBytesNeeded + 64);
-	}
+	return FString::Printf(
+		TEXT("FSWGPacket(Size=%d, Pos=%lld, Encrypted=%d, Compressed=%d)"),
+		Data.Num(), Pos, bEncrypted ? 1 : 0, bCompressed ? 1 : 0);
 }

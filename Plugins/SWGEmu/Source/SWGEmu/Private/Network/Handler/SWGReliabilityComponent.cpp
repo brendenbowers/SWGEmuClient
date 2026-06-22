@@ -4,7 +4,7 @@
 #include "Network/SWGPacket.h"
 #include "HAL/PlatformTime.h"
 
-// Retransmit unacked packets after this many milliseconds (SOE protocol standard: 700 ms).
+// Retransmit unacked packets after 700 ms (SOE protocol standard).
 static constexpr uint64 kResendIntervalMs = 700;
 
 static FORCEINLINE uint64 NowMs()
@@ -20,6 +20,13 @@ FSWGReliabilityComponent::FSWGReliabilityComponent(FSWGSession* InSession)
 
 void FSWGReliabilityComponent::Initialize()
 {
+	OutSeqNext    = FSWGSeqNum(0);
+	InSeqNext     = FSWGSeqNum(0);
+	LastSeqAcked  = 0;
+	FragTotalSize = 0;
+	FragCurrentSize = 0;
+	FragBuffer.Empty();
+	WindowPackets.Empty();
 	Initialized();
 }
 
@@ -38,30 +45,20 @@ void FSWGReliabilityComponent::Incoming(FBitReader& Packet)
 
 	const uint8* Data = Packet.GetData();
 
-	// Only session packets reach this stage (fastpath packets have Data[0] != 0x00
-	// and are game messages that need no reliability processing here).
 	if (!SWGIsSessionPacket(Data, NumBytes))
 		return;
 
 	const ESWGSessionOp Op = SWGGetSessionOp(Data);
 
 	if (Op == ESWGSessionOp::MultiPacket)
-	{
 		HandleMultiPacket(Packet);
-	}
 	else if (SWGOpIsDataChannel(Op))
-	{
 		HandleDataChannel(Packet);
-	}
 	else if (SWGOpIsDataFrag(Op))
-	{
 		HandleDataFrag(Packet);
-	}
 	else if (SWGOpIsDataAck(Op))
-	{
 		HandleDataAck(Packet);
-	}
-	// Other ops (Disconnect, Ping, NetStat, etc.) pass through to the Handshake stage.
+	// Other ops (SessionResponse, Disconnect, Ping…) pass through to the Handshake stage.
 }
 
 void FSWGReliabilityComponent::HandleDataAck(FBitReader& Packet)
@@ -70,20 +67,15 @@ void FSWGReliabilityComponent::HandleDataAck(FBitReader& Packet)
 	if ((int32)Packet.GetNumBytes() < 4)
 		return;
 
-	// Acked sequence — big-endian uint16 at offset 2.
 	const FSWGSeqNum AckedSN(((uint16)Data[2] << 8) | (uint16)Data[3]);
 
-	// Remove all window packets whose sequence number <= AckedSN (cumulative ACK).
-	// FSWGSeqNum::operator>= uses modular arithmetic so wrap-around at 0xFFFF is handled correctly.
+	FScopeLock Lock(&WindowLock);
+	WindowPackets.RemoveAll([AckedSN](const FSWGPacket& WP) -> bool
 	{
-		FScopeLock Lock(&Session->WindowLock);
-		Session->WindowPackets.RemoveAll([AckedSN](const FSWGPacket& WP) -> bool
-		{
-			if (WP.Data.Num() < 4) return true; // malformed, remove
-			const FSWGSeqNum WPSeq(((uint16)WP.Data[2] << 8) | (uint16)WP.Data[3]);
-			return AckedSN >= WPSeq;
-		});
-	}
+		if (WP.Data.Num() < 4) return true;
+		const FSWGSeqNum WPSeq(((uint16)WP.Data[2] << 8) | (uint16)WP.Data[3]);
+		return AckedSN >= WPSeq;
+	});
 
 	UE_LOG(LogTemp, Verbose, TEXT("FSWGReliabilityComponent: DataAck seq=%u"), AckedSN.Get());
 }
@@ -97,34 +89,31 @@ void FSWGReliabilityComponent::HandleDataChannel(FBitReader& Packet)
 
 	const FSWGSeqNum IncomingSeq(((uint16)Data[2] << 8) | (uint16)Data[3]);
 
-	if (IncomingSeq != Session->InSeqNext)
+	if (IncomingSeq != InSeqNext)
 	{
-		// Out-of-order or duplicate — drop for Phase 1 (no reorder buffer).
 		UE_LOG(LogTemp, Verbose,
 			TEXT("FSWGReliabilityComponent: DataChannel seq=%u expected=%u — dropped"),
-			IncomingSeq.Get(), Session->InSeqNext.Get());
+			IncomingSeq.Get(), InSeqNext.Get());
 		return;
 	}
 
-	++Session->InSeqNext;
+	++InSeqNext;
 	SendDataAck(IncomingSeq.Get());
 
-	const int32 PayloadOffset = 4; // after op(2) + seq(2)
-	const int32 PayloadLen = NumBytes - PayloadOffset;
+	const int32 PayloadOffset = 4; // op(2) + seq(2)
+	const int32 PayloadLen    = NumBytes - PayloadOffset;
 	if (PayloadLen <= 0)
 		return;
 
-	// Check for a multi-message bundle: SWGMultiMessageBundleMarker ([0x00][0x19]) at payload start.
-	const uint16 BundleCheck = PayloadLen >= 2
+	const uint16 BundleCheck = (PayloadLen >= 2)
 		? (((uint16)Data[PayloadOffset] << 8) | (uint16)Data[PayloadOffset + 1])
 		: 0u;
 
 	if (BundleCheck == SWGMultiMessageBundleMarker)
 	{
-		// Skip the 2-byte bundle marker; sub-messages follow.
 		UnbundleMessages(Data + PayloadOffset + 2, PayloadLen - 2);
 	}
-	else if (PayloadLen > 0)
+	else
 	{
 		FSWGPacket Msg;
 		Msg.Data.Append(Data + PayloadOffset, PayloadLen);
@@ -141,52 +130,51 @@ void FSWGReliabilityComponent::HandleDataFrag(FBitReader& Packet)
 
 	const FSWGSeqNum IncomingSeq(((uint16)Data[2] << 8) | (uint16)Data[3]);
 
-	if (IncomingSeq != Session->InSeqNext)
+	if (IncomingSeq != InSeqNext)
 	{
 		UE_LOG(LogTemp, Verbose,
 			TEXT("FSWGReliabilityComponent: DataFrag seq=%u expected=%u — dropped"),
-			IncomingSeq.Get(), Session->InSeqNext.Get());
+			IncomingSeq.Get(), InSeqNext.Get());
 		return;
 	}
 
-	++Session->InSeqNext;
+	++InSeqNext;
 	SendDataAck(IncomingSeq.Get());
 
-	if (Session->FragTotalSize == 0)
+	if (FragTotalSize == 0)
 	{
-		// First fragment: offset 4 holds BE uint32 total size, data starts at offset 8.
+		// First fragment: bytes 4-7 are BE uint32 total reassembled size.
 		if (NumBytes < 8)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: first DataFrag too short"));
 			return;
 		}
-		Session->FragTotalSize =
+		FragTotalSize =
 			((uint32)Data[4] << 24) | ((uint32)Data[5] << 16) |
 			((uint32)Data[6] << 8)  | ((uint32)Data[7]);
 
 		const int32 ChunkLen = NumBytes - 8;
-		Session->FragBuffer.Reset();
-		Session->FragBuffer.Append(Data + 8, ChunkLen);
-		Session->FragCurrentSize = (uint32)ChunkLen;
+		FragBuffer.Reset();
+		FragBuffer.Append(Data + 8, ChunkLen);
+		FragCurrentSize = (uint32)ChunkLen;
 	}
 	else
 	{
-		// Continuation fragment: data starts at offset 4 (after op + seq).
+		// Continuation: data starts after op(2)+seq(2).
 		const int32 ChunkLen = NumBytes - 4;
-		Session->FragBuffer.Append(Data + 4, ChunkLen);
-		Session->FragCurrentSize += (uint32)ChunkLen;
+		FragBuffer.Append(Data + 4, ChunkLen);
+		FragCurrentSize += (uint32)ChunkLen;
 	}
 
-	if (Session->FragCurrentSize >= Session->FragTotalSize)
+	if (FragCurrentSize >= FragTotalSize)
 	{
-		// Reassembly complete — push to IncomingMessages.
 		FSWGPacket Msg;
-		Msg.Data = MoveTemp(Session->FragBuffer);
+		Msg.Data = MoveTemp(FragBuffer);
 		Session->IncomingMessages.Enqueue(MoveTemp(Msg));
 
-		Session->FragTotalSize = 0;
-		Session->FragCurrentSize = 0;
-		Session->FragBuffer.Empty();
+		FragTotalSize   = 0;
+		FragCurrentSize = 0;
+		FragBuffer.Empty();
 	}
 }
 
@@ -195,15 +183,13 @@ void FSWGReliabilityComponent::HandleMultiPacket(FBitReader& Packet)
 	const uint8* Data = Packet.GetData();
 	const int32 NumBytes = (int32)Packet.GetNumBytes();
 
-	// Sub-packets start at offset 2 (after MultiPacket op [0x00][0x03]).
-	int32 Offset = 2;
+	int32 Offset = 2; // skip MultiPacket op [0x00][0x03]
 	while (Offset < NumBytes)
 	{
 		const int32 SubSize = (int32)Data[Offset++];
 		if (SubSize == 0 || Offset + SubSize > NumBytes)
 			break;
 
-		// Each sub-packet is a complete packet with its own op — process recursively.
 		FBitReader SubReader(const_cast<uint8*>(Data + Offset), (int64)SubSize * 8);
 		Incoming(SubReader);
 		Offset += SubSize;
@@ -226,14 +212,13 @@ void FSWGReliabilityComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits& Tr
 	if (!SWGOpIsReliable(Op))
 		return;
 
-	// Buffer a copy of the pre-compression/pre-encryption packet for potential resend.
+	// Buffer a pre-pipeline copy for potential retransmit.
 	FSWGPacket WinPacket;
 	WinPacket.Data.Append(Data, NumBytes);
 	WinPacket.TimeSent = NowMs();
-	WinPacket.bEncrypted = true;
 
-	FScopeLock Lock(&Session->WindowLock);
-	Session->WindowPackets.Add(MoveTemp(WinPacket));
+	FScopeLock Lock(&WindowLock);
+	WindowPackets.Add(MoveTemp(WinPacket));
 }
 
 // ── Tick ─────────────────────────────────────────────────────────────────────
@@ -247,20 +232,17 @@ void FSWGReliabilityComponent::HandleRetransmits(float DeltaTime)
 {
 	const uint64 Now = NowMs();
 
-	// Collect packets that need resending (under lock), then enqueue them (outside lock).
 	TArray<FSWGPacket> ToResend;
 	{
-		FScopeLock Lock(&Session->WindowLock);
-		for (FSWGPacket& WP : Session->WindowPackets)
+		FScopeLock Lock(&WindowLock);
+		for (FSWGPacket& WP : WindowPackets)
 		{
 			if (WP.TimeSent == 0)
 				continue;
-
 			if (Now - WP.TimeSent > kResendIntervalMs)
 			{
 				FSWGPacket Copy;
 				Copy.Data = WP.Data;
-				Copy.bEncrypted = true;
 				ToResend.Add(MoveTemp(Copy));
 
 				WP.TimeSent = Now;
@@ -271,14 +253,15 @@ void FSWGReliabilityComponent::HandleRetransmits(float DeltaTime)
 
 	for (FSWGPacket& P : ToResend)
 	{
-		UE_LOG(LogTemp, Verbose, TEXT("FSWGReliabilityComponent: retransmitting window packet (resend #%u)"), P.Resends);
+		UE_LOG(LogTemp, Verbose,
+			TEXT("FSWGReliabilityComponent: retransmitting window packet (resend #%u)"), P.Resends);
 		Session->OutgoingReliable.Enqueue(MoveTemp(P));
 	}
 }
 
 int32 FSWGReliabilityComponent::GetReservedPacketBits() const
 {
-	return 0; // Sequence numbers are in the packet the game layer already built.
+	return 0; // Sequence numbers are part of the packet the game layer builds.
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -290,17 +273,13 @@ void FSWGReliabilityComponent::SendDataAck(uint16 Sequence)
 	Ack.WriteByte(static_cast<uint8>(ESWGSessionOp::DataAck1));
 	Ack.WriteByte((uint8)(Sequence >> 8));
 	Ack.WriteByte((uint8)(Sequence & 0xFF));
-	Ack.bEncrypted = true;
 	Session->OutgoingUnreliable.Enqueue(MoveTemp(Ack));
 }
 
 void FSWGReliabilityComponent::UnbundleMessages(const uint8* Data, int32 Len)
 {
-	// DataChannel 0x0019 sub-message bundle format:
-	//   [size_byte]  — if == 0xFF: next 2 bytes are BE uint16 actual size
-	//   [priority]   — 1 byte (included in size)
-	//   [pad]        — 1 byte (included in size)
-	//   [message...]  — (size - 2) bytes
+	// Sub-message format: [size] [priority(1)] [pad(1)] [message(size-2)]
+	// If size == 0xFF: next 2 bytes are BE uint16 actual size.
 	int32 Offset = 0;
 	while (Offset < Len)
 	{
@@ -317,8 +296,7 @@ void FSWGReliabilityComponent::UnbundleMessages(const uint8* Data, int32 Len)
 		if (SlotSize < 2 || Offset + SlotSize > Len)
 			break;
 
-		// Skip 2-byte header (priority + pad); remaining bytes are the game message.
-		const int32 MsgOffset = Offset + 2;
+		const int32 MsgOffset = Offset + 2; // skip priority + pad
 		const int32 MsgSize   = SlotSize - 2;
 
 		if (MsgSize > 0)
