@@ -23,10 +23,7 @@ TUniquePtr<FSWGNetMessage> FSWGMessageRegistry::Create(uint32 Opcode, FSWGMessag
 	if (!Factory)
 		return nullptr;
 
-	TUniquePtr<FSWGNetMessage> Msg = (*Factory)();
-	Msg->Opcode = Opcode;
-	Msg->Deserialize(Reader);
-	return Msg;
+	return (*Factory)(Opcode, Reader);
 }
 
 bool FSWGMessageRegistry::IsRegistered(uint32 Opcode) const

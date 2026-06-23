@@ -14,9 +14,15 @@ struct FSWGMessage;
 struct SWGEMU_API FSWGNetMessage
 {
 	uint32 Opcode = 0;
-
+	FSWGNetMessage() = default;
+	/** Construct from opcode and reader. Derived classes should call Deserialize() in their ctor. */
+	FSWGNetMessage(uint32 OPCode, FSWGMessage& /*Reader*/)
+		: Opcode(OPCode)
+	{
+		/* Reader is not used in base class, its there to satisfy a signature requirement with the registry */
+	}
 	virtual ~FSWGNetMessage() = default;
 
 	/** Populate fields from the message reader. Cursor is at payload start (post-opcode). */
-	virtual bool Deserialize(FSWGMessage& Reader) { return true; }
+	//virtual bool Deserialize(FSWGMessage& Reader) { return true; }
 };

@@ -5,14 +5,17 @@
 FSWGPacket::FSWGPacket()
 {
 	SetIsSaving(true);
-	ArForceByteSwapping = true; // SOE wire format is big-endian; operator<< uses this
+	// SWG game-layer protocol is little-endian (Core3 writePrimitive = memcpy in host
+	// byte order; x86 Linux/Windows are both LE). SOE header fields use htons/htonl
+	// separately — FSWGPacket only handles the game layer, so no byte-swapping here.
+	ArForceByteSwapping = false;
 }
 
 FSWGPacket::FSWGPacket(const uint8* Bytes, int32 Len)
 {
 	Data.Append(Bytes, Len);
 	SetIsLoading(true);
-	ArForceByteSwapping = true;
+	ArForceByteSwapping = false;
 	Pos = 0;
 }
 
@@ -137,17 +140,23 @@ FString FSWGPacket::ReadAsciiString()
 
 FString FSWGPacket::ReadUnicodeString()
 {
-	uint16 Len = 0;
+	// SWG unicode strings: int32 character count (4 bytes LE) + count*2 bytes UCS-2 LE
+	int32 Len = 0;
 	*this << Len;
-	if (IsError() || Pos + (int64)(Len * 2) > (int64)Data.Num())
+	if (IsError() || Len < 0 || Pos + (int64)(Len * 2) > (int64)Data.Num())
 	{
 		SetError();
 		return FString();
 	}
+	if (Len == 0)
+		return FString();
 
-	FString Result(Len, reinterpret_cast<const TCHAR*>(Data.GetData() + Pos));
-	Pos += Len * 2;
-	return Result;
+	// Read raw UCS-2 LE bytes then convert to FString via UTF-16
+	TArray<UCS2CHAR> Chars;
+	Chars.SetNumUninitialized(Len + 1);
+	Serialize(Chars.GetData(), Len * 2);
+	Chars[Len] = 0;
+	return FString(reinterpret_cast<const UCS2CHAR*>(Chars.GetData()));
 }
 
 void FSWGPacket::Skip(int32 NumBytes)
@@ -201,20 +210,20 @@ void FSWGPacket::WriteFloat(float Value)
 
 void FSWGPacket::WriteAsciiString(const FString& Value)
 {
-	FTCHARToUTF8 Converted(*Value);
+	auto Converted = StringCast<ANSICHAR>(*Value);
 	const int32 Len = Converted.Length();
 	uint16 Len16 = (uint16)Len;
-	*this << Len16; // big-endian length
+	*this << Len16;
 	Serialize(const_cast<ANSICHAR*>(Converted.Get()), Len);
 }
 
 void FSWGPacket::WriteUnicodeString(const FString& Value)
 {
-	const int32 Len = Value.Len();
-	uint16 Len16 = (uint16)Len;
-	*this << Len16;
-	// TCHAR may be 2 or 4 bytes depending on platform; SOE expects UTF-16 (2-byte)
-	Serialize(const_cast<TCHAR*>(*Value), Len * 2);
+	// SWG unicode strings: int32 character count (4 bytes LE) + count*2 bytes UCS-2 LE
+	int32 Len = Value.Len();
+	*this << Len;
+	auto Converted = StringCast<UCS2CHAR>(*Value);
+	Serialize(const_cast<UCS2CHAR*>(Converted.Get()), Len * 2);
 }
 
 FString FSWGPacket::ToString() const

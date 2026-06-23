@@ -17,6 +17,8 @@ enum class ESWGMessageOp : uint32
 	EnumerateCharacterId = 0x65EA4574u,
 	SelectCharacter = 0xb5098d76u,
 
+	LoginClientID = 0x41131F96u,
+
 	// ── Zone Server: Scene & Objects ──────────────────────────
 	CmdStartScene = 0x3AE6DFAEu,         // Server: load terrain
 	CmdSceneReady = 0x43FD1C22u,         // Client: finished loading

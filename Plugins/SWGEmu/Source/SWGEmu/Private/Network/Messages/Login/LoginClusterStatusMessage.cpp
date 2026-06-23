@@ -19,9 +19,9 @@ bool FLoginClusterStatusMessage::Deserialize(FSWGMessage& Reader)
 	for (uint32 i = 0; i < Count; ++i)
 	{
 		FServerDetails& S = Servers.AddDefaulted_GetRef();
-		Reader >> S.ServerID
-		       >> S.ServerIP
-		       >> S.ServerPort
+		Reader >> S.ServerID;
+		S.ServerIP = Reader.ReadAsciiString();
+		Reader >> S.ServerPort
 		       >> S.PingPort
 		       >> S.Population
 		       >> S.MaxCapacity

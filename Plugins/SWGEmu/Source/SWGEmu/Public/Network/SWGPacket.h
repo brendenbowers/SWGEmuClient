@@ -7,7 +7,9 @@
  * FSWGPacket — SOE protocol packet buffer.
  *
  * Derives from FArchive so that Phase 2 game messages can serialize with
- * operator<< (ArForceByteSwapping = true gives big-endian wire order on x86).
+ * operator<< (ArForceByteSwapping = false — SWG game layer is little-endian;
+ * Core3 uses memcpy/host-byte-order for all game fields; only SOE headers
+ * use htons/htonl which are handled by the SOE protocol layer separately).
  *
  * FArchive is a single-cursor streaming type: you are either saving (writing)
  * or loading (reading). The single private cursor `Pos` replaces the old

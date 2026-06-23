@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Network/SWGPacket.h"
+#include "Network/Messages/SWGMessage.h"
 
 struct FServerName
 {
@@ -9,11 +9,11 @@ struct FServerName
 	FString ServerDisplayName;
 	uint32 Timezone = 0;
 
-	bool Deserialize(FSWGPacket& Packet)
+	bool Deserialize(FSWGMessage& Packet)
 	{
-		Packet << ServerID;
-		Packet << ServerDisplayName;
-		Packet << Timezone;
+		Packet >> ServerID;
+		ServerDisplayName = Packet.ReadAsciiString();
+		Packet >> Timezone;
 		return true;
 	}
 };

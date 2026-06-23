@@ -5,7 +5,7 @@
 
 struct FSWGMessage;
 
-using FSWGMessageFactory = TFunction<TUniquePtr<FSWGNetMessage>()>;
+using FSWGMessageFactory = TFunction<TUniquePtr<FSWGNetMessage>(uint32,FSWGMessage&)>;
 
 /**
  * FSWGMessageRegistry maps opcodes to factory functions.
@@ -38,9 +38,9 @@ struct TSWGMessageRegistrar
 {
 	TSWGMessageRegistrar(uint32 Opcode)
 	{
-		FSWGMessageRegistry::Get().Register(Opcode, []() -> TUniquePtr<FSWGNetMessage>
+		FSWGMessageRegistry::Get().Register(Opcode, [](uint32 Op, FSWGMessage& Reader) -> TUniquePtr<FSWGNetMessage>
 		{
-			return MakeUnique<T>();
+			return MakeUnique<T>(Op, Reader);
 		});
 	}
 };

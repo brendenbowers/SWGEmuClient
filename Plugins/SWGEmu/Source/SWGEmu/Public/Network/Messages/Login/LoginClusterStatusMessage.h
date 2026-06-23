@@ -17,9 +17,16 @@ struct FSWGMessage;
  */
 struct FLoginClusterStatusMessage : public FSWGNetMessage
 {
+public:
+	FLoginClusterStatusMessage(uint32 OPCode, FSWGMessage& Reader)
+		: FSWGNetMessage(OPCode, Reader)
+	{
+		Deserialize(Reader);
+	}
+
 	TArray<FServerDetails> Servers;
 
-	virtual bool Deserialize(FSWGMessage& Reader) override;
+	/*virtual*/ bool Deserialize(FSWGMessage& Reader) /*override*/;
 
 	const FServerDetails* FindServer(uint32 ServerID) const;
 };

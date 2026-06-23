@@ -1,4 +1,17 @@
+#include "Containers/StringConv.h"
 #include "Network/Messages/SWGMessage.h"
+
+
+namespace {
+	template<typename TCount>
+	void WriteCharacterArray(const ANSICHAR* Value, TCount Count, FSWGPacket& Packet)
+	{
+		Packet << Count;
+		if (Count > 0) {
+			Packet.Serialize(const_cast<ANSICHAR*>(Value), Count);
+		}
+	}
+}
 
 FSWGMessage::FSWGMessage(const FSWGPacket& InPacket)
 	: Packet(InPacket)
@@ -35,6 +48,41 @@ float   FSWGMessage::ReadFloat()         { return Packet.ReadFloat(); }
 FString FSWGMessage::ReadAsciiString()   { return Packet.ReadAsciiString(); }
 FString FSWGMessage::ReadUnicodeString() { return Packet.ReadUnicodeString(); }
 void    FSWGMessage::Skip(int32 N)       { Packet.Skip(N); }
+void    FSWGMessage::Serialize(void* V, int64 Length)
+{
+	Packet.Serialize(V, Length);
+}
+
+void FSWGMessage::WriteAsciiString(const FString& Value)
+{
+	auto Converter = StringCast<ANSICHAR>(*Value);
+	int16 Length = Converter.Length();
+
+	WriteCharacterArray(Converter.Get(), Length, Packet);
+}
+
+void FSWGMessage::WriteUnicodeString(const FString& Value)
+{
+	FTCHARToUTF8 Converter(*Value);
+	int32 Length = Converter.Length();
+	WriteCharacterArray(Converter.Get(), Length, Packet);
+}
+
+void FSWGMessage::WriteAsciiString(const FText& Value)
+{
+	auto Converter = StringCast<ANSICHAR>(*Value.ToString());
+	int16 Length = Converter.Length();
+
+	WriteCharacterArray(Converter.Get(), Length, Packet);
+}
+
+void FSWGMessage::WriteUnicodeString(const FText& Value)
+{
+	FTCHARToUTF8 Converter(*Value.ToString());
+	int32 Length = Converter.Length();
+	WriteCharacterArray(Converter.Get(), Length, Packet);
+}
+
 
 int32   FSWGMessage::GetRemaining() const { return Packet.GetRemaining(); }
 bool    FSWGMessage::IsAtEnd() const      { return Packet.IsAtEnd(); }
@@ -43,4 +91,9 @@ FString FSWGMessage::ToString() const
 {
 	return FString::Printf(TEXT("FSWGMessage(Opcode=0x%08X, Remaining=%d, Size=%d)"),
 		Opcode, GetRemaining(), Packet.GetSize());
+}
+
+void FSWGMessage::Seek(int32 Position)
+{
+	Packet.Seek(Position);
 }

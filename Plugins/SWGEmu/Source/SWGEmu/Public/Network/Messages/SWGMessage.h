@@ -37,6 +37,14 @@ struct FSWGMessage
 	FString ReadAsciiString();
 	FString ReadUnicodeString();
 	void    Skip(int32 NumBytes);
+	void    Serialize(void* V, int64 Length);
+
+	void WriteAsciiString(const FString& Value);
+	void WriteUnicodeString(const FString& Value);
+
+	void WriteAsciiString(const FText& Value);
+	void WriteUnicodeString(const FText& Value);
+
 
 	// ── Archive-style operators — proxy to packet ──────────────────
 	FSWGMessage& operator<<(uint8& Value)    { Packet << Value; return *this; }
@@ -47,7 +55,6 @@ struct FSWGMessage
 	FSWGMessage& operator<<(int64& Value)    { Packet << Value; return *this; }
 	FSWGMessage& operator<<(uint64& Value)   { Packet << Value; return *this; }
 	FSWGMessage& operator<<(float& Value)    { Packet << Value; return *this; }
-	FSWGMessage& operator<<(FString& Value)  { Packet << Value; return *this; }
 	FSWGMessage& operator<<(bool& Value)     { Packet << Value; return *this; }
 
 	// ── Alternate >> syntax (convention varies; both work) ──────────
@@ -59,13 +66,15 @@ struct FSWGMessage
 	FSWGMessage& operator>>(int64& Value)    { Packet << Value; return *this; }
 	FSWGMessage& operator>>(uint64& Value)   { Packet << Value; return *this; }
 	FSWGMessage& operator>>(float& Value)    { Packet << Value; return *this; }
-	FSWGMessage& operator>>(FString& Value)  { Packet << Value; return *this; }
+	// No operator>>(FString&) — call ReadAsciiString() or ReadUnicodeString() explicitly.
 	FSWGMessage& operator>>(bool& Value)     { Packet << Value; return *this; }
+
 
 	// ── Utility ───────────────────────────────────────────────────
 	int32   GetRemaining() const;
 	bool    IsAtEnd() const;
 	FString ToString() const;
+	void    Seek(int32 Position);
 
 private:
 	FSWGPacket Packet;
