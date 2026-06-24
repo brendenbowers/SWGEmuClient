@@ -18,7 +18,8 @@ public class SWGEmuClient : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"SWGEmu"
         });
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

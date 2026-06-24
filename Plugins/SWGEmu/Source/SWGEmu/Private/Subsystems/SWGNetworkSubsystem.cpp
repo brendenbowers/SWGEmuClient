@@ -8,6 +8,7 @@
 #include "HAL/RunnableThread.h"
 #include "Serialization/BitWriter.h"
 #include "PacketHandler.h"
+#include "Misc/ScopeExit.h"
 
 USWGNetworkSubsystem::USWGNetworkSubsystem() = default;
 USWGNetworkSubsystem::~USWGNetworkSubsystem() = default;
@@ -141,6 +142,27 @@ bool USWGNetworkSubsystem::Connect(const FString& HostAddress, int32 Port, FStri
 	UE_LOG(LogTemp, Log, TEXT("SWGNetworkSubsystem: connected to %s:%d (key=0x%08X)"),
 		*HostAddress, Port, Session.EncryptionKey);
 	return true;
+}
+
+TFuture<TResult<void>> USWGNetworkSubsystem::ConnectAsync(const FString& HostAddress, int32 Port)
+{
+	TPromise<TResult<void>> Promise;
+
+	Async(EAsyncExecution::ThreadPool, [this, Promise = MoveTemp(Promise), HostAddress, Port]() mutable
+	{
+		FString Error;
+		bool bSuccess = Connect(HostAddress, Port, Error);
+
+		AsyncTask(ENamedThreads::GameThread, [Promise = MoveTemp(Promise), bSuccess, Error]() mutable
+		{
+			if (bSuccess)
+				Promise.SetValue(TResult<void>::Success());
+			else
+				Promise.SetValue(TResult<void>::Failure(Error));
+		});
+	});
+
+	return Promise.GetFuture();
 }
 
 void USWGNetworkSubsystem::Disconnect()
@@ -311,3 +333,4 @@ void USWGNetworkSubsystem::StopIOThreads()
 	ReaderRunnable.Reset();
 	PacketHandler.Reset();
 }
+

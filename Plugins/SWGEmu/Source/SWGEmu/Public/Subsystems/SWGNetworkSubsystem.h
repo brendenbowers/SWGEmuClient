@@ -1,8 +1,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Async/Async.h"
+#include "Async/Future.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
+#include "Common/ResultTypes.h"
 #include "Network/SWGSession.h"
 #include "Network/SWGSocketReader.h"
 #include "Network/Handler/SWGPacketHandler.h"
@@ -62,6 +65,18 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Network")
 	bool Connect(const FString& HostAddress, int32 Port, FString& OutError);
+
+	/**
+	 * Asynchronously establish a UDP connection to the SOE server (C++ only).
+	 *
+	 * Returns a TFuture that resolves to success/failure. Use .Next() to register
+	 * a callback that fires on the game thread when the connection completes.
+	 *
+	 * @param HostAddress  Server IP or hostname.
+	 * @param Port         Server port (44453 login, 44463 zone).
+	 * @return             TFuture that resolves to TResult<void>.
+	 */
+	TFuture<TResult<void>> ConnectAsync(const FString& HostAddress, int32 Port);
 
 	/** Send a SOE Disconnect packet and clean up resources. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Network")

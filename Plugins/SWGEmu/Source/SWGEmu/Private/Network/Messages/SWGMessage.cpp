@@ -1,6 +1,5 @@
-#include "Containers/StringConv.h"
 #include "Network/Messages/SWGMessage.h"
-
+#include "Containers/StringConv.h"
 
 namespace {
 	template<typename TCount>
