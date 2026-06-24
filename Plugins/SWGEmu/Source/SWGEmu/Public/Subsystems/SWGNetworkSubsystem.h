@@ -88,10 +88,10 @@ public:
 	// ── Message Handling ──────────────────────────────────────────
 
 	/** Fired on the game thread for every constructed typed message. */
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMessageReceived, const FSWGNetMessage&);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMessageReceived, TSharedPtr<FSWGNetMessage>);
 	FOnMessageReceived OnMessageReceived;
 
-	using FMessageHandler = TFunction<void(const FSWGNetMessage&)>;
+	using FMessageHandler = TFunction<void(TSharedPtr<FSWGNetMessage>)>;
 
 	/** Register a typed handler for a specific message opcode. The concrete type is cast internally. */
 	void RegisterMessageHandler(uint32 Opcode, FMessageHandler&& Handler);
@@ -102,15 +102,15 @@ public:
 	 * Example:
 	 *   Net->RegisterMessageHandler<FLoginClusterStatusMessage>(
 	 *       ESWGMessageOp::LoginClusterStatus,
-	 *       [](const FLoginClusterStatusMessage& Msg) { ... });
+	 *       [](TSharedPtr<const FLoginClusterStatusMessage> Msg) { ... });
 	 */
 	template<typename T>
-	void RegisterMessageHandler(ESWGMessageOp Opcode, TFunction<void(const T&)> Handler)
+	void RegisterMessageHandler(ESWGMessageOp Opcode, TFunction<void(TSharedPtr<const T>)> Handler)
 	{
 		RegisterMessageHandler(static_cast<uint32>(Opcode),
-			[Handler](const FSWGNetMessage& Msg)
+			[Handler](TSharedPtr<FSWGNetMessage> Msg)
 			{
-				Handler(static_cast<const T&>(Msg));
+				Handler(StaticCastSharedPtr<const T>(Msg));
 			});
 	}
 

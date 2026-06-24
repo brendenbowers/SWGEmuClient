@@ -17,7 +17,7 @@ void FSWGMessageRegistry::Register(uint32 Opcode, FSWGMessageFactory&& Factory)
 	Factories.Add(Opcode, MoveTemp(Factory));
 }
 
-TUniquePtr<FSWGNetMessage> FSWGMessageRegistry::Create(uint32 Opcode, FSWGMessage& Reader) const
+TSharedPtr<FSWGNetMessage> FSWGMessageRegistry::Create(uint32 Opcode, FSWGMessage& Reader) const
 {
 	const FSWGMessageFactory* Factory = Factories.Find(Opcode);
 	if (!Factory)

@@ -302,18 +302,18 @@ void USWGNetworkSubsystem::ProcessIncomingMessages()
 		FSWGMessage Reader(Pkt);
 		const uint32 Opcode = Reader.Opcode;
 
-		TUniquePtr<FSWGNetMessage> Msg = FSWGMessageRegistry::Get().Create(Opcode, Reader);
+		TSharedPtr<FSWGNetMessage> Msg = FSWGMessageRegistry::Get().Create(Opcode, Reader);
 		if (!Msg)
 		{
 			UE_LOG(LogTemp, Verbose, TEXT("SWGNetworkSubsystem: no registered message for opcode 0x%08X"), Opcode);
 			continue;
 		}
 
-		OnMessageReceived.Broadcast(*Msg);
+		OnMessageReceived.Broadcast(Msg);
 
 		if (FMessageHandler* HandlerFn = MessageHandlers.Find(Opcode))
 		{
-			(*HandlerFn)(*Msg);
+			(*HandlerFn)(Msg);
 		}
 	}
 }
