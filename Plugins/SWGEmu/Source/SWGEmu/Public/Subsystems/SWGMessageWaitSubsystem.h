@@ -68,24 +68,17 @@ public:
 		float TimeoutSeconds = 10.f,
 		TFunction<bool(const FSWGNetMessage&)> Predicate = nullptr)
 	{
-		FPendingWaiter Waiter;
-		Waiter.Opcode          = static_cast<uint32>(Opcode);
-		Waiter.DeadlineSeconds = FPlatformTime::Seconds() + TimeoutSeconds;
-		Waiter.Predicate       = Predicate;
-
-		TFuture<FSWGNetMessageResult> RawFuture = Waiter.Promise.GetFuture();
-		PendingWaiters.Add(MoveTemp(Waiter));
-
 		// Adapt the base-type result into a typed shared pointer. Static cast is
 		// safe: the opcode guarantees the concrete type registered for it.
-		return RawFuture.Next([](FSWGNetMessageResult Raw) -> TResult<TSharedPtr<const T>>
-		{
-			if (Raw.IsFailure())
-				return TResult<TSharedPtr<const T>>::Failure(Raw.GetError());
+		return WaitForMessageRaw(static_cast<uint32>(Opcode), TimeoutSeconds, MoveTemp(Predicate))
+			.Next([](FSWGNetMessageResult Raw) -> TResult<TSharedPtr<const T>>
+			{
+				if (Raw.IsFailure())
+					return TResult<TSharedPtr<const T>>::Failure(Raw.GetError());
 
-			return TResult<TSharedPtr<const T>>::Success(
-				StaticCastSharedPtr<const T>(Raw.GetValue()));
-		});
+				return TResult<TSharedPtr<const T>>::Success(
+					StaticCastSharedPtr<const T>(Raw.GetValue()));
+			});
 	}
 
 	/** Send a packet through the network subsystem, then await the given opcode. */
@@ -102,6 +95,11 @@ public:
 		return Future;
 	}
 
+	/** Wait for multiple messages (one per opcode) to arrive before resolving. */
+	TFuture<TResult<TMap<uint32, TSharedPtr<FSWGNetMessage>>>> WaitForAll(
+		const TSet<uint32>& Opcodes,
+		float TimeoutSeconds = 10.f);
+
 	/** Fail every pending waiter with the given reason (e.g. on disconnect). */
 	void CancelAll(const FString& Reason);
 
@@ -115,6 +113,16 @@ private:
 	/** Forward a packet to the network subsystem (reliable). */
 	void SendPacket(const FSWGPacket& Packet);
 
+	/**
+	 * Core single-waiter primitive. Registers a pending waiter for the given opcode
+	 * and returns a future on the base message type. Everything else — typed waits,
+	 * multi-waits — composes over this.
+	 */
+	TFuture<FSWGNetMessageResult> WaitForMessageRaw(
+		uint32 Opcode,
+		float TimeoutSeconds,
+		TFunction<bool(const FSWGNetMessage&)> Predicate);
+
 	struct FPendingWaiter
 	{
 		uint32 Opcode = 0;
@@ -122,6 +130,7 @@ private:
 		TFunction<bool(const FSWGNetMessage&)> Predicate;
 		TPromise<TResult<TSharedPtr<FSWGNetMessage>>> Promise;
 	};
+
 	TArray<FPendingWaiter> PendingWaiters;
 
 	UPROPERTY()

@@ -72,6 +72,7 @@ enum class ESWGMessageOp : uint32
 
 	// Add more as needed during implementation
 	Null = 0x0u,
+	Multi = 0x2u
 };
 
 /**

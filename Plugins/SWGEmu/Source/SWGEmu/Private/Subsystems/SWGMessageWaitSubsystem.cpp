@@ -50,8 +50,7 @@ void USWGMessageWaitSubsystem::Tick(float DeltaTime)
 {
 	const double Now = FPlatformTime::Seconds();
 
-	// Collect expired promises first, then resolve them outside the loop so a
-	// continuation that registers a new waiter can't disturb our iteration.
+	// Collect expired single waiters.
 	TArray<TPromise<FSWGNetMessageResult>> Expired;
 	for (int32 i = 0; i < PendingWaiters.Num(); )
 	{
@@ -87,22 +86,23 @@ void USWGMessageWaitSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> 
 
 	const uint32 Opcode = Msg->Opcode;
 
-	// Pull all matching waiters out (FIFO) before resolving, to avoid re-entrancy
+	// Pull all matching single waiters out (FIFO) before resolving, to avoid re-entrancy
 	// if a continuation immediately registers another waiter for the same opcode.
 	// Unmatched predicates stay in queue to await a different message.
 	TArray<TPromise<FSWGNetMessageResult>> ToFulfill;
 	for (int32 i = 0; i < PendingWaiters.Num(); )
 	{
-		if (PendingWaiters[i].Opcode == Opcode)
+		USWGMessageWaitSubsystem::FPendingWaiter& PendingWaiter = PendingWaiters[i];
+		if (PendingWaiter.Opcode == Opcode)
 		{
 			// Check predicate if provided; if it fails, skip this waiter
-			if (PendingWaiters[i].Predicate && !PendingWaiters[i].Predicate(*Msg))
+			if (PendingWaiter.Predicate && !PendingWaiter.Predicate(*Msg))
 			{
 				++i;
 				continue;
 			}
 
-			ToFulfill.Add(MoveTemp(PendingWaiters[i].Promise));
+			ToFulfill.Add(MoveTemp(PendingWaiter.Promise));
 			PendingWaiters.RemoveAt(i);
 		}
 		else
@@ -117,6 +117,77 @@ void USWGMessageWaitSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> 
 	}
 }
 
+TFuture<FSWGNetMessageResult> USWGMessageWaitSubsystem::WaitForMessageRaw(
+	uint32 Opcode,
+	float TimeoutSeconds,
+	TFunction<bool(const FSWGNetMessage&)> Predicate)
+{
+	FPendingWaiter Waiter;
+	Waiter.Opcode          = Opcode;
+	Waiter.DeadlineSeconds = FPlatformTime::Seconds() + TimeoutSeconds;
+	Waiter.Predicate       = MoveTemp(Predicate);
+
+	TFuture<FSWGNetMessageResult> Future = Waiter.Promise.GetFuture();
+	PendingWaiters.Add(MoveTemp(Waiter));
+	return Future;
+}
+
+TFuture<TResult<TMap<uint32, TSharedPtr<FSWGNetMessage>>>> USWGMessageWaitSubsystem::WaitForAll(
+	const TSet<uint32>& Opcodes,
+	float TimeoutSeconds)
+{
+	using FMapResult = TResult<TMap<uint32, TSharedPtr<FSWGNetMessage>>>;
+
+	// Shared so the single move-only promise can be captured by every child waiter's
+	// continuation. The future is handed back to the caller before any child resolves.
+	TSharedRef<TPromise<FMapResult>> Promise = MakeShared<TPromise<FMapResult>>();
+	TFuture<FMapResult> Future = Promise->GetFuture();
+
+	if (Opcodes.IsEmpty())
+	{
+		Promise->SetValue(FMapResult::Success({}));
+		return Future;
+	}
+
+	// A multi-wait is just N single waiters plus a shared accumulator. The first
+	// failure (timeout/cancel) fails the group; the last success completes it.
+	// bResolved guards against double-set once the group has settled either way.
+	struct FAccumulator
+	{
+		TMap<uint32, TSharedPtr<FSWGNetMessage>> Messages;
+		int32 Remaining = 0;
+		bool  bResolved = false;
+	};
+	TSharedRef<FAccumulator> Acc = MakeShared<FAccumulator>();
+	Acc->Remaining = Opcodes.Num();
+
+	for (uint32 Opcode : Opcodes)
+	{
+		WaitForMessageRaw(Opcode, TimeoutSeconds, nullptr)
+			.Next([Promise, Acc, Opcode](FSWGNetMessageResult Result)
+			{
+				if (Acc->bResolved)
+					return;
+
+				if (Result.IsFailure())
+				{
+					Acc->bResolved = true;
+					Promise->SetValue(FMapResult::Failure(Result.GetError()));
+					return;
+				}
+
+				Acc->Messages.Add(Opcode, Result.GetValue());
+				if (--Acc->Remaining == 0)
+				{
+					Acc->bResolved = true;
+					Promise->SetValue(FMapResult::Success(MoveTemp(Acc->Messages)));
+				}
+			});
+	}
+
+	return Future;
+}
+
 void USWGMessageWaitSubsystem::SendPacket(const FSWGPacket& Packet)
 {
 	if (Network)
@@ -125,6 +196,8 @@ void USWGMessageWaitSubsystem::SendPacket(const FSWGPacket& Packet)
 
 void USWGMessageWaitSubsystem::CancelAll(const FString& Reason)
 {
+	// Fail every pending waiter. Multi-waits ride on top of these single waiters,
+	// so failing the children fails their groups too — no separate handling needed.
 	TArray<TPromise<FSWGNetMessageResult>> All;
 	All.Reserve(PendingWaiters.Num());
 	for (FPendingWaiter& W : PendingWaiters)
