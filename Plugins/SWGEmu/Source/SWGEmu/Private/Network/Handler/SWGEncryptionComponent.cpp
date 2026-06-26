@@ -3,9 +3,14 @@
 #include "Network/SWGCrypto.h"
 #include "Network/SWGSession.h"
 
-FSWGEncryptionComponent::FSWGEncryptionComponent(FSWGSession* InSession)
-	: FEncryptionComponent(FName(TEXT("SWGEncryption")))
-	, Session(InSession)
+FString FSWGEncryptionComponent::GetComponentName()
+{
+	static FString Name = TEXT("SWGEncryption");
+	return Name;
+}
+
+FSWGEncryptionComponent::FSWGEncryptionComponent()
+	: FEncryptionComponent(*GetComponentName())
 {
 }
 
@@ -32,12 +37,13 @@ void FSWGEncryptionComponent::SetEncryptionData(const FEncryptionData& Encryptio
 
 void FSWGEncryptionComponent::Initialize()
 {
-	Initialized();
+	if (Handler)
+		Initialized();
 }
 
 bool FSWGEncryptionComponent::IsValid() const
 {
-	return Session != nullptr && EncryptionKey != 0;
+	return EncryptionKey != 0;
 }
 
 void FSWGEncryptionComponent::Incoming(FBitReader& Packet)

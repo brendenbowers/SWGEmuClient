@@ -8,28 +8,40 @@
 #include "Blueprint/UserWidget.h"
 #include "SWGEmuClient.h"
 #include "Widgets/Input/SVirtualJoystick.h"
+#include "UI/ULoginWidget.h"
+#include "Blueprint/UserWidget.h"
 
 void ASWGEmuClientPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 
 	// only spawn touch controls on local player controllers
-	if (IsLocalPlayerController() && ShouldUseTouchControls())
+	if (IsLocalPlayerController())
 	{
-		// spawn the mobile controls widget
-		MobileControlsWidget = CreateWidget<UUserWidget>(this, MobileControlsWidgetClass);
-
-		if (MobileControlsWidget)
+		if(ShouldUseTouchControls())
 		{
-			// add the controls to the player screen
-			MobileControlsWidget->AddToPlayerScreen(0);
+			// spawn the mobile controls widget
+			MobileControlsWidget = CreateWidget<UUserWidget>(this, MobileControlsWidgetClass);
 
-		} else {
+			if (MobileControlsWidget)
+			{
+				// add the controls to the player screen
+				MobileControlsWidget->AddToPlayerScreen(0);
 
-			UE_LOG(LogSWGEmuClient, Error, TEXT("Could not spawn mobile controls widget."));
+			}
+			else {
 
+				UE_LOG(LogSWGEmuClient, Error, TEXT("Could not spawn mobile controls widget."));
+			}
 		}
-
+		
+		if (LoginWidgetClass; ULoginWidget * LoginWidget = CreateWidget<ULoginWidget>(GetWorld(), LoginWidgetClass))
+		{
+			LoginWidget->AddToViewport();
+			GetWorld()->GetFirstPlayerController()->SetInputMode(FInputModeUIOnly());
+			GetWorld()->GetFirstPlayerController()->SetShowMouseCursor(true);
+			LoginWidget->SetFocus();
+		}
 	}
 }
 

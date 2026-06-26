@@ -91,6 +91,10 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMessageReceived, TSharedPtr<FSWGNetMessage>);
 	FOnMessageReceived OnMessageReceived;
 
+	/** Fired when the connection is lost (disconnect initiated or handshake failed). */
+	DECLARE_MULTICAST_DELEGATE(FOnDisconnected);
+	FOnDisconnected OnDisconnected;
+
 	using FMessageHandler = TFunction<void(TSharedPtr<FSWGNetMessage>)>;
 
 	/** Register a typed handler for a specific message opcode. The concrete type is cast internally. */
@@ -126,13 +130,13 @@ public:
 
 	// ── Session Accessors ─────────────────────────────────────────
 
-	ESWGSessionState GetSessionState() const { return Session.State; }
-	uint32 GetEncryptionKey() const { return Session.EncryptionKey; }
+	ESWGSessionState GetSessionState() const { return Session->State; }
+	uint32 GetEncryptionKey() const { return Session->EncryptionKey; }
 
 private:
 	FSocket*						Socket         = nullptr;
-	FSWGSession						Session;
-	TUniquePtr<FSWGPacketHandler>	PacketHandler;
+	TSharedPtr<FSWGSession>			Session;
+	TSharedPtr<FSWGPacketHandler>	PacketHandler;
 	TUniquePtr<FSWGSocketReader>	ReaderRunnable;
 	FRunnableThread*				ReaderThread   = nullptr;
 

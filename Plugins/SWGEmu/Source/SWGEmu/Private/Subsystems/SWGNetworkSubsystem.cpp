@@ -10,7 +10,11 @@
 #include "PacketHandler.h"
 #include "Misc/ScopeExit.h"
 
-USWGNetworkSubsystem::USWGNetworkSubsystem() = default;
+USWGNetworkSubsystem::USWGNetworkSubsystem()
+{
+	Session = MakeShared<FSWGSession>();
+}
+
 USWGNetworkSubsystem::~USWGNetworkSubsystem() = default;
 
 void USWGNetworkSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -82,8 +86,8 @@ bool USWGNetworkSubsystem::Connect(const FString& HostAddress, int32 Port, FStri
 	}
 
 	// 4. Reset session state and create the handler pipeline.
-	Session.Reset();
-	PacketHandler = MakeUnique<FSWGPacketHandler>(&Session);
+	Session = MakeShared<FSWGSession>();
+	PacketHandler = MakeShared<FSWGPacketHandler>(Session);
 	PacketHandler->Initialize();
 
 	// 5. Trigger the handshake: HandshakeComponent::NotifyHandshakeBegin() queues
@@ -94,7 +98,7 @@ bool USWGNetworkSubsystem::Connect(const FString& HostAddress, int32 Port, FStri
 	//    we start the reader thread. (The game-thread Tick won't run until we return.)
 	{
 		FSWGPacket Pkt;
-		while (Session.OutgoingUnreliable.Dequeue(Pkt))
+		while (Session->OutgoingUnreliable.Dequeue(Pkt))
 		{
 			SendPacketThroughPipeline(Pkt);
 		}
@@ -116,37 +120,42 @@ bool USWGNetworkSubsystem::Connect(const FString& HostAddress, int32 Port, FStri
 	// 8. Block until the handshake completes or times out (5 seconds).
 	const double TimeoutSec = 5.0;
 	const double StartSec   = FPlatformTime::Seconds();
-	while (Session.State != ESWGSessionState::Connected)
+	while (Session->State != ESWGSessionState::Connected)
 	{
-		if (Session.State == ESWGSessionState::Error)
+		if (Session->State == ESWGSessionState::Error)
 		{
 			OutError = TEXT("Handshake failed — session error");
 			StopIOThreads();
+			Session.Reset();
+			OnDisconnected.Broadcast();
 			return false;
 		}
 		if (FPlatformTime::Seconds() - StartSec > TimeoutSec)
 		{
 			OutError = TEXT("Handshake timed out");
 			StopIOThreads();
+			Session.Reset();
+			OnDisconnected.Broadcast();
 			return false;
 		}
 		// Flush any ACKs or other control packets queued by the pipeline components
 		// while we wait (e.g., the reliability component may enqueue DataAcks).
 		FSWGPacket Pkt;
-		while (Session.OutgoingUnreliable.Dequeue(Pkt))
+		while (Session->OutgoingUnreliable.Dequeue(Pkt))
 			SendPacketThroughPipeline(Pkt);
 
 		FPlatformProcess::SleepNoStats(0.005f);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("SWGNetworkSubsystem: connected to %s:%d (key=0x%08X)"),
-		*HostAddress, Port, Session.EncryptionKey);
+		*HostAddress, Port, Session->EncryptionKey);
 	return true;
 }
 
 TFuture<TResult<void>> USWGNetworkSubsystem::ConnectAsync(const FString& HostAddress, int32 Port)
 {
 	TPromise<TResult<void>> Promise;
+	TFuture<TResult<void>> Future = Promise.GetFuture();
 
 	Async(EAsyncExecution::ThreadPool, [this, Promise = MoveTemp(Promise), HostAddress, Port]() mutable
 	{
@@ -162,7 +171,7 @@ TFuture<TResult<void>> USWGNetworkSubsystem::ConnectAsync(const FString& HostAdd
 		});
 	});
 
-	return Promise.GetFuture();
+	return Future;
 }
 
 void USWGNetworkSubsystem::Disconnect()
@@ -176,7 +185,7 @@ void USWGNetworkSubsystem::Disconnect()
 	DiscoPacket.WriteByte(static_cast<uint8>(ESWGSessionOp::Disconnect));
 
 	// ConnID — little-endian (what we sent in SessionRequest)
-	const uint32 ConnID = Session.ConnectionID;
+	const uint32 ConnID = Session->ConnectionID;
 	DiscoPacket.WriteByte((uint8)((ConnID >> 0) & 0xFF));
 	DiscoPacket.WriteByte((uint8)((ConnID >> 8) & 0xFF));
 	DiscoPacket.WriteByte((uint8)((ConnID >> 16) & 0xFF));
@@ -197,12 +206,13 @@ void USWGNetworkSubsystem::Disconnect()
 		Socket = nullptr;
 	}
 
+	OnDisconnected.Broadcast();
 	UE_LOG(LogTemp, Log, TEXT("SWGNetworkSubsystem: disconnected"));
 }
 
 bool USWGNetworkSubsystem::IsConnected() const
 {
-	return Session.IsConnected();
+	return Session->IsConnected();
 }
 
 // ── Tick ─────────────────────────────────────────────────────────────────────
@@ -227,7 +237,7 @@ TStatId USWGNetworkSubsystem::GetStatId() const
 
 bool USWGNetworkSubsystem::IsTickable() const
 {
-	return Session.State != ESWGSessionState::Disconnected;
+	return Session->State != ESWGSessionState::Disconnected;
 }
 
 // ── Message Registration & Send ───────────────────────────────────────────────
@@ -243,9 +253,9 @@ void USWGNetworkSubsystem::SendMessage(const FSWGPacket& Message, bool bReliable
 		return;
 
 	if (bReliable)
-		Session.OutgoingReliable.Enqueue(Message);
+		Session->OutgoingReliable.Enqueue(Message);
 	else
-		Session.OutgoingUnreliable.Enqueue(Message);
+		Session->OutgoingUnreliable.Enqueue(Message);
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
@@ -258,11 +268,11 @@ void USWGNetworkSubsystem::FlushOutgoingQueues()
 	FSWGPacket Pkt;
 
 	// Unreliable first (control packets, ACKs).
-	while (Session.OutgoingUnreliable.Dequeue(Pkt))
+	while (Session->OutgoingUnreliable.Dequeue(Pkt))
 		SendPacketThroughPipeline(Pkt);
 
 	// Reliable second (game messages via DataChannel1).
-	while (Session.OutgoingReliable.Dequeue(Pkt))
+	while (Session->OutgoingReliable.Dequeue(Pkt))
 		SendPacketThroughPipeline(Pkt);
 }
 
@@ -290,14 +300,14 @@ void USWGNetworkSubsystem::SendPacketThroughPipeline(const FSWGPacket& Pkt)
 	{
 		int32 BytesSent = 0;
 		Socket->Send(Writer.GetData(), TotalBytes, BytesSent);
-		Session.LastPacketSent = (uint64)(FPlatformTime::Seconds() * 1000.0);
+		Session->LastPacketSent = (uint64)(FPlatformTime::Seconds() * 1000.0);
 	}
 }
 
 void USWGNetworkSubsystem::ProcessIncomingMessages()
 {
 	FSWGPacket Pkt;
-	while (Session.IncomingMessages.Dequeue(Pkt))
+	while (Session->IncomingMessages.Dequeue(Pkt))
 	{
 		FSWGMessage Reader(Pkt);
 		const uint32 Opcode = Reader.Opcode;

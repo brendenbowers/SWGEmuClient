@@ -8,6 +8,7 @@
 
 class UInputMappingContext;
 class UUserWidget;
+class ULoginWidget;
 
 /**
  *  Basic PlayerController class for a third person game
@@ -31,6 +32,10 @@ protected:
 	/** Mobile controls widget to spawn */
 	UPROPERTY(EditAnywhere, Category="Input|Touch Controls")
 	TSubclassOf<UUserWidget> MobileControlsWidgetClass;
+
+	/** Login widget blueprint class — assign WBP_Login in the editor */
+	UPROPERTY(EditAnywhere, Category="UI")
+	TSubclassOf<ULoginWidget> LoginWidgetClass;
 
 	/** Pointer to the mobile controls widget */
 	UPROPERTY()

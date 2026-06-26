@@ -12,9 +12,15 @@ static FORCEINLINE uint64 NowMs()
 	return (uint64)(FPlatformTime::Seconds() * 1000.0);
 }
 
-FSWGReliabilityComponent::FSWGReliabilityComponent(FSWGSession* InSession)
-	: HandlerComponent(FName(TEXT("SWGReliability")))
-	, Session(InSession)
+FString FSWGReliabilityComponent::GetComponentName()
+{
+	static FString Name = TEXT("SWGReliability");
+	return Name;
+}
+
+FSWGReliabilityComponent::FSWGReliabilityComponent(TWeakPtr<FSWGSession> InSession)
+	: HandlerComponent(*GetComponentName())
+	, SessionPtr(InSession)
 {
 }
 
@@ -27,12 +33,14 @@ void FSWGReliabilityComponent::Initialize()
 	FragCurrentSize = 0;
 	FragBuffer.Empty();
 	WindowPackets.Empty();
-	Initialized();
+
+	if (Handler)
+		Initialized();
 }
 
 bool FSWGReliabilityComponent::IsValid() const
 {
-	return Session != nullptr;
+	return SessionPtr.IsValid();
 }
 
 // ── Incoming ─────────────────────────────────────────────────────────────────
@@ -82,6 +90,13 @@ void FSWGReliabilityComponent::HandleDataAck(FBitReader& Packet)
 
 void FSWGReliabilityComponent::HandleDataChannel(FBitReader& Packet)
 {
+	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
+	if (!Session.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: Session pointer is invalid"));
+		return;
+	}
+
 	const uint8* Data = Packet.GetData();
 	const int32 NumBytes = (int32)Packet.GetNumBytes();
 	if (NumBytes < 4)
@@ -125,6 +140,13 @@ void FSWGReliabilityComponent::HandleDataChannel(FBitReader& Packet)
 
 void FSWGReliabilityComponent::HandleDataFrag(FBitReader& Packet)
 {
+	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
+	if (!Session.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: Session pointer is invalid"));
+		return;
+	}
+
 	const uint8* Data = Packet.GetData();
 	const int32 NumBytes = (int32)Packet.GetNumBytes();
 	if (NumBytes < 4)
@@ -234,6 +256,13 @@ void FSWGReliabilityComponent::Tick(float DeltaTime)
 
 void FSWGReliabilityComponent::HandleRetransmits(float DeltaTime)
 {
+	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
+	if (!Session.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: Session pointer is invalid"));
+		return;
+	}
+
 	const uint64 Now = NowMs();
 
 	TArray<FSWGPacket> ToResend;
@@ -272,6 +301,13 @@ int32 FSWGReliabilityComponent::GetReservedPacketBits() const
 
 void FSWGReliabilityComponent::SendDataAck(uint16 Sequence)
 {
+	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
+	if (!Session.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: Session pointer is invalid"));
+		return;
+	}
+
 	FSWGPacket Ack;
 	Ack.WriteByte(0x00);
 	Ack.WriteByte(static_cast<uint8>(ESWGSessionOp::DataAck1));
@@ -282,6 +318,13 @@ void FSWGReliabilityComponent::SendDataAck(uint16 Sequence)
 
 void FSWGReliabilityComponent::SendDataOrder(uint16 Sequence)
 {
+	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
+	if (!Session.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: Session pointer is invalid"));
+		return;
+	}
+
 	FSWGPacket Order;
 	Order.WriteByte(0x00);
 	Order.WriteByte(static_cast<uint8>(ESWGSessionOp::DataOrder1));
@@ -292,6 +335,13 @@ void FSWGReliabilityComponent::SendDataOrder(uint16 Sequence)
 
 void FSWGReliabilityComponent::UnbundleMessages(const uint8* Data, int32 Len)
 {
+	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
+	if (!Session.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: Session pointer is invalid"));
+		return;
+	}
+
 	// Sub-message format: [size] [priority(1)] [pad(1)] [message(size-2)]
 	// If size == 0xFF: next 2 bytes are BE uint16 actual size.
 	int32 Offset = 0;

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "SWGPacket.h"
+#include "SWGSessionData.h"
 
 /**
  * ESWGSessionState tracks the handshake and connection lifecycle.

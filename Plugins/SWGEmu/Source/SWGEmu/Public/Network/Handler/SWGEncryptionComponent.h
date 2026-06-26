@@ -16,8 +16,10 @@ struct FSWGSession;
 class FSWGEncryptionComponent : public FEncryptionComponent
 {
 public:
+	static FString GetComponentName();
+
 	/** @param InSession  Back-pointer to session state. Not owned. */
-	explicit FSWGEncryptionComponent(FSWGSession* InSession);
+	explicit FSWGEncryptionComponent();
 
 	// FEncryptionComponent interface
 	virtual void EnableEncryption() override;
@@ -33,7 +35,6 @@ public:
 	virtual int32 GetReservedPacketBits() const override;
 
 private:
-	FSWGSession* Session = nullptr;
 	uint32 EncryptionKey = 0;
 	bool bEncryptionEnabled = false;
 };

@@ -5,6 +5,7 @@
 
 struct FSWGSession;
 class FSWGEncryptionComponent;
+class FSWGPacketHandler;
 
 /**
  * FSWGHandshakeComponent — SOE session handshake stage.
@@ -16,11 +17,13 @@ class FSWGEncryptionComponent;
 class FSWGHandshakeComponent : public HandlerComponent
 {
 public:
+	static FString GetComponentName();
+
 	/**
 	 * @param InSession     Back-pointer to session state. Not owned.
-	 * @param InEncryption  Encryption stage to key + enable on SessionResponse. Not owned.
+	 * @param InHandler     Back-pointer to packet handler for OnSessionInitialized callback. Not owned.
 	 */
-	FSWGHandshakeComponent(FSWGSession* InSession, FSWGEncryptionComponent* InEncryption);
+	FSWGHandshakeComponent(TWeakPtr<FSWGSession> InSession, FSWGPacketHandler* InHandler);
 
 	// HandlerComponent interface
 	virtual void Initialize() override;
@@ -30,8 +33,8 @@ public:
 	virtual int32 GetReservedPacketBits() const override;
 
 private:
-	FSWGSession* Session;
-	FSWGEncryptionComponent* Encryption;
+	TWeakPtr<FSWGSession> Session;
+	FSWGPacketHandler* PacketHandler = nullptr;
 
 	/** Random connection ID sent in SessionRequest, validated against SessionResponse. */
 	int32 RequestID = 0;

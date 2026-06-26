@@ -15,8 +15,10 @@ struct FSWGSession;
 class FSWGCrcComponent : public HandlerComponent
 {
 public:
-	/** @param InSession  Back-pointer to session state (CRC seed = EncryptionKey). Not owned. */
-	explicit FSWGCrcComponent(FSWGSession* InSession);
+
+	static FString GetComponentName();
+
+	explicit FSWGCrcComponent();
 
 	// HandlerComponent interface
 	virtual void Initialize() override;
@@ -25,6 +27,11 @@ public:
 	virtual void Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits) override;
 	virtual int32 GetReservedPacketBits() const override;
 
+	void SetEncryptionKey(uint32 InEncryptionKey)
+	{
+		EncryptionKey = InEncryptionKey;
+	}
+
 private:
-	FSWGSession* Session;
+	uint32 EncryptionKey = 0; // CRC seed
 };

@@ -1,27 +1,35 @@
 #include "Network/Handler/SWGHandshakeComponent.h"
 #include "Network/Handler/SWGEncryptionComponent.h"
+#include "Network/Handler/SWGPacketHandler.h"
 #include "Network/SWGSessionOp.h"
 #include "Network/SWGSession.h"
 #include "Network/SWGPacket.h"
 #include "EncryptionComponent.h"
 #include "HAL/PlatformTime.h"
 
-FSWGHandshakeComponent::FSWGHandshakeComponent(FSWGSession* InSession, FSWGEncryptionComponent* InEncryption)
-	: HandlerComponent(FName(TEXT("SWGHandshake")))
+FString FSWGHandshakeComponent::GetComponentName()
+{
+	static FString Name = TEXT("SWGHandshake");
+	return Name;
+}
+
+FSWGHandshakeComponent::FSWGHandshakeComponent(TWeakPtr<FSWGSession> InSession, FSWGPacketHandler* InHandler)
+	: HandlerComponent(*GetComponentName())
 	, Session(InSession)
-	, Encryption(InEncryption)
+	, PacketHandler(InHandler)
 {
 	bRequiresHandshake = true;
 }
 
 void FSWGHandshakeComponent::Initialize()
 {
-	Initialized();
+	if (Handler)
+		Initialized();
 }
 
 bool FSWGHandshakeComponent::IsValid() const
 {
-	return Session != nullptr && Encryption != nullptr;
+	return Session != nullptr;
 }
 
 void FSWGHandshakeComponent::Incoming(FBitReader& Packet)
@@ -89,8 +97,15 @@ void FSWGHandshakeComponent::SendSessionRequest()
 	Pkt.WriteByte((uint8)((ConnID >> 16) & 0xFF));
 	Pkt.WriteByte((uint8)((ConnID >> 24) & 0xFF));
 
+	TSharedPtr<FSWGSession> SessionPtr = Session.Pin();
+	if (!SessionPtr.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGHandshakeComponent: Session pointer is invalid"));
+		return;
+	}
+
 	// Max packet size — big-endian
-	const uint32 MaxSize = Session->MaxPacketSize;
+	const uint32 MaxSize = SessionPtr->MaxPacketSize;
 	Pkt.WriteByte((uint8)((MaxSize >> 24) & 0xFF));
 	Pkt.WriteByte((uint8)((MaxSize >> 16) & 0xFF));
 	Pkt.WriteByte((uint8)((MaxSize >> 8) & 0xFF));
@@ -99,14 +114,27 @@ void FSWGHandshakeComponent::SendSessionRequest()
 	Pkt.bEncrypted = false;
 	Pkt.bCompressed = false;
 
-	Session->State = ESWGSessionState::Connecting;
-	Session->ConnectionID = ConnID;
-	Session->OutgoingUnreliable.Enqueue(MoveTemp(Pkt));
+	SessionPtr->State = ESWGSessionState::Connecting;
+	SessionPtr->ConnectionID = ConnID;
+	SessionPtr->OutgoingUnreliable.Enqueue(MoveTemp(Pkt));
 }
 
 void FSWGHandshakeComponent::HandleSessionResponse(FBitReader& Packet)
 {
-	const uint8* Data = Packet.GetData();
+	TSharedPtr<FSWGSession> SessionPtr = Session.Pin();
+	if (!SessionPtr.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGHandshakeComponent: Session pointer is invalid"));
+		return;
+	}
+
+	if (!PacketHandler)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGHandshakeComponent: PacketHandler pointer is invalid"));
+		return;
+	}
+
+	const uint8* PacketData = Packet.GetData();
 	const int32 NumBytes = (int32)Packet.GetNumBytes();
 
 	// Minimum: op(2) + requestID(4) + key(4) + crcLen(1) + useComp(1) + seedSz(1) + udpSize(4) = 17
@@ -121,10 +149,10 @@ void FSWGHandshakeComponent::HandleSessionResponse(FBitReader& Packet)
 
 	// Request ID — little-endian uint32
 	const uint32 ReceivedID =
-		((uint32)Data[Off + 0]) |
-		((uint32)Data[Off + 1] << 8) |
-		((uint32)Data[Off + 2] << 16) |
-		((uint32)Data[Off + 3] << 24);
+		((uint32)PacketData[Off + 0]) |
+		((uint32)PacketData[Off + 1] << 8) |
+		((uint32)PacketData[Off + 2] << 16) |
+		((uint32)PacketData[Off + 3] << 24);
 	Off += 4;
 
 	if (ReceivedID != (uint32)RequestID)
@@ -135,47 +163,54 @@ void FSWGHandshakeComponent::HandleSessionResponse(FBitReader& Packet)
 
 	// Encryption key — big-endian uint32
 	const uint32 Key =
-		((uint32)Data[Off + 0] << 24) |
-		((uint32)Data[Off + 1] << 16) |
-		((uint32)Data[Off + 2] << 8) |
-		((uint32)Data[Off + 3]);
+		((uint32)PacketData[Off + 0] << 24) |
+		((uint32)PacketData[Off + 1] << 16) |
+		((uint32)PacketData[Off + 2] << 8) |
+		((uint32)PacketData[Off + 3]);
 	Off += 4;
 
-	const uint8 CrcLength      = Data[Off++];
-	const uint8 UseCompression = Data[Off++];
-	const uint8 SeedSize       = Data[Off++];
+	const uint8 CrcLength      = PacketData[Off++];
+	const uint8 UseCompression = PacketData[Off++];
+	const uint8 SeedSize       = PacketData[Off++];
 
 	// Max UDP packet size — big-endian uint32
 	const uint32 UDPPacketSize =
-		((uint32)Data[Off + 0] << 24) |
-		((uint32)Data[Off + 1] << 16) |
-		((uint32)Data[Off + 2] << 8) |
-		((uint32)Data[Off + 3]);
+		((uint32)PacketData[Off + 0] << 24) |
+		((uint32)PacketData[Off + 1] << 16) |
+		((uint32)PacketData[Off + 2] << 8) |
+		((uint32)PacketData[Off + 3]);
 
 	if (UDPPacketSize != 0)
-		Session->MaxPacketSize = UDPPacketSize;
+		SessionPtr->MaxPacketSize = UDPPacketSize;
 
 	UE_LOG(LogTemp, Log,
 		TEXT("FSWGHandshakeComponent: SessionResponse — Key=0x%08X CrcLen=%u Comp=%u SeedSz=%u UDPSize=%u"),
 		Key, CrcLength, UseCompression, SeedSize, UDPPacketSize);
 
-	// Set the encryption key on the session and the encryption component.
-	Session->EncryptionKey = Key;
+	SessionPtr->State = ESWGSessionState::Connected;
 
-	FEncryptionData EncData;
-	EncData.Key.SetNumUninitialized(sizeof(Key));
-	FMemory::Memcpy(EncData.Key.GetData(), &Key, sizeof(Key));
-	Encryption->SetEncryptionData(EncData);
-	Encryption->EnableEncryption();
-
-	Session->State = ESWGSessionState::Connected;
+	SessionData SessionDataToInit;
+	SessionDataToInit.EncryptionKey = Key;
+	SessionDataToInit.UseCompression = UseCompression;
+	SessionDataToInit.MaxPacketSize = UDPPacketSize;
+	PacketHandler->OnSessionInitialized(SessionDataToInit);
 
 	// Signal the pipeline that the handshake is complete.
-	Initialized();
+	if (Handler)
+	{
+		Initialized();
+	}
 }
 
 void FSWGHandshakeComponent::HandleNetStatRequest(FBitReader& Packet)
 {
+	TSharedPtr<FSWGSession> SessionPtr = Session.Pin();
+	if (!SessionPtr.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGHandshakeComponent: Session pointer is invalid"));
+		return;
+	}
+
 	const uint8* Data = Packet.GetData();
 	const int32 NumBytes = (int32)Packet.GetNumBytes();
 
@@ -195,13 +230,20 @@ void FSWGHandshakeComponent::HandleNetStatRequest(FBitReader& Packet)
 	Response.bEncrypted = false;
 	Response.bCompressed = false;
 
-	Session->OutgoingUnreliable.Enqueue(MoveTemp(Response));
-	Session->LastPingReceived = (uint64)(FPlatformTime::Seconds() * 1000.0);
+	SessionPtr->OutgoingUnreliable.Enqueue(MoveTemp(Response));
+	SessionPtr->LastPingReceived = (uint64)(FPlatformTime::Seconds() * 1000.0);
 }
 
 void FSWGHandshakeComponent::HandleDisconnect(FBitReader& Packet)
 {
+	TSharedPtr<FSWGSession> SessionPtr = Session.Pin();
+	if (!SessionPtr.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGHandshakeComponent: Session pointer is invalid"));
+		return;
+	}
+
 	// Server is closing the connection.
 	UE_LOG(LogTemp, Log, TEXT("FSWGHandshakeComponent: received Disconnect from server"));
-	Session->State = ESWGSessionState::Disconnected;
+	SessionPtr->State = ESWGSessionState::Disconnected;
 }

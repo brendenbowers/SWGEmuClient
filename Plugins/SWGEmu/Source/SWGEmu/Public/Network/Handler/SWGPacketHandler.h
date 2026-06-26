@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "PacketHandler.h"
+#include "Network/SWGSessionData.h"
 
 struct FSWGSession;
 
@@ -18,7 +19,7 @@ struct FSWGSession;
 class FSWGPacketHandler
 {
 public:
-	explicit FSWGPacketHandler(FSWGSession* InSession);
+	explicit FSWGPacketHandler(TWeakPtr<FSWGSession> InSession);
 	~FSWGPacketHandler();
 
 	/** Build the ordered component pipeline (Crc → Encryption → Compression → Reliability → Handshake). */
@@ -45,8 +46,16 @@ public:
 	/** Sum of reserved bits across components — validate against the 496-byte SOE MTU. */
 	int32 GetTotalReservedPacketBits() const;
 
+	void OnSessionInitialized(const SessionData& Data);
+
 private:
-	FSWGSession* Session;
+
+	void InitalizeEncryptionHandler(TSharedPtr<HandlerComponent> Component, const SessionData& Data);
+	void InitalizeCompressionHandler(TSharedPtr<HandlerComponent> Component, const SessionData& Data);
+	void InitalizeCrcHandler(TSharedPtr<HandlerComponent> Component, const SessionData& Data);
+	void InitalizeReliabilityHandler(TSharedPtr<HandlerComponent> Component, const SessionData& Data);
+
+	TWeakPtr<FSWGSession> SessionPtr;
 
 	/** Ordered pipeline; index 0 is the first Incoming stage. */
 	TArray<TSharedPtr<HandlerComponent>> Components;

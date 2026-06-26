@@ -15,7 +15,9 @@ struct FSWGSession;
 class FSWGCompressionComponent : public HandlerComponent
 {
 public:
-	explicit FSWGCompressionComponent(FSWGSession* InSession);
+	static FString GetComponentName();
+
+	explicit FSWGCompressionComponent();
 
 	// HandlerComponent interface
 	virtual void Initialize() override;
@@ -23,7 +25,4 @@ public:
 	virtual void Incoming(FBitReader& Packet) override;
 	virtual void Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits) override;
 	virtual int32 GetReservedPacketBits() const override;
-
-private:
-	FSWGSession* Session;
 };

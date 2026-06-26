@@ -9,7 +9,11 @@
 void ULoginWidget::NativeConstruct()
 {
     Super::NativeConstruct();
-    ConnectButton->OnClicked.AddDynamic(this, &ULoginWidget::OnConnectClicked);
+
+    if (ConnectButton)
+    {
+        ConnectButton->OnClicked.AddDynamic(this, &ULoginWidget::OnConnectClicked);
+    }
 }
 
 void ULoginWidget::OnConnectClicked()

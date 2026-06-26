@@ -7,20 +7,26 @@
 // (typically 496 bytes), so a conservative 8 KB covers realistic zlib expansion ratios.
 static constexpr int32 kDecompressBufferSize = 8192;
 
-FSWGCompressionComponent::FSWGCompressionComponent(FSWGSession* InSession)
-	: HandlerComponent(FName(TEXT("SWGCompression")))
-	, Session(InSession)
+FString FSWGCompressionComponent::GetComponentName()
+{
+	static FString Name = TEXT("SWGCompression");
+	return Name;
+}
+
+FSWGCompressionComponent::FSWGCompressionComponent()
+	: HandlerComponent(*GetComponentName())
 {
 }
 
 void FSWGCompressionComponent::Initialize()
 {
-	Initialized();
+	if (Handler)
+		Initialized();
 }
 
 bool FSWGCompressionComponent::IsValid() const
 {
-	return Session != nullptr;
+	return true;
 }
 
 void FSWGCompressionComponent::Incoming(FBitReader& Packet)

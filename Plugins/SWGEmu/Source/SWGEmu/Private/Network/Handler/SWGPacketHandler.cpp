@@ -6,8 +6,8 @@
 #include "Network/Handler/SWGHandshakeComponent.h"
 #include "Network/SWGSession.h"
 
-FSWGPacketHandler::FSWGPacketHandler(FSWGSession* InSession)
-	: Session(InSession)
+FSWGPacketHandler::FSWGPacketHandler(TWeakPtr<FSWGSession> InSession)
+	: SessionPtr(InSession)
 {
 }
 
@@ -21,12 +21,13 @@ void FSWGPacketHandler::Initialize()
 	// Build pipeline in receive order: CRC → Encryption → Compression → Reliability → Handshake.
 	// Outgoing runs this list in reverse.
 
-	auto Crc         = MakeShared<FSWGCrcComponent>(Session);
-	auto Encryption  = MakeShared<FSWGEncryptionComponent>(Session);
-	auto Compression = MakeShared<FSWGCompressionComponent>(Session);
-	auto Reliability = MakeShared<FSWGReliabilityComponent>(Session);
-	auto Handshake   = MakeShared<FSWGHandshakeComponent>(Session, &Encryption.Get());
+	auto Crc         = MakeShared<FSWGCrcComponent>();
+	auto Encryption  = MakeShared<FSWGEncryptionComponent>();
+	auto Compression = MakeShared<FSWGCompressionComponent>();
+	auto Reliability = MakeShared<FSWGReliabilityComponent>(SessionPtr);
+	auto Handshake   = MakeShared<FSWGHandshakeComponent>(SessionPtr, this);
 
+	Components.Reserve(5);
 	Components.Empty();
 	Components.Add(Crc);
 	Components.Add(Encryption);
@@ -34,16 +35,22 @@ void FSWGPacketHandler::Initialize()
 	Components.Add(Reliability);
 	Components.Add(Handshake);
 
+	Handshake->SetActive(true);
+
 	for (TSharedPtr<HandlerComponent>& Comp : Components)
 	{
 		Comp->Initialize();
 	}
 
-	const int32 ReservedBits = GetTotalReservedPacketBits();
-	const int32 MaxPayloadBytes = (int32)Session->MaxPacketSize - (ReservedBits / 8);
-	UE_LOG(LogTemp, Log,
-		TEXT("FSWGPacketHandler: initialized — reserved %d bits, max payload %d bytes"),
-		ReservedBits, MaxPayloadBytes);
+	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
+	if (Session.IsValid())
+	{
+		const int32 ReservedBits = GetTotalReservedPacketBits();
+		const int32 MaxPayloadBytes = (int32)Session->MaxPacketSize - (ReservedBits / 8);
+		UE_LOG(LogTemp, Log,
+			TEXT("FSWGPacketHandler: initialized — reserved %d bits, max payload %d bytes"),
+			ReservedBits, MaxPayloadBytes);
+	}
 }
 
 void FSWGPacketHandler::Incoming(FBitReader& Packet)
@@ -53,7 +60,7 @@ void FSWGPacketHandler::Incoming(FBitReader& Packet)
 		if (Packet.IsError())
 			break;
 
-		if (Comp.IsValid())
+		if (Comp.IsValid() && Comp->IsActive())
 			Comp->Incoming(Packet);
 	}
 }
@@ -96,4 +103,81 @@ int32 FSWGPacketHandler::GetTotalReservedPacketBits() const
 			Total += Comp->GetReservedPacketBits();
 	}
 	return Total;
+}
+
+void FSWGPacketHandler::OnSessionInitialized(const SessionData& Data)
+{
+	for (TSharedPtr<HandlerComponent>& Comp : Components)
+	{
+		const FString CompName = Comp->GetName().ToString();
+		if (CompName == FSWGEncryptionComponent::GetComponentName())
+		{
+			InitalizeEncryptionHandler(Comp, Data);
+		}
+		else if (CompName == FSWGCrcComponent::GetComponentName())
+		{
+			InitalizeCrcHandler(Comp, Data);
+		}
+		else if (CompName == FSWGReliabilityComponent::GetComponentName())
+		{
+			InitalizeReliabilityHandler(Comp, Data);
+		}
+		else if (CompName == FSWGCompressionComponent::GetComponentName())
+		{
+			InitalizeCompressionHandler(Comp, Data);
+		}
+	}
+}
+
+void FSWGPacketHandler::InitalizeEncryptionHandler(TSharedPtr<HandlerComponent> Component, const SessionData& Data)
+{
+	TSharedPtr<FSWGEncryptionComponent> EncryptionComp = StaticCastSharedPtr<FSWGEncryptionComponent>(Component);
+	if (!EncryptionComp.IsValid())
+		return;
+
+	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
+	if (!Session.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGPacketHandler: Session pointer is invalid"));
+		return;
+	}
+
+	// Set encryption key and enable encryption
+	Session->EncryptionKey = Data.EncryptionKey;
+
+	FEncryptionData EncData;
+	EncData.Key.SetNumUninitialized(sizeof(Data.EncryptionKey));
+	FMemory::Memcpy(EncData.Key.GetData(), &Data.EncryptionKey, sizeof(Data.EncryptionKey));
+	EncryptionComp->SetEncryptionData(EncData);
+	EncryptionComp->EnableEncryption();
+	EncryptionComp->SetActive(true);
+}
+
+void FSWGPacketHandler::InitalizeCompressionHandler(TSharedPtr<HandlerComponent> Component, const SessionData & Data)
+{
+	TSharedPtr<FSWGCompressionComponent> CompressionComp = StaticCastSharedPtr<FSWGCompressionComponent>(Component);
+	if (!CompressionComp.IsValid())
+		return;
+	
+	CompressionComp->SetActive(Data.UseCompression != 0);
+}
+
+void FSWGPacketHandler::InitalizeCrcHandler(TSharedPtr<HandlerComponent> Component, const SessionData & Data)
+{
+	// CRC is always active; nothing special to initialize
+
+	TSharedPtr<FSWGCrcComponent> CrcComp = StaticCastSharedPtr<FSWGCrcComponent>(Component);
+	if (!CrcComp.IsValid())
+		return;
+	CrcComp->SetEncryptionKey(Data.EncryptionKey);
+	CrcComp->SetActive(true);
+}
+
+void FSWGPacketHandler::InitalizeReliabilityHandler(TSharedPtr<HandlerComponent> Component, const SessionData & Data)
+{
+	TSharedPtr<FSWGReliabilityComponent> ReliabilityComp = StaticCastSharedPtr<FSWGReliabilityComponent>(Component);
+	if (!ReliabilityComp.IsValid())
+		return;
+
+	ReliabilityComp->SetActive(true);
 }

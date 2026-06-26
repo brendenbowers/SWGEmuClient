@@ -2,21 +2,27 @@
 #include "Network/SWGCrypto.h"
 #include "Network/SWGSession.h"
 
-FSWGCrcComponent::FSWGCrcComponent(FSWGSession* InSession)
-	: HandlerComponent(FName(TEXT("SWGCrc")))
-	, Session(InSession)
+FString FSWGCrcComponent::GetComponentName()
+{
+	static FString Name = TEXT("SWGCrc");
+	return Name;
+}
+
+FSWGCrcComponent::FSWGCrcComponent()
+	: HandlerComponent(*GetComponentName())
 {
 }
 
 void FSWGCrcComponent::Initialize()
 {
-	Initialized();
+	if (Handler)
+		Initialized();
 }
 
 bool FSWGCrcComponent::IsValid() const
 {
 	// EncryptionKey == 0 is valid before the handshake (CRC seed of zero is correct for pre-session packets).
-	return Session != nullptr;
+	return EncryptionKey != 0;
 }
 
 void FSWGCrcComponent::Incoming(FBitReader& Packet)
@@ -35,7 +41,7 @@ void FSWGCrcComponent::Incoming(FBitReader& Packet)
 	// Trailing 2-byte CRC is big-endian
 	const uint16 ReceivedCRC = ((uint16)Data[DataLen] << 8) | (uint16)Data[DataLen + 1];
 
-	const uint32 ComputedCRC = FSWGCrypto::GenerateCRC(Data, DataLen, Session->EncryptionKey);
+	const uint32 ComputedCRC = FSWGCrypto::GenerateCRC(Data, DataLen, EncryptionKey);
 	const uint16 ExpectedCRC = (uint16)(ComputedCRC & 0xFFFF);
 
 	if (ReceivedCRC != ExpectedCRC)
@@ -53,7 +59,7 @@ void FSWGCrcComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits)
 	const int32 NumBytes = (int32)Packet.GetNumBytes();
 	const uint8* Data = Packet.GetData();
 
-	const uint32 CRC = FSWGCrypto::GenerateCRC(Data, NumBytes, Session->EncryptionKey);
+	const uint32 CRC = FSWGCrypto::GenerateCRC(Data, NumBytes, EncryptionKey);
 	const uint16 CRCShort = (uint16)(CRC & 0xFFFF);
 
 	// Append 2 CRC bytes big-endian

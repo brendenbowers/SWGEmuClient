@@ -24,7 +24,9 @@ using FSWGSeqNum = TSequenceNumber<16, uint16>;
 class FSWGReliabilityComponent : public HandlerComponent
 {
 public:
-	explicit FSWGReliabilityComponent(FSWGSession* InSession);
+	static FString GetComponentName();
+
+	explicit FSWGReliabilityComponent(TWeakPtr<FSWGSession> InSession);
 
 	// HandlerComponent interface
 	virtual void Initialize() override;
@@ -35,7 +37,7 @@ public:
 	virtual int32 GetReservedPacketBits() const override;
 
 private:
-	FSWGSession* Session;
+	TWeakPtr<FSWGSession> SessionPtr;
 
 	// ── Sequence state (moved from FSWGSession) ───────────────────────────────
 	FSWGSeqNum OutSeqNext;   // Next outgoing sequence number to assign
