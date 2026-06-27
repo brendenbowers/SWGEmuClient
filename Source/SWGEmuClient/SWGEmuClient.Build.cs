@@ -19,6 +19,9 @@ public class SWGEmuClient : ModuleRules
 			"GameplayStateTreeModule",
 			"UMG",
 			"Slate",
+			"SlateCore",
+			"CommonUI",
+			"CommonInput",
 			"SWGEmu"
         });
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Kismet/BlueprintAsyncActionBase.h"
+#include "Engine/CancellableAsyncAction.h"
 #include "Common/ResultTypes.h"
 #include "Network/Messages/SWGNetMessage.h"
 #include "Network/Messages/SWGMessageOp.h"
@@ -12,19 +12,12 @@ class USWGMessageWaitSubsystem;
 /**
  * USWGWaitForMessageAsyncAction — Blueprint node for awaiting network messages.
  *
- * Wraps USWGMessageWaitSubsystem::WaitForMessage<T> with weak-pointer guards
- * to ensure the action doesn't keep the subsystem alive if the caller goes away.
- *
- * Usage (Blueprint):
- *   - "Wait For Message" node
- *   - Set Opcode to the message you're waiting for
- *   - Set TimeoutSeconds
- *   - Pin: OnSuccess fires with the message; OnFailure fires with error string
- *
- * The action self-destructs when the message arrives or timeout expires.
+ * Wraps USWGMessageWaitSubsystem::WaitForMessage<T>. Derives from
+ * UCancellableAsyncAction so Blueprint panels can cancel a pending wait when
+ * they deactivate (e.g. CommonUI stack pop).
  */
 UCLASS()
-class SWGEMU_API USWGWaitForMessageAsyncAction : public UBlueprintAsyncActionBase
+class SWGEMU_API USWGWaitForMessageAsyncAction : public UCancellableAsyncAction
 {
 	GENERATED_BODY()
 
@@ -48,6 +41,7 @@ public:
 	// ── Activation ────────────────────────────────────────────────
 
 	virtual void Activate() override;
+	virtual void Cancel() override;
 
 	// ── Internals ─────────────────────────────────────────────────
 

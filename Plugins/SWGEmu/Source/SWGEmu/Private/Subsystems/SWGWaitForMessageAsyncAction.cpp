@@ -2,6 +2,12 @@
 #include "Subsystems/SWGMessageWaitSubsystem.h"
 #include "Kismet/GameplayStatics.h"
 
+void USWGWaitForMessageAsyncAction::Cancel()
+{
+	Super::Cancel();
+	SetReadyToDestroy();
+}
+
 void USWGWaitForMessageAsyncAction::Activate()
 {
 	UWorld* World = GetWorld();
