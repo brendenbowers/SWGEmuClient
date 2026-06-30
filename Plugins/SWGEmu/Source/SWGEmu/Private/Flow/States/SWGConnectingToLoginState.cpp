@@ -1,10 +1,11 @@
 #include "Flow/States/SWGConnectingToLoginState.h"
+#include "Flow/SWGFlowStateRegistry.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGMessageWaitSubsystem.h"
 
 
-void FSWGConnectingToLoginState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) 
+void FSWGConnectingToLoginState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
 {
 	if (!UIStateMachine.Network)
 	{
@@ -32,7 +33,9 @@ void FSWGConnectingToLoginState::Enter(USWGClientFlowSubsystem& UIStateMachine, 
 			}
 		});
 }
-void FSWGConnectingToLoginState::Exit (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) 
+void FSWGConnectingToLoginState::Exit (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx)
 {
 
 }
+
+REGISTER_FLOW_STATE(FSWGConnectingToLoginState, ESWGClientState::ConnectingToLogin)

@@ -1,4 +1,5 @@
 #include "Flow/States/SWGAuthenticatingState.h"
+#include "Flow/SWGFlowStateRegistry.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGMessageWaitSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
@@ -8,7 +9,7 @@
 #include "Network/Messages/Login/LoginClusterStatusMessage.h"
 #include "Network/Messages/Login/EnumerateCharacterIdMessage.h"
 
-void FSWGAuthenticatingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx)
+void FSWGAuthenticatingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
 {
 	if (!UIStateMachine.Network || !UIStateMachine.WaitSubsystem)
 	{
@@ -109,3 +110,5 @@ void FSWGAuthenticatingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 	UIStateMachine.Network->SendMessage(Msg.Serialize());
 }
 void FSWGAuthenticatingState::Exit (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) {}
+
+REGISTER_FLOW_STATE(FSWGAuthenticatingState, ESWGClientState::Authenticating)

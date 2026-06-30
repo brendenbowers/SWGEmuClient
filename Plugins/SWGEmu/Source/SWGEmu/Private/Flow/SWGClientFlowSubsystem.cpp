@@ -1,15 +1,8 @@
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGMessageWaitSubsystem.h"
-#include "Flow/States/SWGDisconnectedState.h"
-#include "Flow/States/SWGConnectingToLoginState.h"
-#include "Flow/States/SWGAuthenticatingState.h"
-#include "Flow/States/SWGGalaxySelectState.h"
-#include "Flow/States/SWGCharacterSelectState.h"
-#include "Flow/States/SWGConnectingToZoneState.h"
-#include "Flow/States/SWGZoneLoadingState.h"
-#include "Flow/States/SWGInWorldState.h"
-#include "Flow/States/SWGErrorState.h"
+#include "Flow/SWGGalaxySelectedPayload.h"
+#include "Flow/SWGCharacterSelectedPayload.h"
 
 void USWGClientFlowSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -49,7 +42,7 @@ void USWGClientFlowSubsystem::RegisterState(ESWGClientState StateType, TSharedPt
 	Registry[hash] = State;
 }
 
-void USWGClientFlowSubsystem::TransitionTo(ESWGClientState NewState)
+void USWGClientFlowSubsystem::TransitionTo(ESWGClientState NewState, TSharedPtr<FSWGTransitionPayload> Payload)
 {
 	const ESWGClientState OldState = CurrentState;
 	if (ActiveState)
@@ -80,7 +73,7 @@ void USWGClientFlowSubsystem::TransitionTo(ESWGClientState NewState)
 		return;
 	}
 
-	ActiveState->Enter(*this, Context);
+	ActiveState->Enter(*this, Context, Payload);
 	OnStateChanged.Broadcast(OldState, NewState);
 }
 
@@ -107,7 +100,23 @@ void USWGClientFlowSubsystem::BeginLogin(const FString& Host, const FString& Use
 
 	TransitionTo(ESWGClientState::ConnectingToLogin);
 }
-void USWGClientFlowSubsystem::SelectGalaxy(int32 GalaxyID) {}
-void USWGClientFlowSubsystem::SelectCharacter(int64 CharacterID) {}
+void USWGClientFlowSubsystem::SelectGalaxy(int32 GalaxyID)
+{
+	if (CurrentState != ESWGClientState::GalaxySelect)
+		return;
+
+	Context.SelectedGalaxyID = GalaxyID;
+	TSharedPtr<FSWGTransitionPayload> Payload = MakeShared<FSWGGalaxySelectedPayload>(GalaxyID);
+	TransitionTo(ESWGClientState::GalaxySelected, Payload);
+}
+void USWGClientFlowSubsystem::SelectCharacter(int64 CharacterID)
+{
+	if (CurrentState != ESWGClientState::CharacterSelect)
+		return;
+
+	Context.SelectedCharacterID = CharacterID;
+	TSharedPtr<FSWGTransitionPayload> Payload = MakeShared<FSWGCharacterSelectedPayload>(CharacterID);
+	TransitionTo(ESWGClientState::CharacterSelected, Payload);
+}
 void USWGClientFlowSubsystem::Retry() {}
 void USWGClientFlowSubsystem::CancelToLogin() {}

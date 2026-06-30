@@ -58,7 +58,7 @@ public:
 
 	// ── Internal ─────────────────────────────────────────────────
 
-	void TransitionTo(ESWGClientState NewState);
+	void TransitionTo(ESWGClientState NewState, TSharedPtr<FSWGTransitionPayload> Payload = nullptr);
 	void Fail(const FString& Reason);
 
 	int32            Epoch = 0;

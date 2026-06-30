@@ -212,7 +212,7 @@ void USWGNetworkSubsystem::Disconnect()
 
 bool USWGNetworkSubsystem::IsConnected() const
 {
-	return Session->IsConnected();
+	return Session.IsValid() && Session->IsConnected();
 }
 
 // ── Tick ─────────────────────────────────────────────────────────────────────

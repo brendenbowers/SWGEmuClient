@@ -1,9 +1,10 @@
 #include "Flow/States/SWGDisconnectedState.h"
+#include "Flow/SWGFlowStateRegistry.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGMessageWaitSubsystem.h"
 
-void FSWGDisconnectedState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) 
+void FSWGDisconnectedState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
 {
 	if (UIStateMachine.Network)
 	{
@@ -18,3 +19,5 @@ void FSWGDisconnectedState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGF
 	UIStateMachine.OnStatus.Broadcast(LexToText(ESWGClientState::Disconnected));
 }
 void FSWGDisconnectedState::Exit (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) {}
+
+REGISTER_FLOW_STATE(FSWGDisconnectedState, ESWGClientState::Disconnected)

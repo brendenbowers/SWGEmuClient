@@ -12,7 +12,9 @@ enum class ESWGClientState : uint8
 	ConnectingToLogin,
 	Authenticating,
 	GalaxySelect,
+	GalaxySelected,
 	CharacterSelect,
+	CharacterSelected,
 	ConnectingToZone,
 	ZoneLoading,
 	InWorld,
@@ -27,7 +29,9 @@ inline FString LexToString(ESWGClientState State)
 		case ESWGClientState::ConnectingToLogin:   return TEXT("ConnectingToLogin");
 		case ESWGClientState::Authenticating:      return TEXT("Authenticating");
 		case ESWGClientState::GalaxySelect:        return TEXT("GalaxySelect");
+		case ESWGClientState::GalaxySelected:      return TEXT("GalaxySelected");
 		case ESWGClientState::CharacterSelect:     return TEXT("CharacterSelect");
+		case ESWGClientState::CharacterSelected:   return TEXT("CharacterSelected");
 		case ESWGClientState::ConnectingToZone:    return TEXT("ConnectingToZone");
 		case ESWGClientState::ZoneLoading:         return TEXT("ZoneLoading");
 		case ESWGClientState::InWorld:             return TEXT("InWorld");
@@ -44,7 +48,9 @@ inline FText LexToText(ESWGClientState State)
 		case ESWGClientState::ConnectingToLogin:   return INVTEXT("ConnectingToLogin");
 		case ESWGClientState::Authenticating:      return INVTEXT("Authenticating");
 		case ESWGClientState::GalaxySelect:        return INVTEXT("GalaxySelect");
+		case ESWGClientState::GalaxySelected:      return INVTEXT("GalaxySelected");
 		case ESWGClientState::CharacterSelect:     return INVTEXT("CharacterSelect");
+		case ESWGClientState::CharacterSelected:   return INVTEXT("CharacterSelected");
 		case ESWGClientState::ConnectingToZone:    return INVTEXT("ConnectingToZone");
 		case ESWGClientState::ZoneLoading:         return INVTEXT("ZoneLoading");
 		case ESWGClientState::InWorld:             return INVTEXT("InWorld");
