@@ -1,20 +1,30 @@
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGMessageWaitSubsystem.h"
+#include "Flow/SWGFlowStateRegistry.h"
 #include "Flow/SWGGalaxySelectedPayload.h"
 #include "Flow/SWGCharacterSelectedPayload.h"
+#include "Flow/SWGStateTransitionConfig.h"
+#include "UI/SWGGameLayout.h"
 
 void USWGClientFlowSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 	Network       = Cast<USWGNetworkSubsystem>(Collection.InitializeDependency(USWGNetworkSubsystem::StaticClass()));
 	WaitSubsystem = Cast<USWGMessageWaitSubsystem>(Collection.InitializeDependency(USWGMessageWaitSubsystem::StaticClass()));
+
+	OnStateChanged.AddDynamic(this, &USWGClientFlowSubsystem::HandleStateChanged);
+
+	FSWGFlowStateRegistry::Get().RegisterAllStates(*this);
 }
 
 void USWGClientFlowSubsystem::Deinitialize()
 {
 	Epoch++;
 	ActiveState.Reset();
+
+	OnStateChanged.RemoveAll(this);
+	
 	Super::Deinitialize();
 }
 
@@ -39,7 +49,7 @@ bool USWGClientFlowSubsystem::IsTickable() const
 void USWGClientFlowSubsystem::RegisterState(ESWGClientState StateType, TSharedPtr<ISWGFlowState> State, ESWGClientState PreviousState)
 {
 	uint32 hash = GetStateHash(StateType, PreviousState);
-	Registry[hash] = State;
+	Registry.Add(hash, State);
 }
 
 void USWGClientFlowSubsystem::TransitionTo(ESWGClientState NewState, TSharedPtr<FSWGTransitionPayload> Payload)
@@ -82,6 +92,33 @@ void USWGClientFlowSubsystem::Fail(const FString& Reason)
 	Context.ErrorText = FText::FromString(Reason);
 	TransitionTo(ESWGClientState::Error);
 	OnError.Broadcast(Context.ErrorText);
+}
+
+void USWGClientFlowSubsystem::HandleStateChanged(ESWGClientState OldState, ESWGClientState NewState)
+{
+	if (!StateTransitionTable)
+	{
+		return;
+	}
+
+	for (auto& Row : StateTransitionTable->GetRowMap())
+	{
+		FSWGStateTransitionRow* TransitionRow = (FSWGStateTransitionRow*)Row.Value;
+		if (TransitionRow && TransitionRow->OldState == OldState && TransitionRow->NewState == NewState)
+		{
+			if (USWGGameLayout* Layout = USWGGameLayout::GetLayout(GetWorld()))
+			{
+				FGameplayTag Tag = USWGGameLayout::TAG_Layer_Menu;
+				if (TransitionRow->LayerTag != FGameplayTag::EmptyTag)
+				{
+					Tag = TransitionRow->LayerTag;
+				}
+
+				Layout->PushWidgetToLayerStack(Tag, TransitionRow->WidgetClass);
+				break;
+			}
+		}
+	}
 }
 
 uint32 USWGClientFlowSubsystem::GetStateHash(const ESWGClientState First, const ESWGClientState Second)

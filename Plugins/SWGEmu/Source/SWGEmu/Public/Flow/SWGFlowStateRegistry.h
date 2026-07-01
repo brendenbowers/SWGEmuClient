@@ -23,6 +23,7 @@ public:
 	void RegisterAllStates(USWGClientFlowSubsystem& Subsystem);
 
 private:
+	static FSWGFlowStateRegistry* Instance;
 	FSWGFlowStateRegistry() = default;
 
 	struct FStateDefinition

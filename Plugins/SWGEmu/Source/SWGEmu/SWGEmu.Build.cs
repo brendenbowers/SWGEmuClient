@@ -18,6 +18,10 @@ public class SWGEmu : ModuleRules
 				"Networking",
                 "PacketHandler",
                 "zlib",
+				"CommonUI",
+				"CommonInput",
+				"GameplayTags",
+				"UMG",
 			}
 		);
 

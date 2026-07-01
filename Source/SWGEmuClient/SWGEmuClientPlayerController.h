@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "UI/SWGGameLayout.h"
 #include "SWGEmuClientPlayerController.generated.h"
 
 class UInputMappingContext;
@@ -33,9 +34,16 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Input|Touch Controls")
 	TSubclassOf<UUserWidget> MobileControlsWidgetClass;
 
-	/** Login widget blueprint class — assign WBP_Login in the editor */
+	/** Layout widget blueprint class */
 	UPROPERTY(EditAnywhere, Category="UI")
-	TSubclassOf<ULoginWidget> LoginWidgetClass;
+	TSubclassOf<USWGGameLayout> LayoutWidgetClass;
+
+	/** Login widget blueprint class — assign WBP_Login in the editor */
+	UPROPERTY(EditAnywhere, Category = "UI")
+	TSubclassOf<UCommonActivatableWidget> LoginWidget;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
+	class UDataTable* StateTransitionTable;
 
 	/** Pointer to the mobile controls widget */
 	UPROPERTY()

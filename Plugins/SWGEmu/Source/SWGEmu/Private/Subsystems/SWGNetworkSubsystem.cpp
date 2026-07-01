@@ -237,7 +237,7 @@ TStatId USWGNetworkSubsystem::GetStatId() const
 
 bool USWGNetworkSubsystem::IsTickable() const
 {
-	return Session->State != ESWGSessionState::Disconnected;
+	return Session && Session->State != ESWGSessionState::Disconnected;
 }
 
 // ── Message Registration & Send ───────────────────────────────────────────────

@@ -30,16 +30,23 @@ public:
 	*/
 	void RegisterState(ESWGClientState StateType, TSharedPtr<ISWGFlowState> State, ESWGClientState PreviousState = ESWGClientState::None);
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
+	class UDataTable* StateTransitionTable;
+
 	// ── Delegates ─────────────────────────────────────────────────
 
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnStateChanged, ESWGClientState, OldState, ESWGClientState, NewState);
-	UPROPERTY(BlueprintAssignable) FOnStateChanged OnStateChanged;
+	UPROPERTY(BlueprintAssignable) 
+	FOnStateChanged OnStateChanged;
 
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnStatus, FText, Status);
-	UPROPERTY(BlueprintAssignable) FOnStatus OnStatus;
+	UPROPERTY(BlueprintAssignable) 
+	FOnStatus OnStatus;
 
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnError, FText, Error);
-	UPROPERTY(BlueprintAssignable) FOnError OnError;
+	UPROPERTY(BlueprintAssignable) 
+	FOnError OnError;
+
 
 	// ── BP Input API ──────────────────────────────────────────────
 
@@ -68,6 +75,9 @@ public:
 	UPROPERTY() TObjectPtr<USWGMessageWaitSubsystem> WaitSubsystem;
 
 private:
+	UFUNCTION()
+	void HandleStateChanged(ESWGClientState OldState, ESWGClientState NewState);
+
 	uint32 GetStateHash(const ESWGClientState First, const ESWGClientState Second);
 
 	ESWGClientState              CurrentState = ESWGClientState::Disconnected;

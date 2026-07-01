@@ -12,6 +12,8 @@ void FSWGConnectingToLoginState::Enter(USWGClientFlowSubsystem& UIStateMachine, 
 		return;
 	}
 
+	UIStateMachine.OnStatus.Broadcast(FText::FromString(TEXT("Connecting to login server...")));
+
 	int32 Epoch = UIStateMachine.Epoch;
 	TWeakObjectPtr<USWGClientFlowSubsystem> StateMchineWeakRef = &UIStateMachine;
 

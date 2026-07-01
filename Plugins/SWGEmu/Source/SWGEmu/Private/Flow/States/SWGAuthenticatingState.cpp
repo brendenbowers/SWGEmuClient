@@ -16,6 +16,8 @@ void FSWGAuthenticatingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 		return;
 	}
 
+	UIStateMachine.OnStatus.Broadcast(FText::FromString(TEXT("Authenticating...")));
+
 	int32 Epoch = UIStateMachine.Epoch;
 	TWeakObjectPtr<USWGClientFlowSubsystem> StateMchineWeakRef = &UIStateMachine;
 	FLoginIDMessage Msg;

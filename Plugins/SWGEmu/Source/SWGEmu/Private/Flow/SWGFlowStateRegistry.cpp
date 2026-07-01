@@ -14,6 +14,12 @@ void FSWGFlowStateRegistry::RegisterStateDefinition(ESWGClientState StateType, T
 
 void FSWGFlowStateRegistry::RegisterAllStates(USWGClientFlowSubsystem& Subsystem)
 {
+	if (StateDefinitions.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("No state definitions registered in FSWGFlowStateRegistry"));
+		return;
+	}
+
 	for (const FStateDefinition& Def : StateDefinitions)
 	{
 		Subsystem.RegisterState(Def.StateType, Def.Factory(), Def.PreviousState);

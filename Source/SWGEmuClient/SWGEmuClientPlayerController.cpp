@@ -10,6 +10,7 @@
 #include "Widgets/Input/SVirtualJoystick.h"
 #include "UI/ULoginWidget.h"
 #include "Blueprint/UserWidget.h"
+#include "Subsystems/SWGClientFlowSubsystem.h"
 
 void ASWGEmuClientPlayerController::BeginPlay()
 {
@@ -34,13 +35,16 @@ void ASWGEmuClientPlayerController::BeginPlay()
 				UE_LOG(LogSWGEmuClient, Error, TEXT("Could not spawn mobile controls widget."));
 			}
 		}
-		
-		if (LoginWidgetClass; ULoginWidget * LoginWidget = CreateWidget<ULoginWidget>(GetWorld(), LoginWidgetClass))
+
+		if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>())
 		{
-			LoginWidget->AddToViewport();
-			GetWorld()->GetFirstPlayerController()->SetInputMode(FInputModeUIOnly());
-			GetWorld()->GetFirstPlayerController()->SetShowMouseCursor(true);
-			LoginWidget->SetFocus();
+			FlowSubsystem->StateTransitionTable = StateTransitionTable;
+		}
+
+		if (USWGGameLayout* Layout = USWGGameLayout::GetOrCreate(this, LayoutWidgetClass))
+		{
+			//todo: pull this from the statetransitiontable
+			Layout->PushWidgetToLayerStack(USWGGameLayout::TAG_Layer_Menu, LoginWidget);
 		}
 	}
 }
