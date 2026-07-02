@@ -35,8 +35,15 @@ void FSWGPacket::Serialize(void* V, int64 Length)
 	}
 	else
 	{
-		if (Pos + ByteLen > (int64)Data.Num())
-			Data.SetNum((int32)(Pos + ByteLen) + 64);
+		const int64 Needed = Pos + ByteLen;
+		if (Needed > (int64)Data.Num())
+		{
+			// Reserve headroom as *capacity* (avoids per-write reallocation) but keep
+			// Num exact — otherwise the extra bytes ship as trailing zero padding on
+			// the wire, which corrupts CRC/DataAcks and breaks the reliable channel.
+			Data.Reserve((int32)Needed + 64);
+			Data.SetNum((int32)Needed, EAllowShrinking::No);
+		}
 		FMemory::Memcpy(Data.GetData() + Pos, V, ByteLen);
 	}
 	Pos += ByteLen;

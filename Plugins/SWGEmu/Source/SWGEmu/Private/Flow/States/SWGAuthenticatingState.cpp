@@ -31,7 +31,7 @@ void FSWGAuthenticatingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 		static_cast<uint32>(ESWGMessageOp::LoginEnumCluster),
 		static_cast<uint32>(ESWGMessageOp::EnumerateCharacterId)
 	};
-	UIStateMachine.WaitSubsystem->WaitForAll(Opcodes).Next([Epoch, StateMchineWeakRef, &Ctx](TResult<TMap<uint32, TSharedPtr<FSWGNetMessage>>> Result)
+	UIStateMachine.WaitSubsystem->WaitForAll(Opcodes, 30).Next([Epoch, StateMchineWeakRef, &Ctx](TResult<TMap<uint32, TSharedPtr<FSWGNetMessage>>> Result)
 		{
 			TStrongObjectPtr<USWGClientFlowSubsystem> StateMachine = StateMchineWeakRef.Pin();
 			if (!StateMachine.IsValid() || StateMachine->Epoch != Epoch)

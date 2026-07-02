@@ -227,20 +227,38 @@ void FSWGReliabilityComponent::HandleMultiPacket(FBitReader& Packet)
 void FSWGReliabilityComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits)
 {
 	const int32 NumBytes = (int32)Packet.GetNumBytes();
-	if (NumBytes < 4)
+	if (NumBytes == 0)
 		return;
 
 	const uint8* Data = Packet.GetData();
-	if (!SWGIsSessionPacket(Data, NumBytes))
-		return;
 
-	const ESWGSessionOp Op = SWGGetSessionOp(Data);
-	if (!SWGOpIsReliable(Op))
+	// Already a formed session packet — either an unreliable control packet
+	// (Ack/Order/SessionRequest/etc, never window-tracked) or a retransmit copy of
+	// a reliable packet (its window entry already exists and was just refreshed by
+	// HandleRetransmits). Neither case should touch WindowPackets here — doing so
+	// for retransmits would add a duplicate entry per resend cycle and snowball.
+	if (SWGIsSessionPacket(Data, NumBytes))
+	{
 		return;
+	}
 
-	// Buffer a pre-pipeline copy for potential retransmit.
+	// Raw game-message payload from the game layer (Session->OutgoingReliable) —
+	// wrap it in a DataChannel1 envelope: [0x00][DataChannel1][seq_hi][seq_lo][payload...].
+	const uint16 Seq = GetNextOutSeq();
+
+	TArray<uint8> Wrapped;
+	Wrapped.Reserve(NumBytes + 4);
+	Wrapped.Add(0x00);
+	Wrapped.Add(static_cast<uint8>(ESWGSessionOp::DataChannel1));
+	Wrapped.Add((uint8)(Seq >> 8));
+	Wrapped.Add((uint8)(Seq & 0xFF));
+	Wrapped.Append(Data, NumBytes);
+
+	Packet.Reset();
+	Packet.Serialize(Wrapped.GetData(), Wrapped.Num());
+
 	FSWGPacket WinPacket;
-	WinPacket.Data.Append(Data, NumBytes);
+	WinPacket.Data = Wrapped;
 	WinPacket.TimeSent = NowMs();
 
 	FScopeLock Lock(&WindowLock);
@@ -342,8 +360,10 @@ void FSWGReliabilityComponent::UnbundleMessages(const uint8* Data, int32 Len)
 		return;
 	}
 
-	// Sub-message format: [size] [priority(1)] [pad(1)] [message(size-2)]
-	// If size == 0xFF: next 2 bytes are BE uint16 actual size.
+	// Sub-message format: [size][message(size bytes)]. The message itself is the
+	// game-layer packet the parser expects — [operandCount(2)][opcode(4)][payload] —
+	// so the slot is handed on intact (no priority/pad header exists here).
+	// If size == 0xFF: the next 2 bytes are the BE uint16 actual size.
 	int32 Offset = 0;
 	while (Offset < Len)
 	{
@@ -357,18 +377,12 @@ void FSWGReliabilityComponent::UnbundleMessages(const uint8* Data, int32 Len)
 			Offset += 2;
 		}
 
-		if (SlotSize < 2 || Offset + SlotSize > Len)
+		if (SlotSize <= 0 || Offset + SlotSize > Len)
 			break;
 
-		const int32 MsgOffset = Offset + 2; // skip priority + pad
-		const int32 MsgSize   = SlotSize - 2;
-
-		if (MsgSize > 0)
-		{
-			FSWGPacket Msg;
-			Msg.Data.Append(Data + MsgOffset, MsgSize);
-			Session->IncomingMessages.Enqueue(MoveTemp(Msg));
-		}
+		FSWGPacket Msg;
+		Msg.Data.Append(Data + Offset, SlotSize);
+		Session->IncomingMessages.Enqueue(MoveTemp(Msg));
 
 		Offset += SlotSize;
 	}

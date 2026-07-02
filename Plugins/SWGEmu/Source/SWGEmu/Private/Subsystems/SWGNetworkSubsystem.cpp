@@ -298,6 +298,9 @@ void USWGNetworkSubsystem::SendPacketThroughPipeline(const FSWGPacket& Pkt)
 	const int32 TotalBytes = (int32)Writer.GetNumBytes();
 	if (TotalBytes > 0)
 	{
+		UE_LOG(LogTemp, Log, TEXT("SWG NET TX (%d pre / %d wire): %s"),
+			NumBytes, TotalBytes, *BytesToHex(Writer.GetData(), TotalBytes));
+
 		int32 BytesSent = 0;
 		Socket->Send(Writer.GetData(), TotalBytes, BytesSent);
 		Session->LastPacketSent = (uint64)(FPlatformTime::Seconds() * 1000.0);
@@ -315,9 +318,12 @@ void USWGNetworkSubsystem::ProcessIncomingMessages()
 		TSharedPtr<FSWGNetMessage> Msg = FSWGMessageRegistry::Get().Create(Opcode, Reader);
 		if (!Msg)
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("SWGNetworkSubsystem: no registered message for opcode 0x%08X"), Opcode);
+			UE_LOG(LogTemp, Warning, TEXT("SWG MSG: unhandled opcode 0x%08X (%d payload bytes)"),
+				Opcode, Pkt.Data.Num());
 			continue;
 		}
+
+		UE_LOG(LogTemp, Log, TEXT("SWG MSG: dispatched opcode 0x%08X"), Opcode);
 
 		OnMessageReceived.Broadcast(Msg);
 
