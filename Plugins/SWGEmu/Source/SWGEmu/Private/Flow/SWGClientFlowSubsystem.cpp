@@ -142,7 +142,6 @@ void USWGClientFlowSubsystem::SelectGalaxy(int32 GalaxyID)
 	if (CurrentState != ESWGClientState::GalaxySelect)
 		return;
 
-	Context.SelectedGalaxyID = GalaxyID;
 	TSharedPtr<FSWGTransitionPayload> Payload = MakeShared<FSWGGalaxySelectedPayload>(GalaxyID);
 	TransitionTo(ESWGClientState::GalaxySelected, Payload);
 }
@@ -151,7 +150,6 @@ void USWGClientFlowSubsystem::SelectCharacter(int64 CharacterID)
 	if (CurrentState != ESWGClientState::CharacterSelect)
 		return;
 
-	Context.SelectedCharacterID = CharacterID;
 	TSharedPtr<FSWGTransitionPayload> Payload = MakeShared<FSWGCharacterSelectedPayload>(CharacterID);
 	TransitionTo(ESWGClientState::CharacterSelected, Payload);
 }
