@@ -2,17 +2,6 @@
 
 #include "UI/UCharacterListEntryWidget.h"
 #include "UI/UCharacterListEntryData.h"
-#include "Subsystems/SWGClientFlowSubsystem.h"
-
-void UCharacterListEntryWidget::NativeConstruct()
-{
-	Super::NativeConstruct();
-
-	if (SelectButton)
-	{
-		SelectButton->OnClicked.AddDynamic(this, &UCharacterListEntryWidget::OnSelectClicked);
-	}
-}
 
 void UCharacterListEntryWidget::NativeOnListItemObjectSet(UObject* ListItemObject)
 {
@@ -21,8 +10,6 @@ void UCharacterListEntryWidget::NativeOnListItemObjectSet(UObject* ListItemObjec
 	{
 		return;
 	}
-
-	CharacterID = EntryData->Character.CharacterID;
 
 	if (CharacterNameText)
 	{
@@ -38,10 +25,14 @@ void UCharacterListEntryWidget::NativeOnListItemObjectSet(UObject* ListItemObjec
 	}
 }
 
-void UCharacterListEntryWidget::OnSelectClicked()
+void UCharacterListEntryWidget::NativeOnItemSelectionChanged(bool bIsSelected)
 {
-	if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>())
+	IUserObjectListEntry::NativeOnItemSelectionChanged(bIsSelected);
+
+	if (RowBackground)
 	{
-		FlowSubsystem->SelectCharacter(CharacterID);
+		RowBackground->SetBrushColor(bIsSelected
+			? FLinearColor(0.10f, 0.55f, 0.65f, 0.9f)
+			: FLinearColor(0.f, 0.f, 0.f, 0.f));
 	}
 }

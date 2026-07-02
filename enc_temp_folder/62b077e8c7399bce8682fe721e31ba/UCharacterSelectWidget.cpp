@@ -18,7 +18,7 @@ void UCharacterSelectWidget::NativeConstruct()
 	}
 	if (CharacterListView)
 	{
-		CharacterListView->OnItemSelectionChanged().AddUObject(this, &UCharacterSelectWidget::OnCharacterSelectionChanged);
+		CharacterListView->BP_OnItemSelectionChanged.AddDynamic(this, &UCharacterSelectWidget::OnCharacterSelectionChanged);
 	}
 
 	RefreshCharacterList();
@@ -97,9 +97,14 @@ void UCharacterSelectWidget::OnNextClicked()
 	}
 }
 
-void UCharacterSelectWidget::OnCharacterSelectionChanged(UObject* Item)
+void UCharacterSelectWidget::OnCharacterSelectionChanged(UObject* Item, bool bIsSelected)
 {
 	if (!CharacterNamePreviewText)
+	{
+		return;
+	}
+
+	if (!bIsSelected)
 	{
 		return;
 	}

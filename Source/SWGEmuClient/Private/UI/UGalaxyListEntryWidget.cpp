@@ -2,17 +2,6 @@
 
 #include "UI/UGalaxyListEntryWidget.h"
 #include "UI/UGalaxyListEntryData.h"
-#include "Subsystems/SWGClientFlowSubsystem.h"
-
-void UGalaxyListEntryWidget::NativeConstruct()
-{
-	Super::NativeConstruct();
-
-	if (SelectButton)
-	{
-		SelectButton->OnClicked.AddDynamic(this, &UGalaxyListEntryWidget::OnSelectClicked);
-	}
-}
 
 void UGalaxyListEntryWidget::NativeOnListItemObjectSet(UObject* ListItemObject)
 {
@@ -21,8 +10,6 @@ void UGalaxyListEntryWidget::NativeOnListItemObjectSet(UObject* ListItemObject)
 	{
 		return;
 	}
-
-	GalaxyID = EntryData->Galaxy.GalaxyID;
 
 	if (GalaxyNameText)
 	{
@@ -36,16 +23,16 @@ void UGalaxyListEntryWidget::NativeOnListItemObjectSet(UObject* ListItemObject)
 	{
 		StatusText->SetText(EntryData->Galaxy.bOnline ? FText::FromString(TEXT("Online")) : FText::FromString(TEXT("Offline")));
 	}
-	if (SelectButton)
-	{
-		SelectButton->SetIsEnabled(EntryData->Galaxy.bOnline);
-	}
 }
 
-void UGalaxyListEntryWidget::OnSelectClicked()
+void UGalaxyListEntryWidget::NativeOnItemSelectionChanged(bool bIsSelected)
 {
-	if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>())
+	IUserObjectListEntry::NativeOnItemSelectionChanged(bIsSelected);
+
+	if (RowBackground)
 	{
-		FlowSubsystem->SelectGalaxy(GalaxyID);
+		RowBackground->SetBrushColor(bIsSelected
+			? FLinearColor(0.10f, 0.55f, 0.65f, 0.9f)
+			: FLinearColor(0.f, 0.f, 0.f, 0.f));
 	}
 }

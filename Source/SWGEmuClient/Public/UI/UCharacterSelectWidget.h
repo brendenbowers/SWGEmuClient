@@ -13,9 +13,12 @@
  * Character select screen widget.
  *
  * Lists the available characters (via CharacterListView) and lets the player pick one.
- * Binds to BindWidget properties: CharacterListView, StatusText, ExitButton.
- * Each row is a UCharacterListEntryWidget that calls SelectCharacter on the flow
- * subsystem directly when clicked.
+ * Binds to BindWidget properties: CharacterListView, StatusText, BackButton, NextButton,
+ * CharacterNamePreviewText.
+ *
+ * Rows only display character data (see UCharacterListEntryWidget) - selecting a row
+ * highlights it via the list's own selection, and NextButton confirms the highlighted
+ * character by calling SelectCharacter on the flow subsystem.
  */
 UCLASS()
 class SWGEMUCLIENT_API UCharacterSelectWidget : public UCommonActivatableWidget
@@ -30,14 +33,23 @@ protected:
 	void RefreshCharacterList();
 
 	UFUNCTION()
-	void OnExitClicked();
+	void OnBackClicked();
+
+	UFUNCTION()
+	void OnNextClicked();
+
+	void OnCharacterSelectionChanged(UObject* Item);
 
 	UPROPERTY(meta = (BindWidget))
 	UListView* CharacterListView;
 	UPROPERTY(meta = (BindWidget))
 	UTextBlock* StatusText;
 	UPROPERTY(meta = (BindWidget))
-	UButton* ExitButton;
+	UButton* BackButton;
+	UPROPERTY(meta = (BindWidget))
+	UButton* NextButton;
+	UPROPERTY(meta = (BindWidget))
+	UTextBlock* CharacterNamePreviewText;
 
 private:
 	UPROPERTY()

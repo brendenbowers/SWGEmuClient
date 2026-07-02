@@ -5,15 +5,17 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/IUserObjectListEntry.h"
-#include "Components/Button.h"
 #include "Components/TextBlock.h"
+#include "Components/Border.h"
 #include "UGalaxyListEntryWidget.generated.h"
 
 /**
  * Single row in the galaxy list. Binds to BindWidget properties:
- * GalaxyNameText, PopulationText, StatusText, SelectButton.
- * Displays the FSWGGalaxyInfo carried by the bound UGalaxyListEntryData
- * and calls SelectGalaxy on the flow subsystem when clicked.
+ * RowBackground, GalaxyNameText, PopulationText, StatusText.
+ * Displays the FSWGGalaxyInfo carried by the bound UGalaxyListEntryData.
+ * Selection is handled by the owning UGalaxySelectWidget via the list's
+ * own selection (NextButton confirms whatever row is highlighted). RowBackground
+ * is tinted to indicate the highlighted row.
  */
 UCLASS()
 class SWGEMUCLIENT_API UGalaxyListEntryWidget : public UUserWidget, public IUserObjectListEntry
@@ -21,21 +23,15 @@ class SWGEMUCLIENT_API UGalaxyListEntryWidget : public UUserWidget, public IUser
 	GENERATED_BODY()
 
 protected:
-	virtual void NativeConstruct() override;
 	virtual void NativeOnListItemObjectSet(UObject* ListItemObject) override;
+	virtual void NativeOnItemSelectionChanged(bool bIsSelected) override;
 
-	UFUNCTION()
-	void OnSelectClicked();
-
+	UPROPERTY(meta = (BindWidget))
+	UBorder* RowBackground;
 	UPROPERTY(meta = (BindWidget))
 	UTextBlock* GalaxyNameText;
 	UPROPERTY(meta = (BindWidget))
 	UTextBlock* PopulationText;
 	UPROPERTY(meta = (BindWidget))
 	UTextBlock* StatusText;
-	UPROPERTY(meta = (BindWidget))
-	UButton* SelectButton;
-
-private:
-	int32 GalaxyID = 0;
 };

@@ -8,6 +8,15 @@ void UGalaxySelectWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
+	if (BackButton)
+	{
+		BackButton->OnClicked.AddDynamic(this, &UGalaxySelectWidget::OnBackClicked);
+	}
+	if (NextButton)
+	{
+		NextButton->OnClicked.AddDynamic(this, &UGalaxySelectWidget::OnNextClicked);
+	}
+
 	RefreshGalaxyList();
 }
 
@@ -39,5 +48,32 @@ void UGalaxySelectWidget::RefreshGalaxyList()
 		StatusText->SetText(GalaxyEntries.Num() > 0
 			? FText::FromString(TEXT("Select a galaxy"))
 			: FText::FromString(TEXT("No galaxies available")));
+	}
+}
+
+void UGalaxySelectWidget::OnBackClicked()
+{
+	if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>())
+	{
+		FlowSubsystem->CancelToLogin();
+	}
+}
+
+void UGalaxySelectWidget::OnNextClicked()
+{
+	if (!GalaxyListView)
+	{
+		return;
+	}
+
+	const UGalaxyListEntryData* Selected = GalaxyListView->GetSelectedItem<UGalaxyListEntryData>();
+	if (!Selected)
+	{
+		return;
+	}
+
+	if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>())
+	{
+		FlowSubsystem->SelectGalaxy(Selected->Galaxy.GalaxyID);
 	}
 }
