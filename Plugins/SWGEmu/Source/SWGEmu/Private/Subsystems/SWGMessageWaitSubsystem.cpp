@@ -1,6 +1,8 @@
 #include "Subsystems/SWGMessageWaitSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Network/SWGPacket.h"
+#include "Network/Messages/ErrorMessage.h"
+#include "Network/Messages/SWGMessageOp.h"
 
 void USWGMessageWaitSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -85,6 +87,24 @@ void USWGMessageWaitSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> 
 		return;
 
 	const uint32 Opcode = Msg->Opcode;
+
+	UE_LOG(LogTemp, Log, TEXT("SWGMessageWaitSubsystem: received message 0x%08X (%s)"), Opcode, *GetMessageOpName(Opcode));
+
+	// ErrorMessage isn't a reply to any specific opcode — it's the server telling us
+	// why our *last* request failed (bad character ID, server locked, zone disabled,
+	// etc). Without this, a rejected SelectCharacterMessage (etc.) would leave its
+	// waiter to silently expire via the 10s timeout with no indication of why.
+	if (Opcode == static_cast<uint32>(ESWGMessageOp::ErrorMessage))
+	{
+		const TSharedPtr<FErrorMessage> Error = StaticCastSharedPtr<FErrorMessage>(Msg);
+		const FString Reason = FString::Printf(TEXT("%s: %s"), *Error->ErrorType, *Error->ErrorMsg);
+
+		UE_LOG(LogTemp, Warning, TEXT("SWGMessageWaitSubsystem: server ErrorMessage — %s (Fatal=%d)"),
+			*Reason, Error->Fatal);
+
+		CancelAll(Reason);
+		return;
+	}
 
 	// Pull all matching single waiters out (FIFO) before resolving, to avoid re-entrancy
 	// if a continuation immediately registers another waiter for the same opcode.

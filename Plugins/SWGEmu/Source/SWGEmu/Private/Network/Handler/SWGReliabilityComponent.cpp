@@ -33,6 +33,7 @@ void FSWGReliabilityComponent::Initialize()
 	FragCurrentSize = 0;
 	FragBuffer.Empty();
 	WindowPackets.Empty();
+	OutOfOrderBuffer.Empty();
 
 	if (Handler)
 		Initialized();
@@ -90,13 +91,6 @@ void FSWGReliabilityComponent::HandleDataAck(FBitReader& Packet)
 
 void FSWGReliabilityComponent::HandleDataChannel(FBitReader& Packet)
 {
-	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
-	if (!Session.IsValid())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: Session pointer is invalid"));
-		return;
-	}
-
 	const uint8* Data = Packet.GetData();
 	const int32 NumBytes = (int32)Packet.GetNumBytes();
 	if (NumBytes < 4)
@@ -104,18 +98,80 @@ void FSWGReliabilityComponent::HandleDataChannel(FBitReader& Packet)
 
 	const FSWGSeqNum IncomingSeq(((uint16)Data[2] << 8) | (uint16)Data[3]);
 
-	if (IncomingSeq != InSeqNext)
+	if (IncomingSeq == InSeqNext)
+	{
+		++InSeqNext;
+		SendDataAck(IncomingSeq.Get());
+		ProcessDataChannelPayload(Data, NumBytes);
+		DrainOutOfOrderBuffer();
+	}
+	else if (IncomingSeq > InSeqNext)
+	{
+		// Arrived ahead of where we are — hold it instead of discarding it, so it
+		// isn't lost once the gap in front of it gets filled in.
+		UE_LOG(LogTemp, Verbose,
+			TEXT("FSWGReliabilityComponent: DataChannel seq=%u expected=%u — buffering (out of order)"),
+			IncomingSeq.Get(), InSeqNext.Get());
+
+		FBufferedPacket Buffered;
+		Buffered.Op = ESWGSessionOp::DataChannel1;
+		Buffered.Data.Append(Data, NumBytes);
+		OutOfOrderBuffer.Add(IncomingSeq.Get(), MoveTemp(Buffered));
+
+		SendDataOrder(InSeqNext.Get());
+	}
+	else
+	{
+		// Duplicate of a packet we already processed (likely our own DataOrder
+		// triggered a resend that crossed with the original in flight) — just
+		// re-ack it so the server's resend window can clear, don't reprocess.
+		SendDataAck(IncomingSeq.Get());
+	}
+}
+
+void FSWGReliabilityComponent::HandleDataFrag(FBitReader& Packet)
+{
+	const uint8* Data = Packet.GetData();
+	const int32 NumBytes = (int32)Packet.GetNumBytes();
+	if (NumBytes < 4)
+		return;
+
+	const FSWGSeqNum IncomingSeq(((uint16)Data[2] << 8) | (uint16)Data[3]);
+
+	if (IncomingSeq == InSeqNext)
+	{
+		++InSeqNext;
+		SendDataAck(IncomingSeq.Get());
+		ProcessDataFragPayload(Data, NumBytes);
+		DrainOutOfOrderBuffer();
+	}
+	else if (IncomingSeq > InSeqNext)
 	{
 		UE_LOG(LogTemp, Verbose,
-			TEXT("FSWGReliabilityComponent: DataChannel seq=%u expected=%u — out of order"),
+			TEXT("FSWGReliabilityComponent: DataFrag seq=%u expected=%u — buffering (out of order)"),
 			IncomingSeq.Get(), InSeqNext.Get());
-		// Send DataOrder to inform server of what we're expecting
+
+		FBufferedPacket Buffered;
+		Buffered.Op = ESWGSessionOp::DataFrag1;
+		Buffered.Data.Append(Data, NumBytes);
+		OutOfOrderBuffer.Add(IncomingSeq.Get(), MoveTemp(Buffered));
+
 		SendDataOrder(InSeqNext.Get());
+	}
+	else
+	{
+		SendDataAck(IncomingSeq.Get());
+	}
+}
+
+void FSWGReliabilityComponent::ProcessDataChannelPayload(const uint8* Data, int32 NumBytes)
+{
+	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
+	if (!Session.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: Session pointer is invalid"));
 		return;
 	}
-
-	++InSeqNext;
-	SendDataAck(IncomingSeq.Get());
 
 	const int32 PayloadOffset = 4; // op(2) + seq(2)
 	const int32 PayloadLen    = NumBytes - PayloadOffset;
@@ -138,7 +194,7 @@ void FSWGReliabilityComponent::HandleDataChannel(FBitReader& Packet)
 	}
 }
 
-void FSWGReliabilityComponent::HandleDataFrag(FBitReader& Packet)
+void FSWGReliabilityComponent::ProcessDataFragPayload(const uint8* Data, int32 NumBytes)
 {
 	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
 	if (!Session.IsValid())
@@ -146,26 +202,6 @@ void FSWGReliabilityComponent::HandleDataFrag(FBitReader& Packet)
 		UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: Session pointer is invalid"));
 		return;
 	}
-
-	const uint8* Data = Packet.GetData();
-	const int32 NumBytes = (int32)Packet.GetNumBytes();
-	if (NumBytes < 4)
-		return;
-
-	const FSWGSeqNum IncomingSeq(((uint16)Data[2] << 8) | (uint16)Data[3]);
-
-	if (IncomingSeq != InSeqNext)
-	{
-		UE_LOG(LogTemp, Verbose,
-			TEXT("FSWGReliabilityComponent: DataFrag seq=%u expected=%u — out of order"),
-			IncomingSeq.Get(), InSeqNext.Get());
-		// Send DataOrder to inform server of what we're expecting
-		SendDataOrder(InSeqNext.Get());
-		return;
-	}
-
-	++InSeqNext;
-	SendDataAck(IncomingSeq.Get());
 
 	if (FragTotalSize == 0)
 	{
@@ -201,6 +237,32 @@ void FSWGReliabilityComponent::HandleDataFrag(FBitReader& Packet)
 		FragTotalSize   = 0;
 		FragCurrentSize = 0;
 		FragBuffer.Empty();
+	}
+}
+
+void FSWGReliabilityComponent::DrainOutOfOrderBuffer()
+{
+	// After InSeqNext advances, replay any packets that were held because they
+	// arrived ahead of schedule and are now next in line — one gap being filled
+	// can unblock a whole run of already-received packets in a single pass.
+	for (;;)
+	{
+		FBufferedPacket Buffered;
+		if (!OutOfOrderBuffer.RemoveAndCopyValue(InSeqNext.Get(), Buffered))
+			break;
+
+		const FSWGSeqNum Seq = InSeqNext;
+		++InSeqNext;
+		SendDataAck(Seq.Get());
+
+		if (Buffered.Op == ESWGSessionOp::DataFrag1)
+		{
+			ProcessDataFragPayload(Buffered.Data.GetData(), Buffered.Data.Num());
+		}
+		else
+		{
+			ProcessDataChannelPayload(Buffered.Data.GetData(), Buffered.Data.Num());
+		}
 	}
 }
 

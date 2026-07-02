@@ -31,8 +31,9 @@ void UGalaxyListEntryWidget::NativeOnItemSelectionChanged(bool bIsSelected)
 
 	if (RowBackground)
 	{
+		// Retail SWG "Protean" theme: Table.SelectionColorBackground = #35CBD7
 		RowBackground->SetBrushColor(bIsSelected
-			? FLinearColor(0.10f, 0.55f, 0.65f, 0.9f)
+			? FLinearColor(0.035601f, 0.597202f, 0.679542f, 0.9f)
 			: FLinearColor(0.f, 0.f, 0.f, 0.f));
 	}
 }

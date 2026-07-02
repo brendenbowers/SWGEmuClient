@@ -3,12 +3,28 @@
 #include "Widgets/CommonActivatableWidgetContainer.h"
 #include "Blueprint/UserWidget.h"
 #include "GameFramework/PlayerController.h"
+#include "NativeGameplayTags.h"
 
 TWeakObjectPtr<USWGGameLayout> USWGGameLayout::ActiveLayout;
 
-const FGameplayTag USWGGameLayout::TAG_Layer_Menu    = FGameplayTag::RequestGameplayTag(TEXT("UI.Layer.Menu"));
-const FGameplayTag USWGGameLayout::TAG_Layer_Loading = FGameplayTag::RequestGameplayTag(TEXT("UI.Layer.Loading"));
-const FGameplayTag USWGGameLayout::TAG_Layer_Modal   = FGameplayTag::RequestGameplayTag(TEXT("UI.Layer.Modal"));
+// FGameplayTag::RequestGameplayTag() at file-scope static-init time races
+// UGameplayTagsManager's own initialization — depending on module load order
+// it can resolve to an empty tag, silently breaking every "LayerTag == TAG_*"
+// comparison below (this is what produced "Unknown layer tag UI.Layer.Loading").
+// FNativeGameplayTag sidesteps the race: its constructor builds InternalTag
+// directly from the FName (no manager lookup needed) and separately registers
+// with the manager whenever it becomes available, so GetTag() below is always
+// valid regardless of init order.
+namespace SWGGameLayoutTags
+{
+	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Layer_Menu, "UI.Layer.Menu");
+	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Layer_Loading, "UI.Layer.Loading");
+	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Layer_Modal, "UI.Layer.Modal");
+}
+
+const FGameplayTag USWGGameLayout::TAG_Layer_Menu    = SWGGameLayoutTags::TAG_Layer_Menu.GetTag();
+const FGameplayTag USWGGameLayout::TAG_Layer_Loading = SWGGameLayoutTags::TAG_Layer_Loading.GetTag();
+const FGameplayTag USWGGameLayout::TAG_Layer_Modal   = SWGGameLayoutTags::TAG_Layer_Modal.GetTag();
 
 USWGGameLayout* USWGGameLayout::GetOrCreate(APlayerController* PlayerController, TSubclassOf<USWGGameLayout> LayoutClass)
 {

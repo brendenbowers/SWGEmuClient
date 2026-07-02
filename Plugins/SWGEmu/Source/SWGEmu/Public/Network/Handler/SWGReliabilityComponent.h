@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "PacketHandler.h"
 #include "Net/Util/SequenceNumber.h"
+#include "Network/SWGSessionOp.h"
 
 struct FSWGSession;
 struct FSWGPacket;
@@ -53,6 +54,20 @@ private:
 	uint32       FragCurrentSize = 0;
 	TArray<uint8> FragBuffer;
 
+	// ── Out-of-order reorder buffer ───────────────────────────────────────────
+	// DataChannel/DataFrag packets that arrived with seq > InSeqNext. Held here
+	// instead of being discarded, so a single UDP reorder doesn't strand every
+	// subsequent packet in a burst behind a sequence number that never advances
+	// (each mismatch previously just re-requested the same gap and dropped the
+	// packet in hand, so later arrivals kept mismatching against the same stuck
+	// InSeqNext forever).
+	struct FBufferedPacket
+	{
+		ESWGSessionOp Op = ESWGSessionOp::DataChannel1;
+		TArray<uint8> Data;
+	};
+	TMap<uint16, FBufferedPacket> OutOfOrderBuffer;
+
 	// ── Tick throttle ─────────────────────────────────────────────────────────
 	double LastRetransmitCheckTime = 0.0;
 
@@ -66,6 +81,13 @@ private:
 	void SendDataAck(uint16 Sequence);
 	void SendDataOrder(uint16 Sequence);
 	void UnbundleMessages(const uint8* Data, int32 Len);
+
+	/** Process an in-order DataChannel payload (everything after the op/seq header). */
+	void ProcessDataChannelPayload(const uint8* Data, int32 NumBytes);
+	/** Process an in-order DataFrag payload (everything after the op/seq header). */
+	void ProcessDataFragPayload(const uint8* Data, int32 NumBytes);
+	/** After advancing InSeqNext, replay any buffered packets that are now next in line. */
+	void DrainOutOfOrderBuffer();
 
 	/** Consume and return the next outgoing sequence number (wraps at 0xFFFF). */
 	uint16 GetNextOutSeq() { return (OutSeqNext++).Get(); }
