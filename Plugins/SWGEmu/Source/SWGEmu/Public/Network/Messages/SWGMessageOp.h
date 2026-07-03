@@ -68,6 +68,7 @@ enum class ESWGMessageOp : uint32
 
 	// ── Other Messages ────────────────────────────────────────
 	ParametersMessage = 0x487652DAu,
+	UnkByteFlag = 0x7102B15Fu,
 	AttributeListMessage = 0xf3f12f2au,
 
 	// Add more as needed during implementation

@@ -1,6 +1,7 @@
 #include "Flow/States/SWGZoneLoadingState.h"
 #include "Flow/SWGFlowStateRegistry.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
+#include "Kismet/GameplayStatics.h"
 
 void FSWGZoneLoadingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
 {
@@ -13,9 +14,12 @@ void FSWGZoneLoadingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFl
 
 	const FCmdStartSceneMessage& Scene = *ScenePayload->Scene;
 
-	// TODO: kick off the level/terrain load for Scene.TerrainName and place the
-	// player at (Scene.PosX, Scene.PosY, Scene.PosZ). Once the level is ready,
-	// send CmdSceneReadyMessage and transition to InWorld.
+	UWorld* World = UIStateMachine.GetWorld();
+	UGameplayStatics::OpenLevel(World, TEXT("SWGLevel"));
+
+	
+
+
 }
 
 void FSWGZoneLoadingState::Exit(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) {}

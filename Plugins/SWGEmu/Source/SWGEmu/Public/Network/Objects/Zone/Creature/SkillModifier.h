@@ -5,16 +5,18 @@
 
 struct FSkillModifier
 {
-	uint8 LeftoverDelta = 0;
-	FString SkillModString;
-	int32 BaseValue = 0;
-	int32 Modifier = 0;
+	FString SkillModString; // Map key (skill mod name)
+	int32 BaseValue = 0;    // SkillModEntry::skillMod
+	int32 Modifier = 0;     // SkillModEntry::skillBonus
 
+	// Wire order (SkillModList entry, a DeltaVectorMap<String, SkillModEntry>):
+	//   name(ascii) skillMod(int32) skillBonus(int32)
+	// The leading map command byte is consumed by the caller (ReadBaselineMap).
 	bool Deserialize(FSWGPacket& Packet)
 	{
-		Packet << SkillModString;
-		Packet << BaseValue;
-		Packet << Modifier;
+		SkillModString = Packet.ReadAsciiString();
+		BaseValue = Packet.ReadInt32();
+		Modifier = Packet.ReadInt32();
 		return true;
 	}
 };

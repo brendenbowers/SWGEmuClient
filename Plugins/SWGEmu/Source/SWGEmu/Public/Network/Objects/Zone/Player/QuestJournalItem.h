@@ -12,14 +12,18 @@ struct FQuestJournalItem
 	uint8 CompletedFlag = 0;
 	int32 QuestCounter = 0;
 
+	// Wire order (PlayerObject quests entry, a DeltaVectorMap<uint32, PlayerQuestData>):
+	//   questCrc(uint32, map key) ownerId(int64) activeStepBitmask(uint16)
+	//   completedStepBitmask(uint16) completedFlag(uint8) questCounter(int32)
+	// Leading map command byte consumed by the caller.
 	bool Deserialize(FSWGPacket& Packet)
 	{
-		Packet << QuestCRC;
-		Packet << OwnerId;
-		Packet << ActiveStepBitmask;
-		Packet << CompletedStepBitmask;
-		Packet << CompletedFlag;
-		Packet << QuestCounter;
+		QuestCRC = Packet.ReadUInt32();
+		OwnerId = Packet.ReadUInt64();
+		ActiveStepBitmask = Packet.ReadInt16();
+		CompletedStepBitmask = Packet.ReadInt16();
+		CompletedFlag = Packet.ReadByte();
+		QuestCounter = Packet.ReadInt32();
 		return true;
 	}
 };

@@ -1,0 +1,2 @@
+#include "Objects/SWGObject.h"
+
