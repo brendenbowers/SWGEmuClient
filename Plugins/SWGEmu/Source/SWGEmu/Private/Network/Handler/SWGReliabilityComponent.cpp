@@ -34,6 +34,8 @@ void FSWGReliabilityComponent::Initialize()
 	FragBuffer.Empty();
 	WindowPackets.Empty();
 	OutOfOrderBuffer.Empty();
+	LastRequestedOrderSeq = 0;
+	OrderResendStreak = 0;
 
 	if (Handler)
 		Initialized();
@@ -109,7 +111,7 @@ void FSWGReliabilityComponent::HandleDataChannel(FBitReader& Packet)
 	{
 		// Arrived ahead of where we are — hold it instead of discarding it, so it
 		// isn't lost once the gap in front of it gets filled in.
-		UE_LOG(LogTemp, Verbose,
+		UE_LOG(LogTemp, Log,
 			TEXT("FSWGReliabilityComponent: DataChannel seq=%u expected=%u — buffering (out of order)"),
 			IncomingSeq.Get(), InSeqNext.Get());
 
@@ -147,7 +149,7 @@ void FSWGReliabilityComponent::HandleDataFrag(FBitReader& Packet)
 	}
 	else if (IncomingSeq > InSeqNext)
 	{
-		UE_LOG(LogTemp, Verbose,
+		UE_LOG(LogTemp, Log,
 			TEXT("FSWGReliabilityComponent: DataFrag seq=%u expected=%u — buffering (out of order)"),
 			IncomingSeq.Get(), InSeqNext.Get());
 
@@ -403,6 +405,30 @@ void FSWGReliabilityComponent::SendDataOrder(uint16 Sequence)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGReliabilityComponent: Session pointer is invalid"));
 		return;
+	}
+
+	// Stall detection: Core3's server-side DataOrder handler is confirmed dead
+	// code (BaseClient::resendPackets() unconditionally returns before doing
+	// anything with the requested sequence), so repeated requests for the same
+	// gap will never be answered. Surface that plainly instead of letting it
+	// look like silent network death.
+	if (Sequence == LastRequestedOrderSeq)
+	{
+		++OrderResendStreak;
+	}
+	else
+	{
+		LastRequestedOrderSeq = Sequence;
+		OrderResendStreak = 1;
+	}
+
+	if (OrderResendStreak == 4)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("FSWGReliabilityComponent: reliability appears STALLED — sequence %u requested %d times with no server response. ")
+			TEXT("Core3's server-side DataOrder handler is dead code (BaseClient::resendPackets unconditionally returns), ")
+			TEXT("so this gap will likely never be filled without reconnecting."),
+			Sequence, OrderResendStreak);
 	}
 
 	FSWGPacket Order;

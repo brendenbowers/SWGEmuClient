@@ -71,6 +71,15 @@ private:
 	// ── Tick throttle ─────────────────────────────────────────────────────────
 	double LastRetransmitCheckTime = 0.0;
 
+	// ── Stall detection ───────────────────────────────────────────────────────
+	// Core3's server-side DataOrder handler is dead code (BaseClient::resendPackets
+	// unconditionally returns before its resend body) — a genuine gap in the
+	// incoming sequence stream can never be filled by the request/response path
+	// this component uses. Track repeated requests for the same stuck sequence so
+	// that shows up as one unmistakable log line instead of silent traffic death.
+	uint16 LastRequestedOrderSeq = 0;
+	int32  OrderResendStreak = 0;
+
 	// ── Helpers ───────────────────────────────────────────────────────────────
 
 	void HandleDataAck(FBitReader& Packet);

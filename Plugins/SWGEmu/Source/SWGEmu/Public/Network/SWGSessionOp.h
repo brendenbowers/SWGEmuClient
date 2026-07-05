@@ -68,6 +68,19 @@ FORCEINLINE ESWGSessionOp SWGGetSessionOp(const uint8* Data)
 /**
  * Returns the byte offset at which encryption/compression begins.
  * Session packets skip the 2-byte op prefix; fastpath packets skip 1 byte.
+ *
+ * CONFIRMED against Core3's actual send-side code (BaseProtocol::compress/
+ * decompress, BaseProtocol.cpp:183-231,233-303): the sequence number is
+ * written into the buffer via setSequence() BEFORE compress() ever runs
+ * (BaseProtocol::prepareSend, BaseProtocol.cpp:66-70), and compress()/
+ * decompress() both use offset=2 for any session packet ((uint8)opcode==0,
+ * i.e. Data[0]==0x00) — NEVER 4, regardless of op. That means the 2-byte
+ * sequence for DataChannel/DataFrag/etc. is swept INSIDE the
+ * compressed/encrypted region, not preserved outside it; it only becomes
+ * readable again after decompression restores the original bytes. An earlier
+ * attempt to special-case DataChannel/DataFrag/DataOrder/DataAck to offset=4
+ * here was WRONG (contradicted by this source) and made real decompression
+ * failures worse — do not reintroduce that.
  */
 FORCEINLINE uint32 SWGGetPayloadStartOffset(const uint8* Data)
 {

@@ -65,8 +65,9 @@ public:
 
 	// ── Internal ─────────────────────────────────────────────────
 
-	void TransitionTo(ESWGClientState NewState, TSharedPtr<FSWGTransitionPayload> Payload = nullptr);
+	void TransitionTo(const ESWGClientState NewState, const TSharedPtr<FSWGTransitionPayload> Payload = nullptr);
 	void Fail(const FString& Reason);
+	void Status(const FString& Status);
 
 	int32            Epoch = 0;
 	FSWGFlowContext  Context;
@@ -77,6 +78,10 @@ public:
 private:
 	UFUNCTION()
 	void HandleStateChanged(ESWGClientState OldState, ESWGClientState NewState);
+
+	void StatusInternal(const FString& Status);
+	void FailInteral(const FString& Reason);
+	void TransitionToInternal(const ESWGClientState NewState, const TSharedPtr<FSWGTransitionPayload> Payload);
 
 	uint32 GetStateHash(const ESWGClientState First, const ESWGClientState Second);
 

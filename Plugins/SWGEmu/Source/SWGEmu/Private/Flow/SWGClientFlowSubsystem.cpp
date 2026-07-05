@@ -54,44 +54,35 @@ void USWGClientFlowSubsystem::RegisterState(ESWGClientState StateType, TSharedPt
 
 void USWGClientFlowSubsystem::TransitionTo(ESWGClientState NewState, TSharedPtr<FSWGTransitionPayload> Payload)
 {
-	const ESWGClientState OldState = CurrentState;
-	if (ActiveState)
+	if (!IsInGameThread())
 	{
-		ActiveState->Exit(*this, Context);
-	}
-	Epoch++;
-
-	TSharedPtr<ISWGFlowState> NextState;
-	if (TSharedPtr<ISWGFlowState>* Constrained = Registry.Find(GetStateHash(NewState, OldState)))
-	{
-		NextState = *Constrained;
-	}
-	else if (TSharedPtr<ISWGFlowState>* Fallback = Registry.Find(GetStateHash(NewState, ESWGClientState::None)))
-	{
-		NextState = *Fallback;
-	}
-
-	if (NextState)
-	{
-		CurrentState = NewState;
-		ActiveState = NextState;
-	}
-	else 
-	{
-		UE_LOG(LogTemp, Warning, TEXT("No valid state registered"));
-		ActiveState.Reset();
+		AsyncTask(ENamedThreads::GameThread, [this, NewState, Payload]() { TransitionToInternal(NewState, Payload); });
 		return;
 	}
 
-	ActiveState->Enter(*this, Context, Payload);
-	OnStateChanged.Broadcast(OldState, NewState);
+	TransitionToInternal(NewState, Payload);
 }
 
 void USWGClientFlowSubsystem::Fail(const FString& Reason)
 {
-	Context.ErrorText = FText::FromString(Reason);
-	TransitionTo(ESWGClientState::Error);
-	OnError.Broadcast(Context.ErrorText);
+	if (!IsInGameThread())
+	{
+		AsyncTask(ENamedThreads::GameThread, [this, Reason]() { FailInteral(Reason); });
+		return;
+	}
+
+	FailInteral(Reason);
+}
+
+void USWGClientFlowSubsystem::Status(const FString& Status)
+{
+	if (!IsInGameThread())
+	{
+		AsyncTask(ENamedThreads::GameThread, [this, Status]() { StatusInternal(Status); });
+		return;
+	}
+
+	StatusInternal(Status);
 }
 
 void USWGClientFlowSubsystem::HandleStateChanged(ESWGClientState OldState, ESWGClientState NewState)
@@ -119,6 +110,54 @@ void USWGClientFlowSubsystem::HandleStateChanged(ESWGClientState OldState, ESWGC
 			}
 		}
 	}
+}
+
+void USWGClientFlowSubsystem::StatusInternal(const FString& Status)
+{
+	Context.StatusText = FText::FromString(Status);
+	OnStatus.Broadcast(Context.StatusText);
+}
+
+void USWGClientFlowSubsystem::FailInteral(const FString& Reason)
+{
+	Context.ErrorText = FText::FromString(Reason);
+	TransitionTo(ESWGClientState::Error);
+	OnError.Broadcast(Context.ErrorText);
+}
+
+void USWGClientFlowSubsystem::TransitionToInternal(const ESWGClientState NewState, const TSharedPtr<FSWGTransitionPayload> Payload)
+{
+	const ESWGClientState OldState = CurrentState;
+	if (ActiveState)
+	{
+		ActiveState->Exit(*this, Context);
+	}
+	Epoch++;
+
+	TSharedPtr<ISWGFlowState> NextState;
+	if (TSharedPtr<ISWGFlowState>* Constrained = Registry.Find(GetStateHash(NewState, OldState)))
+	{
+		NextState = *Constrained;
+	}
+	else if (TSharedPtr<ISWGFlowState>* Fallback = Registry.Find(GetStateHash(NewState, ESWGClientState::None)))
+	{
+		NextState = *Fallback;
+	}
+
+	if (NextState)
+	{
+		CurrentState = NewState;
+		ActiveState = NextState;
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("No valid state registered"));
+		ActiveState.Reset();
+		return;
+	}
+
+	ActiveState->Enter(*this, Context, Payload);
+	OnStateChanged.Broadcast(OldState, NewState);
 }
 
 uint32 USWGClientFlowSubsystem::GetStateHash(const ESWGClientState First, const ESWGClientState Second)

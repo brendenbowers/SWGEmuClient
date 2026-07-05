@@ -66,11 +66,17 @@ void FSWGCrypto::Decrypt(uint8* Data, uint32 Length, uint32 Seed, uint32 StartIn
 		Seed = TempSeed;
 	}
 
-	// Decrypt remaining tail bytes
+	// Decrypt remaining tail bytes. Confirmed against Core3's BaseProtocol::decrypt
+	// (BaseProtocol.cpp:176-180): every tail byte XORs against the SAME low byte of
+	// the seed — the seed does not change or shift within this loop. Previously this
+	// extracted a different byte of Seed per tail position (Seed >> (i*8)), which is
+	// wrong and corrupts the last 1-3 bytes of almost every real packet (arbitrary
+	// game-message lengths are rarely multiples of 4) — including, critically, the
+	// compression flag byte FSWGCompressionComponent reads at Data[NumBytes-1].
 	uint32 TailStart = StartIndex + BlockCount * 4;
 	for (uint32 i = 0; i < ByteCount; ++i)
 	{
-		Data[TailStart + i] ^= (uint8)(Seed >> (i * 8));
+		Data[TailStart + i] ^= (uint8)Seed;
 	}
 }
 
@@ -90,11 +96,12 @@ void FSWGCrypto::Encrypt(uint8* Data, uint32 Length, uint32 Seed, uint32 StartIn
 		Seed = Block;  // Next seed is the ciphertext block
 	}
 
-	// Encrypt remaining tail bytes
+	// Encrypt remaining tail bytes — same fix as Decrypt(), see its comment.
+	// Confirmed against Core3's BaseProtocol::encrypt (BaseProtocol.cpp:138-141).
 	uint32 TailStart = StartIndex + BlockCount * 4;
 	for (uint32 i = 0; i < ByteCount; ++i)
 	{
-		Data[TailStart + i] ^= (uint8)(Seed >> (i * 8));
+		Data[TailStart + i] ^= (uint8)Seed;
 	}
 }
 

@@ -1,6 +1,9 @@
 #pragma once
 #include "Flow/SWGFlowState.h"
 #include "Network/Messages/Zone/CmdStartSceneMessage.h"
+#include "UObject/WeakObjectPtr.h"
+
+class USWGObjectGraphSubsystem;
 
 /**
  * Transient handoff from CharacterSelected carrying the scene data from CmdStartScene.
@@ -19,4 +22,8 @@ class FSWGZoneLoadingState : public ISWGFlowState
 public:
 	virtual void Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload) override;
 	virtual void Exit (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) override;
+
+private:
+	TWeakObjectPtr<USWGObjectGraphSubsystem> ObjectGraphWeak;
+	FDelegateHandle ZoneRevealedHandle;
 };

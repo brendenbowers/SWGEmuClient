@@ -37,3 +37,20 @@ void UZoneLoadingWidget::HandleStatusUpdate(FText Status)
 		StatusText->SetText(Status);
 	}
 }
+
+void UZoneLoadingWidget::SetProgress(float InPercent)
+{
+	if (ProgressBar)
+	{
+		ProgressBar->SetPercent(FMath::Clamp(InPercent, 0.f, 1.f));
+		ProgressBar->SetVisibility(ESlateVisibility::Visible);
+	}
+}
+
+void UZoneLoadingWidget::HideProgress()
+{
+	if (ProgressBar)
+	{
+		ProgressBar->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
