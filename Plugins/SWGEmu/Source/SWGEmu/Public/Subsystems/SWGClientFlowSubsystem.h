@@ -10,6 +10,7 @@
 
 class USWGNetworkSubsystem;
 class USWGMessageWaitSubsystem;
+class USWGTerrainSubsystem;
 
 UCLASS()
 class SWGEMU_API USWGClientFlowSubsystem : public UGameInstanceSubsystem, public FTickableGameObject
@@ -72,8 +73,14 @@ public:
 	int32            Epoch = 0;
 	FSWGFlowContext  Context;
 
-	UPROPERTY() TObjectPtr<USWGNetworkSubsystem>     Network;
-	UPROPERTY() TObjectPtr<USWGMessageWaitSubsystem> WaitSubsystem;
+	UPROPERTY() 
+	TObjectPtr<USWGNetworkSubsystem>     Network;
+	
+	UPROPERTY() 
+	TObjectPtr<USWGMessageWaitSubsystem> WaitSubsystem;
+
+	UPROPERTY()
+	TObjectPtr<USWGTerrainSubsystem> TerrainSubsystem;
 
 private:
 	UFUNCTION()
@@ -85,7 +92,7 @@ private:
 
 	uint32 GetStateHash(const ESWGClientState First, const ESWGClientState Second);
 
-	ESWGClientState              CurrentState = ESWGClientState::Disconnected;
+	ESWGClientState              CurrentState = ESWGClientState::Initialization;
 	TSharedPtr<ISWGFlowState>    ActiveState;
 	TMap<uint32, TSharedPtr<ISWGFlowState>> Registry;
 };

@@ -36,32 +36,36 @@
 
 namespace
 {
-	// Dispatch order below follows each slot's Core3 field-declaration order
-	// (see world-object-plan.html "Component breakdown" / "Delta application"),
-	// but every component's ApplyBaseX is still a TODO no-op today — none of
-	// them actually consume packet bytes yet. Once real field reads are added,
-	// several slots interleave components mid-stream (e.g. CREO base3 is
-	// CombatState, then loose actor fields, then Health, then CombatState
-	// again, then Health again) — calling each component once per slot, as
-	// done here, will no longer be byte-correct at that point and these
-	// functions will need splitting into per-field-range calls instead.
+	// Dispatch order below is byte-exact against each free-function parser
+	// (SWGTangibleBaselineParser / SWGCreatureBaselineParser — see
+	// world-object-plan.html "Component breakdown" / "Delta application").
+	// Several slots interleave components mid-stream (e.g. CREO base3 is
+	// Tangible/Condition, then CombatState, then loose actor fields, then
+	// Health, then CombatState again, then Health again) — each component's
+	// ApplyBaseX is split into ApplyBaseXPartN sub-calls wherever that happens,
+	// called here in the exact wire order.
 
+	// TANO base3: SWGTangibleBaselineParser::ParseBase3.
 	void ApplyTangibleBaseline(ASWGItem& Item, uint8 Slot, FSWGPacket& Packet)
 	{
 		switch (Slot)
 		{
 			case 3:
-				if (Item.TangibleComponent) 
+				if (Item.TangibleComponent)
 				{
-					Item.TangibleComponent->ApplyBase3(Packet);
+					Item.TangibleComponent->ApplyBase3Part1(Packet);
 				}
 				if (Item.ConditionComponent)
 				{
 					Item.ConditionComponent->ApplyBase3(Packet);
 				}
+				if (Item.TangibleComponent)
+				{
+					Item.TangibleComponent->ApplyBase3Part2(Packet);
+				}
 				break;
 			case 6:
-				if (Item.DefenderComponent) 
+				if (Item.DefenderComponent)
 				{
 					Item.DefenderComponent->ApplyBase6(Packet);
 				}
@@ -72,11 +76,17 @@ namespace
 		}
 	}
 
+	// CREO base1/3/4/6: SWGCreatureBaselineParser::ParseBase1/3/4/6. "Loose"
+	// fields (BankCredits/CashCredits/CreatureLinkId/Height/Level/GuildId) live
+	// directly on ASWGCreature — see world-object-plan.html "Component
+	// breakdown" — so they're read inline here rather than via a component.
 	void ApplyCreatureBaseline(ASWGCreature& Creature, uint8 Slot, FSWGPacket& Packet)
 	{
 		switch (Slot)
 		{
 			case 1:
+				Creature.BankCredits = Packet.ReadInt32();
+				Creature.CashCredits = Packet.ReadInt32();
 				if (Creature.HealthComponent)
 				{
 					Creature.HealthComponent->ApplyBase1(Packet);
@@ -87,65 +97,110 @@ namespace
 				}
 				break;
 			case 3:
-				if (Creature.TangibleComponent) 
+				// TangibleObjectMessage3 fields come first on the wire.
+				if (Creature.TangibleComponent)
 				{
-					Creature.TangibleComponent->ApplyBase3(Packet);
+					Creature.TangibleComponent->ApplyBase3Part1(Packet);
 				}
-				if (Creature.ConditionComponent) 
+				if (Creature.ConditionComponent)
 				{
 					Creature.ConditionComponent->ApplyBase3(Packet);
 				}
+				if (Creature.TangibleComponent)
+				{
+					Creature.TangibleComponent->ApplyBase3Part2(Packet);
+				}
 				if (Creature.CombatStateComponent)
 				{
-					Creature.CombatStateComponent->ApplyBase3(Packet);
+					Creature.CombatStateComponent->ApplyBase3Part1(Packet);
 				}
-				if (Creature.HealthComponent) 
+				Creature.CreatureLinkId = Packet.ReadInt64();
+				Creature.Height = Packet.ReadFloat();
+				if (Creature.HealthComponent)
 				{
-					Creature.HealthComponent->ApplyBase3(Packet);
+					Creature.HealthComponent->ApplyBase3Part1(Packet);
+				}
+				if (Creature.CombatStateComponent)
+				{
+					Creature.CombatStateComponent->ApplyBase3Part2(Packet);
+				}
+				if (Creature.HealthComponent)
+				{
+					Creature.HealthComponent->ApplyBase3Part2(Packet);
 				}
 				break;
 			case 4:
-				if (USWGMovementComponent* Movement = Creature.GetSWGMovementComponent())
+			{
+				USWGMovementComponent* Movement = Creature.GetSWGMovementComponent();
+				if (Movement)
 				{
-					Movement->ApplyBase4(Packet);
+					Movement->ApplyBase4Part1(Packet);
 				}
-				if (Creature.EncumbranceComponent) 
+				if (Creature.EncumbranceComponent)
 				{
-					Creature.EncumbranceComponent->ApplyBase4(Packet); 
+					Creature.EncumbranceComponent->ApplyBase4(Packet);
 				}
-				if (Creature.SkillComponent) 
+				if (Creature.SkillComponent)
 				{
 					Creature.SkillComponent->ApplyBase4(Packet);
 				}
-				if (Creature.SpaceMissionComponent) 
+				if (Movement)
 				{
-					Creature.SpaceMissionComponent->ApplyBase4(Packet);
+					Movement->ApplyBase4Part2(Packet);
+				}
+				if (Creature.SpaceMissionComponent)
+				{
+					Creature.SpaceMissionComponent->ApplyBase4Part1(Packet);
+				}
+				if (Movement)
+				{
+					Movement->ApplyBase4Part3(Packet);
+				}
+				if (Creature.SpaceMissionComponent)
+				{
+					Creature.SpaceMissionComponent->ApplyBase4Part2(Packet);
 				}
 				break;
+			}
 			case 6:
-				if (Creature.DefenderComponent) 
+				// TangibleObjectMessage6 fields (Unknown076 + DefenderList) come first.
+				if (Creature.DefenderComponent)
 				{
 					Creature.DefenderComponent->ApplyBase6(Packet);
 				}
+				Creature.Level = Packet.ReadUInt16();
 				if (Creature.PerformanceComponent)
 				{
-					Creature.PerformanceComponent->ApplyBase6(Packet);
+					Creature.PerformanceComponent->ApplyBase6Part1(Packet);
 				}
 				if (Creature.CombatStateComponent)
 				{
-					Creature.CombatStateComponent->ApplyBase6(Packet);
+					Creature.CombatStateComponent->ApplyBase6Part1(Packet);
 				}
-				if (Creature.GroupComponent) 
+				if (Creature.GroupComponent)
 				{
 					Creature.GroupComponent->ApplyBase6(Packet);
+				}
+				Creature.GuildId = Packet.ReadInt32();
+				if (Creature.CombatStateComponent)
+				{
+					Creature.CombatStateComponent->ApplyBase6Part2(Packet);
+				}
+				if (Creature.PerformanceComponent)
+				{
+					Creature.PerformanceComponent->ApplyBase6Part2(Packet);
 				}
 				if (Creature.HealthComponent)
 				{
 					Creature.HealthComponent->ApplyBase6(Packet);
 				}
-				if (Creature.EquipmentComponent) 
+				if (Creature.EquipmentComponent)
 				{
 					Creature.EquipmentComponent->ApplyBase6(Packet);
+				}
+				if (Creature.CombatStateComponent)
+				{
+					Creature.CombatStateComponent->ApplyBase6Part3(Packet);
 				}
 				break;
 			default:
@@ -320,7 +375,23 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 		return;
 	}
 
+	// No axis swap: Msg.PosX/PosZ/PosY are named after the wire's own transmission
+	// order (which the server picks independent of axis semantics — Core3 sends
+	// getPositionX(), getPositionZ(), getPositionY() in that literal sequence),
+	// not a relabeling — Msg.PosY *is* Server.PositionY, directly, by name, same
+	// for PosZ/PositionZ. Confirmed via SceneObjectImplementation::getCoordinate/
+	// TreeEntry::getDistanceTo (both use PositionX+PositionY as the 2D ground
+	// plane, ignoring PositionZ) that PositionX/PositionY are SWG's horizontal
+	// pair and PositionZ is vertical — i.e. SWG already matches UE's X/Y-
+	// horizontal, Z-vertical convention 1:1. A prior "fix" here swapped Y/Z based
+	// on a misreading of the wire-layout comment; empirically wrong (verified via
+	// a live actor's transform against its exact spawn log line — the actor's
+	// large-magnitude horizontal coordinate landed in Z instead of Y). Reverted.
 	const FVector Location(Msg.PosX, Msg.PosY, Msg.PosZ);
+	// Reverted alongside Location above — see that comment. Not independently
+	// re-verified (no live rotation data to cross-check yet), but reverting to
+	// the same "trust the direct field correspondence" reasoning that turned out
+	// to be right for position, rather than keep an unverified swap here.
 	const FQuat Rotation(Msg.DirX, Msg.DirY, Msg.DirZ, Msg.DirW);
 
 	FActorSpawnParameters SpawnParams;

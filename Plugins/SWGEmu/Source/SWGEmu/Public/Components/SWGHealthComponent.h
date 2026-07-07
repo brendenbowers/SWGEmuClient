@@ -31,6 +31,10 @@ public:
 	bool bHasBase6 = false;
 
 	void ApplyBase1(FSWGPacket& Packet);
-	void ApplyBase3(FSWGPacket& Packet);
+	// Split in two: CREO base3 interleaves ShockWounds and Wounds around
+	// USWGCombatStateComponent's StateBitmask — see
+	// SWGCreatureBaselineParser::ParseBase3.
+	void ApplyBase3Part1(FSWGPacket& Packet); // ShockWounds
+	void ApplyBase3Part2(FSWGPacket& Packet); // Wounds
 	void ApplyBase6(FSWGPacket& Packet);
 };

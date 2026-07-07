@@ -15,5 +15,9 @@ bool FCmdStartSceneMessage::Deserialize(FSWGMessage& Reader)
 	Reader >> PosY;
 	RaceTemplate = Reader.ReadAsciiString();
 	Reader >> GalacticTime;
+
+	UE_LOG(LogTemp, Log, TEXT("FCmdStartSceneMessage::Deserialize: TerrainName='%s' (Len=%d) CharacterID=%lld"),
+		*TerrainName, TerrainName.Len(), CharacterID);
+
 	return true;
 }

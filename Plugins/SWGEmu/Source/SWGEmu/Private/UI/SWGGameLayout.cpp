@@ -26,8 +26,9 @@ const FGameplayTag USWGGameLayout::TAG_Layer_Menu    = SWGGameLayoutTags::TAG_La
 const FGameplayTag USWGGameLayout::TAG_Layer_Loading = SWGGameLayoutTags::TAG_Layer_Loading.GetTag();
 const FGameplayTag USWGGameLayout::TAG_Layer_Modal   = SWGGameLayoutTags::TAG_Layer_Modal.GetTag();
 
-USWGGameLayout* USWGGameLayout::GetOrCreate(APlayerController* PlayerController, TSubclassOf<USWGGameLayout> LayoutClass)
+USWGGameLayout* USWGGameLayout::GetOrCreate(APlayerController* PlayerController, TSubclassOf<USWGGameLayout> LayoutClass, bool& bCreated)
 {
+	bCreated = false;
 	if (ActiveLayout.IsValid())
 		return ActiveLayout.Get();
 
@@ -40,6 +41,8 @@ USWGGameLayout* USWGGameLayout::GetOrCreate(APlayerController* PlayerController,
 
 	Layout->AddToPlayerScreen(100);
 	SetLayout(Layout);
+
+	bCreated = true;
 	return Layout;
 }
 

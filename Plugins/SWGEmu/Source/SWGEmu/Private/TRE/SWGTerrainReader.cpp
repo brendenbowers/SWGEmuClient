@@ -30,6 +30,17 @@ bool FSWGTerrainReader::FindChildForm(const FSWGIffReader& Reader, const FSWGIff
 	return false;
 }
 
+TArray<FSWGIffChunk> FSWGTerrainReader::FindChildForms(const FSWGIffReader& Reader, const FSWGIffChunk& Parent)
+{
+	TArray<FSWGIffChunk> Result;
+	for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
+	{
+		if (Child.IsForm())
+			Result.Add(Child);
+	}
+	return Result;
+}
+
 bool FSWGTerrainReader::FindChildChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag, FSWGIffChunk& OutChunk)
 {
 	for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
@@ -283,22 +294,45 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 	if (TopLevel.Num() == 0 || !TopLevel[0].IsForm() || TopLevel[0].FormType != TEXT("PTAT"))
 		return false;
 
-	FSWGIffChunk Form0013, TgenForm, TgenForm0000;
-	if (!FindChildForm(Reader, TopLevel[0], TEXT("0013"), Form0013)) return false;
-	if (!FindChildForm(Reader, Form0013, TEXT("TGEN"), TgenForm)) return false;
+	// PTAT wraps a single version-tagged form (seen as "0013" on a small test file,
+	// "0014" on real planet data like tatooine.trn) — take whichever one is there
+	// rather than hardcoding a version, since nothing below this depends on which.
+	const TArray<FSWGIffChunk> PtatChildren = FindChildForms(Reader, TopLevel[0]);
+	if (PtatChildren.Num() == 0) return false;
+	const FSWGIffChunk& PtatVersionForm = PtatChildren[0];
+
+	FSWGIffChunk TgenForm, TgenForm0000;
+	if (!FindChildForm(Reader, PtatVersionForm, TEXT("TGEN"), TgenForm)) return false;
 	if (!FindChildForm(Reader, TgenForm, TEXT("0000"), TgenForm0000)) return false;
 
-	// SGRP/FGRP/RGRP/EGRP/MGRP (shader/flora/radial/environment/map groups) are skipped
-	// structurally — not needed until shader/flora rendering and fractal noise
-	// evaluation are tackled (both explicitly deferred). Find the first remaining
-	// child, which per TerrainGenerator::parseFromIffStream is either a single root
-	// LAYR or a LYRS wrapper containing multiple top-level LAYR entries.
-	static const TSet<FString> SkippedGroupTags = { TEXT("SGRP"), TEXT("FGRP"), TEXT("RGRP"), TEXT("EGRP"), TEXT("MGRP") };
+	// SGRP/FGRP/RGRP/EGRP (shader/flora/radial/environment groups) are skipped
+	// structurally — not needed until shader/flora rendering is tackled (deferred).
+	// The first MGRP (map group) IS parsed, since AffectorHeightFractal needs it; a
+	// second MGRP occurrence (Core3's "bitmap group") is skipped. Once past the
+	// groups, per TerrainGenerator::parseFromIffStream the next child is either a
+	// single root LAYR or a LYRS wrapper containing multiple top-level LAYR entries.
+	static const TSet<FString> SkippedGroupTags = { TEXT("SGRP"), TEXT("FGRP"), TEXT("RGRP"), TEXT("EGRP") };
+
+	bool bFoundMapGroup = false;
 
 	for (const FSWGIffChunk& Child : Reader.ReadChildren(TgenForm0000))
 	{
-		if (!Child.IsForm() || SkippedGroupTags.Contains(Child.FormType))
+		if (!Child.IsForm())
 			continue;
+
+		if (SkippedGroupTags.Contains(Child.FormType))
+			continue;
+
+		if (Child.FormType == TEXT("MGRP"))
+		{
+			if (!bFoundMapGroup)
+			{
+				ReadMapGroup(Reader, Child, OutData.MapGroup);
+				bFoundMapGroup = true;
+			}
+			// else: this is Core3's "bitmapGroup" (bitmap-affector support), not needed here.
+			continue;
+		}
 
 		if (Child.FormType == TEXT("LAYR"))
 		{
@@ -324,6 +358,52 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 		}
 
 		break;
+	}
+
+	return true;
+}
+
+bool FSWGTerrainReader::ReadMapGroup(const FSWGIffReader& Reader, const FSWGIffChunk& MgrpForm, FSWGMapGroup& OutGroup)
+{
+	FSWGIffChunk Version;
+	if (!FindChildForm(Reader, MgrpForm, TEXT("0000"), Version)) return false;
+
+	for (const FSWGIffChunk& MfamForm : Reader.ReadChildren(Version))
+	{
+		if (!MfamForm.IsForm() || MfamForm.FormType != TEXT("MFAM"))
+			continue;
+
+		FSWGIffChunk FamilyDataChunk;
+		if (!FindChildChunk(Reader, MfamForm, TEXT("DATA"), FamilyDataChunk)) continue;
+
+		const uint8* FamilyData = Reader.GetChunkData(FamilyDataChunk);
+		const int32 FamilyId = (int32)ReadUInt32LE(FamilyData, 0);
+
+		FSWGIffChunk MfrcForm, MfrcVersion, MfrcData;
+		if (!FindChildForm(Reader, MfamForm, TEXT("MFRC"), MfrcForm)) continue;
+		if (!FindChildForm(Reader, MfrcForm, TEXT("0001"), MfrcVersion)) continue;
+		if (!FindChildChunk(Reader, MfrcVersion, TEXT("DATA"), MfrcData)) continue;
+
+		const uint8* D = Reader.GetChunkData(MfrcData);
+		FSWGMapFractal Fractal;
+		int32 Offset = 0;
+		Fractal.Seed = (int32)ReadUInt32LE(D, Offset); Offset += 4;
+		Fractal.Bias = (int32)ReadUInt32LE(D, Offset); Offset += 4;
+		Fractal.BiasValue = ReadFloatLE(D, Offset); Offset += 4;
+		Fractal.GainType = (int32)ReadUInt32LE(D, Offset); Offset += 4;
+		Fractal.GainValue = ReadFloatLE(D, Offset); Offset += 4;
+		Fractal.Octaves = (int32)ReadUInt32LE(D, Offset); Offset += 4;
+		Fractal.OctavesParam = ReadFloatLE(D, Offset); Offset += 4;
+		Fractal.Amplitude = ReadFloatLE(D, Offset); Offset += 4;
+		Fractal.XFrequency = ReadFloatLE(D, Offset); Offset += 4;
+		Fractal.YFrequency = ReadFloatLE(D, Offset); Offset += 4;
+		Fractal.XOffset = ReadFloatLE(D, Offset); Offset += 4;
+		Fractal.ZOffset = ReadFloatLE(D, Offset); Offset += 4;
+		Fractal.Combination = (int32)ReadUInt32LE(D, Offset); Offset += 4;
+
+		Fractal.Initialize();
+
+		OutGroup.Fractals.Add(FamilyId, MoveTemp(Fractal));
 	}
 
 	return true;

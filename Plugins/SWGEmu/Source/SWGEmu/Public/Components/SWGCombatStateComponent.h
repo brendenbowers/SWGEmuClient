@@ -27,6 +27,15 @@ public:
 	uint8 Frozen   = 0;
 	bool bHasBase6 = false;
 
-	void ApplyBase3(FSWGPacket& Packet);
-	void ApplyBase6(FSWGPacket& Packet);
+	// Split: CREO base3's Posture/FactionRank come before the CreatureLinkId/
+	// Height/ShockWounds fields, StateBitmask comes after — see
+	// SWGCreatureBaselineParser::ParseBase3.
+	void ApplyBase3Part1(FSWGPacket& Packet); // Posture, FactionRank
+	void ApplyBase3Part2(FSWGPacket& Packet); // StateBitmask
+
+	// Split: CREO base6's WeaponId, TargetId, and Frozen are each separated by
+	// other components' fields — see SWGCreatureBaselineParser::ParseBase6.
+	void ApplyBase6Part1(FSWGPacket& Packet); // WeaponId
+	void ApplyBase6Part2(FSWGPacket& Packet); // TargetId
+	void ApplyBase6Part3(FSWGPacket& Packet); // Frozen
 };

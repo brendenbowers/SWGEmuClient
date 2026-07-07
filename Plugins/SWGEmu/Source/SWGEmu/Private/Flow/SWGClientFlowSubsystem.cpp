@@ -1,6 +1,7 @@
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGMessageWaitSubsystem.h"
+#include "Subsystems/SWGTerrainSubsystem.h"
 #include "Flow/SWGFlowStateRegistry.h"
 #include "Flow/SWGGalaxySelectedPayload.h"
 #include "Flow/SWGCharacterSelectedPayload.h"
@@ -12,6 +13,7 @@ void USWGClientFlowSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 	Network       = Cast<USWGNetworkSubsystem>(Collection.InitializeDependency(USWGNetworkSubsystem::StaticClass()));
 	WaitSubsystem = Cast<USWGMessageWaitSubsystem>(Collection.InitializeDependency(USWGMessageWaitSubsystem::StaticClass()));
+	TerrainSubsystem = Cast<USWGTerrainSubsystem>(Collection.InitializeDependency(USWGTerrainSubsystem::StaticClass()));
 
 	OnStateChanged.AddDynamic(this, &USWGClientFlowSubsystem::HandleStateChanged);
 

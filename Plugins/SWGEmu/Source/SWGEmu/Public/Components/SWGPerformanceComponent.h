@@ -22,5 +22,9 @@ public:
 	int32   PerformanceType = 0;
 	bool bHasBase6 = false;
 
-	void ApplyBase6(FSWGPacket& Packet);
+	// Split: PerformanceAnimation/MoodString come early in CREO base6; MoodId/
+	// PerformanceStartTime/PerformanceType come much later (after TargetId) —
+	// see SWGCreatureBaselineParser::ParseBase6.
+	void ApplyBase6Part1(FSWGPacket& Packet); // PerformanceAnimation, MoodString
+	void ApplyBase6Part2(FSWGPacket& Packet); // MoodId, PerformanceStartTime, PerformanceType
 };

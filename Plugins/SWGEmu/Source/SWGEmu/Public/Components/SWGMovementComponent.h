@@ -38,5 +38,12 @@ public:
 	float WaterModPercent = 0.f;
 	bool  bHasBase4 = false;
 
-	void ApplyBase4(FSWGPacket& Packet);
+	// Split in three: CREO base4 interleaves these with USWGEncumbranceComponent/
+	// USWGSkillComponent/USWGSpaceMissionComponent fields mid-stream — see
+	// SWGCreatureBaselineParser::ParseBase4. Part3 recomputes the actual
+	// UCharacterMovementComponent properties per the class comment's mapping,
+	// once all raw fields are known.
+	void ApplyBase4Part1(FSWGPacket& Packet); // AccelerationMultiplierBase, AccelerationMultiplierMod
+	void ApplyBase4Part2(FSWGPacket& Packet); // SpeedMultiplierBase, SpeedMultiplierMod
+	void ApplyBase4Part3(FSWGPacket& Packet); // RunSpeed..WaterModPercent
 };

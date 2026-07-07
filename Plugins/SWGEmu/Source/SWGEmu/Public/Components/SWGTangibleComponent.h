@@ -32,5 +32,9 @@ public:
 	uint8          ObjectVisible = 0;
 	bool           bHasBase3 = false;
 
-	void ApplyBase3(FSWGPacket& Packet);
+	// Split in two: TANO base3 interleaves with USWGConditionComponent mid-stream
+	// (Complexity..OptionsBitmask, then Condition's UseCount/ConditionDamage/
+	// MaxCondition, then ObjectVisible last) — see SWGTangibleBaselineParser::ParseBase3.
+	void ApplyBase3Part1(FSWGPacket& Packet); // Complexity..OptionsBitmask
+	void ApplyBase3Part2(FSWGPacket& Packet); // ObjectVisible
 };

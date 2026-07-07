@@ -29,8 +29,9 @@ public:
 	/**
 	 * Gets the active layout, or creates one from LayoutClass, adds it to the
 	 * player's viewport, and registers it. Equivalent to PrimaryGameLayout::GetOrCreateInstance.
+	 * bCreated is set to true if a new layout was created, false if an existing one was returned.
 	 */
-	static USWGGameLayout* GetOrCreate(APlayerController* PlayerController, TSubclassOf<USWGGameLayout> LayoutClass);
+	static USWGGameLayout* GetOrCreate(APlayerController* PlayerController, TSubclassOf<USWGGameLayout> LayoutClass, bool& bCreated);
 
 	static USWGGameLayout* GetLayout(const UObject* WorldContext);
 	static void SetLayout(USWGGameLayout* Layout);

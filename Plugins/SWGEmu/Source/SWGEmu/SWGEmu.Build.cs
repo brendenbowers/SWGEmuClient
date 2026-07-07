@@ -22,6 +22,7 @@ public class SWGEmu : ModuleRules
 				"CommonInput",
 				"GameplayTags",
 				"UMG",
+				"Landscape",
 			}
 		);
 

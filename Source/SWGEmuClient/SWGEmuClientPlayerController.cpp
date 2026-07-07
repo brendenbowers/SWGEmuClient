@@ -39,12 +39,16 @@ void ASWGEmuClientPlayerController::BeginPlay()
 		// Ensure the layout container exists before the flow's first transition fires —
 		// HandleStateChanged looks it up via USWGGameLayout::GetLayout() and pushes
 		// whichever widget StateTransitionTable maps to the resulting state change.
-		USWGGameLayout::GetOrCreate(this, LayoutWidgetClass);
+		bool bCreated = false;
+		USWGGameLayout::GetOrCreate(this, LayoutWidgetClass, bCreated);
 
-		if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>())
+		if (bCreated)
 		{
-			FlowSubsystem->StateTransitionTable = StateTransitionTable;
-			FlowSubsystem->TransitionTo(ESWGClientState::Initialization);
+			if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>(); FlowSubsystem->GetState() == ESWGClientState::Initialization)
+			{
+				FlowSubsystem->StateTransitionTable = StateTransitionTable;
+				FlowSubsystem->TransitionTo(ESWGClientState::Initialization);
+			}
 		}
 	}
 }

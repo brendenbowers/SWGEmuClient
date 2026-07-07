@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "TRE/SWGIffReader.h"
+#include "TRE/SWGTerrainNoise.h"
 
 /**
  * MVP subset only — the majority-coverage affector/boundary types confirmed against
@@ -36,7 +37,7 @@ struct FSWGTerrainAffector
 	/** HeightConstant / HeightFractal / HeightTerrace: constant height, noise amplitude, or terrace step size respectively. */
 	float Height = 0.0f;
 
-	/** HeightFractal only — index into TGEN's map group; noise evaluation itself is not ported yet. */
+	/** HeightFractal only — index into FSWGTerrainData::MapGroup (FSWGMapGroup::FindFractal). */
 	int32 FractalId = 0;
 
 	/** HeightTerrace only — flat-vs-slope portion of each terrace step. */
@@ -81,18 +82,24 @@ struct FSWGTerrainData
 {
 	/** Top-level layers, in file order — either a single root LAYR or LYRS's children. */
 	TArray<FSWGTerrainLayer> TopLevelLayers;
+
+	/** Resolved from the first MGRP (the "map group"); AffectorHeightFractal::FractalId indexes into this. */
+	FSWGMapGroup MapGroup;
 };
 
 /**
  * Parses SWG's .trn procedural terrain format (FORM PTAT) into an engine-agnostic
  * Layer/Boundary/Affector tree, mirroring Core3's terrain/layer/* class hierarchy
  * directly (confirmed field-for-field against Core3's parseFromIffStream methods —
- * see world-object-plan.html "Terrain rendering"). SGRP/FGRP/RGRP/EGRP/MGRP (shader,
- * flora, radial, environment, and map/fractal groups) are structurally skipped for
- * now — not needed until shader/flora rendering and fractal noise evaluation are
- * tackled (both explicitly deferred). This class only extracts the graph; the
- * recursive height-evaluation walk (Core3's ProceduralTerrainAppearance::getHeight)
- * is a separate, not-yet-implemented step.
+ * see world-object-plan.html "Terrain rendering"). SGRP/FGRP/RGRP/EGRP (shader,
+ * flora, radial, environment groups) are structurally skipped — not needed until
+ * shader/flora rendering is tackled (explicitly deferred). The first MGRP (map
+ * group) IS parsed, into FSWGTerrainData::MapGroup, since AffectorHeightFractal
+ * needs it; a second MGRP occurrence (Core3's "bitmap group", a different,
+ * bitmap-affector-only structure) is skipped. This class only extracts the graph
+ * and resolves fractal noise generators; the recursive height-evaluation walk
+ * (Core3's ProceduralTerrainAppearance::getHeight/processTerrain) is a separate,
+ * not-yet-implemented step.
  */
 class SWGEMU_API FSWGTerrainReader
 {
@@ -103,6 +110,8 @@ public:
 private:
 	static bool FindChildForm(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& FormType, FSWGIffChunk& OutChunk);
 	static bool FindChildChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag, FSWGIffChunk& OutChunk);
+	/** All FORM children (any FormType) among Parent's direct children. */
+	static TArray<FSWGIffChunk> FindChildForms(const FSWGIffReader& Reader, const FSWGIffChunk& Parent);
 	static FString ReadNullTerminatedStringAt(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk, int32 Offset);
 
 	/** FORM IHDR > FORM 0001 > DATA[int32 enabled][string name]. Shared by Layer, every Boundary, every Affector. */
@@ -124,4 +133,7 @@ private:
 	static bool ReadAffectorHeightConstant(const FSWGIffReader& Reader, const FSWGIffChunk& AhcnForm, FSWGTerrainAffector& OutAffector);
 	static bool ReadAffectorHeightFractal(const FSWGIffReader& Reader, const FSWGIffChunk& AhfrForm, FSWGTerrainAffector& OutAffector);
 	static bool ReadAffectorHeightTerrace(const FSWGIffReader& Reader, const FSWGIffChunk& AhtrForm, FSWGTerrainAffector& OutAffector);
+
+	/** FORM MGRP > FORM 0000 > FORM MFAM(*) > [DATA[familyId,name], FORM MFRC > FORM 0001 > DATA[fractal fields]]. */
+	static bool ReadMapGroup(const FSWGIffReader& Reader, const FSWGIffChunk& MgrpForm, FSWGMapGroup& OutGroup);
 };

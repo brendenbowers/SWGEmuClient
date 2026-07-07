@@ -22,6 +22,9 @@ struct FSWGFlowContext
 	FText StatusText;
 	FText ErrorText;
 
+	bool bTerrainLoaded = false;
+	bool bZoneReady = false;
+
 	void Reset()
 	{
 		Host = Username = Password = FString();
@@ -30,5 +33,8 @@ struct FSWGFlowContext
 		SelectedGalaxyID    = -1;
 		SelectedCharacterID = -1;
 		StatusText = ErrorText = FText::GetEmpty();
+
+		bTerrainLoaded = false;
+		bZoneReady = false;
 	}
 };

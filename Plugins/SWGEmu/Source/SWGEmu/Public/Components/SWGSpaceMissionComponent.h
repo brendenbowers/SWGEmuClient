@@ -21,5 +21,9 @@ public:
 	TSWGBaselineList<FGroupMissionCriticalObject> SpaceMissionObjects;
 	bool bHasBase4 = false;
 
-	void ApplyBase4(FSWGPacket& Packet);
+	// Split in two: ListenId and SpaceMissionObjects are not adjacent on the wire
+	// — USWGMovementComponent's speed fields sit between them — see
+	// SWGCreatureBaselineParser::ParseBase4.
+	void ApplyBase4Part1(FSWGPacket& Packet); // ListenId
+	void ApplyBase4Part2(FSWGPacket& Packet); // SpaceMissionObjects
 };
