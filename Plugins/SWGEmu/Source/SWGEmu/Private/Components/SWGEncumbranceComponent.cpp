@@ -1,4 +1,5 @@
 #include "Components/SWGEncumbranceComponent.h"
+#include "Network/SWGPacket.h"
 
 USWGEncumbranceComponent::USWGEncumbranceComponent()
 {
@@ -7,5 +8,6 @@ USWGEncumbranceComponent::USWGEncumbranceComponent()
 
 void USWGEncumbranceComponent::ApplyBase4(FSWGPacket& Packet)
 {
-	// TODO: Encumbrances from CREO base4.
+	Encumbrances = ReadBaselineVector<int32>(Packet, [](FSWGPacket& P) { return P.ReadInt32(); });
+	bHasBase4 = true;
 }

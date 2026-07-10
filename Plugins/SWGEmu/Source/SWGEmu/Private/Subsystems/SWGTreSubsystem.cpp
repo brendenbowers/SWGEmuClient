@@ -105,6 +105,19 @@ bool USWGTreSubsystem::FileExists(const FString& VirtualPath) const
 	return VirtualPathToArchiveIndex.Contains(VirtualPath);
 }
 
+TArray<FString> USWGTreSubsystem::FindVirtualPaths(const FString& Substring) const
+{
+	TArray<FString> Result;
+	for (const TPair<FString, int32>& Entry : VirtualPathToArchiveIndex)
+	{
+		if (Entry.Key.Contains(Substring))
+		{
+			Result.Add(Entry.Key);
+		}
+	}
+	return Result;
+}
+
 TArray<uint8> USWGTreSubsystem::ExtractFile(const FString& VirtualPath) const
 {
 	const int32* ArchiveIndex = VirtualPathToArchiveIndex.Find(VirtualPath);

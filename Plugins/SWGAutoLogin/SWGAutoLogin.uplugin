@@ -1,0 +1,30 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "SWG Auto Login (temporary)",
+	"Description": "Temporary dev-convenience plugin: drives the SWGEmu login flow automatically (localhost/test/test, first galaxy, first character) so PIE testing doesn't need manual UI interaction every run. Safe to disable/delete once real login UI testing is needed.",
+	"Category": "Other",
+	"CreatedBy": "",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SWGAutoLogin",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "SWGEmu",
+			"Enabled": true
+		}
+	]
+}

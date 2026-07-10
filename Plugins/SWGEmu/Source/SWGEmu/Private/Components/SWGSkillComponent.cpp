@@ -1,4 +1,5 @@
 #include "Components/SWGSkillComponent.h"
+#include "Network/SWGPacket.h"
 
 USWGSkillComponent::USWGSkillComponent()
 {
@@ -7,10 +8,17 @@ USWGSkillComponent::USWGSkillComponent()
 
 void USWGSkillComponent::ApplyBase1(FSWGPacket& Packet)
 {
-	// TODO: SkillList from CREO base1.
+	SkillList = ReadBaselineVector<FString>(Packet, [](FSWGPacket& P) { return P.ReadAsciiString(); });
+	bHasBase1 = true;
 }
 
 void USWGSkillComponent::ApplyBase4(FSWGPacket& Packet)
 {
-	// TODO: SkillMods from CREO base4.
+	SkillMods = ReadBaselineMap<FSkillModifier>(Packet, [](FSWGPacket& P)
+	{
+		FSkillModifier Mod;
+		Mod.Deserialize(P);
+		return Mod;
+	});
+	bHasBase4 = true;
 }

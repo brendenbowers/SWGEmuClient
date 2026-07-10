@@ -40,6 +40,9 @@ public:
 
 	bool FileExists(const FString& VirtualPath) const;
 
+	/** Debug helper: every indexed virtual path containing Substring (case-insensitive). */
+	TArray<FString> FindVirtualPaths(const FString& Substring) const;
+
 	/** Reads and decompresses one file's bytes by its virtual path (e.g. "object/mobile/shared_bantha.iff"). */
 	TArray<uint8> ExtractFile(const FString& VirtualPath) const;
 

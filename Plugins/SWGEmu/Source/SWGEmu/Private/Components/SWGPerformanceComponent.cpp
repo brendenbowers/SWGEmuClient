@@ -1,11 +1,21 @@
 #include "Components/SWGPerformanceComponent.h"
+#include "Network/SWGPacket.h"
 
 USWGPerformanceComponent::USWGPerformanceComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGPerformanceComponent::ApplyBase6(FSWGPacket& Packet)
+void USWGPerformanceComponent::ApplyBase6Part1(FSWGPacket& Packet)
 {
-	// TODO: PerformanceAnimation/MoodString/MoodId/PerformanceStartTime/PerformanceType from CREO base6.
+	PerformanceAnimation = Packet.ReadAsciiString();
+	MoodString = Packet.ReadAsciiString();
+}
+
+void USWGPerformanceComponent::ApplyBase6Part2(FSWGPacket& Packet)
+{
+	MoodId = Packet.ReadByte();
+	PerformanceStartTime = Packet.ReadInt32();
+	PerformanceType = Packet.ReadInt32();
+	bHasBase6 = true;
 }

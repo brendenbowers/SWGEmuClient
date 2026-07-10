@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SWGEmu Plugin — PacketHandler Migration</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3347;
+    --accent: #4f8ef7;
+    --accent2: #7c5cbf;
+    --green: #3ecf8e;
+    --yellow: #f5a623;
+    --red: #e05252;
+    --text: #d4d8f0;
+    --muted: #7a7f9a;
+    --code-bg: #0d1117;
+    --sidebar-w: 280px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.65; font-size: 15px; }
+
+  /* Layout */
+  #sidebar {
+    position: fixed; top: 0; left: 0; width: var(--sidebar-w);
+    height: 100vh; overflow-y: auto; background: var(--surface);
+    border-right: 1px solid var(--border); padding: 0 0 40px 0; z-index: 100;
+  }
+  #sidebar-header {
+    padding: 20px 16px 16px; background: var(--surface2);
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 1;
+  }
+  #sidebar-header h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .12em; color: var(--accent); }
+  #sidebar-header p { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  #sidebar nav a {
+    display: block; padding: 7px 16px; font-size: 13px; color: var(--muted);
+    text-decoration: none; border-left: 2px solid transparent; transition: all .15s;
+  }
+  #sidebar nav a:hover { color: var(--text); background: var(--surface2); }
+  #sidebar nav a.active { color: var(--accent); border-left-color: var(--accent); background: var(--surface2); }
+  #sidebar nav .phase-label {
+    display: block; padding: 14px 16px 4px; font-size: 10px; text-transform: uppercase;
+    letter-spacing: .15em; color: var(--accent2); font-weight: 700;
+  }
+  #sidebar nav .sub { padding-left: 28px; font-size: 12px; }
+
+  #content { margin-left: var(--sidebar-w); padding: 48px 60px 80px; max-width: 960px; }
+
+  /* Typography */
+  h1 { font-size: 32px; font-weight: 700; color: #fff; line-height: 1.2; margin-bottom: 12px; }
+  h2 { font-size: 22px; font-weight: 700; color: #fff; margin: 52px 0 16px; padding-top: 8px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+  h3 { font-size: 17px; font-weight: 600; color: var(--accent); margin: 32px 0 10px; }
+  h4 { font-size: 14px; font-weight: 600; color: var(--yellow); margin: 22px 0 8px; text-transform: uppercase; letter-spacing: .06em; }
+  p { margin-bottom: 14px; }
+  ul, ol { margin: 10px 0 14px 22px; }
+  li { margin-bottom: 5px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { color: #fff; font-weight: 600; }
+  code { font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: #e2b96f; }
+
+  /* Code blocks */
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 20px; overflow-x: auto; margin: 16px 0 20px; position: relative;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: 13px; color: var(--text); }
+  .lang-tag {
+    position: absolute; top: 0; right: 0;
+    font-size: 10px; color: var(--muted); padding: 4px 10px;
+    text-transform: uppercase; letter-spacing: .1em;
+    border-bottom-left-radius: 6px; background: var(--surface2);
+    border: 1px solid var(--border); border-top: none; border-right: none;
+  }
+  /* Syntax tones — manual */
+  .kw  { color: #c792ea; }
+  .ty  { color: #82aaff; }
+  .fn  { color: #82cfff; }
+  .st  { color: #c3e88d; }
+  .cm  { color: #546e7a; font-style: italic; }
+  .nu  { color: #f78c6c; }
+  .pp  { color: #89ddff; }
+  .mc  { color: #ffcb6b; }
+
+  /* Callout boxes */
+  .box { border-radius: 8px; padding: 16px 18px; margin: 20px 0; border-left: 4px solid; }
+  .box p:last-child { margin-bottom: 0; }
+  .box-ue   { background: #0e1f3a; border-color: var(--accent); }
+  .box-warn { background: #2a1a00; border-color: var(--yellow); }
+  .box-tip  { background: #0a2a1a; border-color: var(--green); }
+  .box-danger { background: #2a0a0a; border-color: var(--red); }
+  .box-label { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; font-weight: 700; margin-bottom: 6px; }
+  .box-ue   .box-label { color: var(--accent); }
+  .box-warn .box-label { color: var(--yellow); }
+  .box-tip  .box-label { color: var(--green); }
+  .box-danger .box-label { color: var(--red); }
+
+  /* Steps */
+  .step { display: flex; gap: 16px; margin: 18px 0; }
+  .step-num {
+    flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent2); color: #fff; font-weight: 700; font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .step-body { flex: 1; }
+  .step-body p:first-child { margin-top: 4px; }
+  .step-body h3 { margin-top: 2px; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; margin: 16px 0 20px; font-size: 13px; }
+  th { background: var(--surface2); text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); border-bottom: 1px solid var(--border); }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: var(--surface2); }
+
+  /* Hero */
+  .hero { padding: 12px 0 40px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+  .hero-tags { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .tag { font-size: 11px; padding: 3px 10px; border-radius: 12px; background: var(--surface2); border: 1px solid var(--border); color: var(--muted); }
+
+  /* File tree */
+  .tree { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; font-family: 'Cascadia Code', monospace; font-size: 13px; line-height: 1.8; }
+  .tree .dir { color: var(--accent); }
+  .tree .file { color: var(--text); }
+  .tree .new { color: var(--green); }
+  .tree .chg { color: var(--yellow); }
+  .tree .cm { color: var(--muted); font-style: italic; }
+
+  /* Checklist */
+  .checklist { list-style: none; margin: 0; }
+  .checklist li { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; display: flex; align-items: flex-start; gap: 10px; }
+  .checklist li::before { content: '✓'; color: var(--green); font-size: 14px; flex-shrink: 0; }
+
+  @media (max-width: 900px) {
+    #sidebar { display: none; }
+    #content { margin-left: 0; padding: 24px 20px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h2>SWGEmu Plugin</h2>
+    <p>PacketHandler Migration</p>
+  </div>
+  <nav>
+    <a href="#overview">Overview</a>
+    <a href="#why">Why move at all?</a>
+    <a href="#layout">Target File Layout</a>
+    <a href="#mapping">Mapping Table</a>
+
+    <span class="phase-label">Step-by-step</span>
+    <a href="#s0" class="sub">0 — Build dependency</a>
+    <a href="#s1" class="sub">1 — Keep SWGCrypto</a>
+    <a href="#s2" class="sub">2 — CRC component</a>
+    <a href="#s3" class="sub">3 — Encryption component</a>
+    <a href="#s4" class="sub">4 — Compression component</a>
+    <a href="#s5" class="sub">5 — Reliability component</a>
+    <a href="#s6" class="sub">6 — Handshake component</a>
+    <a href="#s7" class="sub">7 — PacketHandler owner</a>
+    <a href="#s8" class="sub">8 — Thin the reader</a>
+    <a href="#s9" class="sub">9 — Tick-driven send</a>
+    <a href="#s10" class="sub">10 — Slim the session</a>
+    <a href="#s11" class="sub">11 — FArchive packet</a>
+
+    <span class="phase-label">Reference</span>
+    <a href="#order" class="sub">Order &amp; Checkpoints</a>
+    <a href="#refs" class="sub">References</a>
+  </nav>
+</div>
+
+<div id="content">
+
+<!-- ═══════════════════════════════ HERO ═══════════════════════════════ -->
+<div class="hero" id="overview">
+  <h1>Migration — Monolithic SOE port → UE <code>PacketHandler</code> pipeline</h1>
+  <p>How to move the <strong>current skeleton</strong> (a 1:1 port of the C# <code>SocketReader</code> / <code>SocketWriter</code> / <code>Session</code> / <code>CompressioEncryption</code> layout) to a <strong>UE-idiomatic architecture</strong> built on Unreal's own networking abstractions.</p>
+  <p>This is a refactor plan, not a code dump. Each step says <em>what moves where</em> and <em>why</em>, so you can apply it incrementally and keep the plugin compiling between steps.</p>
+  <div class="hero-tags">
+    <span class="tag">Phase 1</span>
+    <span class="tag">HandlerComponent</span>
+    <span class="tag">FEncryptionComponent</span>
+    <span class="tag">Reliability</span>
+    <span class="tag">FArchive</span>
+  </div>
+</div>
+
+<div class="box box-ue">
+  <div class="box-label">Read first — in the engine source</div>
+  <ul style="margin-bottom:0;">
+    <li><code>Engine/Source/Runtime/PacketHandlers/PacketHandler/Public/PacketHandler.h</code> — the <code>HandlerComponent</code> base contract</li>
+    <li><code>Engine/Source/Runtime/PacketHandlers/PacketHandler/Public/EncryptionComponent.h</code> — <code>FEncryptionComponent</code></li>
+    <li><code>Engine/Source/Runtime/PacketHandlers/ReliabilityHandlerComponent/</code> — a worked reliability component</li>
+  </ul>
+</div>
+
+<!-- ═══════════════════════════════ WHY ═══════════════════════════════ -->
+<h2 id="why">Why move at all?</h2>
+
+<p>The C# client puts CRC + XOR + zlib in one <code>CompressioEncryption</code> class, called inline from <code>SocketReader.DoWork</code>, with all reliability / fragment / multi state in one <code>Session</code>. That works, but it doesn't match how UE structures transport.</p>
+
+<p>UE runs every datagram through an <strong>ordered list of <code>HandlerComponent</code>s</strong> (<code>Incoming</code> on receive, <code>Outgoing</code> in reverse on send). The SOE receive path in <code>SocketReader.cs</code> (<code>_HandleCompressedEncryptedPacket</code>) is already that shape:</p>
+
+<pre><code><span class="cm">CRC check → decrypt → decompress → reliability/session → dispatch</span></code></pre>
+
+<p>Splitting along those seams gives us testable stages, a natural home for the handshake to flip encryption on, and accurate MTU budgeting via <code>GetReservedPacketBits()</code>.</p>
+
+<pre><span class="lang-tag">HandlerComponent contract (UE)</span><code><span class="kw">virtual</span> <span class="kw">void</span> <span class="fn">Incoming</span>(<span class="ty">FBitReader</span>&amp; Packet);                  <span class="cm">// unwrap one layer (receive)</span>
+<span class="kw">virtual</span> <span class="kw">void</span> <span class="fn">Outgoing</span>(<span class="ty">FBitWriter</span>&amp; Packet, <span class="ty">FOutPacketTraits</span>&amp;); <span class="cm">// wrap one layer (send, reverse order)</span>
+<span class="kw">virtual</span> <span class="kw">void</span> <span class="fn">Initialize</span>();
+<span class="kw">virtual</span> <span class="ty">int32</span> <span class="fn">GetReservedPacketBits</span>() <span class="kw">const</span>;             <span class="cm">// header/footer byte budget</span>
+<span class="kw">virtual</span> <span class="kw">void</span> <span class="fn">NotifyHandshakeBegin</span>();                       <span class="cm">// handshake hook</span></code></pre>
+
+<!-- ═══════════════════════════════ LAYOUT ═══════════════════════════════ -->
+<h2 id="layout">Target file layout</h2>
+
+<div class="tree">
+Source/SWGEmu/<br>
+├── <span class="dir">Public/Network/</span><br>
+│&nbsp;&nbsp;&nbsp;├── <span class="file">SWGPacket.h</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="chg"># (changed)</span> <span class="cm">becomes an FArchive subclass</span><br>
+│&nbsp;&nbsp;&nbsp;├── <span class="file">SWGSession.h</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="chg"># (shrinks)</span> <span class="cm">handshake params + key only</span><br>
+│&nbsp;&nbsp;&nbsp;├── <span class="file">SWGCrypto.h</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="cm"># (kept)    pure algorithms, called by components</span><br>
+│&nbsp;&nbsp;&nbsp;├── <span class="file">SWGSocketReader.h</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="cm"># (thinned) Recv() → Handler->Incoming()</span><br>
+│&nbsp;&nbsp;&nbsp;└── <span class="dir new">Handler/</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="new"># (NEW)     the pipeline</span><br>
+│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="file">SWGPacketHandler.h</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="cm"># owns the ordered component list</span><br>
+│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="file">SWGCrcComponent.h</span><br>
+│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="file">SWGEncryptionComponent.h</span>&nbsp;&nbsp;<span class="cm"># : FEncryptionComponent</span><br>
+│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="file">SWGCompressionComponent.h</span><br>
+│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="file">SWGReliabilityComponent.h</span><br>
+│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── <span class="file">SWGHandshakeComponent.h</span><br>
+└── <span class="dir">Private/Network/</span> <span class="cm">(mirrors Public)</span>
+</div>
+
+<div class="box box-warn">
+  <div class="box-label">Removed</div>
+  <p><code>SWGSocketWriter.h/.cpp</code> is <strong>removed</strong> — sending becomes tick-driven from the subsystem (mirrors <code>UIpNetDriver::TickFlush</code>), not a second blocking thread.</p>
+</div>
+
+<!-- ═══════════════════════════════ MAPPING ═══════════════════════════════ -->
+<h2 id="mapping">Mapping table</h2>
+
+<table>
+  <tr><th>Current skeleton</th><th>Target</th><th>Action</th></tr>
+  <tr><td><code>SWGCrypto::GenerateCRC</code></td><td><code>FSWGCrcComponent</code></td><td>wrap algorithm in a component</td></tr>
+  <tr><td><code>SWGCrypto::Encrypt/Decrypt</code></td><td><code>FSWGEncryptionComponent : FEncryptionComponent</code></td><td>wrap; key set via <code>SetEncryptionData</code></td></tr>
+  <tr><td><code>SWGCrypto::Compress/Decompress</code></td><td><code>FSWGCompressionComponent</code></td><td>wrap</td></tr>
+  <tr><td><code>FSWGSession</code> seq/ack/window/frag fields</td><td><code>FSWGReliabilityComponent</code></td><td>move state into the component</td></tr>
+  <tr><td><code>FSWGSession</code> handshake (state, key, MaxPacketSize)</td><td><code>FSWGHandshakeComponent</code> + slim <code>FSWGSession</code></td><td>split</td></tr>
+  <tr><td><code>FSWGSocketReader</code> (CRC+decrypt+decompress inline)</td><td><code>FSWGSocketReader</code> (thin) + pipeline</td><td>gut the per-packet logic</td></tr>
+  <tr><td><code>FSWGSocketWriter</code> (thread)</td><td>subsystem tick + <code>Handler->Outgoing()</code></td><td>delete the class</td></tr>
+  <tr><td><code>USWGNetworkSubsystem</code> owns <code>Session</code> + 2 threads</td><td>owns <code>FSWGPacketHandler</code> + 1 recv thread</td><td>re-wire ownership</td></tr>
+</table>
+
+<!-- ═══════════════════════════════ STEPS ═══════════════════════════════ -->
+<h2>Step-by-step</h2>
+
+<div class="step" id="s0">
+  <div class="step-num">0</div>
+  <div class="step-body">
+    <h3>Add the <code>HandlerComponent</code> build dependency</h3>
+    <p>In <code>SWGEmu.Build.cs</code>, add <code>"PacketHandler"</code> to <code>PublicDependencyModuleNames</code> (alongside <code>Sockets</code>, <code>Networking</code>). This is what gives you <code>HandlerComponent</code>, <code>FEncryptionComponent</code>, <code>PacketHandler</code>, <code>FBitReader</code>/<code>FBitWriter</code>.</p>
+  </div>
+</div>
+
+<div class="step" id="s1">
+  <div class="step-num">1</div>
+  <div class="step-body">
+    <h3>Keep <code>SWGCrypto</code> as a pure algorithm library</h3>
+    <p>No behavior change. The CRC table, XOR cipher, and zlib wrappers stay exactly as they are. The components below <em>call into</em> <code>FSWGCrypto</code>; they don't reimplement it. This keeps the diff small and the algorithms unit-testable on their own.</p>
+  </div>
+</div>
+
+<div class="step" id="s2">
+  <div class="step-num">2</div>
+  <div class="step-body">
+    <h3>Create <code>FSWGCrcComponent</code></h3>
+    <ul>
+      <li><code>Incoming(FBitReader&amp;)</code>: compute CRC over the datagram (seed = encryption key), compare to the trailing 2 bytes, drop on mismatch (return an empty/invalidated reader). Mirror <code>_HandleCompressedEncryptedPacket</code>'s CRC check.</li>
+      <li><code>Outgoing(FBitWriter&amp;, FOutPacketTraits&amp;)</code>: append the 2-byte CRC.</li>
+      <li><code>GetReservedPacketBits()</code>: return <code>16</code> (2 bytes).</li>
+      <li>The key lives on the shared session; pass a <code>FSWGSession*</code> into the component at construction (UE components similarly hold a back-pointer to connection state).</li>
+    </ul>
+  </div>
+</div>
+
+<div class="step" id="s3">
+  <div class="step-num">3</div>
+  <div class="step-body">
+    <h3>Create <code>FSWGEncryptionComponent : FEncryptionComponent</code></h3>
+    <p>Implement the pure-virtuals from <code>EncryptionComponent.h</code>:</p>
+    <ul>
+      <li><code>SetEncryptionData(const FEncryptionData&amp;)</code> — stash the 4-byte SOE key.</li>
+      <li><code>EnableEncryption()</code> / <code>DisableEncryption()</code> / <code>IsEncryptionEnabled()</code>.</li>
+      <li><code>Incoming</code>: <code>FSWGCrypto::Decrypt(...)</code> starting at the correct offset (2 or 4 depending on op, see <code>SocketReader.cs</code>).</li>
+      <li><code>Outgoing</code>: <code>FSWGCrypto::Encrypt(...)</code>.</li>
+      <li><code>GetReservedPacketBits()</code>: <code>0</code> (XOR is in-place, no size change).</li>
+    </ul>
+    <p>Encryption starts <strong>disabled</strong>; the handshake enables it once the key arrives.</p>
+  </div>
+</div>
+
+<div class="step" id="s4">
+  <div class="step-num">4</div>
+  <div class="step-body">
+    <h3>Create <code>FSWGCompressionComponent</code></h3>
+    <ul>
+      <li><code>Incoming</code>: if the compression flag byte is set, <code>FSWGCrypto::Decompress</code>.</li>
+      <li><code>Outgoing</code>: <code>FSWGCrypto::Compress</code>; set/clear the flag byte.</li>
+      <li><code>GetReservedPacketBits()</code>: <code>8</code> (1 flag byte) — be conservative.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="step" id="s5">
+  <div class="step-num">5</div>
+  <div class="step-body">
+    <h3>Create <code>FSWGReliabilityComponent</code> (the big one)</h3>
+    <p>Move these fields out of <code>FSWGSession</code> into this component: <code>OutSeqNext</code>, <code>InSeqNext</code>, <code>LastSeqAcked</code>, <code>WindowPackets</code>, <code>WindowLock</code>, <code>FragTotalSize</code>, <code>FragCurrentSize</code>, <code>FragBuffer</code>, <code>OutgoingReliable</code>, <code>IncomingMessages</code>.</p>
+    <div class="box box-ue">
+      <div class="box-label">Model on UE's <code>ReliabilityHandlerComponent</code></div>
+      <p>It already tracks <code>LocalPacketID</code> / <code>LocalPacketIDACKED</code> / <code>RemotePacketID</code>, a buffered-resend list, and a resend timer driven from <code>Tick()</code> — exactly the bookkeeping SOE's DataChannel/DataAck needs.</p>
+    </div>
+    <ul>
+      <li><code>Outgoing</code>: assign a <code>uint16</code> seq on DataChannel1, buffer the packet for resend.</li>
+      <li><code>Incoming</code>: on DataAck retire acked window packets; on DataChannel deliver in-order and emit a DataAck; on DataFrag/MultiPacket reassemble (port the <code>HandleDataFrag</code> / <code>ParseMultiPacket</code> sketches from the HTML guide) and push the finished payload to the dispatch queue.</li>
+      <li><code>Tick(DeltaTime)</code>: resend unacked window packets past the resend interval.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="step" id="s6">
+  <div class="step-num">6</div>
+  <div class="step-body">
+    <h3>Create <code>FSWGHandshakeComponent</code></h3>
+    <ul>
+      <li><code>RequiresHandshake()</code> returns <code>true</code>.</li>
+      <li><code>NotifyHandshakeBegin()</code>: send <code>SessionRequest</code>.</li>
+      <li><code>Incoming</code>: on <code>SessionResponse</code>, parse the key + <code>MaxPacketSize</code>, call <code>EncryptionComponent->SetEncryptionData()</code> then <code>EnableEncryption()</code>, and fire the <code>FPacketHandlerHandshakeComplete</code> delegate so the subsystem knows it can start sending game traffic.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="step" id="s7">
+  <div class="step-num">7</div>
+  <div class="step-body">
+    <h3>Create <code>FSWGPacketHandler</code></h3>
+    <p>A thin owner of the ordered component list. Construction order <strong>is</strong> the receive order:</p>
+    <pre><code>[ Crc, Encryption, Compression, Reliability, Handshake ]</code></pre>
+    <ul>
+      <li><code>Incoming(FBitReader&amp;)</code>: call each component's <code>Incoming</code> front-to-back.</li>
+      <li><code>Outgoing(FBitWriter&amp;, FOutPacketTraits&amp;)</code>: call back-to-front.</li>
+      <li>Sum <code>GetReservedPacketBits()</code> across components to validate against the 496-byte SOE MTU before sending.</li>
+    </ul>
+    <p>(You may instead use UE's stock <code>PacketHandler</code> and <code>AddHandler&lt;&gt;()</code>; a small custom owner is fine for a fixed pipeline and easier to read.)</p>
+  </div>
+</div>
+
+<div class="step" id="s8">
+  <div class="step-num">8</div>
+  <div class="step-body">
+    <h3>Thin out <code>FSWGSocketReader</code></h3>
+    <p>Replace the per-packet CRC/decrypt/decompress logic with two lines: wrap the received bytes in an <code>FBitReader</code> and call <code>Handler->Incoming(Reader)</code>. The reader thread no longer knows anything about crypto or reliability.</p>
+  </div>
+</div>
+
+<div class="step" id="s9">
+  <div class="step-num">9</div>
+  <div class="step-body">
+    <h3>Delete <code>FSWGSocketWriter</code>; send from the subsystem tick</h3>
+    <p>Implement <code>USWGNetworkSubsystem::Tick</code> (or a timer) to:</p>
+    <ol>
+      <li>Drain outgoing game messages into an <code>FBitWriter</code>.</li>
+      <li><code>Handler->Outgoing(Writer, Traits)</code>.</li>
+      <li><code>Socket->Send(...)</code>.</li>
+    </ol>
+    <p>Also call <code>Handler->Tick(DeltaTime)</code> so the reliability component can resend.</p>
+  </div>
+</div>
+
+<div class="step" id="s10">
+  <div class="step-num">10</div>
+  <div class="step-body">
+    <h3>Slim <code>FSWGSession</code></h3>
+    <p>After Steps 5–6, <code>FSWGSession</code> keeps only shared connection facts the components read: <code>EncryptionKey</code>, <code>MaxPacketSize</code>, <code>WindowResendSize</code>, <code>State</code>, and the ping/timeout timestamps. Everything sequence/fragment-related now lives in <code>FSWGReliabilityComponent</code>.</p>
+  </div>
+</div>
+
+<div class="step" id="s11">
+  <div class="step-num">11</div>
+  <div class="step-body">
+    <h3>Make <code>FSWGPacket</code> an <code>FArchive</code></h3>
+    <p>So game messages (Phase 2) serialize with <code>&lt;&lt;</code> like UE's <code>NetSerialize</code>, derive <code>FSWGPacket</code> from <code>FArchive</code> and implement <code>Serialize(void*, int64)</code> plus <code>SetIsLoading</code>/<code>SetIsSaving</code>. Keep the existing big-endian read/write helpers as convenience wrappers. This is independent of Steps 1–10 and can be done last.</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ ORDER ═══════════════════════════════ -->
+<h2 id="order">Suggested order &amp; checkpoints</h2>
+
+<p>Each checkpoint leaves the plugin in a buildable state.</p>
+
+<ul class="checklist">
+  <li>Steps 0–1 (deps + keep algorithms) → still compiles, no behavior change.</li>
+  <li>Steps 2–4 (Crc/Encryption/Compression components) → unit-test each in isolation.</li>
+  <li>Step 7 (handler owner) wiring those three → round-trip a raw packet.</li>
+  <li>Steps 5–6 (reliability + handshake) → can complete a real SessionResponse.</li>
+  <li>Steps 8–10 (thin reader, tick send, slim session) → end-to-end connect.</li>
+  <li>Step 11 (<code>FArchive</code>) → cleaner Phase 2 message serialization.</li>
+</ul>
+
+<!-- ═══════════════════════════════ REFS ═══════════════════════════════ -->
+<h2 id="refs">References</h2>
+<ul>
+  <li>Architecture rationale &amp; diagrams: <code>e:/Projects/swgemu-unreal-guide.html</code> (Architecture Map + Phase 1)</li>
+  <li>C# reference implementation: <code>e:/Projects/swgemu.client/SWG.Client/Network/</code></li>
+  <li>UE transport source: <code>e:/Projects/UnrealEngine/Engine/Source/Runtime/PacketHandlers/</code></li>
+</ul>
+
+</div>
+</body>
+</html>

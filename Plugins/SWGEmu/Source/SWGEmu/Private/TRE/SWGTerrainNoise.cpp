@@ -264,6 +264,17 @@ float FSWGMapFractal::GetNoise(float X, float Y) const
 
 	static const double Log05 = FMath::Loge(0.5);
 
+	// Result is meant to be a normalized [0,1] noise value, but the octave sum
+	// above isn't strictly bounded — it occasionally dips just under 0 (Perlin
+	// noise combined across octaves isn't a hard [-1,1] guarantee). Pow() with
+	// a negative base and a non-integer exponent is undefined (NaN in
+	// practice), and that NaN height baked into the landscape's uint16
+	// heightmap is exactly what produced isolated needle-thin spike artifacts
+	// scattered across otherwise normal terrain (confirmed via a live capture:
+	// creature-scale geometry rendered correctly, but the terrain around it had
+	// sparse extreme spikes, not a uniform scale/slope issue).
+	Result = FMath::Clamp(Result, 0.0, 1.0);
+
 	if (Bias != 0)
 	{
 		Result = FMath::Pow(Result, FMath::Loge((double)BiasValue) / Log05);

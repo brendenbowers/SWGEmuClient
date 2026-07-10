@@ -1,4 +1,5 @@
 #include "Components/SWGEquipmentComponent.h"
+#include "Network/SWGPacket.h"
 
 USWGEquipmentComponent::USWGEquipmentComponent()
 {
@@ -7,5 +8,13 @@ USWGEquipmentComponent::USWGEquipmentComponent()
 
 void USWGEquipmentComponent::ApplyBase6(FSWGPacket& Packet)
 {
-	// TODO: EquipmentList/AlternateAppearance from CREO base6.
+	EquipmentList = ReadBaselineVector<FEquiptmentItem>(Packet, [](FSWGPacket& P)
+	{
+		FEquiptmentItem Item;
+		Item.Deserialize(P);
+		return Item;
+	});
+
+	AlternateAppearance = Packet.ReadAsciiString();
+	bHasBase6 = true;
 }

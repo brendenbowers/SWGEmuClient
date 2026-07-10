@@ -12,6 +12,7 @@
 
 class USWGTreSubsystem;
 class USWGNetworkSubsystem;
+class USWGMeshGeneratorSubsystem;
 class UDataTable;
 class ULevelStreaming;
 struct FSWGNetMessage;
@@ -20,6 +21,9 @@ struct FBaselinesMessage;
 struct FSceneEndBaselinesMessage;
 struct FDeltasMessage;
 struct FCmdStartSceneMessage;
+struct FUpdateContainmentMessage;
+struct FUpdateTransformMessage;
+class USWGTerrainSubsystem;
 
 /**
  * Owns the live object graph: the CRC->actor-class dispatch table (built once
@@ -113,6 +117,22 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnZoneLevelRevealed);
 	FOnZoneLevelRevealed OnZoneLevelRevealed;
 
+	/**
+	 * Called from FSWGZoneLoadingState once PostLoadMapWithWorld fires for the
+	 * new zone level — mirrors the guard USWGTerrainSubsystem::BeginLoadTerrain
+	 * already needed for the same reason (see FSWGZoneLoadingState::Enter's
+	 * comment): UGameplayStatics::OpenLevel is deferred to the next world
+	 * travel tick, not immediate, so every SceneCreateObjectByCrc/Baselines/
+	 * SceneEndBaselines message arriving between CmdStartScene and the actual
+	 * level swap — including the local player's own spawn, sent exactly once
+	 * — was being spawned into the OLD, about-to-be-destroyed level and
+	 * silently destroyed the instant OpenLevel took effect (confirmed via a
+	 * dedicated ASWGPlayer::EndPlay log: reason=LevelTransition, ~0.1s after
+	 * the player's own SceneEndBaselines "revealed" line, every single zone
+	 * load). Replays every message queued during that window in order.
+	 */
+	void OnZoneLevelLoaded();
+
 private:
 	void HandleMessageReceived(TSharedPtr<FSWGNetMessage> Msg);
 
@@ -121,18 +141,53 @@ private:
 	void HandleBaselines(const FBaselinesMessage& Msg);
 	void HandleSceneEndBaselines(const FSceneEndBaselinesMessage& Msg);
 	void HandleDeltas(const FDeltasMessage& Msg);
+	void HandleUpdateContainment(const FUpdateContainmentMessage& Msg);
+	void HandleUpdateTransform(const FUpdateTransformMessage& Msg);
+
+	/**
+	 * The network sends feet/ground-level Z, but AActor::SetActorLocation
+	 * places the actor origin there — which for an ACharacter is the capsule's
+	 * *center*, not its bottom (confirmed: the default capsule half-height
+	 * offset some engines bake into a character's mesh doesn't exist in the
+	 * base C++ ACharacter, only in the Blueprint third-person template — so
+	 * nothing was correcting for this). Without this, every creature/player
+	 * renders floating at capsule-half-height above the ground. Returns
+	 * NetworkPos unchanged for non-ACharacter actors (items sit directly on
+	 * their own reported position, no capsule to account for).
+	 */
+	static FVector GroundedLocationFor(const AActor* Actor, const FVector& NetworkPos);
+
+	/** Hides/shows Actor for a container change, or no-ops if Actor is null (containment can arrive before the actor's SceneCreateObjectByCrc). */
+	void ApplyContainment(AActor* Actor, int64 ContainerId);
 
 	TMap<uint32, TSubclassOf<AActor>> CrcToActorClass;
 	bool bCrcMapBuilt = false;
 
 	TMap<int64, TWeakObjectPtr<AActor>> ActorRegistry;
 
+	/** ObjectId -> ContainerId (0 = no container / placed in the world) from the most recent UpdateContainmentMessage — checked by
+	 *  HandleSceneEndBaselines so a contained object doesn't get revealed as a free-floating world actor at its raw (usually (0,0,0)) position. */
+	TMap<int64, int64> ContainerByObjectId;
+
+	UPROPERTY()
+	TObjectPtr<USWGTerrainSubsystem> TerrainSubsystem;
+
 	int64 LocalPlayerObjectId = 0;
+
+	/**
+	 * False from the moment a CmdStartScene starts a new zone load until
+	 * OnZoneLevelLoaded() fires — see that function's comment. Every
+	 * non-CmdStartScene message received while false is buffered in
+	 * PendingMessages instead of processed immediately.
+	 */
+	bool bLevelReadyForObjects = true;
+	TArray<TSharedPtr<FSWGNetMessage>> PendingMessages;
 
 	TWeakObjectPtr<ULevelStreaming> CurrentZoneStreamingLevel;
 
 	UPROPERTY()
 	TObjectPtr<USWGNetworkSubsystem> Network;
+	TObjectPtr<USWGMeshGeneratorSubsystem> MeshGenerator;
 
 	FDelegateHandle MessageHandle;
 };

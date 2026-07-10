@@ -6,7 +6,23 @@
 #include "SWGTerrainSubsystem.generated.h"
 
 class USWGTreSubsystem;
+class USWGMeshGeneratorSubsystem;
 class ALandscape;
+class UDataTable;
+class UTexture2D;
+class UMaterialInterface;
+
+/**
+ * One static world-snapshot object (building, wall, pillar, item, etc.)
+ * resolved and ready to spawn — see USWGTerrainSubsystem::LoadWorldSnapshotObjects.
+ */
+struct FSWGWorldSnapshotSpawnInfo
+{
+	TSubclassOf<AActor> ActorClass;
+	FVector Position = FVector::ZeroVector;
+	FQuat Rotation = FQuat::Identity;
+	FString TemplateName;
+};
 
 /** Result of BakeHeightmap (or a cache hit) — everything SpawnLandscape needs. */
 struct FSWGBakedHeightmap
@@ -19,6 +35,19 @@ struct FSWGBakedHeightmap
 
 	/** World units between adjacent heightmap samples. */
 	float Spacing = 0.0f;
+
+	/**
+	 * Up to 4 shader-family IDs this tile blends between (see BakeShaderWeights),
+	 * ordered by total paint weight across the tile — [0] is the dominant
+	 * ("base") family and has no corresponding vertex-color channel (its weight
+	 * is implicit: 1 - R - G - B). Empty if this tile's terrain data had no
+	 * shader affectors evaluate to anything (falls back to the plain default
+	 * material, same as before real texturing existed).
+	 */
+	TArray<int32> ChosenShaderFamilyIds;
+
+	/** Row-major, same layout as Heights — VertexColors[i].X/Y/Z are family [1]/[2]/[3]'s paint weight at that vertex. */
+	TArray<FVector3f> ShaderWeightColors;
 };
 
 /**
@@ -55,6 +84,10 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnTerrainError, const FString& /*ErrorMessage*/);
 	FOnTerrainError OnTerrainError;
 
+	/** Diagnostic: evaluates the same height function the baked heightmap uses, for comparing against a live actor's network-received Z. Returns 0 if no terrain has parsed yet. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Terrain")
+	float GetHeightAt(float X, float Y) const;
+
 private:
 	void Error(const FString& ErrorMessage);
 
@@ -77,17 +110,96 @@ private:
 	 */
 	FSWGBakedHeightmap BakeHeightmap(const FSWGTerrainData& TerrainData, const FVector& RegionOrigin);
 
+	/**
+	 * Companion bake, same region/resolution as BakeHeightmap: evaluates
+	 * FSWGTerrainEvaluator::GetShaderWeights at every sample, picks this
+	 * tile's top (up to) 4 shader families by total paint weight, and packs
+	 * per-vertex weights into Heightmap.ShaderWeightColors — see
+	 * FSWGBakedHeightmap's own comment for the exact channel layout.
+	 */
+	void BakeShaderWeights(const FSWGTerrainData& TerrainData, FSWGBakedHeightmap& Heightmap);
+
+	/**
+	 * Builds (or returns an already-built) UMaterialInstanceDynamic for this
+	 * tile's ChosenShaderFamilyIds, loading each family's primary diffuse
+	 * texture.dds via TreSubsystem + FSWGDDSTextureLoader (memoized in
+	 * LoadedShaderTextures — adjacent tiles very commonly share their
+	 * dominant family, no reason to decode the same .dds twice). Falls back
+	 * to the plain default material if Heightmap has no chosen families.
+	 */
+	UMaterialInterface* BuildTerrainTileMaterial(const FSWGBakedHeightmap& Heightmap);
+
+	/** Loads/decodes texture/<FamilyLayerName>.dds once and caches the result — see BuildTerrainTileMaterial. */
+	UTexture2D* GetOrLoadShaderTexture(const FString& LayerName);
+
 	/** ti6: spawn one ALandscape actor at the whole grid's min corner (game thread). */
 	ALandscape* SpawnLandscapeActor(const FVector& GridOrigin, float Spacing);
 
 	/** ti6: build/register one component from a baked heightmap at the given SectionBase (quad units, game thread). */
 	void AddLandscapeComponent(ALandscape* Landscape, const FSWGBakedHeightmap& Heightmap, const FIntPoint& SectionBase);
 
-	/** ti6: spawn the actor + every component in the grid (game thread). */
+	/** ti6: spawn the actor + every component in the grid (game thread). Kept
+	 *  around but no longer called (see SpawnDynamicMeshTerrainGrid) — its
+	 *  ULandscapeComponent scale composition turned out undocumented/unreliable
+	 *  (see chat history: two different pre-divide constants produced results
+	 *  consistent with the composition being squared, not linear), and a plain
+	 *  mesh sidesteps that entirely by working in direct world-space units. */
 	void SpawnLandscapeGrid(const TArray<FSWGBakedHeightmap>& Grid, const FVector& GridOrigin, float Spacing);
+
+	/**
+	 * Active terrain rendering path: one UDynamicMeshComponent per baked grid
+	 * tile, vertices placed directly in world-space units (no actor/component
+	 * scale beyond identity) — same approach USWGMeshGeneratorSubsystem already
+	 * uses for buildings/props, chosen specifically to avoid ULandscapeComponent's
+	 * scale-encoding indirection that caused the "terrain ~1000 units below the
+	 * buildings" bug.
+	 */
+	void SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHeightmap>& Grid, const FVector& GridOrigin, float Spacing);
+
+	/**
+	 * Parses snapshot/<zone>.ws (the client-side counterpart to Core3's own
+	 * loadSnapshotObjects — static world content like buildings/walls that's
+	 * never sent over the network, confirmed this session), keeps only
+	 * top-level nodes within WorldSnapshotSpawnRadius of SpawnPosition, and
+	 * resolves each one's actor class the same way SceneCreateObjectByCrc
+	 * dispatch does (root FORM tag -> DT_SWGFormTagMappings), just keyed by
+	 * template path instead of CRC. Safe to call off the game thread (no
+	 * UObject spawning here, just parsing/resolving) — mirrors ParseTerrain/
+	 * BakeHeightmap's own thread-safety story.
+	 */
+	TArray<FSWGWorldSnapshotSpawnInfo> LoadWorldSnapshotObjects(const FString& TerrainVirtualPath, const FVector& SpawnPosition);
+
+	/** Spawns every resolved object from LoadWorldSnapshotObjects (game thread only). */
+	void SpawnWorldSnapshotObjects(const TArray<FSWGWorldSnapshotSpawnInfo>& Objects);
 
 	UPROPERTY()
 	TObjectPtr<USWGTreSubsystem> TreSubsystem;
+
+	UPROPERTY()
+	TObjectPtr<USWGMeshGeneratorSubsystem> MeshGenerator;
+
+	/** Lazily loaded on first use — see LoadWorldSnapshotObjects. Same DataTable SWGInitializationState uses for CRC dispatch. */
+	UPROPERTY()
+	TObjectPtr<UDataTable> FormTagMappingTable;
+
+	/** Parent material for BuildTerrainTileMaterial's per-tile MIDs — a simple vertex-color blend of up to 4 texture parameters (Layer0..Layer3). Authored as a plugin content asset, not generated at runtime. */
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> TerrainBlendMaterial;
+
+	/** TRE virtual path's texture (e.g. "rock_cliff_anza" -> texture/rock_cliff_anza.dds) -> decoded transient UTexture2D. See GetOrLoadShaderTexture. */
+	UPROPERTY()
+	TMap<FString, TObjectPtr<UTexture2D>> LoadedShaderTextures;
+
+	// How far from the spawn position to keep world-snapshot objects (9099
+	// total nodes for all of tatooine — spawning every one would be wasteful
+	// and mostly irrelevant to where the player actually is).
+	static constexpr float WorldSnapshotSpawnRadius = 3000.0f;
+
+	// Cached from the last successful ParseTerrain in LoadTerrain, so GetHeightAt
+	// can re-evaluate the same height function on demand (diagnostics, and any
+	// future on-the-fly-height need) without re-parsing the .trn each call.
+	FSWGTerrainData CachedTerrainData;
+	bool bTerrainDataCached = false;
 
 	// Bake grid tuning — placeholder extent, not a finished sizing decision (see
 	// world-object-plan.html "Heightmap baking + local cache": "resolution TBD

@@ -281,7 +281,33 @@ void FSWGReliabilityComponent::HandleMultiPacket(FBitReader& Packet)
 			break;
 
 		FBitReader SubReader(const_cast<uint8*>(Data + Offset), (int64)SubSize * 8);
-		Incoming(SubReader);
+
+		// Sub-packets recognized here get handled directly. Anything else
+		// (NetStatRequest, Disconnect, Ping...) must go to ForwardUnhandledOp
+		// instead of recursing into Incoming() — recursion only re-enters THIS
+		// component, never reaching the Handshake component the way a
+		// top-level packet does via FSWGPacketHandler's own per-component
+		// loop, so those ops were previously silently dropped here.
+		if (SubSize >= 2 && SWGIsSessionPacket(Data + Offset, SubSize))
+		{
+			const ESWGSessionOp SubOp = SWGGetSessionOp(Data + Offset);
+
+			if (SubOp == ESWGSessionOp::MultiPacket)
+				HandleMultiPacket(SubReader);
+			else if (SWGOpIsDataChannel(SubOp))
+				HandleDataChannel(SubReader);
+			else if (SWGOpIsDataFrag(SubOp))
+				HandleDataFrag(SubReader);
+			else if (SWGOpIsDataAck(SubOp))
+				HandleDataAck(SubReader);
+			else if (ForwardUnhandledOp)
+			{
+				UE_LOG(LogTemp, Log, TEXT("FSWGReliabilityComponent: forwarding MultiPacket sub-packet op=0x%02X size=%d to Handshake"),
+					(uint8)SubOp, SubSize);
+				ForwardUnhandledOp(SubReader);
+			}
+		}
+
 		Offset += SubSize;
 	}
 }

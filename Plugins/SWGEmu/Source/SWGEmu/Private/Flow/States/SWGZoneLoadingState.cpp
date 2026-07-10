@@ -85,6 +85,20 @@ void FSWGZoneLoadingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFl
 				{
 					TerrainSubsystem->BeginLoadTerrain(PendingTerrainName, PendingSpawnPosition);
 				}
+
+				// Same reasoning as terrain above, for the object graph's own
+				// spawning — see USWGObjectGraphSubsystem::OnZoneLevelLoaded's
+				// comment: messages that arrived between CmdStartScene and this
+				// point (including the player's own one-time spawn) were being
+				// created in the old, about-to-be-destroyed level and destroyed
+				// moments later when OpenLevel's deferred travel finally landed.
+				if (UGameInstance* GameInstance = StateMachine->GetGameInstance())
+				{
+					if (USWGObjectGraphSubsystem* ObjectGraph = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>())
+					{
+						ObjectGraph->OnZoneLevelLoaded();
+					}
+				}
 			});
 	}
 

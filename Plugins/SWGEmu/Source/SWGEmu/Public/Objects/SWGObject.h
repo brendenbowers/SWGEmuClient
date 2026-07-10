@@ -19,7 +19,7 @@ class SWGEMU_API ASWGObject : public AActor, public ISWGNetworkObjectInterface
 	GENERATED_BODY()
 
 public:
-	ASWGObject() = default;
+	ASWGObject();
 
 	int64  SWGObjectId  = 0;
 	uint32 SWGObjectCRC = 0;

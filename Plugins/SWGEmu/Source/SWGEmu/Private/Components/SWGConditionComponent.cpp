@@ -1,4 +1,5 @@
 #include "Components/SWGConditionComponent.h"
+#include "Network/SWGPacket.h"
 
 USWGConditionComponent::USWGConditionComponent()
 {
@@ -7,5 +8,8 @@ USWGConditionComponent::USWGConditionComponent()
 
 void USWGConditionComponent::ApplyBase3(FSWGPacket& Packet)
 {
-	// TODO: ConditionDamage/MaxCondition/UseCount from TANO base3.
+	UseCount = Packet.ReadInt32();
+	ConditionDamage = Packet.ReadInt32();
+	MaxCondition = Packet.ReadInt32();
+	bHasBase3 = true;
 }

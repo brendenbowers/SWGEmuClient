@@ -3,6 +3,8 @@
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
+#include "Subsystems/SWGMeshGeneratorSubsystem.h"
+#include "Subsystems/SWGTerrainSubsystem.h"
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGFormTagMapping.h"
 
@@ -13,6 +15,14 @@
 #include "Network/Messages/Zone/SceneEndBaselinesMessage.h"
 #include "Network/Messages/Zone/DeltasMessage.h"
 #include "Network/Messages/Zone/CmdStartSceneMessage.h"
+#include "Network/Messages/Zone/UpdateContainmentMessage.h"
+#include "Network/Messages/Zone/UpdateTransformMessage.h"
+
+#include "GameFramework/Character.h"
+#include "Components/CapsuleComponent.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
+#include "Objects/Creature/SWGCreature.h"
 
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Objects/Tangible/SWGItem.h"
@@ -213,6 +223,8 @@ namespace
 void USWGObjectGraphSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Network = Cast<USWGNetworkSubsystem>(Collection.InitializeDependency(USWGNetworkSubsystem::StaticClass()));
+	MeshGenerator = Cast<USWGMeshGeneratorSubsystem>(Collection.InitializeDependency(USWGMeshGeneratorSubsystem::StaticClass()));
+	TerrainSubsystem = Cast<USWGTerrainSubsystem>(Collection.InitializeDependency(USWGTerrainSubsystem::StaticClass()));
 
 	if (Network)
 	{
@@ -294,11 +306,53 @@ void USWGObjectGraphSubsystem::RevealCurrentZoneLevel()
 	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: zone level revealed"));
 }
 
+FVector USWGObjectGraphSubsystem::GroundedLocationFor(const AActor* Actor, const FVector& NetworkPos)
+{
+	if (const ACharacter* Character = Cast<ACharacter>(Actor))
+	{
+		// Stash the server's real feet-level Z regardless of capsule state —
+		// USWGMeshGeneratorSubsystem's capsule-resize step reads this back
+		// directly instead of reverse-engineering it from the actor's
+		// current location (which can drift due to an unconstrained
+		// freefall before real terrain collision exists, physics, etc. — see
+		// ASWGCreature::LastNetworkZ's own comment for why that mattered).
+		if (ASWGCreature* Creature = const_cast<ASWGCreature*>(Cast<ASWGCreature>(Actor)))
+		{
+			Creature->LastNetworkZ = NetworkPos.Z;
+		}
+
+		if (const UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+		{
+			const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+			UE_LOG(LogTemp, Warning, TEXT("GroundedLocationFor: actor=%s networkPos.Z=%.2f halfHeight=%.2f -> result.Z=%.2f"),
+				*Actor->GetName(), NetworkPos.Z, HalfHeight, NetworkPos.Z + HalfHeight);
+			return NetworkPos + FVector(0.0f, 0.0f, HalfHeight);
+		}
+		UE_LOG(LogTemp, Warning, TEXT("GroundedLocationFor: actor=%s is ACharacter but GetCapsuleComponent() is null"), *Actor->GetName());
+	}
+	return NetworkPos;
+}
+
 AActor* USWGObjectGraphSubsystem::FindActor(int64 ObjectId) const
 {
 	if (const TWeakObjectPtr<AActor>* Found = ActorRegistry.Find(ObjectId))
 		return Found->Get();
 	return nullptr;
+}
+
+void USWGObjectGraphSubsystem::OnZoneLevelLoaded()
+{
+	bLevelReadyForObjects = true;
+
+	TArray<TSharedPtr<FSWGNetMessage>> Replay = MoveTemp(PendingMessages);
+	PendingMessages.Reset();
+
+	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: zone level loaded, replaying %d buffered message(s)"), Replay.Num());
+
+	for (const TSharedPtr<FSWGNetMessage>& Msg : Replay)
+	{
+		HandleMessageReceived(Msg);
+	}
 }
 
 void USWGObjectGraphSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> Msg)
@@ -310,9 +364,23 @@ void USWGObjectGraphSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> 
 
 	if (Opcode == static_cast<uint32>(ESWGMessageOp::CmdStartScene))
 	{
+		// A new zone load is starting — UGameplayStatics::OpenLevel (triggered
+		// by this same message, in FSWGZoneLoadingState::Enter) won't actually
+		// swap levels until the next world-travel tick, so buffer everything
+		// else until OnZoneLevelLoaded() confirms the new level is live. See
+		// that function's header comment for the full story.
+		bLevelReadyForObjects = false;
 		HandleCmdStartScene(*static_cast<const FCmdStartSceneMessage*>(Msg.Get()));
+		return;
 	}
-	else if (Opcode == static_cast<uint32>(ESWGMessageOp::SceneCreateObjectByCrc))
+
+	if (!bLevelReadyForObjects)
+	{
+		PendingMessages.Add(Msg);
+		return;
+	}
+
+	if (Opcode == static_cast<uint32>(ESWGMessageOp::SceneCreateObjectByCrc))
 	{
 		HandleSceneCreateObject(*static_cast<const FSceneCreateObjectMessage*>(Msg.Get()));
 	}
@@ -327,6 +395,14 @@ void USWGObjectGraphSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> 
 	else if (Opcode == static_cast<uint32>(ESWGMessageOp::DeltasMessage))
 	{
 		HandleDeltas(*static_cast<const FDeltasMessage*>(Msg.Get()));
+	}
+	else if (Opcode == static_cast<uint32>(ESWGMessageOp::UpdateContainmentMessage))
+	{
+		HandleUpdateContainment(*static_cast<const FUpdateContainmentMessage*>(Msg.Get()));
+	}
+	else if (Opcode == static_cast<uint32>(ESWGMessageOp::UpdateTransformMessage))
+	{
+		HandleUpdateTransform(*static_cast<const FUpdateTransformMessage*>(Msg.Get()));
 	}
 }
 
@@ -358,6 +434,7 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 		return;
 	}
 
+
 	// The player's own body resolves through the same SCOT->ASWGCreature mapping
 	// as any NPC — upgrade to ASWGPlayer specifically for the ObjectId CmdStartScene
 	// told us is "us." Only swaps a plain ASWGCreature; leaves other mappings alone.
@@ -375,34 +452,33 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 		return;
 	}
 
-	// No axis swap: Msg.PosX/PosZ/PosY are named after the wire's own transmission
-	// order (which the server picks independent of axis semantics — Core3 sends
-	// getPositionX(), getPositionZ(), getPositionY() in that literal sequence),
-	// not a relabeling — Msg.PosY *is* Server.PositionY, directly, by name, same
-	// for PosZ/PositionZ. Confirmed via SceneObjectImplementation::getCoordinate/
-	// TreeEntry::getDistanceTo (both use PositionX+PositionY as the 2D ground
-	// plane, ignoring PositionZ) that PositionX/PositionY are SWG's horizontal
-	// pair and PositionZ is vertical — i.e. SWG already matches UE's X/Y-
-	// horizontal, Z-vertical convention 1:1. A prior "fix" here swapped Y/Z based
-	// on a misreading of the wire-layout comment; empirically wrong (verified via
-	// a live actor's transform against its exact spawn log line — the actor's
-	// large-magnitude horizontal coordinate landed in Z instead of Y). Reverted.
+	
 	const FVector Location(Msg.PosX, Msg.PosY, Msg.PosZ);
-	// Reverted alongside Location above — see that comment. Not independently
-	// re-verified (no live rotation data to cross-check yet), but reverting to
-	// the same "trust the direct field correspondence" reasoning that turned out
-	// to be right for position, rather than keep an unverified swap here.
-	const FQuat Rotation(Msg.DirX, Msg.DirY, Msg.DirZ, Msg.DirW);
+	// Unlike Position (confirmed 1:1, no swap — see FSWGZoneLoadingState::Enter's
+	// comment), a direct X,Y,Z,W copy here produced wildly wrong pitch (~-89 deg
+	// for standing NPCs, confirmed via a live actor's transform) — the rotation
+	// wire data isn't in the same basis as position. Swapping Y/Z is the standard
+	// Y-up-to-Z-up quaternion conversion; testing empirically against a live actor.
+	const FQuat Rotation(Msg.DirX, Msg.DirZ, Msg.DirY, Msg.DirW);
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	//SpawnParams.OverrideLevel = GetSpawnLevel(); // null falls back to default (PersistentLevel) placement
 
 	AActor* NewActor = World->SpawnActor<AActor>(ActorClass, FTransform(Rotation, Location), SpawnParams);
 	if (!NewActor)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGObjectGraphSubsystem: failed to spawn %s for object %lld"), *ActorClass->GetName(), Msg.ObjectId);
 		return;
+	}
+
+	// Location is feet/ground-level (the network convention), but SpawnActor's
+	// transform places the actor origin there — capsule center for an
+	// ACharacter, not its bottom. Correct immediately; the actor is still
+	// hidden until SceneEndBaselines so this is never visible mid-adjustment.
+	const FVector Grounded = GroundedLocationFor(NewActor, Location);
+	if (!Grounded.Equals(Location))
+	{
+		NewActor->SetActorLocation(Grounded);
 	}
 
 	if (ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(NewActor))
@@ -416,6 +492,12 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 	NewActor->SetActorEnableCollision(false);
 
 	ActorRegistry.Add(Msg.ObjectId, NewActor);
+
+	if (ActorClass->IsChildOf(ASWGCreature::StaticClass()) || ActorClass->IsChildOf(ASWGPlayer::StaticClass()) || ActorClass->IsChildOf(ASWGItem::StaticClass()))
+	{
+		MeshGenerator->RequestMesh(NewActor, Msg.ObjectCrc);
+	}
+
 
 	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: spawned %s for object %lld (crc %08X), registered"),
 		*ActorClass->GetName(), Msg.ObjectId, Msg.ObjectCrc);
@@ -466,8 +548,42 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 		return;
 	}
 
+	// A contained object (equipped gear, inventory contents) still goes
+	// through the normal SceneCreateObjectByCrc/Baselines/SceneEndBaselines
+	// flow — it just also gets an UpdateContainmentMessage with a nonzero
+	// ContainerId. If that's already arrived by now, stay hidden instead of
+	// revealing it as a free-floating world actor at its (usually (0,0,0))
+	// raw position — that position is container-relative, not world-relative.
+	if (const int64* ContainerId = ContainerByObjectId.Find(Msg.ObjectId); ContainerId && *ContainerId != 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: SceneEndBaselines object=%lld actor=%s — staying hidden (contained in %lld)"),
+			Msg.ObjectId, *Actor->GetName(), *ContainerId);
+		OnObjectReady.Broadcast(Msg.ObjectId);
+		return;
+	}
+
 	Actor->SetActorHiddenInGame(false);
 	Actor->SetActorEnableCollision(true);
+
+	// The local player's own CREO — swap control from the editor's default
+	// free-fly pawn to this one now that its position/orientation are final
+	// (revealing any earlier is pointless: it's still hidden and its
+	// transform may not reflect the server's actual baseline data yet).
+	if (Msg.ObjectId == LocalPlayerObjectId)
+	{
+		if (UWorld* World = Actor->GetWorld())
+		{
+			if (APlayerController* PC = World->GetFirstPlayerController())
+			{
+				if (APawn* PlayerPawn = Cast<APawn>(Actor))
+				{
+					PC->Possess(PlayerPawn);
+					UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: possessed local player actor %lld (%s)"),
+						Msg.ObjectId, *Actor->GetName());
+				}
+			}
+		}
+	}
 
 	OnObjectReady.Broadcast(Msg.ObjectId);
 
@@ -482,6 +598,68 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 	{
 		RevealCurrentZoneLevel();
 	}
+}
+
+void USWGObjectGraphSubsystem::HandleUpdateContainment(const FUpdateContainmentMessage& Msg)
+{
+	ContainerByObjectId.Add(Msg.ObjectId, Msg.ContainerId);
+
+	AActor* Actor = FindActor(Msg.ObjectId);
+
+	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: UpdateContainmentMessage object=%lld container=%lld type=%u actor=%s"),
+		Msg.ObjectId, Msg.ContainerId, Msg.Type, Actor ? *Actor->GetName() : TEXT("<not spawned yet>"));
+
+	// If the actor hasn't spawned yet (containment can arrive before its own
+	// SceneCreateObjectByCrc), there's nothing to hide/show right now —
+	// HandleSceneEndBaselines checks ContainerByObjectId itself once it does.
+	if (Actor)
+	{
+		ApplyContainment(Actor, Msg.ContainerId);
+	}
+}
+
+void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessage& Msg)
+{
+	AActor* Actor = FindActor(Msg.ObjectId);
+	if (!Actor)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: UpdateTransformMessage for unknown object %lld"), Msg.ObjectId);
+		return;
+	}
+
+	// Same X,Z,Y wire order as the initial spawn position (SceneCreateObjectMessage)
+	// — no axis swap needed, just direct field->component mapping. Msg.PosZ is
+	// feet/ground-level; GroundedLocationFor corrects for ACharacter's capsule
+	// center being the actual actor origin (see its own comment / the header's).
+	Actor->SetActorLocation(GroundedLocationFor(Actor, FVector(Msg.PosX, Msg.PosY, Msg.PosZ)));
+
+	if (TerrainSubsystem)
+	{
+		const float TerrainZ = TerrainSubsystem->GetHeightAt(Msg.PosX, Msg.PosY);
+		UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: canyon-check object=%lld actor=%s networkPos=(%.1f,%.1f,%.1f) terrainZ=%.1f delta=%.1f"),
+			Msg.ObjectId, *Actor->GetName(), Msg.PosX, Msg.PosY, Msg.PosZ, TerrainZ, Msg.PosZ - TerrainZ);
+	}
+
+	// DirectionAngle is a single byte (0-255) mapping to a full 0-360 degree
+	// yaw — cheap per-tick facing without transmitting a full quaternion like
+	// the initial spawn does. Pitch/Roll aren't part of this message (walking
+	// creatures don't need them), so only Yaw changes here.
+	const float YawDegrees = (Msg.DirectionAngle / 256.0f) * 360.0f;
+	FRotator NewRotation = Actor->GetActorRotation();
+	NewRotation.Yaw = YawDegrees;
+	Actor->SetActorRotation(NewRotation);
+}
+
+void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ContainerId)
+{
+	if (!Actor)
+	{
+		return;
+	}
+
+	const bool bContained = ContainerId != 0;
+	Actor->SetActorHiddenInGame(bContained);
+	Actor->SetActorEnableCollision(!bContained);
 }
 
 void USWGObjectGraphSubsystem::HandleDeltas(const FDeltasMessage& Msg)

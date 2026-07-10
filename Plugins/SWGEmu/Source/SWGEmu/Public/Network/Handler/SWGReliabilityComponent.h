@@ -37,8 +37,22 @@ public:
 	virtual void Tick(float DeltaTime) override;
 	virtual int32 GetReservedPacketBits() const override;
 
+	/**
+	 * Set by FSWGPacketHandler to forward session ops this component doesn't
+	 * itself handle (NetStatRequest, Disconnect, Ping...) to the Handshake
+	 * component. Needed specifically for sub-packets unwrapped out of a
+	 * MultiPacket (see HandleMultiPacket) — those only ever reach this
+	 * component's own Incoming(), recursing into itself, and never reach the
+	 * rest of the pipeline the way a top-level packet does via
+	 * FSWGPacketHandler's own per-component loop. Without this, any such op
+	 * bundled inside a MultiPacket was silently dropped here instead of ever
+	 * reaching e.g. FSWGHandshakeComponent::HandleNetStatRequest.
+	 */
+	void SetUnhandledOpForwarder(TFunction<void(FBitReader&)> InForwarder) { ForwardUnhandledOp = MoveTemp(InForwarder); }
+
 private:
 	TWeakPtr<FSWGSession> SessionPtr;
+	TFunction<void(FBitReader&)> ForwardUnhandledOp;
 
 	// ── Sequence state (moved from FSWGSession) ───────────────────────────────
 	FSWGSeqNum OutSeqNext;   // Next outgoing sequence number to assign

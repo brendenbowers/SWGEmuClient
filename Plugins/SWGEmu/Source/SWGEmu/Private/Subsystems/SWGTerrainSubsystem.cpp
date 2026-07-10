@@ -1,15 +1,46 @@
 #include "Subsystems/SWGTerrainSubsystem.h"
+#include "HAL/IConsoleManager.h"
 #include "Subsystems/SWGTreSubsystem.h"
+#include "Subsystems/SWGMeshGeneratorSubsystem.h"
 #include "TRE/SWGTerrainReader.h"
 #include "TRE/SWGTerrainEvaluator.h"
+#include "TRE/SWGWorldSnapshotReader.h"
+#include "TRE/SWGFormTagMapping.h"
+#include "TRE/SWGDDSTextureLoader.h"
 #include "Landscape.h"
 #include "LandscapeComponent.h"
 #include "LandscapeDataAccess.h"
 #include "Engine/Texture2D.h"
+#include "Engine/DataTable.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Components/SceneComponent.h"
+#include "Components/DynamicMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "DynamicMesh/DynamicMesh3.h"
+#include "DynamicMesh/DynamicMeshAttributeSet.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/StaticMesh.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 
 namespace
 {
+	// Landscape's uint16 height packing represents a fixed +/-256 *local*
+	// height range (LandscapeDataAccess::GetLocalHeight/GetTexHeight use a
+	// hardcoded LANDSCAPE_ZSCALE regardless of the actor's own Z scale) — the
+	// actor's Z scale is what stretches that fixed range into final world
+	// units. With Z scale 1.0 (the original choice — see SpawnLandscapeActor's
+	// comment), any real height beyond +/-256 world units clamps hard,
+	// producing an unnaturally steep cliff exactly where legitimate terrain
+	// (e.g. a real canyon) exceeds that range — reported as "terrain looks
+	// like a canyon" / floating NPCs, and initially and incorrectly suspected
+	// to be an XY spacing/scale bug (ruled out: the live Landscape actor's
+	// scale was confirmed exactly (16,16,1) as intended). Baked heights must
+	// be pre-divided by this same constant before packing (see PackHeightMip)
+	// to match — SpawnLandscapeActor uses it directly as the actor's Z scale.
+	constexpr float HeightZScale = 8.0f; // +/-2048 world units of representable height
+
 	// Per-2x2-quad {Min,Max,Average} stats for one mip level — see
 	// LandscapeComponent.h:503-512 (MipToMipMaxDeltas) for what these feed into.
 	struct FSWGQuadHeightInfo
@@ -153,7 +184,10 @@ namespace
 		Packed.SetNumUninitialized(Heights.Num());
 		for (int32 i = 0; i < Heights.Num(); ++i)
 		{
-			FColor P = LandscapeDataAccess::PackHeight(LandscapeDataAccess::GetTexHeight(Heights[i]));
+			// GetTexHeight expects a *local* height (the fixed +/-256 range) —
+			// divide the real-world baked height by the actor's Z scale to get
+			// there, since GetTexHeight itself has no notion of our Z scale.
+			FColor P = LandscapeDataAccess::PackHeight(LandscapeDataAccess::GetTexHeight(Heights[i] / HeightZScale));
 			P.B = DefaultNormal.B;
 			P.A = DefaultNormal.A;
 			Packed[i] = P;
@@ -165,6 +199,402 @@ namespace
 void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	TreSubsystem = Cast<USWGTreSubsystem>(Collection.InitializeDependency(USWGTreSubsystem::StaticClass()));
+	MeshGenerator = Cast<USWGMeshGeneratorSubsystem>(Collection.InitializeDependency(USWGMeshGeneratorSubsystem::StaticClass()));
+
+	// Temporary diagnostic: cross-validates GetHeightAt against the server's own
+	// SERVERHEIGHTCHECK log at the same (x,y) samples — see chat history re:
+	// comparing client vs server terrain height around the town hills.
+	static FAutoConsoleCommand DumpHeightCompareCmd(
+		TEXT("swg.DumpHeightCompare"),
+		TEXT("Logs GetHeightAt(x,y) for a fixed list of server-sampled coordinates."),
+		FConsoleCommandDelegate::CreateLambda([this]()
+			{
+				static const TArray<FVector2D> Samples = {
+					{-1382.96f, -3749.1f}, {-1389.03f, -3757.89f}, {-1390.6f, -3780.95f},
+					{-1472.42f, -3759.99f}, {-1454.45f, -3825.68f}, {-1436.44f, -3834.79f},
+					{-1298.25f, -3449.17f}, {-1305.12f, -3442.03f}, {-1243.86f, -3701.65f},
+					{-1279.19f, -3602.41f}, {-1285.16f, -3545.52f}, {-1287.28f, -3507.51f},
+					{-1432.84f, -3479.05f}, {-1498.01f, -3702.77f}, {-1493.2f, -3610.32f},
+					{-1454.26f, -3517.02f}, {-1453.66f, -3512.0f}, {-1332.11f, -3728.26f},
+					{-1455.19f, -3510.15f}, {-1339.8f, -3722.93f}
+				};
+
+				for (const FVector2D& Sample : Samples)
+				{
+					const float Z = GetHeightAt(Sample.X, Sample.Y);
+					UE_LOG(LogTemp, Warning, TEXT("HEIGHTCOMPARE x=%.2f y=%.2f clientHeight=%.4f"), Sample.X, Sample.Y, Z);
+				}
+			}));
+
+	// Temporary diagnostic: investigating option 3 from chat history — the
+	// SFAM layer names (e.g. "rock_cliff_anza", "tatt_sand_bumpy") are clearly
+	// real SWG ground-texture identifiers, but the actual TRE virtual path
+	// convention (directory/extension) is still unknown. Searches the whole
+	// indexed virtual filesystem for any path containing the given substring.
+	static FAutoConsoleCommand FindTexturePathCmd(
+		TEXT("swg.FindVirtualPaths"),
+		TEXT("swg.FindVirtualPaths <substring> — lists every indexed TRE virtual path containing this substring."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.FindVirtualPaths <substring>"));
+					return;
+				}
+				if (!TreSubsystem)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.FindVirtualPaths: no TreSubsystem"));
+					return;
+				}
+
+				TArray<FString> Matches = TreSubsystem->FindVirtualPaths(Args[0]);
+				UE_LOG(LogTemp, Warning, TEXT("swg.FindVirtualPaths: %d match(es) for '%s'"), Matches.Num(), *Args[0]);
+				for (const FString& Match : Matches)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("  %s"), *Match);
+				}
+			}));
+
+	// Temporary diagnostic: investigating option 3 from chat history (authentic
+	// SWG terrain shaders/textures, not a flat placeholder) — dumps the .trn's
+	// FORM SGRP > SFAM chunk list (Core3's ShadersGroup/ShaderFamily) to see
+	// what "fileName" actually looks like on disk (expected: a reference to
+	// SWG's own shader-template asset, which itself should point at real
+	// texture(s) — this determines whether real terrain texturing is a
+	// reasonably-scoped follow-up or a much bigger asset-resolution project).
+	static FAutoConsoleCommand DumpShaderFamiliesCmd(
+		TEXT("swg.DumpShaderFamilies"),
+		TEXT("Dumps terrain/tatooine.trn's FORM SGRP shader family table (familyId, name, fileName, color)."),
+		FConsoleCommandDelegate::CreateLambda([this]()
+			{
+				if (!TreSubsystem)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderFamilies: no TreSubsystem"));
+					return;
+				}
+
+				FSWGIffReader Reader = TreSubsystem->CreateIffReader(TEXT("terrain/tatooine.trn"));
+				if (!Reader.IsValid())
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderFamilies: failed to open terrain/tatooine.trn"));
+					return;
+				}
+
+				FSWGIffChunk SgrpForm;
+				if (!Reader.FindForm(TEXT("SGRP"), SgrpForm))
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderFamilies: no SGRP form found"));
+					return;
+				}
+
+				TArray<FSWGIffChunk> VersionForms = Reader.ReadChildren(SgrpForm);
+				if (VersionForms.Num() == 0 || !VersionForms[0].IsForm())
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderFamilies: SGRP has no version form"));
+					return;
+				}
+
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderFamilies: SGRP version form '%s'"), *VersionForms[0].FormType);
+
+				auto ReadNullTerminated = [](const uint8* D, int32 Size, int32& Offset) -> FString
+				{
+					const int32 Start = Offset;
+					while (Offset < Size && D[Offset] != 0) { ++Offset; }
+					FString Result = FString::ConstructFromPtrSize((const ANSICHAR*)(D + Start), Offset - Start);
+					++Offset; // skip null terminator
+					return Result;
+				};
+
+				int32 Count = 0;
+				for (const FSWGIffChunk& Child : Reader.ReadChildren(VersionForms[0]))
+				{
+					if (Child.IsForm() || Child.Tag != TEXT("SFAM"))
+					{
+						continue;
+					}
+
+					const uint8* D = Reader.GetChunkData(Child);
+					const int32 Size = Reader.GetChunkSize(Child);
+					int32 Offset = 0;
+
+					if (Offset + 4 > Size) continue;
+					const int32 FamilyId = (int32)(D[Offset] | (D[Offset + 1] << 8) | (D[Offset + 2] << 16) | (D[Offset + 3] << 24));
+					Offset += 4;
+
+					const FString FamilyName = ReadNullTerminated(D, Size, Offset);
+					const FString FileName = ReadNullTerminated(D, Size, Offset);
+
+					if (Offset + 3 > Size) continue;
+					const uint8 R = D[Offset], G = D[Offset + 1], B = D[Offset + 2];
+					Offset += 3;
+
+					auto ReadFloat = [](const uint8* Bytes, int32 Off) -> float
+					{
+						uint32 Bits = Bytes[Off] | (Bytes[Off + 1] << 8) | (Bytes[Off + 2] << 16) | (Bytes[Off + 3] << 24);
+						float Result;
+						FMemory::Memcpy(&Result, &Bits, sizeof(float));
+						return Result;
+					};
+
+					float Var7 = 0.0f, Weight = 0.0f;
+					int32 NumLayers = 0;
+					if (Offset + 8 <= Size)
+					{
+						Var7 = ReadFloat(D, Offset); Offset += 4;
+						Weight = ReadFloat(D, Offset); Offset += 4;
+					}
+					if (Offset + 4 <= Size)
+					{
+						NumLayers = (int32)(D[Offset] | (D[Offset + 1] << 8) | (D[Offset + 2] << 16) | (D[Offset + 3] << 24));
+						Offset += 4;
+					}
+
+					UE_LOG(LogTemp, Warning, TEXT("SFAM[%d] familyId=%d name='%s' fileName='%s' color=(%d,%d,%d) var7=%.4f weight=%.4f numLayers=%d"),
+						Count, FamilyId, *FamilyName, *FileName, R, G, B, Var7, Weight, NumLayers);
+
+					for (int32 L = 0; L < NumLayers && Offset < Size; ++L)
+					{
+						const FString LayerName = ReadNullTerminated(D, Size, Offset);
+						float LayerWeight = 0.0f;
+						if (Offset + 4 <= Size)
+						{
+							LayerWeight = ReadFloat(D, Offset);
+							Offset += 4;
+						}
+						UE_LOG(LogTemp, Warning, TEXT("  layer[%d] name='%s' weight=%.4f"), L, *LayerName, LayerWeight);
+					}
+					++Count;
+				}
+
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderFamilies: %d shader famil(y/ies) total"), Count);
+			}));
+
+	// Temporary diagnostic: generic recursive IFF tree dumper, to inspect a
+	// shader-template .iff's structure (e.g. abstract/terrain_surface/grass.iff)
+	// and find exactly which key holds the real texture asset reference.
+	static FAutoConsoleCommand DumpIffTreeCmd(
+		TEXT("swg.DumpIffTree"),
+		TEXT("swg.DumpIffTree <virtual path> — dumps the full FORM/chunk tree, including leaf chunk contents as printable strings where possible."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpIffTree <virtual path>"));
+					return;
+				}
+
+				if (!TreSubsystem)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpIffTree: no TreSubsystem"));
+					return;
+				}
+
+				FSWGIffReader Reader = TreSubsystem->CreateIffReader(*Args[0]);
+				if (!Reader.IsValid())
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpIffTree: failed to open %s"), *Args[0]);
+					return;
+				}
+
+				TFunction<void(const FSWGIffChunk&, int32)> DumpRecursive = [&Reader, &DumpRecursive](const FSWGIffChunk& Chunk, int32 Depth)
+				{
+					const FString Indent = FString::ChrN(Depth * 2, ' ');
+
+					if (Chunk.IsForm())
+					{
+						UE_LOG(LogTemp, Warning, TEXT("%sFORM %s (%d bytes)"), *Indent, *Chunk.FormType, Chunk.DataSize);
+						for (const FSWGIffChunk& Child : Reader.ReadChildren(Chunk))
+						{
+							DumpRecursive(Child, Depth + 1);
+						}
+					}
+					else
+					{
+						const uint8* D = Reader.GetChunkData(Chunk);
+						const int32 Size = Reader.GetChunkSize(Chunk);
+
+						// XXXX chunks are key/flag/[typed-value] (same layout
+						// FindXxxxStringValue already knows about for object
+						// templates) — decode the key always, and show the
+						// remainder as hex when it's not a plain string, since
+						// the generic printable-guess below bails out on any
+						// chunk that mixes a readable key with binary value
+						// bytes (which is most of them).
+						if (Chunk.Tag == TEXT("XXXX"))
+						{
+							int32 KeyEnd = 0;
+							while (KeyEnd < Size && D[KeyEnd] != 0) { ++KeyEnd; }
+							const FString Key = FString::ConstructFromPtrSize((const ANSICHAR*)D, KeyEnd);
+							const int32 FlagOffset = KeyEnd + 1;
+							const uint8 Flag = (FlagOffset < Size) ? D[FlagOffset] : 0;
+
+							FString ValueHex;
+							for (int32 i = FlagOffset + 1; i < Size; ++i)
+							{
+								ValueHex += FString::Printf(TEXT("%02X "), D[i]);
+							}
+
+							// Try it as a string too, in case the value itself is one.
+							FString AsString;
+							if (FlagOffset + 1 < Size)
+							{
+								int32 ValEnd = FlagOffset + 1;
+								while (ValEnd < Size && D[ValEnd] != 0) { ++ValEnd; }
+								bool bAllPrintable = ValEnd > FlagOffset + 1;
+								for (int32 i = FlagOffset + 1; i < ValEnd && bAllPrintable; ++i)
+								{
+									if (D[i] < 0x20 || D[i] > 0x7E) bAllPrintable = false;
+								}
+								if (bAllPrintable)
+								{
+									AsString = FString::ConstructFromPtrSize((const ANSICHAR*)(D + FlagOffset + 1), ValEnd - FlagOffset - 1);
+								}
+							}
+
+							UE_LOG(LogTemp, Warning, TEXT("%sXXXX key='%s' flag=%d valueHex=[%s] asString='%s'"),
+								*Indent, *Key, Flag, *ValueHex, *AsString);
+							return;
+						}
+
+						// Best-effort printable preview — most leaf chunks in these
+						// template files are short ASCII/UTF8 strings or small
+						// numeric blobs; show whichever this looks like.
+						bool bPrintable = Size > 0 && Size <= 256;
+						if (bPrintable)
+						{
+							for (int32 i = 0; i < Size; ++i)
+							{
+								if (D[i] != 0 && (D[i] < 0x20 || D[i] > 0x7E)) { bPrintable = false; break; }
+							}
+						}
+
+						if (bPrintable)
+						{
+							FString Preview = FString::ConstructFromPtrSize((const ANSICHAR*)D, Size);
+							UE_LOG(LogTemp, Warning, TEXT("%sCHUNK %s (%d bytes): '%s'"), *Indent, *Chunk.Tag, Size, *Preview);
+						}
+						else
+						{
+							FString Hex;
+							for (int32 i = 0; i < FMath::Min(Size, 64); ++i)
+							{
+								Hex += FString::Printf(TEXT("%02X "), D[i]);
+							}
+							UE_LOG(LogTemp, Warning, TEXT("%sCHUNK %s (%d bytes, binary): %s"), *Indent, *Chunk.Tag, Size, *Hex);
+						}
+					}
+				};
+
+				for (const FSWGIffChunk& Top : Reader.ReadChunks())
+				{
+					DumpRecursive(Top, 0);
+				}
+			}));
+
+	static FAutoConsoleCommand TraceHeightCmd(
+		TEXT("swg.TraceHeight"),
+		TEXT("swg.TraceHeight <x> <y> — logs every layer that changes height at that coordinate."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 2)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.TraceHeight <x> <y>"));
+					return;
+				}
+
+				const float X = FCString::Atof(*Args[0]);
+				const float Y = FCString::Atof(*Args[1]);
+
+				FSWGTerrainEvaluator::SetDebugTraceTarget(X, Y, true);
+				const float Z = GetHeightAt(X, Y);
+				FSWGTerrainEvaluator::SetDebugTraceTarget(0.0f, 0.0f, false);
+
+				UE_LOG(LogTemp, Warning, TEXT("HEIGHTTRACE final x=%.2f y=%.2f height=%.4f"), X, Y, Z);
+			}));
+
+	// Temporary diagnostic: buildings/items/creatures are all rendering as
+	// flat off-white/gray in a real (lit, shadowed) screenshot, with no
+	// texture color at all — reported live by the user after a full rebuild.
+	// Since object materials and terrain materials both funnel through the
+	// exact same FSWGDDSTextureLoader, this isolates whether the runtime
+	// DDS->UTexture2D bridge itself is producing a genuinely renderable
+	// texture, decoupled from all the mesh-generator/shader-parsing logic on
+	// top of it: loads one texture directly, logs its platform-data state,
+	// and slaps it on a plain spawned plane right in front of the player so
+	// it can be screenshotted up close.
+	static FAutoConsoleCommand TestDDSTextureCmd(
+		TEXT("swg.TestDDSTexture"),
+		TEXT("swg.TestDDSTexture <texture virtual path> — loads a .dds directly and displays it on a plane in front of the player."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.TestDDSTexture <texture virtual path>"));
+					return;
+				}
+
+				if (!TreSubsystem || !TreSubsystem->FileExists(Args[0]))
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: %s not found in TRE"), *Args[0]);
+					return;
+				}
+
+				const TArray<uint8> Bytes = TreSubsystem->ExtractFile(Args[0]);
+				UTexture2D* Texture = FSWGDDSTextureLoader::LoadTexture2D(Bytes, FName(*Args[0]), /*bSRGB=*/true);
+				if (!Texture)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: FSWGDDSTextureLoader failed for %s"), *Args[0]);
+					return;
+				}
+
+				UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: %s decoded — SizeX=%d SizeY=%d PixelFormat=%d SRGB=%d HasResource=%d"),
+					*Args[0], Texture->GetSizeX(), Texture->GetSizeY(), (int32)Texture->GetPixelFormat(),
+					Texture->SRGB ? 1 : 0, Texture->GetResource() != nullptr ? 1 : 0);
+
+				UWorld* World = GetWorld();
+				APawn* Pawn = World ? World->GetFirstPlayerController()->GetPawn() : nullptr;
+				if (!World || !Pawn)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: no world/pawn to spawn the test plane near"));
+					return;
+				}
+
+				UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGObjectTextured.M_SWGObjectTextured"));
+				if (!Parent)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: M_SWGObjectTextured not found"));
+					return;
+				}
+				UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Parent, this);
+				MID->SetTextureParameterValue(TEXT("Diffuse"), Texture);
+
+				UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+				if (!PlaneMesh)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: /Engine/BasicShapes/Plane not found"));
+					return;
+				}
+
+				const FVector SpawnLocation = Pawn->GetActorLocation() + Pawn->GetActorForwardVector() * 300.0f + FVector(0, 0, 100.0f);
+				const FRotator SpawnRotation = (-Pawn->GetActorForwardVector()).Rotation() + FRotator(90.0f, 0.0f, 0.0f);
+
+				FActorSpawnParameters SpawnParams;
+				SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+				AStaticMeshActor* PlaneActor = World->SpawnActor<AStaticMeshActor>(SpawnLocation, SpawnRotation, SpawnParams);
+				if (!PlaneActor)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: failed to spawn test plane actor"));
+					return;
+				}
+
+				UStaticMeshComponent* MeshComponent = PlaneActor->GetStaticMeshComponent();
+				MeshComponent->SetMobility(EComponentMobility::Movable);
+				MeshComponent->SetStaticMesh(PlaneMesh);
+				MeshComponent->SetWorldScale3D(FVector(3.0f, 3.0f, 1.0f));
+				MeshComponent->SetMaterial(0, MID);
+
+				UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: spawned test plane at %s"), *SpawnLocation.ToString());
+			}));
 }
 
 void USWGTerrainSubsystem::Deinitialize()
@@ -227,18 +657,137 @@ void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const 
 			if (!FindCachedHeightmap(TerrainVirtualPath, RegionOrigin, Heightmap))
 			{
 				Heightmap = BakeHeightmap(TerrainData, RegionOrigin);
+				BakeShaderWeights(TerrainData, Heightmap);
 			}
 		}
 	}
 
+	TArray<FSWGWorldSnapshotSpawnInfo> SnapshotObjects = LoadWorldSnapshotObjects(TerrainVirtualPath, SpawnPosition);
+
 	// SpawnLandscapeGrid touches actors/components/textures — all game-thread-only
 	// — but LoadTerrain itself runs on the background thread BeginLoadTerrain
-	// dispatched onto. Marshal back before touching any of that.
-	AsyncTask(ENamedThreads::GameThread, [this, Grid = MoveTemp(Grid), GridOrigin, Spacing]()
+	// dispatched onto. Marshal back before touching any of that. Caching
+	// TerrainData here too (rather than back on the background thread) avoids a
+	// write/read race with GetHeightAt, which is only ever called from the game thread.
+	AsyncTask(ENamedThreads::GameThread, [this, Grid = MoveTemp(Grid), GridOrigin, Spacing, TerrainData = MoveTemp(TerrainData), SnapshotObjects = MoveTemp(SnapshotObjects)]()
 		{
-			SpawnLandscapeGrid(Grid, GridOrigin, Spacing);
+			CachedTerrainData = TerrainData;
+			bTerrainDataCached = true;
+
+			SpawnDynamicMeshTerrainGrid(Grid, GridOrigin, Spacing);
+			SpawnWorldSnapshotObjects(SnapshotObjects);
 			OnTerrainReady.Broadcast();
 		});
+}
+
+TArray<FSWGWorldSnapshotSpawnInfo> USWGTerrainSubsystem::LoadWorldSnapshotObjects(const FString& TerrainVirtualPath, const FVector& SpawnPosition)
+{
+	TArray<FSWGWorldSnapshotSpawnInfo> Result;
+
+	// "terrain/tatooine.trn" -> "tatooine" -> "snapshot/tatooine.ws".
+	FString ZoneName = FPaths::GetBaseFilename(TerrainVirtualPath);
+	const FString SnapshotPath = FString::Printf(TEXT("snapshot/%s.ws"), *ZoneName);
+
+	FSWGIffReader SnapshotReader = TreSubsystem->CreateIffReader(SnapshotPath);
+	if (!SnapshotReader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: no world snapshot found at %s — no static world objects will spawn"), *SnapshotPath);
+		return Result;
+	}
+
+	FSWGWorldSnapshotData SnapshotData;
+	if (!FSWGWorldSnapshotReader::ReadWorldSnapshot(SnapshotReader, SnapshotData))
+	{
+		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: failed to parse world snapshot %s"), *SnapshotPath);
+		return Result;
+	}
+
+	if (!FormTagMappingTable)
+	{
+		// Loadable off the game thread — SWGInitializationState's own CRC map
+		// generation already does exactly this from a background ThreadPool task.
+		FormTagMappingTable = LoadObject<UDataTable>(nullptr,
+			TEXT("/Game/SWGEmu/Data/DT_SWGFormTagMappings.DT_SWGFormTagMappings"));
+	}
+
+	const float RadiusSq = WorldSnapshotSpawnRadius * WorldSnapshotSpawnRadius;
+	int32 InRangeCount = 0;
+
+	for (const FSWGWorldSnapshotNode& Node : SnapshotData.Nodes)
+	{
+		if (FVector::DistSquared(Node.Position, SpawnPosition) > RadiusSq)
+			continue;
+
+		++InRangeCount;
+
+		if (!SnapshotData.ObjectTemplateNames.IsValidIndex((int32)Node.NameID))
+			continue;
+
+		const FString& TemplateName = SnapshotData.ObjectTemplateNames[(int32)Node.NameID];
+
+		FSWGIffReader TemplateReader = TreSubsystem->CreateIffReader(TemplateName);
+		if (!TemplateReader.IsValid())
+			continue;
+
+		const FName FormType = TemplateReader.GetRootFormType();
+		if (FormType == NAME_None || !FormTagMappingTable)
+			continue;
+
+		const FSWGFormTagMapping* Mapping = FormTagMappingTable->FindRow<FSWGFormTagMapping>(FormType, TEXT("USWGTerrainSubsystem"), false);
+		if (!Mapping || !Mapping->ActorClass)
+			continue;
+
+		FSWGWorldSnapshotSpawnInfo Info;
+		Info.ActorClass = Mapping->ActorClass;
+		Info.Position = Node.Position;
+		Info.Rotation = Node.Direction;
+		Info.TemplateName = TemplateName;
+		Result.Add(MoveTemp(Info));
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: world snapshot %s — %d/%d node(s) within %.0f units of spawn, %d resolved to an actor class"),
+		*SnapshotPath, InRangeCount, SnapshotData.Nodes.Num(), WorldSnapshotSpawnRadius, Result.Num());
+
+	return Result;
+}
+
+void USWGTerrainSubsystem::SpawnWorldSnapshotObjects(const TArray<FSWGWorldSnapshotSpawnInfo>& Objects)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+		return;
+
+	for (const FSWGWorldSnapshotSpawnInfo& Info : Objects)
+	{
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		const FTransform SpawnTransform(Info.Rotation, Info.Position);
+		AActor* Actor = World->SpawnActor<AActor>(Info.ActorClass, SpawnTransform, SpawnParams);
+
+		if (!Actor)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: failed to spawn world snapshot object %s"), *Info.TemplateName);
+			continue;
+		}
+
+		if (MeshGenerator)
+		{
+			MeshGenerator->RequestMeshForTemplatePath(Actor, Info.TemplateName);
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: spawned %d world snapshot object(s)"), Objects.Num());
+}
+
+float USWGTerrainSubsystem::GetHeightAt(float X, float Y) const
+{
+	if (!bTerrainDataCached)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: GetHeightAt called before any terrain has parsed"));
+		return 0.0f;
+	}
+	return FSWGTerrainEvaluator::GetHeight(CachedTerrainData, X, Y);
 }
 
 bool USWGTerrainSubsystem::FindCachedHeightmap(const FString& TerrainVirtualPath, const FVector& RegionOrigin, FSWGBakedHeightmap& OutHeightmap)
@@ -274,6 +823,19 @@ FSWGBakedHeightmap USWGTerrainSubsystem::BakeHeightmap(const FSWGTerrainData& Te
 	Heightmap.Spacing = Spacing;
 	Heightmap.Heights.SetNumUninitialized(Resolution * Resolution);
 
+	// Diagnostic (see chat: buildings render far above the terrain surface
+	// away from the spawn point): track the actual min/max/out-of-range
+	// height values this component's evaluator calls produced, to see
+	// whether GetHeight is diverging to huge values (which GetTexHeight's
+	// Clamp(..., 0, MaxValue) would silently flatten to the +/-2048
+	// representable ceiling/floor — a very different failure mode than the
+	// NaN case already guarded below, but one that would also show up as
+	// sharp, spiky terrain at a wildly wrong height).
+	float MinHeight = TNumericLimits<float>::Max();
+	float MaxHeight = TNumericLimits<float>::Lowest();
+	int32 OutOfRangeCount = 0;
+	constexpr float RepresentableHeightLimit = 2048.0f;
+
 	for (int32 Row = 0; Row < Resolution; ++Row)
 	{
 		const float WorldY = RegionOrigin.Y + Row * Spacing;
@@ -281,11 +843,170 @@ FSWGBakedHeightmap USWGTerrainSubsystem::BakeHeightmap(const FSWGTerrainData& Te
 		for (int32 Col = 0; Col < Resolution; ++Col)
 		{
 			const float WorldX = RegionOrigin.X + Col * Spacing;
-			Heightmap.Heights[Row * Resolution + Col] = FSWGTerrainEvaluator::GetHeight(TerrainData, WorldX, WorldY);
+			float Height = FSWGTerrainEvaluator::GetHeight(TerrainData, WorldX, WorldY);
+			// Safety net: a NaN/Inf height here bakes straight into the landscape's
+			// uint16 heightmap and comes out as an extreme spike (this is what was
+			// actually happening — see FSWGMapFractal::GetNoise's Pow() fix for the
+			// specific cause found). Guard at the source too, since other affector
+			// math could in principle produce the same failure mode.
+			if (!FMath::IsFinite(Height))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: non-finite height at (%f, %f) — clamping to 0"), WorldX, WorldY);
+				Height = 0.0f;
+			}
+
+			if (FMath::Abs(Height) > RepresentableHeightLimit)
+			{
+				++OutOfRangeCount;
+			}
+			MinHeight = FMath::Min(MinHeight, Height);
+			MaxHeight = FMath::Max(MaxHeight, Height);
+
+			Heightmap.Heights[Row * Resolution + Col] = Height;
 		}
 	}
 
+	UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: BakeHeightmap region origin=(%.1f,%.1f) min=%.1f max=%.1f outOfRange(+/-%.0f)=%d/%d"),
+		RegionOrigin.X, RegionOrigin.Y, MinHeight, MaxHeight, RepresentableHeightLimit, OutOfRangeCount, Resolution * Resolution);
+
 	return Heightmap;
+}
+
+void USWGTerrainSubsystem::BakeShaderWeights(const FSWGTerrainData& TerrainData, FSWGBakedHeightmap& Heightmap)
+{
+	const int32 Resolution = HeightmapResolution;
+	const int32 SampleCount = Resolution * Resolution;
+
+	// One pass, keeping every vertex's full weight map around — re-evaluating
+	// the layer tree a second time (rather than storing this) would double
+	// the bake cost for no real memory win at this resolution (16384 samples).
+	TArray<TMap<int32, float>> PerVertexWeights;
+	PerVertexWeights.SetNum(SampleCount);
+
+	TMap<int32, float> TotalWeightByFamily;
+
+	for (int32 Row = 0; Row < Resolution; ++Row)
+	{
+		const float WorldY = Heightmap.Origin.Y + Row * Heightmap.Spacing;
+		for (int32 Col = 0; Col < Resolution; ++Col)
+		{
+			const float WorldX = Heightmap.Origin.X + Col * Heightmap.Spacing;
+			TMap<int32, float>& Weights = PerVertexWeights[Row * Resolution + Col];
+			FSWGTerrainEvaluator::GetShaderWeights(TerrainData, WorldX, WorldY, Weights);
+
+			for (const TPair<int32, float>& Pair : Weights)
+			{
+				TotalWeightByFamily.FindOrAdd(Pair.Key) += Pair.Value;
+			}
+		}
+	}
+
+	TArray<TPair<int32, float>> SortedFamilies;
+	for (const TPair<int32, float>& Pair : TotalWeightByFamily)
+	{
+		if (Pair.Value > 0.0f)
+		{
+			SortedFamilies.Add(Pair);
+		}
+	}
+	SortedFamilies.Sort([](const TPair<int32, float>& A, const TPair<int32, float>& B) { return A.Value > B.Value; });
+
+	constexpr int32 MaxLayers = 4;
+	for (int32 i = 0; i < FMath::Min(SortedFamilies.Num(), MaxLayers); ++i)
+	{
+		Heightmap.ChosenShaderFamilyIds.Add(SortedFamilies[i].Key);
+	}
+
+	if (Heightmap.ChosenShaderFamilyIds.Num() == 0)
+	{
+		// No shader affector ever painted anything at this tile — leave empty,
+		// BuildTerrainTileMaterial falls back to the plain default material.
+		return;
+	}
+
+	Heightmap.ShaderWeightColors.SetNumZeroed(SampleCount);
+	for (int32 i = 0; i < SampleCount; ++i)
+	{
+		const TMap<int32, float>& Weights = PerVertexWeights[i];
+		FVector3f Color(0.0f, 0.0f, 0.0f);
+		for (int32 Channel = 1; Channel < Heightmap.ChosenShaderFamilyIds.Num(); ++Channel)
+		{
+			const float* Weight = Weights.Find(Heightmap.ChosenShaderFamilyIds[Channel]);
+			Color.Component(Channel - 1) = Weight ? FMath::Clamp(*Weight, 0.0f, 1.0f) : 0.0f;
+		}
+		Heightmap.ShaderWeightColors[i] = Color;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: BakeShaderWeights region origin=(%.1f,%.1f) chosen %d family(ies): %s"),
+		Heightmap.Origin.X, Heightmap.Origin.Y, Heightmap.ChosenShaderFamilyIds.Num(),
+		*FString::JoinBy(Heightmap.ChosenShaderFamilyIds, TEXT(","), [](int32 Id) { return FString::FromInt(Id); }));
+}
+
+UTexture2D* USWGTerrainSubsystem::GetOrLoadShaderTexture(const FString& LayerName)
+{
+	if (TObjectPtr<UTexture2D>* Existing = LoadedShaderTextures.Find(LayerName))
+	{
+		return *Existing;
+	}
+
+	// Cache the miss too (as nullptr) so a bad/missing texture doesn't retry
+	// (and re-log) on every tile that happens to reference the same family.
+	UTexture2D* Result = nullptr;
+
+	const FString VirtualPath = FString::Printf(TEXT("texture/%s.dds"), *LayerName);
+	if (TreSubsystem && TreSubsystem->FileExists(VirtualPath))
+	{
+		const TArray<uint8> Bytes = TreSubsystem->ExtractFile(VirtualPath);
+		Result = FSWGDDSTextureLoader::LoadTexture2D(Bytes, FName(*VirtualPath), /*bSRGB=*/true);
+	}
+
+	if (!Result)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: failed to load shader texture '%s'"), *VirtualPath);
+	}
+
+	LoadedShaderTextures.Add(LayerName, Result);
+	return Result;
+}
+
+UMaterialInterface* USWGTerrainSubsystem::BuildTerrainTileMaterial(const FSWGBakedHeightmap& Heightmap)
+{
+	if (Heightmap.ChosenShaderFamilyIds.Num() == 0)
+	{
+		return UMaterial::GetDefaultMaterial(MD_Surface);
+	}
+
+	if (!TerrainBlendMaterial)
+	{
+		TerrainBlendMaterial = LoadObject<UMaterialInterface>(nullptr,
+			TEXT("/Game/SWGEmu/Materials/M_SWGTerrainBlend.M_SWGTerrainBlend"));
+	}
+
+	if (!TerrainBlendMaterial)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: M_SWGTerrainBlend not found — falling back to plain default material"));
+		return UMaterial::GetDefaultMaterial(MD_Surface);
+	}
+
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(TerrainBlendMaterial, this);
+
+	static const FName LayerParamNames[4] = { TEXT("Layer0"), TEXT("Layer1"), TEXT("Layer2"), TEXT("Layer3") };
+
+	for (int32 Channel = 0; Channel < Heightmap.ChosenShaderFamilyIds.Num(); ++Channel)
+	{
+		const FSWGShaderFamily* Family = CachedTerrainData.FindShaderFamily(Heightmap.ChosenShaderFamilyIds[Channel]);
+		if (!Family || Family->LayerNames.Num() == 0)
+		{
+			continue;
+		}
+
+		if (UTexture2D* Texture = GetOrLoadShaderTexture(Family->LayerNames[0]))
+		{
+			MID->SetTextureParameterValue(LayerParamNames[Channel], Texture);
+		}
+	}
+
+	return MID;
 }
 
 ALandscape* USWGTerrainSubsystem::SpawnLandscapeActor(const FVector& GridOrigin, float Spacing)
@@ -306,30 +1027,41 @@ ALandscape* USWGTerrainSubsystem::SpawnLandscapeActor(const FVector& GridOrigin,
 	const int32 NumSubsections = 1;
 	const int32 ComponentSizeQuads = NumSubsections * SubsectionSizeQuads;
 
-	// ALandscape's root component defaults to Static mobility — spawn it with the
-	// transform already set, rather than calling SetActorLocation/SetActorScale3D
-	// afterward, which logs a "has to be Movable" warning for a static root.
-	// XY: each quad spans Spacing world units. Z: 1.0, so packed heights (via
-	// LandscapeDataAccess::GetTexHeight, the exact inverse of GetLocalHeight)
-	// reconstruct directly in our own world-height units with no extra scaling.
-	//
-	// ALandscapeProxy's constructor unconditionally does
-	// RootComponent->SetRelativeScale3D(FVector(128, 128, 256)) — "Old default
-	// scale, preserved for compatibility" (Landscape.cpp:1762) — and empirically
-	// (confirmed via a live actor showing Scale=(2048,2048,256) for an intended
-	// (16,16,1)) this composes multiplicatively with whatever scale we hand
-	// SpawnActor, rather than being replaced by it. Pre-divide by that same
-	// constant so the composed result comes out as intended.
-	const FVector LandscapeConstructorDefaultScale(128.0f, 128.0f, 256.0f);
-	const FVector DesiredScale(Spacing, Spacing, 1.0f);
-	const FVector CompensatedScale = DesiredScale / LandscapeConstructorDefaultScale;
-	const FTransform SpawnTransform(FQuat::Identity, GridOrigin, CompensatedScale);
+	// XY: each quad spans Spacing world units. Z: HeightZScale (see its own
+	// comment) — packed heights (via LandscapeDataAccess::GetTexHeight, the
+	// exact inverse of GetLocalHeight) reconstruct in world-height units once
+	// scaled by this, since GetTexHeight's own range is a fixed +/-256 *local*
+	// units regardless of our chosen Z scale.
+	const FVector DesiredScale(Spacing, Spacing, HeightZScale);
+
+	// Pre-compensating this through SpawnActor's transform parameter (dividing
+	// by whatever ALandscapeProxy's constructor's own unconditional
+	// RootComponent->SetRelativeScale3D(128,128,256) call was assumed to
+	// compose with) turned out NOT to have a fixed, predictable relationship
+	// — two different pre-divide constants produced results consistent with
+	// a *squared* composition (k=512 XY / k=1024 Z against the divided input),
+	// not a simple linear compose. Chasing the exact formula further wasn't
+	// worth it: this is what actually caused the "terrain renders ~1000 units
+	// below the buildings" bug (buildings sit at their real network height,
+	// but the landscape's real applied Scale.Z came out wildly different from
+	// intended). Simplest fix: spawn at identity scale, then force the exact
+	// scale we want directly afterward. Static mobility blocks SetActorScale3D
+	// with a "has to be Movable" warning, so flip mobility around the call —
+	// this is a one-time setup step, not a runtime move, so there's no actual
+	// mobility concern being papered over.
+	const FTransform SpawnTransform(FQuat::Identity, GridOrigin, FVector::OneVector);
 	ALandscape* Landscape = Cast<ALandscape>(World->SpawnActor(ALandscape::StaticClass(), &SpawnTransform));
 	if (!Landscape)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: failed to spawn ALandscape"));
 		return nullptr;
 	}
+
+	USceneComponent* LandscapeRoot = Landscape->GetRootComponent();
+	const EComponentMobility::Type OriginalMobility = LandscapeRoot->Mobility;
+	LandscapeRoot->SetMobility(EComponentMobility::Movable);
+	Landscape->SetActorRelativeScale3D(DesiredScale);
+	LandscapeRoot->SetMobility(OriginalMobility);
 
 	Landscape->ComponentSizeQuads = ComponentSizeQuads;
 	Landscape->SubsectionSizeQuads = SubsectionSizeQuads;
@@ -484,4 +1216,155 @@ void USWGTerrainSubsystem::SpawnLandscapeGrid(const TArray<FSWGBakedHeightmap>& 
 		Name = Level->GetName();
 	}
 	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: spawned %dx%d landscape grid in level: %s"), ComponentGridSize, ComponentGridSize, *Name);
+}
+
+void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHeightmap>& Grid, const FVector& GridOrigin, float Spacing)
+{
+	using namespace UE::Geometry;
+
+	check(IsInGameThread());
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: no valid world to spawn terrain mesh in"));
+		return;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* TerrainActor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform(FQuat::Identity, GridOrigin), SpawnParams);
+	if (!TerrainActor)
+	{
+		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: failed to spawn terrain mesh actor"));
+		return;
+	}
+
+	// A plain AActor has no root component at construction time, so
+	// SpawnActor's given transform (GridOrigin) has nothing to store itself in
+	// and silently no-ops — same bug pattern as ASWGObject's missing root
+	// component earlier this session. Set the location explicitly once the
+	// root actually exists.
+	USceneComponent* TerrainRoot = NewObject<USceneComponent>(TerrainActor, TEXT("TerrainRoot"));
+	TerrainActor->SetRootComponent(TerrainRoot);
+	TerrainRoot->RegisterComponent();
+	TerrainActor->SetActorLocation(GridOrigin);
+
+	const int32 Resolution = HeightmapResolution;
+
+	for (int32 TileIndex = 0; TileIndex < Grid.Num(); ++TileIndex)
+	{
+		const FSWGBakedHeightmap& Heightmap = Grid[TileIndex];
+		if (Heightmap.Heights.Num() != Resolution * Resolution)
+		{
+			UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: terrain tile %d has %d samples, expected %d — skipping"),
+				TileIndex, Heightmap.Heights.Num(), Resolution * Resolution);
+			continue;
+		}
+
+		// Relative to the actor (GridOrigin), same coordinate this tile's own
+		// heights were baked in world-space against — no encoding/scale
+		// indirection at all, just a direct offset.
+		const FVector LocalOrigin = Heightmap.Origin - GridOrigin;
+
+		UDynamicMeshComponent* MeshComponent = NewObject<UDynamicMeshComponent>(TerrainActor, NAME_None, RF_Transactional);
+		MeshComponent->SetupAttachment(TerrainRoot);
+
+		const bool bHasShaderWeights = Heightmap.ShaderWeightColors.Num() == Resolution * Resolution;
+
+		MeshComponent->EditMesh([&Heightmap, Resolution, LocalOrigin, bHasShaderWeights](FDynamicMesh3& EditMesh)
+		{
+			EditMesh.EnableAttributes();
+			FDynamicMeshNormalOverlay* Normals = EditMesh.Attributes()->PrimaryNormals();
+			FDynamicMeshUVOverlay* UVs = EditMesh.Attributes()->PrimaryUV();
+
+			// Vertex colors carry this tile's shader-family blend weights (R/G/B
+			// = family[1]/[2]/[3]'s paint weight; family[0]'s weight is implicit,
+			// 1-R-G-B, computed in the material) — see BakeShaderWeights.
+			if (bHasShaderWeights)
+			{
+				EditMesh.EnableVertexColors(FVector3f::ZeroVector);
+			}
+
+			TArray<int32> VertexIds, NormalIds, UVIds;
+			VertexIds.SetNumUninitialized(Resolution * Resolution);
+			NormalIds.SetNumUninitialized(Resolution * Resolution);
+			UVIds.SetNumUninitialized(Resolution * Resolution);
+
+			for (int32 Row = 0; Row < Resolution; ++Row)
+			{
+				for (int32 Col = 0; Col < Resolution; ++Col)
+				{
+					const int32 Idx = Row * Resolution + Col;
+					const FVector3d Pos(
+						LocalOrigin.X + Col * Heightmap.Spacing,
+						LocalOrigin.Y + Row * Heightmap.Spacing,
+						Heightmap.Heights[Idx]);
+
+					VertexIds[Idx] = EditMesh.AppendVertex(Pos);
+					NormalIds[Idx] = Normals->AppendElement(FVector3f(0, 0, 1));
+					UVIds[Idx] = UVs->AppendElement(FVector2f(
+						(float)Col / (Resolution - 1),
+						(float)Row / (Resolution - 1)));
+
+					if (bHasShaderWeights)
+					{
+						EditMesh.SetVertexColor(VertexIds[Idx], Heightmap.ShaderWeightColors[Idx]);
+					}
+				}
+			}
+
+			for (int32 Row = 0; Row < Resolution - 1; ++Row)
+			{
+				for (int32 Col = 0; Col < Resolution - 1; ++Col)
+				{
+					const int32 I00 = Row * Resolution + Col;
+					const int32 I10 = Row * Resolution + (Col + 1);
+					const int32 I01 = (Row + 1) * Resolution + Col;
+					const int32 I11 = (Row + 1) * Resolution + (Col + 1);
+
+					const int32 TriA = EditMesh.AppendTriangle(VertexIds[I00], VertexIds[I01], VertexIds[I10]);
+					if (TriA >= 0)
+					{
+						Normals->SetTriangle(TriA, FIndex3i(NormalIds[I00], NormalIds[I01], NormalIds[I10]));
+						UVs->SetTriangle(TriA, FIndex3i(UVIds[I00], UVIds[I01], UVIds[I10]));
+					}
+
+					const int32 TriB = EditMesh.AppendTriangle(VertexIds[I10], VertexIds[I01], VertexIds[I11]);
+					if (TriB >= 0)
+					{
+						Normals->SetTriangle(TriB, FIndex3i(NormalIds[I10], NormalIds[I01], NormalIds[I11]));
+						UVs->SetTriangle(TriB, FIndex3i(UVIds[I10], UVIds[I01], UVIds[I11]));
+					}
+				}
+			}
+		});
+
+		MeshComponent->SetMaterial(0, BuildTerrainTileMaterial(Heightmap));
+		// Deliberately NOT calling SetColorOverrideMode(VertexColors) here —
+		// confirmed via FBaseDynamicMeshSceneProxy source that any non-None
+		// ColorOverrideMode makes the scene proxy force-substitute the
+		// engine's own built-in vertex-color debug material for WHATEVER
+		// material is assigned, silently discarding M_SWGTerrainBlend (the
+		// real per-tile textured material set just above) even though it was
+		// correctly assigned. Vertex color data itself still uploads to the
+		// GPU with ColorMode left at its default None, which is all
+		// M_SWGTerrainBlend's own VertexColor material node needs to read the
+		// per-vertex blend weights.
+
+		// Terrain was previously non-collidable at all (see world-object-plan.html
+		// "Collision-data research pass") — every character fell forever through
+		// empty space before its mesh loaded, since there was nothing to land on
+		// (worked around, not fixed, by forcing MOVE_Flying until a real position
+		// update arrived). Use the terrain's own baked triangle mesh directly as
+		// its collision shape (complex-as-simple) — it's already a heightfield,
+		// there's no cheaper "simple" approximation worth building separately.
+		MeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		MeshComponent->SetCollisionObjectType(ECC_WorldStatic);
+		MeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
+		MeshComponent->RegisterComponent();
+		MeshComponent->EnableComplexAsSimpleCollision();
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: spawned %d dynamic mesh terrain tile(s) at origin %s"), Grid.Num(), *GridOrigin.ToString());
 }

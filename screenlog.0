@@ -1,0 +1,131 @@
+Reading symbols from [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/bin/core3[m...
+Catchpoint 1 (signal SIGUSR1)
+Warning: '[1mset logging on[m', an alias for the command '[1mset logging enabled[m', is deprecated.
+Use '[1mset logging enabled on[m'.
+
+Warning: '[1mset logging off[m', an alias for the command '[1mset logging enabled[m', is deprecated.
+Use '[1mset logging enabled off[m'.
+
+Catchpoint 2 (signal SIGSEGV)
+Catchpoint 3 (signal SIGABRT)
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "[32m/lib/x86_64-linux-gnu/libthread_db.so.1[m".
+log/core3.log (2: No such file or directory)
+terminate called after throwing an instance of 'sys::io::FileWriterOpenException'
+
+Catchpoint 3 (signal SIGABRT), [33m__pthread_kill_implementation[m (
+    [36mthreadid[m=<optimized out>, [36msigno=signo@entry[m=6, [36mno_tid=no_tid@entry[m=0)
+    at [32m./nptl/pthread_kill.c[m:44
+44      ./nptl/pthread_kill.c: No such file or directory.
++shell date '+START %c %s%nSIGABRT Caught' >> gdb.log
++shell sleep 10;tail -10 ~/../bin/screenlog.0 | tr -d '\r' >> gdb.log
+tail: cannot open '/home/brendenbowers/../bin/screenlog.0' for reading: No such file or directory
++set logging file gdb.log
++set logging on
++bt
+#0  [33m__pthread_kill_implementation[m ([36mthreadid[m=<optimized out>, [36msigno=signo@entry[m=6, [36mno_tid=no_tid@entry[m=0) at [32m./nptl/pthread_kill.c[m:44
+#1  [34m0x00007ffff70a8f4f[m in [33m__pthread_kill_internal[m ([36msigno[m=6, [36mthreadid[m=<optimized out>) at [32m./nptl/pthread_kill.c[m:78
+#2  [34m0x00007ffff7059fb2[m in [33m__GI_raise[m ([36msig=sig@entry[m=6) at [32m../sysdeps/posix/raise.c[m:26
+#3  [34m0x00007ffff7044472[m in [33m__GI_abort[m () at [32m./stdlib/abort.c[m:79
+#4  [34m0x00007ffff6e9d919[m in [33m??[m () from [32m/lib/x86_64-linux-gnu/libstdc++.so.6[m
+#5  [34m0x00007ffff6ea8e1a[m in [33m??[m () from [32m/lib/x86_64-linux-gnu/libstdc++.so.6[m
+#6  [34m0x00007ffff6ea8e85[m in [33mstd::terminate()[m () from [32m/lib/x86_64-linux-gnu/libstdc++.so.6[m
+#7  [34m0x0000555556210f8e[m in [33m__clang_call_terminate[m ()
+#8  [34m0x000055555752379a[m in [33mengine::log::LoggerHelper::~LoggerHelper[m ([36mthis=this@entry[m=0x7fffffffd988) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/log/Logger.cpp[m:596
+#9  [34m0x0000555557526ae6[m in [33mengine::lua::Lua::runFile[m ([36mthis[m=0x55555781f770 <engine::core::Core::initializeProperties(sys::lang::String const&)::lua>, [36mfilename[m=@0x7fffffffda20: {static SSO_SIZE = 16, count = 16, {value = 0x7ffff6ac2920 "conf/engine3.lua", sso = " )\254\366\377\177\000\000(\366\201WUU\000"}, static npos = -1}) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/lua/Lua.cpp[m:61
+#10 [34m0x00005555574fbc30[m in [33mengine::core::Core::initializeProperties(sys::lang::String const&)::$_0::operator()() const[m ([36mthis[m=<optimized out>) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/core/Core.cpp[m:103
+#11 [34m0x00005555574fbb03[m in [33mengine::core::Core::initializeProperties[m ([36mclassName[m=@0x7fffffffdb00: {static SSO_SIZE = 16, count = 10, {value = 0x6172546b63617453 <error: Cannot access memory at address 0x6172546b63617453>, sso = "StackTrace\000\0000\000\000"}, static npos = -1}) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/core/Core.cpp[m:98
+#12 [34m0x00005555574e7f47[m in [33msys::lang::StackTrace::print[m ([36mthis=this@entry[m=0x7ffff6a74220) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/system/lang/StackTrace.cpp[m:60
+#13 [34m0x00005555574e73c6[m in [33msys::lang::Exception::printStackTrace[m ([36mthis[m=<optimized out>) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/system/lang/Exception.cpp[m:23
+#14 [34m0x0000555556210a2c[m in [33mmain[m ([36margc[m=1, [36margv[m=<optimized out>) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/src/main.cpp[m:92
++set logging off
++shell date '+END %c %s' >> gdb.log
++set trace-commands off
+[?2004h(gdb) continue
+[?2004lContinuing.
+
+Program received signal SIGCONT, Continued.
+[33m__pthread_kill_implementation[m ([36mthreadid[m=<optimized out>, [36msigno=signo@entry[m=6, 
+    [36mno_tid=no_tid@entry[m=0) at [32m./nptl/pthread_kill.c[m:44
+44      in [32m./nptl/pthread_kill.c[m
+[?2004h[?2004l[?2004h(gdb) Reading symbols from [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/bin/core3[m...
+Signal        Stop      Print   Pass to program Description
+SIGTTOU       No        No      Yes             Stopped (tty output)
+Signal        Stop      Print   Pass to program Description
+SIGTTIN       No        No      Yes             Stopped (tty input)
+Catchpoint 1 (signal SIGUSR1)
+Warning: '[1mset logging on[m', an alias for the command '[1mset logging enabled[m', is deprecated.
+Use '[1mset logging enabled on[m'.
+
+Warning: '[1mset logging off[m', an alias for the command '[1mset logging enabled[m', is deprecated.
+Use '[1mset logging enabled off[m'.
+
+Catchpoint 2 (signal SIGSEGV)
+Catchpoint 3 (signal SIGABRT)
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "[32m/lib/x86_64-linux-gnu/libthread_db.so.1[m".
+log/core3.log (2: No such file or directory)
+terminate called after throwing an instance of 'sys::io::FileWriterOpenException'
+
+Catchpoint 3 (signal SIGABRT), [33m__pthread_kill_implementation[m (
+    [36mthreadid[m=<optimized out>, [36msigno=signo@entry[m=6, [36mno_tid=no_tid@entry[m=0)
+    at [32m./nptl/pthread_kill.c[m:44
+44      ./nptl/pthread_kill.c: No such file or directory.
++shell date '+START %c %s%nSIGABRT Caught' >> gdb.log
++shell sleep 10;tail -10 ~/../bin/screenlog.0 | tr -d '\r' >> gdb.log
+tail: cannot open '/home/brendenbowers/../bin/screenlog.0' for reading: No such file or directory
++set logging file gdb.log
++set logging on
++bt
+#0  [33m__pthread_kill_implementation[m ([36mthreadid[m=<optimized out>, [36msigno=signo@entry[m=6, [36mno_tid=no_tid@entry[m=0) at [32m./nptl/pthread_kill.c[m:44
+#1  [34m0x00007ffff70a8f4f[m in [33m__pthread_kill_internal[m ([36msigno[m=6, [36mthreadid[m=<optimized out>) at [32m./nptl/pthread_kill.c[m:78
+#2  [34m0x00007ffff7059fb2[m in [33m__GI_raise[m ([36msig=sig@entry[m=6) at [32m../sysdeps/posix/raise.c[m:26
+#3  [34m0x00007ffff7044472[m in [33m__GI_abort[m () at [32m./stdlib/abort.c[m:79
+#4  [34m0x00007ffff6e9d919[m in [33m??[m () from [32m/lib/x86_64-linux-gnu/libstdc++.so.6[m
+#5  [34m0x00007ffff6ea8e1a[m in [33m??[m () from [32m/lib/x86_64-linux-gnu/libstdc++.so.6[m
+#6  [34m0x00007ffff6ea8e85[m in [33mstd::terminate()[m () from [32m/lib/x86_64-linux-gnu/libstdc++.so.6[m
+#7  [34m0x0000555556210f8e[m in [33m__clang_call_terminate[m ()
+#8  [34m0x000055555752379a[m in [33mengine::log::LoggerHelper::~LoggerHelper[m ([36mthis=this@entry[m=0x7fffffffd988) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/log/Logger.cpp[m:596
+#9  [34m0x0000555557526ae6[m in [33mengine::lua::Lua::runFile[m ([36mthis[m=0x55555781f770 <engine::core::Core::initializeProperties(sys::lang::String const&)::lua>, [36mfilename[m=@0x7fffffffda20: {static SSO_SIZE = 16, count = 16, {value = 0x7ffff6ac2920 "conf/engine3.lua", sso = " )\254\366\377\177\000\000(\366\201WUU\000"}, static npos = -1}) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/lua/Lua.cpp[m:61
+#10 [34m0x00005555574fbc30[m in [33mengine::core::Core::initializeProperties(sys::lang::String const&)::$_0::operator()() const[m ([36mthis[m=<optimized out>) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/core/Core.cpp[m:103
+#11 [34m0x00005555574fbb03[m in [33mengine::core::Core::initializeProperties[m ([36mclassName[m=@0x7fffffffdb00: {static SSO_SIZE = 16, count = 10, {value = 0x6172546b63617453 <error: Cannot access memory at address 0x6172546b63617453>, sso = "StackTrace\000\0000\000\000"}, static npos = -1}) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/core/Core.cpp[m:98
+#12 [34m0x00005555574e7f47[m in [33msys::lang::StackTrace::print[m ([36mthis=this@entry[m=0x7ffff6a74220) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/system/lang/StackTrace.cpp[m:60
+#13 [34m0x00005555574e73c6[m in [33msys::lang::Exception::printStackTrace[m ([36mthis[m=<optimized out>) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/system/lang/Exception.cpp[m:23
+#14 [34m0x0000555556210a2c[m in [33mmain[m ([36margc[m=1, [36margv[m=<optimized out>) at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/src/main.cpp[m:92
++set logging off
++shell date '+END %c %s' >> gdb.log
++set trace-commands off
+[?2004h(gdb) bt
+[?2004l#0  [33m__pthread_kill_implementation[m ([36mthreadid[m=<optimized out>, 
+    [36msigno=signo@entry[m=6, [36mno_tid=no_tid@entry[m=0) at [32m./nptl/pthread_kill.c[m:44
+#1  [34m0x00007ffff70a8f4f[m in [33m__pthread_kill_internal[m ([36msigno[m=6, 
+    [36mthreadid[m=<optimized out>) at [32m./nptl/pthread_kill.c[m:78
+#2  [34m0x00007ffff7059fb2[m in [33m__GI_raise[m ([36msig=sig@entry[m=6)
+    at [32m../sysdeps/posix/raise.c[m:26
+#3  [34m0x00007ffff7044472[m in [33m__GI_abort[m () at [32m./stdlib/abort.c[m:79
+#4  [34m0x00007ffff6e9d919[m in [33m??[m () from [32m/lib/x86_64-linux-gnu/libstdc++.so.6[m
+#5  [34m0x00007ffff6ea8e1a[m in [33m??[m () from [32m/lib/x86_64-linux-gnu/libstdc++.so.6[m
+#6  [34m0x00007ffff6ea8e85[m in [33mstd::terminate()[m ()
+   from [32m/lib/x86_64-linux-gnu/libstdc++.so.6[m
+#7  [34m0x0000555556210f8e[m in [33m__clang_call_terminate[m ()
+#8  [34m0x000055555752379a[m in [33mengine::log::LoggerHelper::~LoggerHelper[m (
+    [36mthis=this@entry[m=0x7fffffffd988)
+    at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/log/Logger.cpp[m:596
+#9  [34m0x0000555557526ae6[m in [33mengine::lua::Lua::runFile[m (
+    [36mthis[m=0x55555781f770 <engine::core::Core::initializeProperties(sys::lang::String const&)::lua>, 
+    [36mfilename[m=@0x7fffffffda20: {static SSO_SIZE = 16, count = 16, {value = 0x7ffff6ac2920 "conf/engine3.lua", sso = " )\254\366\377\177\000\000(\366\201WUU\000"}, static npos = -1})
+    at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/lua/Lua.cpp[m:61
+#10 [34m0x00005555574fbc30[m in [33mengine::core::Core::initializeProperties(sys::lang::String const&)::$_0::operator()() const[m ([36mthis[m=<optimized out>)
+    at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/core/Core.cpp[m:103
+#11 [34m0x00005555574fbb03[m in [33mengine::core::Core::initializeProperties[m (
+    [36mclassName[m=@0x7fffffffdb00: {static SSO_SIZE = 16, count = 10, {value = 0x6172546b63617453 <error: Cannot access memory at address 0x6172546b63617453>, sso = "StackTrace\000\0000\000\000"}, static npos = -1})
+    at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/engine/core/Core.cpp[m:98
+#12 [34m0x00005555574e7f47[m in [33msys::lang::StackTrace::print[m (
+    [36mthis=this@entry[m=0x7ffff6a74220)
+    at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/system/lang/StackTrace.cpp[m:60
+#13 [34m0x00005555574e73c6[m in [33msys::lang::Exception::printStackTrace[m (
+    [36mthis[m=<optimized out>)
+    at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/utils/engine3/MMOEngine/src/system/lang/Exception.cpp[m:23
+#14 [34m0x0000555556210a2c[m in [33mmain[m ([36margc[m=1, [36margv[m=<optimized out>)
+    at [32m/home/brendenbowers/workspace/Core3/MMOCoreORB/src/main.cpp[m:92
+[?2004h(gdb) 

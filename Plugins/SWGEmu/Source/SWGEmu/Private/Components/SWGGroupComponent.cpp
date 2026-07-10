@@ -1,4 +1,5 @@
 #include "Components/SWGGroupComponent.h"
+#include "Network/SWGPacket.h"
 
 USWGGroupComponent::USWGGroupComponent()
 {
@@ -7,5 +8,8 @@ USWGGroupComponent::USWGGroupComponent()
 
 void USWGGroupComponent::ApplyBase6(FSWGPacket& Packet)
 {
-	// TODO: GroupId/GroupInviterId/GroupInviteCounter from CREO base6.
+	GroupId = Packet.ReadInt64();
+	GroupInviterId = Packet.ReadInt64();
+	GroupInviteCounter = Packet.ReadInt64();
+	bHasBase6 = true;
 }

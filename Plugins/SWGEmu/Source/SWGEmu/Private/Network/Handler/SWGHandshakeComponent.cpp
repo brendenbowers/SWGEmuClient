@@ -53,6 +53,10 @@ void FSWGHandshakeComponent::Incoming(FBitReader& Packet)
 	{
 		HandleNetStatRequest(Packet);
 	}
+	else if (Op == ESWGSessionOp::NetStatResponse)
+	{
+		HandleNetStatResponse(Packet);
+	}
 	else if (Op == ESWGSessionOp::Disconnect)
 	{
 		HandleDisconnect(Packet);
@@ -232,6 +236,71 @@ void FSWGHandshakeComponent::HandleNetStatRequest(FBitReader& Packet)
 
 	SessionPtr->OutgoingUnreliable.Enqueue(MoveTemp(Response));
 	SessionPtr->LastPingReceived = (uint64)(FPlatformTime::Seconds() * 1000.0);
+	UE_LOG(LogTemp, Log, TEXT("FSWGHandshakeComponent: received NetStatRequest tick=%u — queued NetStatResponse"), Tick);
+}
+
+void FSWGHandshakeComponent::HandleNetStatResponse(FBitReader& Packet)
+{
+	const uint8* Data = Packet.GetData();
+	const int32 NumBytes = (int32)Packet.GetNumBytes();
+	if (NumBytes < 4)
+		return;
+
+	const uint16 Tick = ((uint16)Data[2] << 8) | (uint16)Data[3];
+	UE_LOG(LogTemp, Verbose, TEXT("FSWGHandshakeComponent: received NetStatResponse tick=%u"), Tick);
+}
+
+void FSWGHandshakeComponent::Tick(float DeltaTime)
+{
+	TSharedPtr<FSWGSession> SessionPtr = Session.Pin();
+	if (!SessionPtr.IsValid() || SessionPtr->State != ESWGSessionState::Connected)
+		return;
+
+	SecondsSinceLastNetStatusRequest += (double)DeltaTime;
+	if (SecondsSinceLastNetStatusRequest >= NetStatusRequestIntervalSeconds)
+	{
+		SecondsSinceLastNetStatusRequest = 0.0;
+		SendNetStatusRequest();
+	}
+}
+
+void FSWGHandshakeComponent::SendNetStatusRequest()
+{
+	TSharedPtr<FSWGSession> SessionPtr = Session.Pin();
+	if (!SessionPtr.IsValid())
+		return;
+
+	// Wire layout: [0x00][NetStatRequest][tick(2 BE)][5 zero ints][2 zero longs].
+	// Confirmed necessary the hard way: a 4-byte tick-only packet (matching
+	// NetStatusRequestMessage.h's minimal BasePacket(7) constructor) reached the
+	// server fine, but BaseClient::handleNetStatusRequest unconditionally parses
+	// 5 ints + 2 longs of stats AFTER the tick and throws
+	// StreamIndexOutOfBoundsException when they aren't there — so the header's
+	// own constructor doesn't match what the live handler actually requires.
+	// This mirrors NetStatusResponseMessage's real 40-byte total (2 op + 2 tick +
+	// 36 stat bytes) exactly, just with zeros for stats we don't track.
+	const uint16 Tick = (uint16)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFF);
+
+	FSWGPacket Request;
+	Request.WriteByte(0x00);
+	Request.WriteByte(static_cast<uint8>(ESWGSessionOp::NetStatRequest));
+	Request.WriteByte((uint8)(Tick >> 8));
+	Request.WriteByte((uint8)(Tick & 0xFF));
+	for (int32 i = 0; i < 5; ++i)
+	{
+		Request.WriteByte(0); Request.WriteByte(0); Request.WriteByte(0); Request.WriteByte(0);
+	}
+	for (int32 i = 0; i < 2; ++i)
+	{
+		for (int32 b = 0; b < 8; ++b)
+			Request.WriteByte(0);
+	}
+	Request.bEncrypted = false;
+	Request.bCompressed = false;
+
+	SessionPtr->OutgoingUnreliable.Enqueue(MoveTemp(Request));
+
+	UE_LOG(LogTemp, Log, TEXT("FSWGHandshakeComponent: sent NetStatusRequest tick=%u"), Tick);
 }
 
 void FSWGHandshakeComponent::HandleDisconnect(FBitReader& Packet)

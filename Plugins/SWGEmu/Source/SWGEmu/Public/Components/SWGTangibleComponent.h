@@ -6,6 +6,7 @@
 #include "SWGTangibleComponent.generated.h"
 
 struct FSWGPacket;
+class UTextRenderComponent;
 
 /**
  * TANO base3 identity/appearance fields — shared by every tangible object
@@ -37,4 +38,21 @@ public:
 	// MaxCondition, then ObjectVisible last) — see SWGTangibleBaselineParser::ParseBase3.
 	void ApplyBase3Part1(FSWGPacket& Packet); // Complexity..OptionsBitmask
 	void ApplyBase3Part2(FSWGPacket& Packet); // ObjectVisible
+
+	// Re-derives NameLabel's height above the root from the owner's *current*
+	// capsule size — called by USWGMeshGeneratorSubsystem once the owner's
+	// real mesh has resized its capsule, since UpdateNameLabel may have
+	// already run (and positioned the label) against the default capsule
+	// size beforehand. No-op if NameLabel doesn't exist yet.
+	void RepositionNameLabel();
+
+private:
+	// Dev-visibility name tag floating above the object — CustomName if the
+	// player set one (e.g. a crafted/renamed item), otherwise the raw
+	// File/StringTableId from ObjectName as a stand-in until STF string-table
+	// lookup exists to resolve it to real display text.
+	void UpdateNameLabel();
+
+	UPROPERTY()
+	TObjectPtr<UTextRenderComponent> NameLabel;
 };

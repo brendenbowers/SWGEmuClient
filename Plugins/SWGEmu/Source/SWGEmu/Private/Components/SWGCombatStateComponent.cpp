@@ -1,16 +1,35 @@
 #include "Components/SWGCombatStateComponent.h"
+#include "Network/SWGPacket.h"
 
 USWGCombatStateComponent::USWGCombatStateComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGCombatStateComponent::ApplyBase3(FSWGPacket& Packet)
+void USWGCombatStateComponent::ApplyBase3Part1(FSWGPacket& Packet)
 {
-	// TODO: Posture/FactionRank/StateBitmask from CREO base3.
+	Posture = Packet.ReadByte();
+	FactionRank = Packet.ReadByte();
 }
 
-void USWGCombatStateComponent::ApplyBase6(FSWGPacket& Packet)
+void USWGCombatStateComponent::ApplyBase3Part2(FSWGPacket& Packet)
 {
-	// TODO: TargetId/WeaponId/Frozen from CREO base6.
+	StateBitmask = Packet.ReadInt64();
+	bHasBase3 = true;
+}
+
+void USWGCombatStateComponent::ApplyBase6Part1(FSWGPacket& Packet)
+{
+	WeaponId = Packet.ReadInt64();
+}
+
+void USWGCombatStateComponent::ApplyBase6Part2(FSWGPacket& Packet)
+{
+	TargetId = Packet.ReadInt64();
+}
+
+void USWGCombatStateComponent::ApplyBase6Part3(FSWGPacket& Packet)
+{
+	Frozen = Packet.ReadByte();
+	bHasBase6 = true;
 }

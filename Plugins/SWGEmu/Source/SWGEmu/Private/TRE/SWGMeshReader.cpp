@@ -2,14 +2,14 @@
 
 namespace
 {
-	float ReadFloatLE(const uint8* Data, int32 Offset)
+	float MeshReadFloatLE(const uint8* Data, int32 Offset)
 	{
 		float Value;
 		FMemory::Memcpy(&Value, Data + Offset, sizeof(float));
 		return Value;
 	}
 
-	uint32 ReadUInt32LE(const uint8* Data, int32 Offset)
+	uint32 MeshReadUInt32LE(const uint8* Data, int32 Offset)
 	{
 		uint32 Value;
 		FMemory::Memcpy(&Value, Data + Offset, sizeof(uint32));
@@ -25,7 +25,32 @@ namespace
 
 	FVector ReadVector3LE(const uint8* Data, int32 Offset)
 	{
-		return FVector(ReadFloatLE(Data, Offset), ReadFloatLE(Data, Offset + 4), ReadFloatLE(Data, Offset + 8));
+		// SWG's mesh data is authored Y-up (model space); UE is Z-up. Reading
+		// the file's (x,y,z) straight into UE's (X,Y,Z) with no conversion put
+		// every creature's mesh (which stands upright in its own Y-up model
+		// space) tipped 90 degrees in UE's Z-up world — reported as creatures
+		// lying flat on their backs. Swapping Y/Z maps Y-up model space onto
+		// Z-up world space directly. Applies equally to positions, normals, and
+		// the bounding box (TryReadBoundingBox), all of which share this helper
+		// and all need the same conversion.
+		return FVector(MeshReadFloatLE(Data, Offset), MeshReadFloatLE(Data, Offset + 8), MeshReadFloatLE(Data, Offset + 4));
+	}
+
+	// Reverted (see chat): a x100 meters->world-units scale here made meshes
+	// correctly human-scale in isolation, but everything ELSE in this
+	// codebase (terrain heights, network spawn Z, world-snapshot positions)
+	// is tuned around the ORIGINAL small mesh scale and nobody wants to
+	// rescale that whole side instead — so mesh geometry goes back to
+	// matching the world's existing (small) scale rather than the world
+	// being scaled up to match human-sized meshes. Kept as a named constant
+	// (rather than deleted outright) in case a real per-format scale factor
+	// is needed again later. Applies to position data only (never normals,
+	// which must stay unit-length, or UVs).
+	constexpr float MetersToWorldUnits = 1.0f;
+
+	FVector ReadPositionVector3LE(const uint8* Data, int32 Offset)
+	{
+		return ReadVector3LE(Data, Offset) * MetersToWorldUnits;
 	}
 }
 
@@ -85,8 +110,8 @@ void FSWGMeshReader::TryReadBoundingBox(const FSWGIffReader& Reader, const FSWGI
 	if (BoxChunk.DataSize < 24) return;
 
 	const uint8* Data = Reader.GetChunkData(BoxChunk);
-	const FVector A = ReadVector3LE(Data, 0);
-	const FVector B = ReadVector3LE(Data, 12);
+	const FVector A = ReadPositionVector3LE(Data, 0);
+	const FVector B = ReadPositionVector3LE(Data, 12);
 
 	FBox Box(ForceInit);
 	Box += A;
@@ -103,17 +128,23 @@ bool FSWGMeshReader::ReadMshSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 		OutSubmesh.ShaderName = ReadNullTerminatedString(Reader, NameChunk);
 	}
 
+	// SubmeshForm (e.g. FORM "0001") wraps: NAME, an outer INFO chunk, and a
+	// nested FORM "0001" that itself holds an inner INFO chunk, FORM VTXA
+	// (-> FORM 0003 -> INFO/DATA), and INDX — confirmed via a live chunk-tree
+	// dump against a real .msh (thm_all_elevator_panel_down_s02_l0.msh).
+	// INDX sits under the *inner* wrapper form, not directly under
+	// SubmeshForm — that mismatch was why every submesh failed to parse.
 	FSWGIffChunk Wrapper0001, Vtxa, F0003, InfoChunk, DataChunk, IndxChunk;
 	if (!FindChildForm(Reader, SubmeshForm, TEXT("0001"), Wrapper0001)) return false;
 	if (!FindChildForm(Reader, Wrapper0001, TEXT("VTXA"), Vtxa)) return false;
 	if (!FindChildForm(Reader, Vtxa, TEXT("0003"), F0003)) return false;
 	if (!FindChildChunk(Reader, F0003, TEXT("INFO"), InfoChunk)) return false;
 	if (!FindChildChunk(Reader, F0003, TEXT("DATA"), DataChunk)) return false;
-	if (!FindChildChunk(Reader, SubmeshForm, TEXT("INDX"), IndxChunk)) return false;
+	if (!FindChildChunk(Reader, Wrapper0001, TEXT("INDX"), IndxChunk)) return false;
 
 	const uint8* InfoData = Reader.GetChunkData(InfoChunk);
-	const uint32 Flags = ReadUInt32LE(InfoData, 0);
-	const uint32 VertexCount = ReadUInt32LE(InfoData, 4);
+	const uint32 Flags = MeshReadUInt32LE(InfoData, 0);
+	const uint32 VertexCount = MeshReadUInt32LE(InfoData, 4);
 	if (VertexCount == 0) return false;
 
 	const int32 Stride = DataChunk.DataSize / (int32)VertexCount;
@@ -128,7 +159,7 @@ bool FSWGMeshReader::ReadMshSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 		const int32 Base = (int32)v * Stride;
 
 		FSWGMeshVertex Vertex;
-		Vertex.Position = ReadVector3LE(VertexData, Base + 0);
+		Vertex.Position = ReadPositionVector3LE(VertexData, Base + 0);
 		Vertex.Normal = ReadVector3LE(VertexData, Base + 12);
 
 		int32 UvStart = Base + 24;
@@ -143,8 +174,8 @@ bool FSWGMeshReader::ReadMshSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 		Vertex.UVs.Reserve(UvChannels);
 		for (int32 ch = 0; ch < UvChannels; ++ch)
 		{
-			const float U = ReadFloatLE(VertexData, UvStart + ch * 8);
-			const float V = ReadFloatLE(VertexData, UvStart + ch * 8 + 4);
+			const float U = MeshReadFloatLE(VertexData, UvStart + ch * 8);
+			const float V = MeshReadFloatLE(VertexData, UvStart + ch * 8 + 4);
 			Vertex.UVs.Add(FVector2D(U, V));
 		}
 
@@ -152,7 +183,7 @@ bool FSWGMeshReader::ReadMshSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 	}
 
 	const uint8* IndxData = Reader.GetChunkData(IndxChunk);
-	const uint32 TriIndexCount = ReadUInt32LE(IndxData, 0);
+	const uint32 TriIndexCount = MeshReadUInt32LE(IndxData, 0);
 	OutSubmesh.Triangles.Reserve((int32)TriIndexCount);
 	for (uint32 i = 0; i < TriIndexCount; ++i)
 	{
@@ -172,8 +203,15 @@ bool FSWGMeshReader::ReadStaticMesh(const FSWGIffReader& Reader, FSWGMeshData& O
 
 	const FSWGIffChunk& MeshForm = TopLevel[0];
 
-	FSWGIffChunk Form0004;
-	if (!FindChildForm(Reader, MeshForm, TEXT("0004"), Form0004)) return false;
+	// FORM MESH wraps a single version-tagged form — hardcoded "0004" only
+	// matched the original small test file; real production meshes use "0005"
+	// (confirmed against appearance/mesh/wp_mle_axe_heavy_duty_l0.msh). Same
+	// version-drift pattern already hit and fixed in FSWGTerrainReader's PTAT
+	// tag — take whichever single one is present rather than hardcode it,
+	// since nothing below this depends on which.
+	const TArray<FSWGIffChunk> MeshVersionForms = FindChildForms(Reader, MeshForm);
+	if (MeshVersionForms.Num() == 0) return false;
+	const FSWGIffChunk& Form0004 = MeshVersionForms[0];
 
 	TryReadBoundingBox(Reader, Form0004, OutMesh);
 
@@ -187,6 +225,14 @@ bool FSWGMeshReader::ReadStaticMesh(const FSWGIffReader& Reader, FSWGMeshData& O
 		if (ReadMshSubmesh(Reader, SubmeshForm, Submesh))
 		{
 			OutMesh.Submeshes.Add(MoveTemp(Submesh));
+		}
+		else
+		{
+			// Previously silent — ReadStaticMesh still returns true as long as
+			// at least one submesh parses, so a partial failure (most
+			// submeshes dropped, one small one surviving) looked like success
+			// while actually rendering only a fragment of the mesh.
+			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: failed to parse submesh FORM %s — skipping"), *SubmeshForm.FormType);
 		}
 	}
 
@@ -202,19 +248,52 @@ bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 	}
 
 	FSWGIffChunk PidxChunk, NidxChunk, TcsfForm, TcsdChunk, PrimForm, OitlChunk;
-	if (!FindChildChunk(Reader, PsdtForm, TEXT("PIDX"), PidxChunk)) return false;
-	if (!FindChildChunk(Reader, PsdtForm, TEXT("NIDX"), NidxChunk)) return false;
-	if (!FindChildForm(Reader, PsdtForm, TEXT("TCSF"), TcsfForm)) return false;
-	if (!FindChildChunk(Reader, TcsfForm, TEXT("TCSD"), TcsdChunk)) return false;
-	if (!FindChildForm(Reader, PsdtForm, TEXT("PRIM"), PrimForm)) return false;
-	if (!FindChildChunk(Reader, PrimForm, TEXT("OITL"), OitlChunk)) return false;
+	if (!FindChildChunk(Reader, PsdtForm, TEXT("PIDX"), PidxChunk))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s missing PIDX"), *PsdtForm.FormType);
+		return false;
+	}
+	if (!FindChildChunk(Reader, PsdtForm, TEXT("NIDX"), NidxChunk))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s missing NIDX"), *PsdtForm.FormType);
+		return false;
+	}
+	if (!FindChildForm(Reader, PsdtForm, TEXT("TCSF"), TcsfForm))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s missing TCSF"), *PsdtForm.FormType);
+		return false;
+	}
+	if (!FindChildChunk(Reader, TcsfForm, TEXT("TCSD"), TcsdChunk))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s TCSF missing TCSD"), *PsdtForm.FormType);
+		return false;
+	}
+	if (!FindChildForm(Reader, PsdtForm, TEXT("PRIM"), PrimForm))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s missing PRIM"), *PsdtForm.FormType);
+		return false;
+	}
+	// Unlike FORM MESH's static submeshes (which use a plain "ITL " tag with
+	// 12-byte/no-flag records — see ReadMshSubmesh), a .mgn PSDT's PRIM form
+	// genuinely uses "OITL" — confirmed via a live PRIM child dump (only
+	// children were INFO and OITL, no "ITL " at all). These are two distinct
+	// on-disk conventions, not the same bug in two places.
+	if (!FindChildChunk(Reader, PrimForm, TEXT("OITL"), OitlChunk))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s PRIM missing OITL"), *PsdtForm.FormType);
+		return false;
+	}
 
 	// PIDX carries its own leading count prefix; NIDX/TCSD do not (their counts
 	// are implied to match PIDX's) — confirmed against real samples, see
 	// world-object-plan.html "Parsing gotcha hit while decoding this".
 	const uint8* PidxData = Reader.GetChunkData(PidxChunk);
-	const uint32 CornerCount = ReadUInt32LE(PidxData, 0);
-	if (CornerCount == 0) return false;
+	const uint32 CornerCount = MeshReadUInt32LE(PidxData, 0);
+	if (CornerCount == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s has zero CornerCount"), *PsdtForm.FormType);
+		return false;
+	}
 
 	const uint8* NidxData = Reader.GetChunkData(NidxChunk);
 	const uint8* TcsdData = Reader.GetChunkData(TcsdChunk);
@@ -222,30 +301,37 @@ bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 	OutSubmesh.Vertices.Reserve((int32)CornerCount);
 	for (uint32 c = 0; c < CornerCount; ++c)
 	{
-		const uint32 PosIndex = ReadUInt32LE(PidxData, 4 + (int32)c * 4);
-		const uint32 NormIndex = ReadUInt32LE(NidxData, (int32)c * 4);
+		const uint32 PosIndex = MeshReadUInt32LE(PidxData, 4 + (int32)c * 4);
+		const uint32 NormIndex = MeshReadUInt32LE(NidxData, (int32)c * 4);
 		if ((int32)PosIndex >= Positions.Num() || (int32)NormIndex >= Normals.Num())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s corner %d out of range (PosIndex=%d/%d, NormIndex=%d/%d)"),
+				*PsdtForm.FormType, c, PosIndex, Positions.Num(), NormIndex, Normals.Num());
 			return false;
+		}
 
 		FSWGMeshVertex Vertex;
 		Vertex.Position = Positions[PosIndex];
 		Vertex.Normal = Normals[NormIndex];
-		Vertex.UVs.Add(FVector2D(ReadFloatLE(TcsdData, (int32)c * 8), ReadFloatLE(TcsdData, (int32)c * 8 + 4)));
+		Vertex.UVs.Add(FVector2D(MeshReadFloatLE(TcsdData, (int32)c * 8), MeshReadFloatLE(TcsdData, (int32)c * 8 + 4)));
 		OutSubmesh.Vertices.Add(MoveTemp(Vertex));
 	}
 
-	// OITL record = [uint16 flag][uint32 corner0][uint32 corner1][uint32 corner2] = 14 bytes,
-	// corner indices reference the CornerCount-sized array we just built directly.
+	// OITL record = [uint16 flag][uint32 corner0][uint32 corner1][uint32 corner2]
+	// = 14 bytes — confirmed against a real chunk (DataSize=2160: (2160-4)/14
+	// = 154 exactly, whereas /12 isn't an integer). This is the format the
+	// static-mesh "ITL " fix moved away from — that fix was specific to FORM
+	// MESH's plain "ITL " tag, not this one.
 	const uint8* OitlData = Reader.GetChunkData(OitlChunk);
-	const uint32 TriCount = ReadUInt32LE(OitlData, 0);
+	const uint32 TriCount = MeshReadUInt32LE(OitlData, 0);
 	constexpr int32 RecordBytes = 14;
 	OutSubmesh.Triangles.Reserve((int32)TriCount * 3);
 	for (uint32 t = 0; t < TriCount; ++t)
 	{
-		const int32 RecordOffset = 4 + (int32)t * RecordBytes;
-		OutSubmesh.Triangles.Add((int32)ReadUInt32LE(OitlData, RecordOffset + 2));
-		OutSubmesh.Triangles.Add((int32)ReadUInt32LE(OitlData, RecordOffset + 6));
-		OutSubmesh.Triangles.Add((int32)ReadUInt32LE(OitlData, RecordOffset + 10));
+		const int32 RecordOffset = 4 + (int32)t * RecordBytes + 2; // +2 skips the leading uint16 flag
+		OutSubmesh.Triangles.Add((int32)MeshReadUInt32LE(OitlData, RecordOffset + 0));
+		OutSubmesh.Triangles.Add((int32)MeshReadUInt32LE(OitlData, RecordOffset + 4));
+		OutSubmesh.Triangles.Add((int32)MeshReadUInt32LE(OitlData, RecordOffset + 8));
 	}
 
 	return true;
@@ -261,8 +347,12 @@ bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGM
 
 	const FSWGIffChunk& SkmgForm = TopLevel[0];
 
-	FSWGIffChunk Form0004;
-	if (!FindChildForm(Reader, SkmgForm, TEXT("0004"), Form0004)) return false;
+	// Same version-tag drift as FORM MESH's inner form (see ReadStaticMesh) —
+	// hardcoded "0004" doesn't match every real .mgn; take whichever single
+	// version-tagged form is actually present.
+	const TArray<FSWGIffChunk> SkmgVersionForms = FindChildForms(Reader, SkmgForm);
+	if (SkmgVersionForms.Num() == 0) return false;
+	const FSWGIffChunk& Form0004 = SkmgVersionForms[0];
 
 	FSWGIffChunk PosnChunk, NormChunk;
 	if (!FindChildChunk(Reader, Form0004, TEXT("POSN"), PosnChunk)) return false;
@@ -272,24 +362,34 @@ bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGM
 	const uint8* NormData = Reader.GetChunkData(NormChunk);
 	const int32 VertexCount = PosnChunk.DataSize / 12;
 
+	// See ReadPositionVector3LE's comment — .mgn position data is in meters,
+	// same as .msh, and needs the same scale-up to match the rest of the
+	// codebase's world-unit convention.
 	TArray<FVector> Positions, Normals;
 	Positions.Reserve(VertexCount);
 	Normals.Reserve(VertexCount);
 	for (int32 i = 0; i < VertexCount; ++i)
 	{
-		Positions.Add(ReadVector3LE(PosnData, i * 12));
+		Positions.Add(ReadPositionVector3LE(PosnData, i * 12));
 		Normals.Add(ReadVector3LE(NormData, i * 12));
 	}
 
+	int32 PsdtCount = 0;
 	for (const FSWGIffChunk& Child : FindChildForms(Reader, Form0004))
 	{
 		if (Child.FormType != TEXT("PSDT")) continue;
+		++PsdtCount;
 
 		FSWGMeshSubmesh Submesh;
 		if (ReadMgnSubmesh(Reader, Child, Positions, Normals, Submesh))
 		{
 			OutMesh.Submeshes.Add(MoveTemp(Submesh));
 		}
+	}
+
+	if (PsdtCount == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: FORM %s (SKMG version form) has no PSDT children"), *Form0004.FormType);
 	}
 
 	return OutMesh.Submeshes.Num() > 0;

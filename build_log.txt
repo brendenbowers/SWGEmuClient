@@ -1,0 +1,4 @@
+Microsoft Windows [Version 10.0.29613.1000]
+(c) Microsoft Corporation. All rights reserved.
+
+F:\Projects\SWGEmuClient>

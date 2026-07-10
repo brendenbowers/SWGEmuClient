@@ -62,6 +62,14 @@
 		{
 			"Name": "ModelViewViewModelPreview",
 			"Enabled": true
+		},
+		{
+			"Name": "SWGDevToolset",
+			"Enabled": true
+		},
+		{
+			"Name": "SWGAutoLogin",
+			"Enabled": true
 		}
 	]
 }

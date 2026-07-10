@@ -5,6 +5,8 @@
 #include "Subsystems/SWGMessageWaitSubsystem.h"
 #include "Network/Messages/Zone/ClientIdMessage.h"
 #include "Network/Messages/Zone/ClientPermissionsMessage.h"
+#include "Network/Messages/Zone/ConnectPlayerMessage.h"
+#include "Network/Messages/Zone/ConnectPlayerResponseMessage.h"
 #include "Flow/SWGGalaxySelectedPayload.h"
 
 void FSWGGalaxySelectedState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
@@ -89,7 +91,31 @@ void FSWGGalaxySelectedState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 
 							Ctx.SelectedGalaxyID = GalaxyID;
 
-							StateMachine->TransitionTo(ESWGClientState::CharacterSelect);
+							// Never actually sent until now — this struct existed fully
+							// implemented but unwired (same pattern as CmdSceneReady and
+							// the client-initiated NetStatusRequest keepalive both turned
+							// out to be). Per this message's own header comment, the
+							// server's reply "triggers the SelectCharacter / CmdStartScene
+							// sequence" — worth sending properly and waiting for the ack
+							// rather than assuming the rest of the flow works fine without it.
+							FConnectPlayerMessage ConnectMsg;
+							StateMachine->WaitSubsystem->SendAndWaitFor<FConnectPlayerResponseMessage>(ConnectMsg.Serialize(), ESWGMessageOp::ConnectPlayerResponseMessage)
+								.Next([Epoch, StateMchineWeakRef](TResult<TSharedPtr<const FConnectPlayerResponseMessage>> ConnectResult)
+									{
+										TStrongObjectPtr<USWGClientFlowSubsystem> InnerStateMachine = StateMchineWeakRef.Pin();
+										if (!InnerStateMachine.IsValid() || InnerStateMachine->Epoch != Epoch)
+										{
+											return;
+										}
+
+										if (!ConnectResult.IsSuccess())
+										{
+											InnerStateMachine->Fail(ConnectResult.GetError());
+											return;
+										}
+
+										InnerStateMachine->TransitionTo(ESWGClientState::CharacterSelect);
+									});
 						});
 			});
 }

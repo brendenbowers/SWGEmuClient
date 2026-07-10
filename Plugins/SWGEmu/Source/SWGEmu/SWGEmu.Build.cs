@@ -23,6 +23,10 @@ public class SWGEmu : ModuleRules
 				"GameplayTags",
 				"UMG",
 				"Landscape",
+				"GeometryFramework",
+				"GeometryCore",
+				"EnhancedInput",
+				"ImageCore",
 			}
 		);
 

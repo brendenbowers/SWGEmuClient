@@ -1,6 +1,7 @@
 #include "Network/Handler/SWGCrcComponent.h"
 #include "Network/SWGCrypto.h"
 #include "Network/SWGSession.h"
+#include "Network/SWGSessionOp.h"
 
 FString FSWGCrcComponent::GetComponentName()
 {
@@ -36,6 +37,18 @@ void FSWGCrcComponent::Incoming(FBitReader& Packet)
 	}
 
 	const uint8* Data = Packet.GetData();
+
+	// NetStatusResponseMessage is sent server-side with setCRCChecking(false) —
+	// Core3's BaseProtocol never appends a CRC trailer for it, so its trailing
+	// bytes are just payload (the zeroed stat fields), not a checksum. Treating
+	// them as one made every single reply fail validation and get dropped here
+	// (confirmed: 100% of "CRC mismatch" drops were this exact opcode). Pass it
+	// through untouched instead of trimming a nonexistent trailer.
+	if (SWGIsSessionPacket(Data, NumBytes) && SWGGetSessionOp(Data) == ESWGSessionOp::NetStatResponse)
+	{
+		return;
+	}
+
 	const int32 DataLen = NumBytes - 2;
 
 	// Trailing 2-byte CRC is big-endian
