@@ -1,4 +1,5 @@
 #include "Subsystems/SWGTerrainSubsystem.h"
+#include "Common/SWGWorldScale.h"
 #include "HAL/IConsoleManager.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
@@ -762,7 +763,11 @@ void USWGTerrainSubsystem::SpawnWorldSnapshotObjects(const TArray<FSWGWorldSnaps
 		FActorSpawnParameters SpawnParams;
 		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-		const FTransform SpawnTransform(Info.Rotation, Info.Position);
+		// Info.Position is raw/native space (straight from the .ws file, compared
+		// against WorldSnapshotSpawnRadius in that same raw space in
+		// LoadWorldSnapshotObjects) — scale to final UE space right at this
+		// actor-placement boundary.
+		const FTransform SpawnTransform(Info.Rotation, SWGToUnrealSpace(Info.Position));
 		AActor* Actor = World->SpawnActor<AActor>(Info.ActorClass, SpawnTransform, SpawnParams);
 
 		if (!Actor)
@@ -1248,7 +1253,10 @@ void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHei
 	USceneComponent* TerrainRoot = NewObject<USceneComponent>(TerrainActor, TEXT("TerrainRoot"));
 	TerrainActor->SetRootComponent(TerrainRoot);
 	TerrainRoot->RegisterComponent();
-	TerrainActor->SetActorLocation(GridOrigin);
+	// GridOrigin is raw/native space (matches the .trn's own units, same as
+	// every position vertex placement below is computed against) — scale to
+	// final UE space right at this actor-placement boundary.
+	TerrainActor->SetActorLocation(SWGToUnrealSpace(GridOrigin));
 
 	const int32 Resolution = HeightmapResolution;
 
@@ -1296,10 +1304,14 @@ void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHei
 				for (int32 Col = 0; Col < Resolution; ++Col)
 				{
 					const int32 Idx = Row * Resolution + Col;
-					const FVector3d Pos(
+					// Everything feeding this (LocalOrigin, Spacing, baked
+					// Heights) is raw/native space, matching the .trn's own
+					// units — SWGWorldScale converts to final UE units right
+					// here, at the actual vertex-placement boundary.
+					const FVector3d Pos = FVector3d(
 						LocalOrigin.X + Col * Heightmap.Spacing,
 						LocalOrigin.Y + Row * Heightmap.Spacing,
-						Heightmap.Heights[Idx]);
+						Heightmap.Heights[Idx]) * SWGWorldScale;
 
 					VertexIds[Idx] = EditMesh.AppendVertex(Pos);
 					NormalIds[Idx] = Normals->AppendElement(FVector3f(0, 0, 1));

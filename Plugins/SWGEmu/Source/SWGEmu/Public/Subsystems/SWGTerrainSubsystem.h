@@ -84,7 +84,16 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnTerrainError, const FString& /*ErrorMessage*/);
 	FOnTerrainError OnTerrainError;
 
-	/** Diagnostic: evaluates the same height function the baked heightmap uses, for comparing against a live actor's network-received Z. Returns 0 if no terrain has parsed yet. */
+	/**
+	 * Diagnostic: evaluates the same height function the baked heightmap uses,
+	 * for comparing against a live actor's network-received Z. Returns 0 if
+	 * no terrain has parsed yet. Takes and returns RAW/native-space
+	 * coordinates (matching the .trn file's own units and the network wire's
+	 * raw X/Y/Z, NOT final UE-space actor positions) — see Common/SWGWorldScale.h.
+	 * Callers comparing against a network position should pass that position's
+	 * own raw X/Y unconverted; comparing against a live actor's UE Location
+	 * needs SWGToRawSpace() first.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Terrain")
 	float GetHeightAt(float X, float Y) const;
 
@@ -192,8 +201,12 @@ private:
 
 	// How far from the spawn position to keep world-snapshot objects (9099
 	// total nodes for all of tatooine — spawning every one would be wasteful
-	// and mostly irrelevant to where the player actually is).
-	static constexpr float WorldSnapshotSpawnRadius = 3000.0f;
+	// and mostly irrelevant to where the player actually is). Cut down
+	// alongside ComponentGridSize (see its own comment) now that mesh
+	// geometry is back to human-scale UE units — the old 3000 (matching a
+	// ~3-tile-wide baked area) would now try to spawn props across a
+	// footprint we no longer bake terrain for at all.
+	static constexpr float WorldSnapshotSpawnRadius = 1000.0f;
 
 	// Cached from the last successful ParseTerrain in LoadTerrain, so GetHeightAt
 	// can re-evaluate the same height function on demand (diagnostics, and any
@@ -220,8 +233,11 @@ private:
 
 	// Tile ComponentGridSize x ComponentGridSize components (each still
 	// HeightmapResolution samples / HeightmapWorldExtent world units, same as a
-	// single patch) under one ALandscape actor, centered on the spawn point —
-	// more coverage without coarsening spacing. Kept odd so there's a well-defined
-	// center component containing the spawn point.
-	static constexpr int32 ComponentGridSize = 3;
+	// single patch) under one ALandscape actor, centered on the spawn point.
+	// Cut from 3 down to 1 (see chat): mesh geometry (creatures/buildings/props)
+	// is back to human-scale UE units, and baking/spawning a 3x3 tile area at
+	// that scale is both far more world than the player can meaningfully see
+	// at once and far more expensive — one tile centered on the spawn point
+	// is enough for now.
+	static constexpr int32 ComponentGridSize = 1;
 };

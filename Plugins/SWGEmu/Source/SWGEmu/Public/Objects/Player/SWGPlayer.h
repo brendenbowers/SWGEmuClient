@@ -58,17 +58,36 @@ public:
 	// even for a differently-sized character.
 	void UpdateCameraHeight();
 
-	// Terrain has no collision yet (USWGTerrainSubsystem's landscape renders
-	// but collision generation is a separate deferred task), so MOVE_Walking
-	// would free-fall forever. Switch to Flying on possession as a stand-in
-	// until real terrain collision exists.
+	// Switches to MOVE_Walking on possession now that terrain has real
+	// collision (USWGTerrainSubsystem) — the default pre-possession movement
+	// mode is whatever ACharacter starts with, which isn't guaranteed to be
+	// Walking.
 	virtual void PossessedBy(AController* NewController) override;
 
 protected:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
 	void Move(const FInputActionValue& Value);
-	void Look(const FInputActionValue& Value);
+
+	// Mouse-look, bound directly to the legacy raw MouseX/MouseY axis keys
+	// rather than through an Enhanced Input action — see the .cpp's
+	// SetupPlayerInputComponent comment for why.
+	void LookMouseX(float Value);
+	void LookMouseY(float Value);
+
+	// Holding RMB turns the character to face the camera instead of the
+	// default auto-face-movement behavior (bOrientRotationToMovement) —
+	// released, it reverts back. Implemented manually in Tick() rather than
+	// via bUseControllerRotationYaw because the actor's yaw needs the same
+	// -90 correction CameraBoom's own alignment requires (see the .cpp's
+	// PossessedBy comment) — the engine's built-in controller-rotation-yaw
+	// behavior has no way to inject that offset.
+	void OnRightMouseButtonPressed();
+	void OnRightMouseButtonReleased();
+
+	// Mouse wheel zooms the camera by adjusting CameraBoom's TargetArmLength,
+	// clamped so it can't zoom through the character or out to absurd range.
+	void OnMouseWheel(float Value);
 
 	// Sends the current position/orientation to the server as a
 	// FDataTransformMessage, throttled by Tick — see the .cpp for the
@@ -76,28 +95,29 @@ protected:
 	void SendDataTransformUpdate();
 
 	// Third-person: a spring arm holding the camera behind/above the
-	// character, orbiting with mouse look (bUsePawnControlRotation) and doing
-	// its own collision test so it doesn't clip through walls/terrain.
+	// character, orbiting freely around it with mouse look
+	// (bUsePawnControlRotation) independent of which way the body currently
+	// faces, and doing its own collision test so it doesn't clip through
+	// walls/terrain.
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
 	TObjectPtr<USpringArmComponent> CameraBoom;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
 	TObjectPtr<UCameraComponent> FollowCamera;
 
-	// Same Enhanced Input actions ASWGEmuClientCharacter's third-person
-	// Blueprint uses (/Game/Input/Actions/IA_Move, IA_Look) — the project's
-	// existing IMC_Default/IMC_MouseLook mapping contexts already route
-	// WASD/mouse to these, so binding the same assets here means input keeps
-	// working across the swap from the default free-fly pawn to this one
-	// without touching any input assets.
+	// Same Enhanced Input action ASWGEmuClientCharacter's third-person
+	// Blueprint uses (/Game/Input/Actions/IA_Move) — the project's existing
+	// IMC_Default mapping context already routes WASD to this, so binding the
+	// same asset here means input keeps working across the swap from the
+	// default free-fly pawn to this one without touching any input assets.
+	// (Look uses the legacy MouseX/MouseY axis path instead — see
+	// SetupPlayerInputComponent — so there's no equivalent LookAction here.)
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
 	TObjectPtr<UInputAction> MoveAction;
-
-	UPROPERTY(EditDefaultsOnly, Category = "Input")
-	TObjectPtr<UInputAction> LookAction;
 
 private:
 	float TimeSinceLastTransformSend = 0.0f;
 	int32 TransformMovementCounter = 0;
 	bool bWasMovingLastSend = false;
+	bool bIsTurningToCamera = false;
 };

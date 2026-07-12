@@ -3,6 +3,13 @@
 #include "CoreMinimal.h"
 #include "TRE/SWGIffReader.h"
 
+/** One bone influence — BoneIndex is local to the owning FSWGMeshData's BoneNames list, not a skeleton index. */
+struct FSWGBoneWeight
+{
+	int32 BoneIndex = 0;
+	float Weight = 0.0f;
+};
+
 /** One decoded vertex — position/normal always present, UVs/color depend on the source format. */
 struct FSWGMeshVertex
 {
@@ -11,6 +18,9 @@ struct FSWGMeshVertex
 	TArray<FVector2D> UVs;
 	FColor Color = FColor::White;
 	bool bHasColor = false;
+
+	// Only populated for .mgn (skeletal) meshes read via ReadSkeletalMeshBindPose — empty for .msh.
+	TArray<FSWGBoneWeight> BoneWeights;
 };
 
 /** One shader-bound submesh: a self-contained vertex buffer + flat triangle index list. */
@@ -28,6 +38,15 @@ struct FSWGMeshData
 	/** From the file's own EXBX/BOX chunk, if present. Unset (no extent) otherwise — not required for rendering. */
 	FBox BoundingBox = FBox(ForceInit);
 	bool bHasBoundingBox = false;
+
+	/**
+	 * This mesh's own bone name list (XFNM), only populated for .mgn meshes —
+	 * FSWGMeshVertex::BoneWeights' BoneIndex values index into this array, NOT
+	 * into a skeleton's joint list directly. Names are as stored in the file
+	 * (lowercase, e.g. "lthigh") — matching against a FSWGSkeletonData's joint
+	 * names (e.g. "lThigh") needs a case-insensitive comparison.
+	 */
+	TArray<FString> BoneNames;
 };
 
 /**
@@ -38,8 +57,13 @@ struct FSWGMeshData
  * implemented yet — this class only decodes geometry, it doesn't touch UE mesh
  * components at all).
  *
- * .mgn decode is bind-pose only: POSN/NORM are read as-is with no skinning applied
- * (see world-object-plan.html "Decision: bind-pose-only creatures/players for now").
+ * .mgn's POSN/NORM are read as-is with no skinning APPLIED (no vertex ever
+ * gets moved/rotated by a bone) — but per-vertex bone weights (TWHD/TWDT) and
+ * this mesh's own bone name list (XFNM) are decoded into FSWGMeshData for a
+ * downstream skeletal-mesh-build step to consume, alongside FSWGSkeletonReader's
+ * bind pose (see world-object-plan.html "Decision: bind-pose-only creatures/
+ * players for now" — that decision predates the current skeleton-import work
+ * and is being revisited).
  */
 class SWGEMU_API FSWGMeshReader
 {
@@ -66,5 +90,18 @@ private:
 	static void TryReadBoundingBox(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh);
 
 	static bool ReadMshSubmesh(const FSWGIffReader& Reader, const FSWGIffChunk& SubmeshForm, FSWGMeshSubmesh& OutSubmesh);
-	static bool ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffChunk& PsdtForm, const TArray<FVector>& Positions, const TArray<FVector>& Normals, FSWGMeshSubmesh& OutSubmesh);
+	static bool ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffChunk& PsdtForm, const TArray<FVector>& Positions, const TArray<FVector>& Normals,
+		const TArray<TArray<FSWGBoneWeight>>& VertexWeights, FSWGMeshSubmesh& OutSubmesh);
+
+	/** Splits a chunk of back-to-back null-terminated strings (XFNM) into names, consuming the whole chunk. */
+	static TArray<FString> ReadAllNullTerminatedStrings(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk);
+
+	/**
+	 * Decodes TWHD (per-vertex influence count) + TWDT (sequential bone-index/
+	 * weight pairs) into one weight list per vertex, indexed the same way as
+	 * Positions/Normals (by POSN index) — see world-object-plan.html's TWHD/TWDT
+	 * entry. Returns an empty array (not a failure) if either chunk is missing;
+	 * bind-pose rendering doesn't depend on skin weights being present.
+	 */
+	static TArray<TArray<FSWGBoneWeight>> ReadVertexWeights(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, int32 VertexCount);
 };

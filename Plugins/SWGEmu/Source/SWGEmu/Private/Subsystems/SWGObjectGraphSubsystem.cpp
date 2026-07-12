@@ -1,6 +1,7 @@
 
 
 #include "Subsystems/SWGObjectGraphSubsystem.h"
+#include "Common/SWGWorldScale.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
@@ -324,8 +325,6 @@ FVector USWGObjectGraphSubsystem::GroundedLocationFor(const AActor* Actor, const
 		if (const UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
 		{
 			const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
-			UE_LOG(LogTemp, Warning, TEXT("GroundedLocationFor: actor=%s networkPos.Z=%.2f halfHeight=%.2f -> result.Z=%.2f"),
-				*Actor->GetName(), NetworkPos.Z, HalfHeight, NetworkPos.Z + HalfHeight);
 			return NetworkPos + FVector(0.0f, 0.0f, HalfHeight);
 		}
 		UE_LOG(LogTemp, Warning, TEXT("GroundedLocationFor: actor=%s is ACharacter but GetCapsuleComponent() is null"), *Actor->GetName());
@@ -453,7 +452,7 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 	}
 
 	
-	const FVector Location(Msg.PosX, Msg.PosY, Msg.PosZ);
+	const FVector Location = SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ));
 	// Unlike Position (confirmed 1:1, no swap — see FSWGZoneLoadingState::Enter's
 	// comment), a direct X,Y,Z,W copy here produced wildly wrong pitch (~-89 deg
 	// for standing NPCs, confirmed via a live actor's transform) — the rotation
@@ -631,14 +630,8 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	// — no axis swap needed, just direct field->component mapping. Msg.PosZ is
 	// feet/ground-level; GroundedLocationFor corrects for ACharacter's capsule
 	// center being the actual actor origin (see its own comment / the header's).
-	Actor->SetActorLocation(GroundedLocationFor(Actor, FVector(Msg.PosX, Msg.PosY, Msg.PosZ)));
-
-	if (TerrainSubsystem)
-	{
-		const float TerrainZ = TerrainSubsystem->GetHeightAt(Msg.PosX, Msg.PosY);
-		UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: canyon-check object=%lld actor=%s networkPos=(%.1f,%.1f,%.1f) terrainZ=%.1f delta=%.1f"),
-			Msg.ObjectId, *Actor->GetName(), Msg.PosX, Msg.PosY, Msg.PosZ, TerrainZ, Msg.PosZ - TerrainZ);
-	}
+	// Raw wire position -> UE space at this boundary, same as the initial spawn.
+	Actor->SetActorLocation(GroundedLocationFor(Actor, SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ))));
 
 	// DirectionAngle is a single byte (0-255) mapping to a full 0-360 degree
 	// yaw — cheap per-tick facing without transmitting a full quaternion like

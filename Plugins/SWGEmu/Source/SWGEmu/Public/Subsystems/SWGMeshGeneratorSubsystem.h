@@ -4,6 +4,8 @@
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
 #include "TRE/SWGMeshReader.h"
+#include "TRE/SWGSkeletonReader.h"
+#include "TRE/SWGRuntimeAnimationPlayer.h"
 #include "SWGMeshGeneratorSubsystem.generated.h"
 
 class USWGTreSubsystem;
@@ -12,6 +14,20 @@ class UDynamicMesh;
 class UDynamicMeshComponent;
 class UMaterialInterface;
 class UTexture2D;
+class UPoseableMeshComponent;
+
+/**
+ * One actor's live procedural animation playback — see
+ * TryApplyGeneratedAnimatedMesh's comment for why this drives bones directly
+ * every tick instead of using a built UAnimSequence.
+ */
+struct FSWGPlayingAnimation
+{
+	TWeakObjectPtr<UPoseableMeshComponent> PoseableMesh;
+	FSWGSkeletonData Skeleton;
+	FSWGRuntimeAnimation RuntimeAnim;
+	float PlaybackTimeSeconds = 0.0f;
+};
 
 /** One entity waiting for its mesh to be resolved, parsed, and built. */
 struct FSWGPendingMeshRequest
@@ -125,6 +141,36 @@ private:
 	void FinalizeMeshComponent(AActor& Actor, UDynamicMeshComponent& MeshComponent, const FVector3f& PlaceholderColor, const TArray<UMaterialInterface*>& SubmeshMaterials);
 
 	/**
+	 * Hardcoded "for now, just the Wookiee" resolution: if MeshVirtualPaths
+	 * matches the Wookiee's known body mesh, swaps in the pre-built (editor-
+	 * time only — see FSWGSkeletalMeshImporter) /Game/SWGEmu/Generated/
+	 * SK_Wookiee skeletal mesh on a new UPoseableMeshComponent (NOT Actor's
+	 * ACharacter::GetMesh() — that stays hidden), hiding DynamicMeshComponent
+	 * instead (the reverse of FinalizeMeshComponent's normal "always hide
+	 * GetMesh()" default). Loading the already-built skeletal mesh works in
+	 * any build config — only its construction (the console commands) is
+	 * editor-only.
+	 *
+	 * Animation is driven directly at runtime (parses the skeleton + idle
+	 * .ans fresh from the TRE right here, builds a FSWGRuntimeAnimation, and
+	 * registers it in PlayingAnimations for Tick to sample every frame via
+	 * UPoseableMeshComponent::SetBoneTransformByName) rather than playing a
+	 * built UAnimSequence — building real UAnimSequence assets via
+	 * IAnimationDataController turned out to silently discard every keyframe
+	 * in this engine build no matter what was tried (see
+	 * FSWGRuntimeAnimationPlayer's header comment for the full account), so
+	 * this sidesteps that path entirely. It's also not editor-only, unlike
+	 * the abandoned AnimSequence approach.
+	 *
+	 * Returns false (no-op, DynamicMeshComponent stays visible) for anything
+	 * that isn't a recognized generated model, or if the generated skeletal
+	 * mesh hasn't been built yet. A general resolution system (any species
+	 * with generated assets, not just this one hardcoded check) is a natural
+	 * follow-up once more than one creature has been imported this way.
+	 */
+	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, UMeshComponent* DynamicMeshComponent);
+
+	/**
 	 * Parses a .sht shader template (e.g. "shader/dl44_main_as9.sht") and
 	 * returns the virtual path of its primary diffuse texture — confirmed
 	 * wire layout: FORM SSHT > FORM 0000 > FORM TXMS > FORM TXM(*) > FORM
@@ -137,6 +183,37 @@ private:
 	 * Returns empty if the shader has no usable texture reference.
 	 */
 	FString ResolveShaderDiffuseTexturePath(const FString& ShaderVirtualPath);
+
+	/**
+	 * Parses a .sht shader template's FORM TFAC block (creature/player skin
+	 * shaders only — most object shaders have none) and returns the virtual
+	 * path of its customization color palette (e.g.
+	 * "palette/pc_skin_wke.pal") — wire layout: FORM SSHT > FORM 0000 > FORM
+	 * TFAC > CHUNK "PAL " (repeated, one per customization color slot):
+	 * [null-terminated key string, e.g. "index_color_1"][4-byte reversed-
+	 * fourCC tag][null-terminated palette virtual path][trailing bytes
+	 * (looks like a default palette index) — not currently read]. Same
+	 * MAIN-tag-preferred/first-found-fallback convention as
+	 * ResolveShaderDiffuseTexturePath. Discovered while investigating why the
+	 * Wookiee rendered flat white — SWG creature skins are a pattern texture
+	 * (see ResolveShaderDiffuseTexturePath) meant to be tinted by a color
+	 * picked from this palette per-character, not a ready-to-use diffuse on
+	 * its own. Returns empty if the shader has no TFAC block (plain object/
+	 * weapon/building shaders — expected, not an error).
+	 */
+	FString ResolveShaderTintPalettePath(const FString& ShaderVirtualPath);
+
+	/**
+	 * Loads/decodes a .pal customization palette (standard little-endian RIFF
+	 * "PAL data" format — PALETTEHEADER{u16 Version; u16 NumEntries;} +
+	 * NumEntries*{R,G,B,Flags} bytes — distinct from every other SWG asset
+	 * format read elsewhere in this codebase, which are all big-endian IFF)
+	 * and returns the average of all its entries as a flat tint approximation
+	 * — a real per-character customization index pick is a follow-up, not
+	 * implemented yet. Returns opaque white (no tint change) if the palette
+	 * can't be loaded/parsed.
+	 */
+	FLinearColor LoadPaletteAverageTint(const FString& PaletteVirtualPath);
 
 	/** Loads/decodes texture/<name>.dds once and caches the result (see LoadedObjectTextures) — same pattern as USWGTerrainSubsystem::GetOrLoadShaderTexture. */
 	UTexture2D* GetOrLoadObjectTexture(const FString& TextureVirtualPath);
@@ -183,4 +260,7 @@ private:
 	/** Shader virtual path (e.g. "shader/dl44_main_as9.sht") -> built MaterialInstanceDynamic. See GetOrBuildObjectMaterial. */
 	UPROPERTY()
 	TMap<FString, TObjectPtr<UMaterialInterface>> ObjectMaterialCache;
+
+	/** Actors whose UPoseableMeshComponent is being driven directly every tick — see TryApplyGeneratedAnimatedMesh and FSWGRuntimeAnimationPlayer. */
+	TArray<FSWGPlayingAnimation> PlayingAnimations;
 };

@@ -1,4 +1,5 @@
 #include "Objects/Player/SWGPlayer.h"
+#include "Common/SWGWorldScale.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -16,10 +17,10 @@ ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 {
 	PrimaryActorTick.bCanEverTick = true;
 
-	// Third-person: mouse look orbits the camera boom around the character
-	// instead of snapping the body to match the view, and the character
-	// faces whichever direction it's actually moving (standard UE
-	// third-person convention — matches BP_ThirdPersonCharacter's own setup).
+	// Third-person orbit camera: mouse moves the boom freely around the
+	// character (bUsePawnControlRotation) instead of turning the body, and
+	// the character auto-faces whichever direction it's actually moving —
+	// standard UE third-person convention (matches BP_ThirdPersonCharacter).
 	bUseControllerRotationYaw = false;
 	bUseControllerRotationPitch = false;
 	bUseControllerRotationRoll = false;
@@ -28,12 +29,9 @@ ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(GetCapsuleComponent());
-	// TargetArmLength is re-derived from the capsule's real size in
-	// UpdateCameraHeight (same reasoning as eye height) — a fixed 400 (tuned
-	// for UE's normal ~180-unit-tall default capsule) would be wildly too
-	// long once the capsule reflects this project's actual (much smaller)
-	// creature-mesh scale, putting the camera far outside nearby terrain
-	// features and making its own collision-test yank it in tight/underground.
+	// TargetArmLength (fixed 300, see UpdateCameraHeight) and boom offset
+	// height are set there since the height still depends on the capsule's
+	// real size (re-called once the actual mesh resizes it).
 	CameraBoom->bUsePawnControlRotation = true;
 	CameraBoom->bDoCollisionTest = true;
 
@@ -51,12 +49,6 @@ ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	{
 		MoveAction = MoveActionFinder.Object;
 	}
-
-	static ConstructorHelpers::FObjectFinder<UInputAction> LookActionFinder(TEXT("/Game/Input/Actions/IA_Look.IA_Look"));
-	if (LookActionFinder.Succeeded())
-	{
-		LookAction = LookActionFinder.Object;
-	}
 }
 
 void ASWGPlayer::UpdateCameraHeight()
@@ -71,12 +63,10 @@ void ASWGPlayer::UpdateCameraHeight()
 	const float EyeHeightAboveFeet = HalfHeight * 2.0f * 0.92f;
 	CameraBoom->SetRelativeLocation(FVector(0.0f, 0.0f, EyeHeightAboveFeet - HalfHeight));
 
-	// Scale the boom length off the capsule's real size too — a fixed length
-	// tuned for a normal ~180-unit-tall UE character would be wildly too
-	// long (or too short) for whatever this creature's mesh actually decoded
-	// to. ~4x full standing height is a reasonable "see the character with
-	// some breathing room" default third-person distance.
-	CameraBoom->TargetArmLength = FMath::Max(HalfHeight * 2.0f * 4.0f, 10.0f);
+	// Fixed rather than scaled off capsule height — the capsule-relative
+	// length put the camera too far out once tested in PIE; 300 is the
+	// tuned distance that reads well regardless of creature mesh size.
+	CameraBoom->TargetArmLength = 300.0f;
 }
 
 void ASWGPlayer::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -91,7 +81,23 @@ void ASWGPlayer::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
 
-	GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+
+	// CameraBoom orbits off ControlRotation (bUsePawnControlRotation), which
+	// otherwise defaults to (0,0,0) regardless of whatever heading the
+	// network's spawn quaternion actually gave this actor (see
+	// HandleSceneCreateObject) — without this the boom would start facing
+	// world yaw-zero instead of behind the character. The +90 yaw is the
+	// same empirically-tuned correction found while testing in PIE: the
+	// boom's local axes don't line up with the actor's forward 1:1, so
+	// starting ControlRotation at the actor's own yaw put the camera off to
+	// the character's side instead of behind it. -15 pitch gives the
+	// camera its default slight downward tilt; from here on, mouse-look
+	// (LookMouseX/LookMouseY) freely orbits away from this starting point.
+	if (NewController)
+	{
+		NewController->SetControlRotation(GetActorRotation() + FRotator(-15.0f, 90.0f, 0.0f));
+	}
 }
 
 void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -104,15 +110,68 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 		{
 			EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &ASWGPlayer::Move);
 		}
-		if (LookAction)
-		{
-			EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &ASWGPlayer::Look);
-		}
 	}
 	else
 	{
 		UE_LOG(LogTemp, Error, TEXT("ASWGPlayer::SetupPlayerInputComponent: no EnhancedInputComponent — movement input will not work"));
 	}
+
+	// Mouse-look is bound via the legacy raw-key axis path (BindAxisKey), not
+	// an Enhanced Input action — every Enhanced Input mouse-axis mapping
+	// tested (paired Mouse2D, and separate MouseX/MouseY) produced zero
+	// Triggered events in this project despite provably-correct IMC/IA
+	// configuration, while this legacy path reliably delivers real deltas
+	// and Enhanced Input's own keyboard actions (Move above) work fine. The
+	// discrepancy points at Enhanced Input's high-precision mouse sampling
+	// specifically, not anything wrong with the mapping assets — this is the
+	// pragmatic workaround rather than a real fix for that root cause.
+	PlayerInputComponent->BindAxisKey(EKeys::MouseX, this, &ASWGPlayer::LookMouseX);
+	PlayerInputComponent->BindAxisKey(EKeys::MouseY, this, &ASWGPlayer::LookMouseY);
+
+	PlayerInputComponent->BindKey(EKeys::RightMouseButton, IE_Pressed, this, &ASWGPlayer::OnRightMouseButtonPressed);
+	PlayerInputComponent->BindKey(EKeys::RightMouseButton, IE_Released, this, &ASWGPlayer::OnRightMouseButtonReleased);
+
+	// Same legacy-axis approach as mouse-look — MouseWheelAxis is a mouse
+	// axis key like MouseX/MouseY, so it's bound the same way rather than
+	// risking the same zero-events problem through an Enhanced Input action.
+	PlayerInputComponent->BindAxisKey(EKeys::MouseWheelAxis, this, &ASWGPlayer::OnMouseWheel);
+}
+
+void ASWGPlayer::LookMouseX(float Value)
+{
+	AddControllerYawInput(Value);
+}
+
+void ASWGPlayer::LookMouseY(float Value)
+{
+	AddControllerPitchInput(Value);
+}
+
+void ASWGPlayer::OnMouseWheel(float Value)
+{
+	if (FMath::IsNearlyZero(Value))
+	{
+		return;
+	}
+
+	constexpr float ZoomStep = 50.0f;
+	constexpr float MinArmLength = 100.0f;
+	constexpr float MaxArmLength = 1000.0f;
+
+	CameraBoom->TargetArmLength = FMath::Clamp(
+		CameraBoom->TargetArmLength - Value * ZoomStep, MinArmLength, MaxArmLength);
+}
+
+void ASWGPlayer::OnRightMouseButtonPressed()
+{
+	bIsTurningToCamera = true;
+	GetCharacterMovement()->bOrientRotationToMovement = false;
+}
+
+void ASWGPlayer::OnRightMouseButtonReleased()
+{
+	bIsTurningToCamera = false;
+	GetCharacterMovement()->bOrientRotationToMovement = true;
 }
 
 void ASWGPlayer::Move(const FInputActionValue& Value)
@@ -124,25 +183,16 @@ void ASWGPlayer::Move(const FInputActionValue& Value)
 		return;
 	}
 
+	// Movement is relative to the camera's current yaw, not the character's
+	// own facing — WASD always means "forward relative to view" regardless
+	// of which way the body is currently turned, and bOrientRotationToMovement
+	// then turns the body to catch up to whichever direction that resolves to.
 	const FRotator YawRotation(0.0f, Controller->GetControlRotation().Yaw, 0.0f);
 	const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
 	const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
 
 	AddMovementInput(ForwardDirection, MovementVector.Y);
 	AddMovementInput(RightDirection, MovementVector.X);
-}
-
-void ASWGPlayer::Look(const FInputActionValue& Value)
-{
-	const FVector2D LookAxisVector = Value.Get<FVector2D>();
-
-	if (Controller == nullptr)
-	{
-		return;
-	}
-
-	AddControllerYawInput(LookAxisVector.X);
-	AddControllerPitchInput(LookAxisVector.Y);
 }
 
 void ASWGPlayer::Tick(float DeltaTime)
@@ -154,16 +204,17 @@ void ASWGPlayer::Tick(float DeltaTime)
 		return;
 	}
 
-	// Belt-and-suspenders alongside PossessedBy's SetMovementMode(MOVE_Flying):
-	// something (baseline application arriving after possession, or the
-	// initial pre-possession freefall's accumulated state) was observed
-	// reverting this back to MOVE_Falling, dropping the capsule to
-	// terrain-collision-doesn't-exist-yet infinity. Keep re-asserting it
-	// every tick until real terrain collision lands.
-	if (GetCharacterMovement()->MovementMode != MOVE_Flying)
+	if (bIsTurningToCamera && Controller)
 	{
-		GetCharacterMovement()->SetMovementMode(MOVE_Flying);
-		GetCharacterMovement()->Velocity = FVector::ZeroVector;
+		// -90 matches PossessedBy's ControlRotation seed: CameraBoom sits
+		// "behind" wherever ControlRotation points, but that alignment is
+		// itself 90 degrees off from the actor's true forward (the same
+		// quirk PossessedBy corrects for at spawn) — so turning the actor to
+		// face the camera needs the same correction, or the character ends
+		// up facing 90 degrees away from where the boom actually sits.
+		FRotator NewRotation = GetActorRotation();
+		NewRotation.Yaw = Controller->GetControlRotation().Yaw - 90.0f;
+		SetActorRotation(NewRotation);
 	}
 
 	// Real SWG clients report position ~10/sec while moving and send one
@@ -189,6 +240,10 @@ void ASWGPlayer::Tick(float DeltaTime)
 
 void ASWGPlayer::SendDataTransformUpdate()
 {
+
+	// todo: move thos to be more generic, a component registered with the network system to update or 
+	// something similar
+
 	UGameInstance* GameInstance = GetGameInstance();
 	USWGNetworkSubsystem* Network = GameInstance ? GameInstance->GetSubsystem<USWGNetworkSubsystem>() : nullptr;
 	if (!Network)
@@ -198,7 +253,9 @@ void ASWGPlayer::SendDataTransformUpdate()
 
 	FDataTransformMessage Transform;
 	Transform.ObjectId = SWGObjectId;
-	Transform.Position = GetActorLocation();
+	// The server expects raw (pre-scale) wire-space coordinates, same as
+	// every position it sends us — convert back before sending our own.
+	Transform.Position = SWGToRawSpace(GetActorLocation());
 	Transform.Direction = GetActorQuat();
 	Transform.TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
 	Transform.MovementCounter = ++TransformMovementCounter;

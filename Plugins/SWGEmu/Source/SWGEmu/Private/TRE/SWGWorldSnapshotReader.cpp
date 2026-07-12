@@ -5,8 +5,8 @@ namespace
 	// Same convention confirmed for terrain (.trn) DATA chunks: the IFF
 	// container itself is big-endian (chunk tags/sizes), but payload data
 	// within a leaf chunk is little-endian (matching the original x86
-	// authoring tools) — see SWGTerrainReader.cpp's ReadFloatLE/ReadUInt32LE.
-	float ReadFloatLE(const uint8* Data, int32 Offset)
+	// authoring tools) — see SWGTerrainReader.cpp's SnapshotReadFloatLE/SnapshotReadUInt32LE.
+	float SnapshotReadFloatLE(const uint8* Data, int32 Offset)
 	{
 		uint32 Bits = Data[Offset] | (Data[Offset + 1] << 8) | (Data[Offset + 2] << 16) | (Data[Offset + 3] << 24);
 		float Result;
@@ -14,7 +14,7 @@ namespace
 		return Result;
 	}
 
-	uint32 ReadUInt32LE(const uint8* Data, int32 Offset)
+	uint32 SnapshotReadUInt32LE(const uint8* Data, int32 Offset)
 	{
 		return Data[Offset] | (Data[Offset + 1] << 8) | (Data[Offset + 2] << 16) | (Data[Offset + 3] << 24);
 	}
@@ -73,7 +73,7 @@ bool FSWGWorldSnapshotReader::ReadWorldSnapshot(const FSWGIffReader& Reader, FSW
 			if (Size < 4)
 				continue;
 
-			const int32 Count = (int32)ReadUInt32LE(Data, 0);
+			const int32 Count = (int32)SnapshotReadUInt32LE(Data, 0);
 			int32 Offset = 4;
 			OutData.ObjectTemplateNames.Reserve(Count);
 			for (int32 i = 0; i < Count && Offset < Size; ++i)
@@ -129,15 +129,15 @@ bool FSWGWorldSnapshotReader::ReadNode(const FSWGIffReader& Reader, const FSWGIf
 		return false;
 	}
 
-	OutNode.ObjectID = ReadUInt32LE(D, 0);
-	OutNode.ParentID = ReadUInt32LE(D, 4);
-	OutNode.NameID = ReadUInt32LE(D, 8);
-	OutNode.CellID = ReadUInt32LE(D, 12);
+	OutNode.ObjectID = SnapshotReadUInt32LE(D, 0);
+	OutNode.ParentID = SnapshotReadUInt32LE(D, 4);
+	OutNode.NameID = SnapshotReadUInt32LE(D, 8);
+	OutNode.CellID = SnapshotReadUInt32LE(D, 12);
 
-	const float QW = ReadFloatLE(D, 16);
-	const float QX = ReadFloatLE(D, 20);
-	const float QY = ReadFloatLE(D, 24);
-	const float QZ = ReadFloatLE(D, 28);
+	const float QW = SnapshotReadFloatLE(D, 16);
+	const float QX = SnapshotReadFloatLE(D, 20);
+	const float QY = SnapshotReadFloatLE(D, 24);
+	const float QZ = SnapshotReadFloatLE(D, 28);
 	// Same Y/Z relabeling as position below (SWG Y-up -> UE Z-up), but a plain
 	// component swap alone represents a *reflection* (Y-up -> Z-up via a
 	// 2-axis swap has determinant -1, not a proper rotation) — for a pure-yaw
@@ -149,13 +149,13 @@ bool FSWGWorldSnapshotReader::ReadNode(const FSWGIffReader& Reader, const FSWGIf
 	// wrong before this fix (starport/SWGBuilding1 faced backwards).
 	OutNode.Direction = FQuat(QX, QZ, -QY, QW);
 
-	const float X = ReadFloatLE(D, 32);
-	const float Z = ReadFloatLE(D, 36);
-	const float Y = ReadFloatLE(D, 40);
+	const float X = SnapshotReadFloatLE(D, 32);
+	const float Z = SnapshotReadFloatLE(D, 36);
+	const float Y = SnapshotReadFloatLE(D, 40);
 	OutNode.Position = FVector(X, Y, Z);
 
-	OutNode.GameObjectType = ReadFloatLE(D, 44);
-	OutNode.Unknown2 = ReadUInt32LE(D, 48);
+	OutNode.GameObjectType = SnapshotReadFloatLE(D, 44);
+	OutNode.Unknown2 = SnapshotReadUInt32LE(D, 48);
 
 	// Remaining children (after DATA) are nested NODE forms — matches Core3's
 	// "versionForm->getChunksSize() - 1" child-node count exactly.

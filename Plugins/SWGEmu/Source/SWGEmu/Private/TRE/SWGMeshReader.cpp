@@ -36,17 +36,14 @@ namespace
 		return FVector(MeshReadFloatLE(Data, Offset), MeshReadFloatLE(Data, Offset + 8), MeshReadFloatLE(Data, Offset + 4));
 	}
 
-	// Reverted (see chat): a x100 meters->world-units scale here made meshes
-	// correctly human-scale in isolation, but everything ELSE in this
-	// codebase (terrain heights, network spawn Z, world-snapshot positions)
-	// is tuned around the ORIGINAL small mesh scale and nobody wants to
-	// rescale that whole side instead — so mesh geometry goes back to
-	// matching the world's existing (small) scale rather than the world
-	// being scaled up to match human-sized meshes. Kept as a named constant
-	// (rather than deleted outright) in case a real per-format scale factor
-	// is needed again later. Applies to position data only (never normals,
-	// which must stay unit-length, or UVs).
-	constexpr float MetersToWorldUnits = 1.0f;
+	// Re-enabled (see chat): mesh geometry scales up to human-scale UE units
+	// again. This time the rendered footprint (terrain tile count, world-
+	// snapshot spawn radius) is being cut down alongside it, rather than
+	// leaving those at their old "cover a huge small-scale area" settings,
+	// which would now try to bake/spawn ~100x more effective world area.
+	// Applies to position data only (never normals, which must stay
+	// unit-length, or UVs).
+	constexpr float MetersToWorldUnits = 100.0f;
 
 	FVector ReadPositionVector3LE(const uint8* Data, int32 Offset)
 	{
@@ -97,6 +94,68 @@ FString FSWGMeshReader::ReadNullTerminatedString(const FSWGIffReader& Reader, co
 	// DataSize includes the trailing null the file stores after the string.
 	const int32 Len = FMath::Max(0, Chunk.DataSize - 1);
 	return FString::ConstructFromPtrSize((const ANSICHAR*)Data, Len);
+}
+
+TArray<FString> FSWGMeshReader::ReadAllNullTerminatedStrings(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk)
+{
+	TArray<FString> Names;
+	const uint8* Data = Reader.GetChunkData(Chunk);
+	int32 Start = 0;
+	while (Start < Chunk.DataSize)
+	{
+		int32 End = Start;
+		while (End < Chunk.DataSize && Data[End] != 0)
+		{
+			++End;
+		}
+		Names.Add(FString::ConstructFromPtrSize((const ANSICHAR*)(Data + Start), End - Start));
+		Start = End + 1; // skip the null terminator
+	}
+	return Names;
+}
+
+TArray<TArray<FSWGBoneWeight>> FSWGMeshReader::ReadVertexWeights(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, int32 VertexCount)
+{
+	TArray<TArray<FSWGBoneWeight>> VertexWeights;
+	VertexWeights.SetNum(VertexCount);
+
+	FSWGIffChunk TwhdChunk, TwdtChunk;
+	if (!FindChildChunk(Reader, Form0004, TEXT("TWHD"), TwhdChunk) || !FindChildChunk(Reader, Form0004, TEXT("TWDT"), TwdtChunk))
+	{
+		return VertexWeights; // no weights present — bind-pose-only rendering doesn't need them
+	}
+	if (TwhdChunk.DataSize != VertexCount * 4)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: TWHD size %d doesn't match VertexCount %d (expected %d) — skipping weights"),
+			TwhdChunk.DataSize, VertexCount, VertexCount * 4);
+		return VertexWeights;
+	}
+
+	const uint8* TwhdData = Reader.GetChunkData(TwhdChunk);
+	const uint8* TwdtData = Reader.GetChunkData(TwdtChunk);
+	const int32 TwdtEntryCount = TwdtChunk.DataSize / 8; // {uint32 BoneIndex; float Weight} per entry
+
+	int32 EntryCursor = 0;
+	for (int32 v = 0; v < VertexCount; ++v)
+	{
+		const int32 InfluenceCount = (int32)MeshReadUInt32LE(TwhdData, v * 4);
+		VertexWeights[v].Reserve(InfluenceCount);
+		for (int32 i = 0; i < InfluenceCount; ++i)
+		{
+			if (EntryCursor >= TwdtEntryCount)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: TWDT ran out of entries at vertex %d (expected %d total, TWDT only has %d) — weights truncated"),
+					v, TwhdChunk.DataSize / 4, TwdtEntryCount);
+				return VertexWeights;
+			}
+			FSWGBoneWeight Weight;
+			Weight.BoneIndex = (int32)MeshReadUInt32LE(TwdtData, EntryCursor * 8);
+			Weight.Weight = MeshReadFloatLE(TwdtData, EntryCursor * 8 + 4);
+			VertexWeights[v].Add(Weight);
+			++EntryCursor;
+		}
+	}
+	return VertexWeights;
 }
 
 void FSWGMeshReader::TryReadBoundingBox(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh)
@@ -239,7 +298,8 @@ bool FSWGMeshReader::ReadStaticMesh(const FSWGIffReader& Reader, FSWGMeshData& O
 	return OutMesh.Submeshes.Num() > 0;
 }
 
-bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffChunk& PsdtForm, const TArray<FVector>& Positions, const TArray<FVector>& Normals, FSWGMeshSubmesh& OutSubmesh)
+bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffChunk& PsdtForm, const TArray<FVector>& Positions, const TArray<FVector>& Normals,
+	const TArray<TArray<FSWGBoneWeight>>& VertexWeights, FSWGMeshSubmesh& OutSubmesh)
 {
 	FSWGIffChunk NameChunk;
 	if (FindChildChunk(Reader, PsdtForm, TEXT("NAME"), NameChunk))
@@ -314,6 +374,12 @@ bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 		Vertex.Position = Positions[PosIndex];
 		Vertex.Normal = Normals[NormIndex];
 		Vertex.UVs.Add(FVector2D(MeshReadFloatLE(TcsdData, (int32)c * 8), MeshReadFloatLE(TcsdData, (int32)c * 8 + 4)));
+		// Skin weights are indexed by POSN index too (same as Position above),
+		// not by corner index — see world-object-plan.html's TWHD/TWDT entry.
+		if (VertexWeights.IsValidIndex((int32)PosIndex))
+		{
+			Vertex.BoneWeights = VertexWeights[PosIndex];
+		}
 		OutSubmesh.Vertices.Add(MoveTemp(Vertex));
 	}
 
@@ -374,6 +440,17 @@ bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGM
 		Normals.Add(ReadVector3LE(NormData, i * 12));
 	}
 
+	// XFNM is this mesh's own bone name list — FSWGBoneWeight::BoneIndex
+	// (from TWDT below) indexes into it, not into a skeleton's joint array
+	// directly (see the header's BoneNames comment).
+	FSWGIffChunk XfnmChunk;
+	if (FindChildChunk(Reader, Form0004, TEXT("XFNM"), XfnmChunk))
+	{
+		OutMesh.BoneNames = ReadAllNullTerminatedStrings(Reader, XfnmChunk);
+	}
+
+	const TArray<TArray<FSWGBoneWeight>> VertexWeights = ReadVertexWeights(Reader, Form0004, VertexCount);
+
 	int32 PsdtCount = 0;
 	for (const FSWGIffChunk& Child : FindChildForms(Reader, Form0004))
 	{
@@ -381,7 +458,7 @@ bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGM
 		++PsdtCount;
 
 		FSWGMeshSubmesh Submesh;
-		if (ReadMgnSubmesh(Reader, Child, Positions, Normals, Submesh))
+		if (ReadMgnSubmesh(Reader, Child, Positions, Normals, VertexWeights, Submesh))
 		{
 			OutMesh.Submeshes.Add(MoveTemp(Submesh));
 		}
