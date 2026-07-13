@@ -93,32 +93,15 @@ void FSWGRuntimeAnimationPlayer::ApplyPose(UPoseableMeshComponent& PoseableMesh,
 		// skeleton exactly, or the pose fights the inverse-bind matrices.
 		FQuat MidRotation = FQuat::Slerp(Track.DenseRotations[Frame0], Track.DenseRotations[Frame1], Alpha);
 
-		// Soft-clamp (2026-07-12, replaces the earlier uniform-factor Slerp
-		// damping — see WOOKIEE_ANIMATION_POSE_BUG.md) — a UNIFORM
-		// Slerp(Target, Mid, factor) scales every frame's swing down by the
-		// same fraction, including frames that were already a normal,
-		// correctly-shaped part of the gait. That's why the first pass
-		// (factor 0.3-0.4 on every frame) produced a visibly shrunken,
-		// mincing stride instead of fixing the actual bad frames — user
-		// feedback: "legs ... very short" and torso "still unnaturally
-		// moving around" even after tightening the factor further. Only
-		// clamp frames whose swing genuinely exceeds a plausible max for
-		// that joint group; frames already under the cap pass through at
-		// full authored amplitude, so a real running stride keeps its full
-		// range of motion and only actual outlier keyframes get reined in.
+		// Only clamps frames whose swing exceeds a plausible max for that joint
+		// group; frames under the cap pass through at full amplitude, unlike a
+		// uniform Slerp(Target, Mid, factor) which would shrink every frame.
 		auto SoftClampSwing = [](const FQuat& Target, FQuat Current, float MaxDegrees) -> FQuat
 		{
 			FQuat Delta = Target.Inverse() * Current;
 			// Quaternion double-cover: Delta and -Delta represent the same
-			// rotation, but GetAngle() = 2*acos(W) is NOT hemisphere-aware —
-			// if W lands negative it reports the long-way-around angle (up
-			// to 360 deg) for what may be a genuinely small rotation. Force
-			// the shortest-path hemisphere first or the clamp fraction below
-			// comes out wrong on essentially arbitrary frames (whichever
-			// hemisphere the quaternion product happened to land in), which
-			// reads as sudden per-frame flips/twists — exactly the "legs
-			// twist and fly out, head pitching backwards" regression this
-			// fixes.
+			// rotation, but GetAngle() = 2*acos(W) isn't hemisphere-aware — force
+			// the shortest-path hemisphere first or the clamp fraction is wrong.
 			if (Delta.W < 0.0f)
 			{
 				Delta = Delta * -1.0f;
@@ -132,21 +115,8 @@ void FSWGRuntimeAnimationPlayer::ApplyPose(UPoseableMeshComponent& PoseableMesh,
 			return Current;
 		};
 
-		// Re-enabled again (2026-07-12) — burst-captured screenshots of the
-		// undamped run clip (with the -90 mesh yaw fix in place) showed the
-		// character diving so far forward mid-cycle the head left the top
-		// of frame. Confirms the ORIGINAL diagnosis (root/spine swing
-		// genuinely ~15-60 deg, compounding through a 5-joint chain) was
-		// correct all along — the earlier "damping is hiding the issue"
-		// feedback was right too, but for a DIFFERENT reason: at the time,
-		// damping was hiding a wrong-axis bug, not legitimately taming
-		// amplitude. Now that the axis is fixed, damping is back to doing
-		// its original, legitimate job. If this still looks wrong, the
-		// problem is genuinely in the per-joint amplitude/calibration, not
-		// axis orientation.
-		// OFF for diagnosis 2026-07-13 (FOOTTRACK stride-axis check on the walk
-		// clip) — the user is right that damping can mask a frame error; the
-		// clamps must not touch the data while we measure the stride axis.
+		// Root/spine swing genuinely compounds ~15-60 deg through the 5-joint
+		// chain; damping tames that. Set false to measure raw (undamped) pose data.
 		constexpr bool bSWGEnablePoseDamping = false;
 		if (!bSWGEnablePoseDamping)
 		{
@@ -184,14 +154,10 @@ void FSWGRuntimeAnimationPlayer::ApplyPose(UPoseableMeshComponent& PoseableMesh,
 		else if (RuntimeAnim.RestMidRotations.IsValidIndex(JointIndex) &&
 			(Joint.Name.Contains(TEXT("arm"), ESearchCase::IgnoreCase) || Joint.Name.Contains(TEXT("clav"), ESearchCase::IgnoreCase)))
 		{
-			// Arms are NOT safe to clamp toward FQuat::Identity (see the
-			// ruled-out note in WOOKIEE_ANIMATION_POSE_BUG.md — a T-pose's
-			// arm bind orientation IS identity Mid, so that relaxes toward
-			// arms-out-to-the-sides, which is worse). Clamp toward the idle
-			// clip's decoded arm rotation instead — a real "arms resting"
-			// reference, populated once at spawn time into
-			// RuntimeAnim.RestMidRotations (see USWGMeshGeneratorSubsystem's
-			// Wookiee finalize path).
+			// Arms aren't safe to clamp toward FQuat::Identity — a T-pose's arm
+			// bind orientation IS identity Mid, so that relaxes toward
+			// arms-out-to-the-sides. Clamp toward the idle clip's decoded arm
+			// rotation instead (RuntimeAnim.RestMidRotations).
 			MidRotation = SoftClampSwing(RuntimeAnim.RestMidRotations[JointIndex], MidRotation, 45.0f);
 		}
 

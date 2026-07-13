@@ -26,16 +26,11 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 		UE_LOG(LogTemp, Warning, TEXT("FSWGInWorldState::Enter: UIStateMachine.Network was null — CmdSceneReadyMessage NOT sent"));
 	}
 
-	// Core3's Zone::inRange awareness recompute (what actually decides which
-	// nearby objects — including buildings — get sent to us) is only ever
-	// triggered by CreatureObject::updateZone(), which the server ONLY calls
-	// from DataTransformCallback::run() — i.e. only in reaction to the client
-	// sending its own position/movement report. The initial zone-in teleport()
-	// does one scan automatically, but nothing ever prompts a second one for a
-	// stationary client — confirmed this client has never sent this message at
-	// all. Send one "stationary" report right after zone-in to trigger that
-	// recompute and see if anything (buildings included) that the first scan
-	// missed shows up afterward.
+	// Core3's Zone::inRange awareness recompute is only triggered by
+	// CreatureObject::updateZone(), which the server only calls in reaction to
+	// the client's own DataTransform report. The initial zone-in teleport() does
+	// one scan automatically but nothing else prompts a second one for a
+	// stationary client, so send one "stationary" report right after zone-in.
 	if (UIStateMachine.Network)
 	{
 		if (UGameInstance* GameInstance = UIStateMachine.GetGameInstance())

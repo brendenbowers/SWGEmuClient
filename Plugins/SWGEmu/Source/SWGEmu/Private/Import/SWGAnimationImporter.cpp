@@ -12,14 +12,9 @@
 #include "Common/SWGDenseTrackUtils.h"
 
 // Dense arrays use double-precision FVector/FQuat (not FVector3f/FQuat4f)
-// deliberately — IAnimationDataController::SetBoneTrackKeys has TWO
-// overloads, and the float-vector one silently CheckOuterClass()-fails
-// (returns false, no warning logged) for every single bone, leaving the
-// built AnimSequence with NumberOfSampledKeys=1/SequenceLength=0 (no
-// animation at all — the bug behind "idle and walk do nothing"). The
-// double-precision overload has no such check and works correctly. See
-// Engine/Source/Developer/AnimationDataController/Private/
-// AnimDataController.cpp's two SetBoneTrackKeys overloads.
+// deliberately — IAnimationDataController::SetBoneTrackKeys's float-vector
+// overload silently fails CheckOuterClass() for every bone, leaving the built
+// AnimSequence with no animation. The double-precision overload works correctly.
 
 UAnimSequence* FSWGAnimationImporter::BuildAnimSequence(
 	const FSWGAnimationData& Animation,
@@ -51,18 +46,10 @@ UAnimSequence* FSWGAnimationImporter::BuildAnimSequence(
 	UAnimSequence* AnimSequence = NewObject<UAnimSequence>(Package, FName(*AssetName), RF_Public | RF_Standalone);
 	AnimSequence->SetSkeleton(TargetSkeleton);
 
-	// Rebuilding this same asset repeatedly (e.g. re-running
-	// swg.BuildWookieeAnimations after a code fix) reloads whatever was
-	// already saved to disk from the PREVIOUS attempt — NewObject with an
-	// already-loaded name/outer returns that existing UAnimSequence, whose
-	// data model has its "population flag" already set from the prior
-	// build. With that flag set, AddBoneCurve/SetBoneTrackKeys report success
-	// but the model discards the changes (this is the actual mechanism
-	// behind hours of "AddBoneCurve returns true but NumBoneTracks stays 0" —
-	// confirmed by finding the equivalent FBX reimport code path in
-	// SkeletalMeshEdit.cpp, which wraps its whole populate step in exactly
-	// this scope). FReimportScope temporarily clears the flag so a rebuild
-	// is treated the same as a first-time populate.
+	// Rebuilding this same asset repeatedly reloads the previous attempt's
+	// UAnimSequence, whose data model already has its "population flag" set —
+	// with that set, AddBoneCurve/SetBoneTrackKeys report success but discard
+	// the changes. FReimportScope clears the flag so a rebuild populates fresh.
 	IAnimationDataModel::FReimportScope ReimportScope(AnimSequence->GetDataModel());
 
 	IAnimationDataController& Controller = AnimSequence->GetController();

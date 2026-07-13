@@ -90,18 +90,12 @@ public:
 	int32 GuildId        = 0;
 
 	/**
-	 * The server's actual last-known feet/ground-level Z (set every time
-	 * USWGObjectGraphSubsystem::GroundedLocationFor computes a grounded
-	 * position for this actor). USWGMeshGeneratorSubsystem's capsule-resize
-	 * step reads this directly instead of reverse-engineering it as
-	 * "CurrentLocation.Z - OldHalfHeight" — that back-calculation silently
-	 * breaks if anything else (an unconstrained freefall before terrain
-	 * collision exists, physics, etc.) moved the actor between spawn and
-	 * whenever its mesh happens to finish building, which is exactly what
-	 * was landing the player deep underground: the async mesh queue can take
-	 * many seconds, and MOVE_Flying's per-tick re-assertion (see
-	 * ASWGPlayer::Tick) only stops a freefall already in progress, it
-	 * doesn't undo the distance already fallen before Tick first caught it.
+	 * The server's last-known feet/ground-level Z (set by
+	 * USWGObjectGraphSubsystem::GroundedLocationFor). Read directly by
+	 * USWGMeshGeneratorSubsystem's capsule-resize step rather than
+	 * back-calculated as "CurrentLocation.Z - OldHalfHeight", which breaks if
+	 * anything (e.g. freefall before terrain collision exists) moves the actor
+	 * before its mesh finishes building.
 	 */
 	float LastNetworkZ = 0.0f;
 

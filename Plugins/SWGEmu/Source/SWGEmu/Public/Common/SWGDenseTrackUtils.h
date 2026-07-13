@@ -58,16 +58,10 @@ inline TArray<FQuat> SWGBuildDenseRotationTrack(const TMap<int32, FQuat>& Sparse
 		}
 	}
 
-	// Outlier-frame smoothing (2026-07-12, see WOOKIEE_ANIMATION_POSE_BUG.md
-	// "legs twist and fly out" investigation) — an earlier offline analysis
-	// of this same CKAT decoder found ~3% invalid samples and ~24% of
-	// frame-to-frame transitions >90 deg even under the best-known decode.
-	// A real isolated bad sample has a specific signature a genuine fast
-	// swing doesn't: it jumps away from its neighbors AND back again within
-	// one frame, so going straight from frame i-1 to i+1 (skipping i) is a
-	// much SMALLER total rotation than going through i. Detect that and
-	// replace the outlier with the neighbor midpoint; leaves smooth/large
-	// but monotonic motion (a real running stride) untouched.
+	// An isolated bad sample jumps away from its neighbors and back within one
+	// frame, so skipping it (i-1 to i+1 directly) gives a much smaller total
+	// rotation than going through it. Detect that and replace with the
+	// neighbor midpoint; leaves genuine large-but-monotonic motion untouched.
 	if (FrameCount >= 3)
 	{
 		auto ShortestAngleDeg = [](const FQuat& A, const FQuat& B) -> float

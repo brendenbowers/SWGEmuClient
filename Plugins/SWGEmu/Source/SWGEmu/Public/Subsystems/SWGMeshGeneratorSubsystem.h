@@ -141,32 +141,14 @@ private:
 	void FinalizeMeshComponent(AActor& Actor, UDynamicMeshComponent& MeshComponent, const FVector3f& PlaceholderColor, const TArray<UMaterialInterface*>& SubmeshMaterials);
 
 	/**
-	 * Hardcoded "for now, just the Wookiee" resolution: if MeshVirtualPaths
-	 * matches the Wookiee's known body mesh, swaps in the pre-built (editor-
-	 * time only — see FSWGSkeletalMeshImporter) /Game/SWGEmu/Generated/
-	 * SK_Wookiee skeletal mesh on a new UPoseableMeshComponent (NOT Actor's
-	 * ACharacter::GetMesh() — that stays hidden), hiding DynamicMeshComponent
-	 * instead (the reverse of FinalizeMeshComponent's normal "always hide
-	 * GetMesh()" default). Loading the already-built skeletal mesh works in
-	 * any build config — only its construction (the console commands) is
-	 * editor-only.
-	 *
-	 * Animation is driven directly at runtime (parses the skeleton + idle
-	 * .ans fresh from the TRE right here, builds a FSWGRuntimeAnimation, and
-	 * registers it in PlayingAnimations for Tick to sample every frame via
-	 * UPoseableMeshComponent::SetBoneTransformByName) rather than playing a
-	 * built UAnimSequence — building real UAnimSequence assets via
-	 * IAnimationDataController turned out to silently discard every keyframe
-	 * in this engine build no matter what was tried (see
-	 * FSWGRuntimeAnimationPlayer's header comment for the full account), so
-	 * this sidesteps that path entirely. It's also not editor-only, unlike
-	 * the abandoned AnimSequence approach.
-	 *
-	 * Returns false (no-op, DynamicMeshComponent stays visible) for anything
-	 * that isn't a recognized generated model, or if the generated skeletal
-	 * mesh hasn't been built yet. A general resolution system (any species
-	 * with generated assets, not just this one hardcoded check) is a natural
-	 * follow-up once more than one creature has been imported this way.
+	 * Hardcoded "for now, just the Wookiee" resolution: swaps in the pre-built
+	 * SK_Wookiee skeletal mesh on a new UPoseableMeshComponent (not
+	 * ACharacter::GetMesh()), hiding DynamicMeshComponent instead. Animation is
+	 * driven directly at runtime (bones sampled from FSWGRuntimeAnimation every
+	 * tick) rather than via a built UAnimSequence, since IAnimationDataController
+	 * silently discards every keyframe in this engine build — see
+	 * FSWGRuntimeAnimationPlayer's header comment. Returns false (no-op) for
+	 * anything that isn't a recognized generated model.
 	 */
 	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, UMeshComponent* DynamicMeshComponent);
 
@@ -186,20 +168,12 @@ private:
 
 	/**
 	 * Parses a .sht shader template's FORM TFAC block (creature/player skin
-	 * shaders only — most object shaders have none) and returns the virtual
-	 * path of its customization color palette (e.g.
-	 * "palette/pc_skin_wke.pal") — wire layout: FORM SSHT > FORM 0000 > FORM
-	 * TFAC > CHUNK "PAL " (repeated, one per customization color slot):
-	 * [null-terminated key string, e.g. "index_color_1"][4-byte reversed-
-	 * fourCC tag][null-terminated palette virtual path][trailing bytes
-	 * (looks like a default palette index) — not currently read]. Same
-	 * MAIN-tag-preferred/first-found-fallback convention as
-	 * ResolveShaderDiffuseTexturePath. Discovered while investigating why the
-	 * Wookiee rendered flat white — SWG creature skins are a pattern texture
-	 * (see ResolveShaderDiffuseTexturePath) meant to be tinted by a color
-	 * picked from this palette per-character, not a ready-to-use diffuse on
-	 * its own. Returns empty if the shader has no TFAC block (plain object/
-	 * weapon/building shaders — expected, not an error).
+	 * shaders only) and returns the virtual path of its customization color
+	 * palette — wire layout: FORM SSHT > FORM 0000 > FORM TFAC > CHUNK "PAL "
+	 * (repeated): [key string][4-byte reversed-fourCC tag][palette path].
+	 * SWG creature skins are a pattern texture meant to be tinted by a color
+	 * picked from this palette per-character. Returns empty if the shader has
+	 * no TFAC block (plain object/weapon/building shaders — not an error).
 	 */
 	FString ResolveShaderTintPalettePath(const FString& ShaderVirtualPath);
 
@@ -234,17 +208,10 @@ private:
 	TArray<FSWGPendingMeshRequest> PendingRequests;
 
 	/**
-	 * Cache paths currently being written by an in-flight fresh-parse request
-	 * — guards against two actors that share the same underlying mesh
-	 * (common: many creature instances of the same template CRC, or several
-	 * spawned back-to-back in the same burst) racing on the same on-disk
-	 * cache file. Confirmed live: two creatures with an identical template
-	 * CRC spawned in the same tick left one of them permanently stuck with no
-	 * mesh at all (silently, no error logged) — one's cache-file write and
-	 * the other's cache-file read/write collided. Any request whose target
-	 * path is already in this set falls back to a plain parse-and-build
-	 * without touching the cache at all, rather than risking a second
-	 * concurrent reader/writer on the same file.
+	 * Cache paths currently being written by an in-flight fresh-parse request —
+	 * guards against two actors sharing a template CRC racing the same on-disk
+	 * cache file. Any request whose target path is already in this set falls
+	 * back to a plain parse-and-build without touching the cache.
 	 */
 	FCriticalSection CacheWriteLock;
 	TSet<FString> InFlightCacheWrites;

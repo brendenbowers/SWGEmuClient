@@ -149,10 +149,8 @@ private:
 
 	/** ti6: spawn the actor + every component in the grid (game thread). Kept
 	 *  around but no longer called (see SpawnDynamicMeshTerrainGrid) — its
-	 *  ULandscapeComponent scale composition turned out undocumented/unreliable
-	 *  (see chat history: two different pre-divide constants produced results
-	 *  consistent with the composition being squared, not linear), and a plain
-	 *  mesh sidesteps that entirely by working in direct world-space units. */
+	 *  ULandscapeComponent scale composition is undocumented/unreliable, and a
+	 *  plain mesh sidesteps that by working in direct world-space units. */
 	void SpawnLandscapeGrid(const TArray<FSWGBakedHeightmap>& Grid, const FVector& GridOrigin, float Spacing);
 
 	/**
@@ -168,7 +166,7 @@ private:
 	/**
 	 * Parses snapshot/<zone>.ws (the client-side counterpart to Core3's own
 	 * loadSnapshotObjects — static world content like buildings/walls that's
-	 * never sent over the network, confirmed this session), keeps only
+	 * never sent over the network), keeps only
 	 * top-level nodes within WorldSnapshotSpawnRadius of SpawnPosition, and
 	 * resolves each one's actor class the same way SceneCreateObjectByCrc
 	 * dispatch does (root FORM tag -> DT_SWGFormTagMappings), just keyed by
@@ -231,13 +229,8 @@ private:
 	// matches one typical local feature's scale instead.
 	static constexpr float HeightmapWorldExtent = 2032.0f; // world units per axis, centered on the spawn position
 
-	// Tile ComponentGridSize x ComponentGridSize components (each still
-	// HeightmapResolution samples / HeightmapWorldExtent world units, same as a
-	// single patch) under one ALandscape actor, centered on the spawn point.
-	// Cut from 3 down to 1 (see chat): mesh geometry (creatures/buildings/props)
-	// is back to human-scale UE units, and baking/spawning a 3x3 tile area at
-	// that scale is both far more world than the player can meaningfully see
-	// at once and far more expensive — one tile centered on the spawn point
-	// is enough for now.
+	// Tile ComponentGridSize x ComponentGridSize components under one ALandscape
+	// actor, centered on the spawn point. 1 (not 3x3) since that's already more
+	// world than the player can meaningfully see and far cheaper to bake.
 	static constexpr int32 ComponentGridSize = 1;
 };

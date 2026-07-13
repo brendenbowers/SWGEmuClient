@@ -45,25 +45,15 @@ void FSWGZoneLoadingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFl
 			};
 		TerrainReadyHandle = UIStateMachine.TerrainSubsystem->OnTerrainReady.AddLambda(OnTerrainReadyCallback);
 
-		// BeginLoadTerrain must not run until the OpenLevel travel below actually
-		// finishes loading the new world — otherwise GetWorld() inside the terrain
-		// subsystem resolves to whatever level is current AT THAT MOMENT, which is
-		// still the OLD (pre-travel) level if terrain parsing+baking happens to
-		// finish first (confirmed: this is exactly how a spawned Landscape ended up
-		// in L_Startup instead of the zone level). PostLoadMapWithWorld fires once
+		// BeginLoadTerrain must not run until the OpenLevel travel below finishes
+		// loading the new world, or GetWorld() inside the terrain subsystem
+		// resolves to the old (pre-travel) level. PostLoadMapWithWorld fires once
 		// for the newly-loaded world regardless of travel type — defer until then.
-		// Stored as plain member state, not captured into the lambda below — see
-		// the field comments on PendingTerrainName/PendingSpawnPosition for why.
 		PendingTerrainName = Scene.TerrainName;
-		// No axis swap — Scene.PosX/PosY/PosZ are named after the server's own
-		// PositionX/Y/Z fields directly (the wire's X,Z,Y transmission order is
-		// just Core3's own choice of send sequence, not a relabeling); confirmed
-		// PositionX/PositionY are SWG's horizontal pair and PositionZ is vertical
-		// via SceneObjectImplementation::getCoordinate/TreeEntry::getDistanceTo
-		// (SWG already matches UE's X/Y-horizontal, Z-vertical convention 1:1).
-		// A prior "fix" here swapped Y/Z based on a misreading of the wire-layout
-		// comment; empirically wrong (verified against a live actor's transform
-		// vs. its exact spawn log line elsewhere — see SWGObjectGraphSubsystem.cpp).
+		// No axis swap — Scene.PosX/PosY/PosZ match the server's PositionX/Y/Z
+		// directly (the wire's X,Z,Y transmission order is just Core3's send
+		// sequence, not a relabeling); SWG already matches UE's X/Y-horizontal,
+		// Z-vertical convention 1:1.
 		PendingSpawnPosition = FVector(Scene.PosX, Scene.PosY, Scene.PosZ);
 		UE_LOG(LogTemp, Log, TEXT("FSWGZoneLoadingState::Enter: PendingTerrainName='%s' (Len=%d)"), *PendingTerrainName, PendingTerrainName.Len());
 

@@ -135,18 +135,10 @@ struct FSWGTerrainBoundary
 };
 
 /**
- * FilterHeight (FHGT) and FilterFractal (FFRA) are modeled (confirmed via a
- * live diagnostic dump of tatooine.trn's actually-present layer child forms:
- * FHGT=37, FSLP=24, FFRA=23, FSHD=6, FDIR=2). Skipping filters entirely was
- * the root cause of an oversized terrain "cutout" with buildings appearing
- * sunk into it — Core3's processTerrain only ever lets a filter *shrink*
- * transformValue below what boundaries produced, never grow it, so a height
- * layer meant to be masked to a narrow height band (FilterHeight) or a noisy,
- * patchy sub-area (FilterFractal) was instead applying across its whole
- * (much larger) boundary shape. FilterFractal specifically was confirmed
- * (via a per-layer height trace at a live "spike" coordinate) as the cause of
- * isolated ~150-unit height spikes matching Hills/Mesa/Canyon/Erosion/
- * Outcropping-type layers applying at full (unfiltered) strength.
+ * FilterHeight (FHGT) and FilterFractal (FFRA) — Core3's processTerrain only
+ * ever lets a filter *shrink* transformValue below what boundaries produced,
+ * never grow it, so skipping filters lets a layer meant to be masked to a
+ * narrow band or patchy sub-area apply across its whole boundary shape instead.
  */
 struct FSWGTerrainFilter
 {
@@ -179,11 +171,9 @@ struct FSWGTerrainLayer
 	TArray<FSWGTerrainAffector> Affectors;
 	TArray<FSWGTerrainLayer> Children;
 
-	// Diagnostic only (see chat: tracking down an oversized terrain "cutout"
-	// with buildings sunk into it) — every boundary/filter FORM tag this
-	// layer had that we don't parse (e.g. BPLN), so we can tell whether a
-	// layer with real height affectors is missing a constraint that would
-	// normally shrink where they apply.
+	// Diagnostic only: every boundary/filter FORM tag this layer had that we
+	// don't parse (e.g. BPLN), to tell whether a layer with real height
+	// affectors is missing a constraint that would normally shrink where they apply.
 	TArray<FString> SkippedBoundaryOrFilterTags;
 };
 

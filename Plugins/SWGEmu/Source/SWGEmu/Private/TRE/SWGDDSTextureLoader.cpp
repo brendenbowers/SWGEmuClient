@@ -86,14 +86,9 @@ UTexture2D* FSWGDDSTextureLoader::LoadTexture2D(const TArray<uint8>& DDSBytes, c
 	if (Mip0.Width == 0 || Mip0.Height == 0 || Mip0.DataSize <= 0
 		|| Mip0.Width > MaxTextureDimension || Mip0.Height > MaxTextureDimension)
 	{
-		// Confirmed crash causes (both D3D12RHI assertions, fired on the render
-		// thread during FTexture2DResource::InitRHI, for two different
-		// malformed/misread .dds files): "TextureDesc.Extent.X > 0 &&
-		// TextureDesc.Extent.Y > 0 && TextureDesc.NumMips > 0" (degenerate
-		// zero-sized mip) and "TextureDesc.Extent.X <= GetMax2DTextureDimension()"
-		// (garbage/huge mip dimension). Neither fails loudly here — CreateTransient
-		// happily accepts a bad size, it only blows up later once the RHI
-		// resource actually gets created.
+		// A zero-sized or oversized mip 0 doesn't fail here — CreateTransient
+		// accepts a bad size — but crashes the render thread later with a
+		// D3D12RHI assertion once the RHI resource actually gets created.
 		UE_LOG(LogTemp, Warning, TEXT("FSWGDDSTextureLoader: '%s' has an invalid mip 0 (%dx%d, %lld bytes) — refusing to load"),
 			*TextureName.ToString(), Mip0.Width, Mip0.Height, Mip0.DataSize);
 		delete Dds;
@@ -136,15 +131,11 @@ UTexture2D* FSWGDDSTextureLoader::LoadTexture2D(const TArray<uint8>& DDSBytes, c
 	Texture->SRGB = bSRGB;
 	Texture->CompressionSettings = TC_Default;
 
-	// Without these, the engine's own streaming/mip-regeneration machinery
-	// can silently take over a manually-populated PlatformData like this one
-	// — it expects a texture built the normal way (via Source + the DDC) to
-	// derive/stream mips from, which this texture never has, so it can end
-	// up replacing our real decoded mips with a blank/default appearance
-	// (rendering as flat gray) despite Texture->GetResource() reporting a
-	// perfectly valid, non-null resource the whole time. NeverStream pins all
-	// mips resident from PlatformData directly; LeaveExistingMips stops any
-	// attempt to regenerate the mip chain from a Source we never populated.
+	// Without these, the engine's streaming/mip-regeneration machinery can
+	// silently replace this manually-populated PlatformData with a blank
+	// default (since it expects mips derived from Source + the DDC, which this
+	// texture never has). NeverStream pins mips resident from PlatformData;
+	// LeaveExistingMips stops regeneration from an unpopulated Source.
 	Texture->NeverStream = true;
 	Texture->MipGenSettings = TMGS_LeaveExistingMips;
 

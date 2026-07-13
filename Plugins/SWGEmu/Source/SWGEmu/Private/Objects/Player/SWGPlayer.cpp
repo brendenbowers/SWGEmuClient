@@ -117,15 +117,10 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 		UE_LOG(LogTemp, Error, TEXT("ASWGPlayer::SetupPlayerInputComponent: no EnhancedInputComponent — movement input will not work"));
 	}
 
-	// Mouse-look is bound via the legacy raw-key axis path (BindAxisKey), not
-	// an Enhanced Input action — every Enhanced Input mouse-axis mapping
-	// tested (paired Mouse2D, and separate MouseX/MouseY) produced zero
-	// Triggered events in this project despite provably-correct IMC/IA
-	// configuration, while this legacy path reliably delivers real deltas
-	// and Enhanced Input's own keyboard actions (Move above) work fine. The
-	// discrepancy points at Enhanced Input's high-precision mouse sampling
-	// specifically, not anything wrong with the mapping assets — this is the
-	// pragmatic workaround rather than a real fix for that root cause.
+	// Mouse-look uses the legacy raw-key axis path (BindAxisKey), not Enhanced
+	// Input — Enhanced Input mouse-axis mappings produce zero Triggered events
+	// in this project despite correct IMC/IA configuration; keyboard actions
+	// work fine, so this is a workaround for Enhanced Input's mouse sampling.
 	PlayerInputComponent->BindAxisKey(EKeys::MouseX, this, &ASWGPlayer::LookMouseX);
 	PlayerInputComponent->BindAxisKey(EKeys::MouseY, this, &ASWGPlayer::LookMouseY);
 

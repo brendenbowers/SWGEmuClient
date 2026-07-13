@@ -147,17 +147,11 @@ namespace
 		return FindXxxxStringValue(Reader, DataForm, TEXT("appearanceFilename"), OutAppearancePath);
 	}
 
-	// Buildings with interiors (spaceports, cantinas, etc.) leave
-	// appearanceFilename empty entirely — not inherited via DERV either — and
-	// instead reference their exterior shell through portalLayoutFilename
-	// (.pob). Per Core3's PortalLayout::parse/parseCELSForm and CellProperty
-	// (see chat history), the .pob's CELS form holds one FORM CELL per
-	// interior room PLUS one implicit "cell 0" representing the outside —
-	// getCellTotalNumber() explicitly excludes it ("cellProperties.size() - 1").
-	// Cell 0's own meshFile field (read positionally, not as an XXXX
-	// key/value — see CellProperty::loadVersion4/5) is the building's outer
-	// shell appearance path. We only need that one field; interior
-	// cells/floor meshes/portals are out of scope for now.
+	// Buildings with interiors leave appearanceFilename empty and reference
+	// their exterior shell via portalLayoutFilename (.pob) instead. The .pob's
+	// CELS form holds one FORM CELL per interior room plus an implicit "cell 0"
+	// for the outside; cell 0's meshFile (read positionally, not as an XXXX
+	// key/value) is the building's outer shell appearance path.
 	bool ReadPobExteriorMeshPath(const FSWGIffReader& Reader, FString& OutAppearancePath)
 	{
 		FSWGIffChunk PrtoForm;
@@ -248,12 +242,9 @@ namespace
 
 	// A FORM DERV child of SHOT (when present) is the base-template reference:
 	// FORM DERV > CHUNK XXXX holding a single null-terminated path string (not
-	// the key/flag/value layout parseVariableData uses — this is Core3's
-	// loadDerv() reading a plain Chunk::readString()). Buildings' own .iff
-	// almost always has an empty appearanceFilename because it's inherited
-	// from this base template (e.g. object/building/base/shared_*.iff) rather
-	// than redefined per-building — this is why every building template was
-	// failing the appearanceFilename lookup.
+	// the key/flag/value layout parseVariableData uses). Buildings' own .iff
+	// usually has an empty appearanceFilename since it's inherited from this
+	// base template rather than redefined per-building.
 	bool FindDervParentPath(const FSWGIffReader& Reader, const FSWGIffChunk& ShotForm, FString& OutParentPath)
 	{
 		for (const FSWGIffChunk& Child : Reader.ReadChildren(ShotForm))
@@ -722,10 +713,8 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 	}
 
 	FSWGPendingMeshRequest Request = PendingRequests.Pop();
-	// Temporary diagnostic: pin down exactly where a request silently vanishes
-	// without hitting any existing error/warning log (confirmed live for CRC
-	// 4E38DA33 — two creatures sharing it never got a mesh at all, even after
-	// the pending-request queue fully drained).
+	// Diagnostic: pins down where a request silently vanishes without hitting
+	// any existing error/warning log.
 	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ProcessNextRequest starting for actor %s (crc %08X, %d path(s) already resolved)"),
 		Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, Request.MeshVirtualPaths.Num());
 	Async(EAsyncExecution::Thread, [this, Request = MoveTemp(Request)]() mutable
@@ -768,15 +757,10 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 			const FString MeshCacheDir = FPaths::ProjectSavedDir() / TEXT("MeshCache");
 			const FString MeshCachePath = FString::Printf(TEXT("%s/%u_%s.dmesh"), *MeshCacheDir, PathsHash, *ActorClassName);
 
-			// Two actors sharing the same template (very common — many
-			// instances of one creature CRC, or several spawned in the same
-			// burst) can request this exact cache path at nearly the same
-			// moment. Deciding read-vs-write-vs-skip has to happen atomically
-			// under one lock, or two requests could both see "file doesn't
-			// exist yet" and both start writing it (or one starts reading a
-			// file the other is still mid-write on) — confirmed live as the
-			// cause of a creature silently never getting a mesh at all (no
-			// error logged, capsule stuck at the un-resized default forever).
+			// Two actors sharing the same template can request this exact cache
+			// path at nearly the same moment; read-vs-write-vs-skip must be
+			// decided atomically under one lock or two requests can both see
+			// "file doesn't exist yet" and race on writing/reading it.
 			bool bTryCacheRead = false;
 			bool bShouldWriteCache = false;
 			{
@@ -820,16 +804,11 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							return;
 						}
 
-						// UDynamicMesh::Serialize (called on the UObject itself) also
-						// runs Super::Serialize (UObject's tagged-property/versioning
-						// path), which expects a proper linker/package archive context
-						// — round-tripping it through a bare IFileManager archive
-						// produced multiple creatures stuck with an un-resized default
-						// capsule (confirmed live: capsule never resized after caching
-						// was introduced, exactly for repeat/cached spawns of the same
-						// mesh). FDynamicMesh3::Serialize (via GetMeshRef()) is a plain
-						// data serializer with no UObject involvement, safe for a bare
-						// archive.
+						// UDynamicMesh::Serialize also runs Super::Serialize (UObject's
+						// tagged-property path), which needs a real linker/package
+						// archive context — round-tripping through a bare IFileManager
+						// archive breaks it. FDynamicMesh3::Serialize (GetMeshRef()) is
+						// a plain data serializer with no UObject involvement, safe here.
 						UDynamicMesh* DynamicMesh = NewObject<UDynamicMesh>(this);
 						DynamicMesh->GetMeshRef().Serialize(*FileReader);
 
@@ -995,8 +974,7 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FStr
 
 bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, bool& bOutSkeletal)
 {
-	// Chain confirmed by direct inspection of real TRE files (see chat history,
-	// not just the design doc's summary):
+	// Resolution chain:
 	//   template .iff (SCOT/STOT > FORM SHOT > versioned data form > XXXX
 	//     "appearanceFilename" key) -> appearance/*.sat or appearance/*.apt
 	//   .sat (FORM SMAT > FORM 0003 > MSGN, one full path)      -> .lmg
@@ -1257,12 +1235,9 @@ bool USWGMeshGeneratorSubsystem::ParseMesh(const FSWGPendingMeshRequest& Request
 				continue;
 			}
 
-			// Temporary diagnostic: investigating the player's capsule
-			// resizing to a degenerate ~1-unit half-height (see chat —
-			// player ends up underground) — need the RAW decoded bind-pose
-			// bounds per body part to see whether POSN data itself is
-			// already near-flat (implying a missing bone-transform step) or
-			// whether something later in the pipeline collapses it.
+			// Diagnostic: RAW decoded bind-pose bounds per body part, to tell
+			// whether POSN data itself is near-flat (missing bone-transform
+			// step) or something later in the pipeline collapses it.
 			{
 				FBox PartBounds(ForceInit);
 				int32 PartVertexCount = 0;
@@ -1298,13 +1273,10 @@ bool USWGMeshGeneratorSubsystem::ParseMesh(const FSWGPendingMeshRequest& Request
 namespace
 {
 	// Simple item/weapon shaders are a bare top-level FORM SSHT, but
-	// character/creature skin shaders (needing hue/palette variation) wrap it
-	// as FORM CSHD > FORM 0001 > FORM SSHT — confirmed live via swg.DumpIffTree
-	// on shader/hum_m_body.sht. Animated shaders (console screens, terminals,
-	// bazaar signs — confirmed live via shader/anim_bazaar.sht) are a
-	// completely different top-level FORM SWTS instead. Recurses a few levels
-	// to find whichever TargetFormType form is present, regardless of what
-	// (if anything) wraps it.
+	// character/creature skin shaders wrap it as FORM CSHD > FORM 0001 >
+	// FORM SSHT, and animated shaders (console screens, signs) use a
+	// completely different top-level FORM SWTS. Recurses to find whichever
+	// TargetFormType form is present, regardless of what wraps it.
 	bool FindFormRecursive(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk, const FString& TargetFormType, FSWGIffChunk& OutForm, int32 MaxDepth)
 	{
 		if (!Chunk.IsForm())
@@ -1526,14 +1498,9 @@ FString USWGMeshGeneratorSubsystem::ResolveShaderTintPalettePath(const FString& 
 		const uint8* Data = Reader.GetChunkData(PalChunk);
 		const int32 Size = Reader.GetChunkSize(PalChunk);
 
-		// [key CString, e.g. "index_color_1"][null terminator][1 extra byte —
-		// looks like a flag, unexplored][4-byte reversed tag][palette path
-		// CString][trailing bytes]. Confirmed via a live hex dump
-		// (".." — two 0x00 bytes, not one — between "index_color_1" and
-		// "NIAM") after swg.DumpShaderTint first returned a path with a
-		// leading stray 'M' (the tag's own trailing byte bleeding into what
-		// should've been the path start) — skipping only the key's null
-		// terminator wasn't enough.
+		// [key CString][null terminator][1 extra flag byte, unexplored]
+		// [4-byte reversed tag][palette path CString][trailing bytes] — note
+		// two null bytes separate the key from the tag, not one.
 		int32 Offset = 0;
 		while (Offset < Size && Data[Offset] != 0) ++Offset;
 		if (Offset >= Size) continue;
@@ -1655,11 +1622,8 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 
 	if (!Texture)
 	{
-		// Temporary diagnostic: pin down exactly which shaders' texture
-		// resolution is silently failing (see chat: item submeshes showing
-		// partial N/M textured ratios with no other warning logged at all —
-		// meaning the failure is inside ResolveShaderDiffuseTexturePath's own
-		// TXM-tag loop, not any of its already-logged early-outs).
+		// Diagnostic: pins down which shaders' texture resolution silently fails
+		// inside ResolveShaderDiffuseTexturePath's TXM-tag loop.
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no diffuse texture resolved for shader '%s' (resolved texture path: '%s')"),
 			*ShaderVirtualPath, *TexturePath);
 	}
@@ -1851,20 +1815,11 @@ void USWGMeshGeneratorSubsystem::FinalizeMeshComponent(AActor& Actor, UDynamicMe
 		*Actor.GetName(), *Actor.GetClass()->GetName(), NumTextured, NumSlots,
 		PlaceholderColor.X, PlaceholderColor.Y, PlaceholderColor.Z);
 
-	// Confirmed via FBaseDynamicMeshSceneProxy source: ColorOverrideMode
-	// anything other than None (VertexColors/Polygroups/Constant) makes the
-	// scene proxy completely IGNORE whatever material is actually assigned to
-	// this component and force-substitute the engine's own built-in
-	// "default vertex color" debug material instead — this was why every
-	// real per-shader textured MaterialInstanceDynamic (correctly assigned,
-	// confirmed via logs) never actually rendered: it was always being
-	// silently replaced at the render-proxy level. Vertex color data itself
-	// is still uploaded to the GPU regardless of this mode (only Constant
-	// mode ignores it), so the VertexColorViewMode_ColorOnly fallback
-	// material (used for any submesh whose shader didn't resolve) still
-	// works correctly here with ColorMode left at its default None — it
-	// reads vertex color through its own material graph, same as any other
-	// assigned material would.
+	// ColorOverrideMode other than None (VertexColors/Polygroups/Constant) makes
+	// the scene proxy ignore whatever material is assigned and force-substitute
+	// the engine's built-in vertex-color debug material — leave it at None.
+	// Vertex color data still uploads to the GPU regardless (only Constant mode
+	// ignores it), so materials that read it via their own graph still work.
 
 	MeshComponent.RegisterComponent();
 
@@ -1876,26 +1831,14 @@ void USWGMeshGeneratorSubsystem::FinalizeMeshComponent(AActor& Actor, UDynamicMe
 	{
 		MeshComponent.AttachToComponent(Actor.GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
 
-		// ASWGCreature/ASWGPlayer are ACharacters — their root is the capsule,
-		// centered above the feet, but SWG geometry is authored with its origin
-		// at ground level. Without this offset the decoded mesh renders at the
-		// capsule's center (network Z + half-height), floating above the actual
-		// ground/network position. This is the Blueprint third-person template's
-		// mesh offset convention, which the base C++ ACharacter never sets up.
-		//
-		// The capsule itself also gets resized to the real mesh bounds here
-		// (rather than staying at UE's flat default 88 half-height/34 radius)
-		// — every offset derived from the capsule (this one, the camera's eye
-		// height, the nameplate's head clearance) was wrong for any creature
-		// whose true size differs from a default human, which is most of
-		// them. Centering the mesh on the resized capsule this way keeps the
-		// mesh's own vertical midpoint exactly at the root regardless of
-		// whether its geometry happens to be authored with Z=0 at the feet.
-		//
-		// Bounds are read back from the component's own DynamicMesh here
-		// (rather than from FSWGMeshData, which the cache-hit path doesn't
-		// have) so the fresh-parse and cache-hit paths compute this identically
-		// — one source of truth instead of two independent implementations.
+		// ACharacter's root is the capsule, centered above the feet, but SWG
+		// geometry is authored with its origin at ground level — this offset
+		// keeps the mesh from floating at capsule-center height. The capsule is
+		// also resized here to the real mesh bounds (not UE's flat 88/34
+		// default), since every capsule-derived offset (this one, camera eye
+		// height, nameplate clearance) is wrong otherwise. Bounds are read from
+		// the component's own DynamicMesh (not FSWGMeshData) so the fresh-parse
+		// and cache-hit paths compute this identically.
 		if (ACharacter* Character = Cast<ACharacter>(&Actor))
 		{
 			if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
@@ -1911,25 +1854,11 @@ void USWGMeshGeneratorSubsystem::FinalizeMeshComponent(AActor& Actor, UDynamicMe
 
 				if (MeshBounds.IsValid)
 				{
-					// Read the server's real feet-level Z back from
-					// ASWGCreature::LastNetworkZ (set directly by
-					// USWGObjectGraphSubsystem::GroundedLocationFor) instead
-					// of reverse-engineering it as "CurrentLocation.Z -
-					// OldHalfHeight". That back-calculation assumed nothing
-					// else ever moves the actor between spawn and whenever
-					// its mesh happens to finish building — false in
-					// practice: the async mesh queue can take many seconds,
-					// and an unconstrained freefall before real terrain
-					// collision exists (MOVE_Flying's per-tick
-					// re-assertion — see ASWGPlayer::Tick — only stops a
-					// fall already in progress, it doesn't undo the
-					// distance already dropped before Tick first caught it)
-					// corrupts CurrentLocation.Z in the meantime. Confirmed
-					// live as the actual cause of the player ending up
-					// deep underground: the back-calculated "NetworkZ" came
-					// out ~54 units below the server's real value because
-					// the capsule-resize step ran long after the character
-					// had already fallen and been caught mid-drop.
+					// Read the server's real feet-level Z from ASWGCreature::LastNetworkZ
+					// rather than back-calculating "CurrentLocation.Z - OldHalfHeight" —
+					// the async mesh queue can take seconds, during which an
+					// unconstrained freefall (before terrain collision exists) can
+					// move the actor and corrupt that back-calculation.
 					const ASWGCreature* Creature = Cast<ASWGCreature>(&Actor);
 					const float NetworkZ = Creature ? Creature->LastNetworkZ : (Actor.GetActorLocation().Z - Capsule->GetScaledCapsuleHalfHeight());
 
@@ -1968,23 +1897,11 @@ void USWGMeshGeneratorSubsystem::FinalizeMeshComponent(AActor& Actor, UDynamicMe
 		}
 	}
 
-	// ASWGCreature is an ACharacter, which always carries its own default
-	// USkeletalMeshComponent (ACharacter::GetMesh()) with no SkeletalMesh
-	// assigned. We deliberately never feed our decoded geometry into that —
-	// building a real runtime USkeletalMesh (skin weights, LOD render data)
-	// needs the same editor-only import pipeline UDynamicMeshComponent exists
-	// to avoid — so just hide it rather than leave an empty/default mesh
-	// component rendering (or not) alongside ours.
-	//
-	// Tried copying CharacterMesh's relative transform here on the theory that
-	// ACharacter offsets its default mesh down by the capsule half-height so
-	// feet land on the floor — confirmed false (CharacterMesh->GetRelativeLocation()
-	// is (0,0,0) too; that offset convention lives in the Blueprint third-person
-	// template, not the base C++ ACharacter). The real "NPCs floating" fix is
-	// the capsule-half-height correction applied where network position gets
-	// set (see USWGObjectGraphSubsystem — SetActorLocation places the actor
-	// origin, i.e. capsule center, at the network Z, but that Z means feet/
-	// ground level).
+	// ACharacter always carries its own default USkeletalMeshComponent with no
+	// SkeletalMesh assigned; we never feed decoded geometry into it (that needs
+	// the same editor-only import pipeline UDynamicMeshComponent avoids), so
+	// just hide it. The capsule-half-height offset (not this component's
+	// transform) is what fixes NPCs floating — see USWGObjectGraphSubsystem.
 	if (ACharacter* Character = Cast<ACharacter>(&Actor))
 	{
 		if (USkeletalMeshComponent* CharacterMesh = Character->GetMesh())
@@ -2049,19 +1966,11 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		PoseableMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -Capsule->GetScaledCapsuleHalfHeight()));
 	}
 
-	// SWG's data convention is consistently 90 degrees off from what Unreal
-	// expects for "forward" — the same quirk ASWGPlayer::PossessedBy/
-	// OnRightMouseButtonPressed already correct for on CameraBoom/actor yaw
-	// (see those comments). That fix only covers camera/control rotation;
-	// it doesn't touch the mesh itself, so the Wookiee's animation-driven
-	// pose (root -> the rest of the skeleton) still swings relative to the
-	// SWG-authored forward axis, not the actor's. Rather than bake a
-	// correction into individual joint rotations in ApplyPose (which would
-	// fight FSWGSkeletalMeshImporter's reference skeleton / inverse-bind
-	// matrices — runtime and bind composition must match exactly), rotate
-	// the whole mesh rigidly here, the same way CameraBoom is offset
-	// relative to the actor rather than baked into per-bone math.
-	// +90 tried first and confirmed backwards by visual test; using -90.
+	// SWG's forward axis is 90 degrees off from Unreal's — the same quirk
+	// ASWGPlayer's camera/control rotation already corrects for. That fix
+	// doesn't touch the mesh itself, so rotate the whole mesh rigidly here
+	// rather than baking a correction into individual ApplyPose joint
+	// rotations, which would fight the reference skeleton's inverse-bind matrices.
 	PoseableMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
 
 	// The importer creates material slots named after each submesh's shader
@@ -2077,22 +1986,14 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		}
 	}
 
-	// Parses the skeleton + idle clip fresh from the TRE right here and
-	// drives PoseableMesh's bones directly every tick (see Tick and
-	// FSWGRuntimeAnimationPlayer) instead of playing a built UAnimSequence —
-	// building real UAnimSequence assets via IAnimationDataController turned
-	// out to silently discard every keyframe in this engine build no matter
-	// what was tried (overload switch, ResetModel, FReimportScope — all
-	// logically should have worked per the engine source, none did), so this
-	// sidesteps that path entirely.
+	// Parses the skeleton + idle clip fresh from the TRE and drives
+	// PoseableMesh's bones directly every tick instead of playing a built
+	// UAnimSequence, since IAnimationDataController silently discards every
+	// keyframe in this engine build.
 	if (TreSubsystem)
 	{
 		FSWGIffReader SkeletonIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/skeleton/all_b.skt"));
 		FSWGSkeletonData Skeleton;
-		// Diagnosis 2026-07-13: back on the walk clip (the most offline-
-		// validated CKAT data) for the FOOTTRACK stride-axis check — the run
-		// clip's foot trajectories were too corrupted to read an axis from.
-		// See WOOKIEE_ANIMATION_POSE_BUG.md.
 		FSWGIffReader ClipIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/animation/all_b_loc_walk_male.ans"));
 		FSWGAnimationData ClipAnimation;
 

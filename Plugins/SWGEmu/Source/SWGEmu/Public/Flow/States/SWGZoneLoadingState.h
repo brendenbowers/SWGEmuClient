@@ -33,14 +33,10 @@ private:
 	/** One-shot: defers BeginLoadTerrain until the OpenLevel travel actually finishes loading the new world. */
 	FDelegateHandle PostLoadMapHandle;
 
-	// Set in Enter(), read back when PostLoadMapHandle fires. Deliberately stored
-	// as plain member state rather than captured into the PostLoadMapWithWorld
-	// lambda directly — a value captured into that closure was observed coming
-	// back with its length intact but its character data corrupted to garbage
-	// after a full OpenLevel world travel, while ordinary member fields on this
-	// same long-lived instance (Epoch ints, delegate handles, weak pointers) all
-	// survive the same window fine. Root cause not fully understood; this
-	// sidesteps it rather than explains it.
+	// Set in Enter(), read back when PostLoadMapHandle fires. Stored as plain
+	// member state rather than captured into the PostLoadMapWithWorld lambda —
+	// a captured FString comes back with corrupted character data after a full
+	// OpenLevel world travel, unlike ordinary member fields. Root cause unknown.
 	FString PendingTerrainName;
 	FVector PendingSpawnPosition = FVector::ZeroVector;
 };

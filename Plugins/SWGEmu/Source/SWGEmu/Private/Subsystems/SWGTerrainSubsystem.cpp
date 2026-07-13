@@ -27,19 +27,11 @@
 
 namespace
 {
-	// Landscape's uint16 height packing represents a fixed +/-256 *local*
-	// height range (LandscapeDataAccess::GetLocalHeight/GetTexHeight use a
-	// hardcoded LANDSCAPE_ZSCALE regardless of the actor's own Z scale) — the
-	// actor's Z scale is what stretches that fixed range into final world
-	// units. With Z scale 1.0 (the original choice — see SpawnLandscapeActor's
-	// comment), any real height beyond +/-256 world units clamps hard,
-	// producing an unnaturally steep cliff exactly where legitimate terrain
-	// (e.g. a real canyon) exceeds that range — reported as "terrain looks
-	// like a canyon" / floating NPCs, and initially and incorrectly suspected
-	// to be an XY spacing/scale bug (ruled out: the live Landscape actor's
-	// scale was confirmed exactly (16,16,1) as intended). Baked heights must
-	// be pre-divided by this same constant before packing (see PackHeightMip)
-	// to match — SpawnLandscapeActor uses it directly as the actor's Z scale.
+	// Landscape's uint16 height packing represents a fixed +/-256 *local* height
+	// range (LANDSCAPE_ZSCALE is hardcoded regardless of actor Z scale); the
+	// actor's Z scale stretches that into final world units. Baked heights must
+	// be pre-divided by this same constant before packing (see PackHeightMip) —
+	// SpawnLandscapeActor uses it directly as the actor's Z scale.
 	constexpr float HeightZScale = 8.0f; // +/-2048 world units of representable height
 
 	// Per-2x2-quad {Min,Max,Average} stats for one mip level — see
@@ -202,9 +194,8 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	TreSubsystem = Cast<USWGTreSubsystem>(Collection.InitializeDependency(USWGTreSubsystem::StaticClass()));
 	MeshGenerator = Cast<USWGMeshGeneratorSubsystem>(Collection.InitializeDependency(USWGMeshGeneratorSubsystem::StaticClass()));
 
-	// Temporary diagnostic: cross-validates GetHeightAt against the server's own
-	// SERVERHEIGHTCHECK log at the same (x,y) samples — see chat history re:
-	// comparing client vs server terrain height around the town hills.
+	// Diagnostic: cross-validates GetHeightAt against the server's own
+	// SERVERHEIGHTCHECK log at the same (x,y) samples.
 	static FAutoConsoleCommand DumpHeightCompareCmd(
 		TEXT("swg.DumpHeightCompare"),
 		TEXT("Logs GetHeightAt(x,y) for a fixed list of server-sampled coordinates."),
@@ -513,16 +504,9 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 				UE_LOG(LogTemp, Warning, TEXT("HEIGHTTRACE final x=%.2f y=%.2f height=%.4f"), X, Y, Z);
 			}));
 
-	// Temporary diagnostic: buildings/items/creatures are all rendering as
-	// flat off-white/gray in a real (lit, shadowed) screenshot, with no
-	// texture color at all — reported live by the user after a full rebuild.
-	// Since object materials and terrain materials both funnel through the
-	// exact same FSWGDDSTextureLoader, this isolates whether the runtime
-	// DDS->UTexture2D bridge itself is producing a genuinely renderable
-	// texture, decoupled from all the mesh-generator/shader-parsing logic on
-	// top of it: loads one texture directly, logs its platform-data state,
-	// and slaps it on a plain spawned plane right in front of the player so
-	// it can be screenshotted up close.
+	// Diagnostic: isolates whether the runtime DDS->UTexture2D bridge produces a
+	// renderable texture, decoupled from mesh-generator/shader-parsing logic —
+	// loads one texture and displays it on a plane in front of the player.
 	static FAutoConsoleCommand TestDDSTextureCmd(
 		TEXT("swg.TestDDSTexture"),
 		TEXT("swg.TestDDSTexture <texture virtual path> — loads a .dds directly and displays it on a plane in front of the player."),
@@ -828,14 +812,9 @@ FSWGBakedHeightmap USWGTerrainSubsystem::BakeHeightmap(const FSWGTerrainData& Te
 	Heightmap.Spacing = Spacing;
 	Heightmap.Heights.SetNumUninitialized(Resolution * Resolution);
 
-	// Diagnostic (see chat: buildings render far above the terrain surface
-	// away from the spawn point): track the actual min/max/out-of-range
-	// height values this component's evaluator calls produced, to see
-	// whether GetHeight is diverging to huge values (which GetTexHeight's
-	// Clamp(..., 0, MaxValue) would silently flatten to the +/-2048
-	// representable ceiling/floor — a very different failure mode than the
-	// NaN case already guarded below, but one that would also show up as
-	// sharp, spiky terrain at a wildly wrong height).
+	// Tracks min/max/out-of-range height values from this component's evaluator
+	// calls — catches GetHeight diverging to huge values, which GetTexHeight's
+	// Clamp would otherwise silently flatten to the +/-2048 ceiling/floor.
 	float MinHeight = TNumericLimits<float>::Max();
 	float MaxHeight = TNumericLimits<float>::Lowest();
 	int32 OutOfRangeCount = 0;
@@ -1039,21 +1018,11 @@ ALandscape* USWGTerrainSubsystem::SpawnLandscapeActor(const FVector& GridOrigin,
 	// units regardless of our chosen Z scale.
 	const FVector DesiredScale(Spacing, Spacing, HeightZScale);
 
-	// Pre-compensating this through SpawnActor's transform parameter (dividing
-	// by whatever ALandscapeProxy's constructor's own unconditional
-	// RootComponent->SetRelativeScale3D(128,128,256) call was assumed to
-	// compose with) turned out NOT to have a fixed, predictable relationship
-	// — two different pre-divide constants produced results consistent with
-	// a *squared* composition (k=512 XY / k=1024 Z against the divided input),
-	// not a simple linear compose. Chasing the exact formula further wasn't
-	// worth it: this is what actually caused the "terrain renders ~1000 units
-	// below the buildings" bug (buildings sit at their real network height,
-	// but the landscape's real applied Scale.Z came out wildly different from
-	// intended). Simplest fix: spawn at identity scale, then force the exact
-	// scale we want directly afterward. Static mobility blocks SetActorScale3D
-	// with a "has to be Movable" warning, so flip mobility around the call —
-	// this is a one-time setup step, not a runtime move, so there's no actual
-	// mobility concern being papered over.
+	// ALandscapeProxy's constructor unconditionally sets its own RootComponent
+	// scale (128,128,256), which doesn't compose predictably with a pre-divided
+	// spawn-transform scale. Spawn at identity scale instead, then force the
+	// exact scale afterward; Static mobility blocks SetActorScale3D, so flip
+	// mobility around the call (a one-time setup step, not a runtime move).
 	const FTransform SpawnTransform(FQuat::Identity, GridOrigin, FVector::OneVector);
 	ALandscape* Landscape = Cast<ALandscape>(World->SpawnActor(ALandscape::StaticClass(), &SpawnTransform));
 	if (!Landscape)
@@ -1111,16 +1080,10 @@ void USWGTerrainSubsystem::AddLandscapeComponent(ALandscape* Landscape, const FS
 	// (matching GetDefaultPackedHeightColor's convention) is enough to get this rendering.
 	const FColor DefaultNormal = LandscapeDataAccess::GetDefaultPackedHeightColor();
 
-	// Mip 0 goes through CreateTransient (matches its own internal construction of
-	// mip 0 exactly); additional mips are appended the same way CreateTransient
-	// builds its own — new FTexture2DMipMap + BulkData lock/realloc/unlock, none
-	// of it editor-gated (Texture2D.cpp:1341-1349).
-	//
-	// Name must be unique per component — CreateTransient's NewObject<UTexture2D>
-	// call used the same literal "SWGTerrainHeightmap" name for every component in
-	// the grid, so every call after the first resolved to (and overwrote) the same
-	// transient object instead of creating an independent one, leaving every
-	// component but the last-baked one sampling the wrong texture.
+	// Mip 0 goes through CreateTransient; additional mips are appended the same
+	// way CreateTransient builds its own (new FTexture2DMipMap + BulkData
+	// lock/realloc/unlock). Name must be unique per component, or every
+	// component in the grid resolves to (and overwrites) the same transient object.
 	const TArray<FColor> Mip0Pixels = PackHeightMip(MipHeights[0], DefaultNormal);
 	const FName TextureName(*FString::Printf(TEXT("SWGTerrainHeightmap_%d_%d"), SectionBase.X, SectionBase.Y));
 	UTexture2D* HeightmapTexture = UTexture2D::CreateTransient(
@@ -1134,14 +1097,10 @@ void USWGTerrainSubsystem::AddLandscapeComponent(ALandscape* Landscape, const FS
 	}
 
 #if WITH_EDITOR
-	// Editor-only: ULandscapeTextureHash::GetHash (LandscapeTextureHash.cpp:339-348,
-	// itself entirely #if WITH_EDITORONLY_DATA) falls back to Source.GetId() whenever
-	// no ULandscapeTextureHash asset user data is attached — which ours never has —
-	// and asserts if Source is unpopulated. CreateTransient only builds PlatformData
-	// (the runtime mips), never Source, so this always fires in-editor/PIE. Harmless
-	// to skip in a packaged build: the whole check compiles away with WITH_EDITORONLY_DATA.
-	// Only mip 0 is ever actually hashed (CalculateTextureHash64 only reads mip 0), so
-	// that's all Source needs.
+	// Editor-only: ULandscapeTextureHash::GetHash asserts if Source is
+	// unpopulated when no hash asset user data is attached (ours never has any),
+	// and CreateTransient only builds PlatformData, never Source. Only mip 0
+	// needs populating since CalculateTextureHash64 only reads mip 0.
 	HeightmapTexture->Source.Init(ComponentVerts, ComponentVerts, /*NewNumSlices=*/1, /*NewNumMips=*/1, TSF_BGRA8,
 		reinterpret_cast<const uint8*>(Mip0Pixels.GetData()));
 #endif
@@ -1245,11 +1204,9 @@ void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHei
 		return;
 	}
 
-	// A plain AActor has no root component at construction time, so
-	// SpawnActor's given transform (GridOrigin) has nothing to store itself in
-	// and silently no-ops — same bug pattern as ASWGObject's missing root
-	// component earlier this session. Set the location explicitly once the
-	// root actually exists.
+	// A plain AActor has no root component at construction time, so SpawnActor's
+	// given transform (GridOrigin) has nothing to store itself in and silently
+	// no-ops. Set the location explicitly once the root actually exists.
 	USceneComponent* TerrainRoot = NewObject<USceneComponent>(TerrainActor, TEXT("TerrainRoot"));
 	TerrainActor->SetRootComponent(TerrainRoot);
 	TerrainRoot->RegisterComponent();
@@ -1353,16 +1310,11 @@ void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHei
 		});
 
 		MeshComponent->SetMaterial(0, BuildTerrainTileMaterial(Heightmap));
-		// Deliberately NOT calling SetColorOverrideMode(VertexColors) here —
-		// confirmed via FBaseDynamicMeshSceneProxy source that any non-None
-		// ColorOverrideMode makes the scene proxy force-substitute the
-		// engine's own built-in vertex-color debug material for WHATEVER
-		// material is assigned, silently discarding M_SWGTerrainBlend (the
-		// real per-tile textured material set just above) even though it was
-		// correctly assigned. Vertex color data itself still uploads to the
-		// GPU with ColorMode left at its default None, which is all
-		// M_SWGTerrainBlend's own VertexColor material node needs to read the
-		// per-vertex blend weights.
+		// Deliberately NOT calling SetColorOverrideMode(VertexColors) — any
+		// non-None mode makes the scene proxy force-substitute the engine's
+		// vertex-color debug material regardless of what's assigned. Vertex
+		// color still uploads to the GPU with ColorMode at its default None,
+		// which is all M_SWGTerrainBlend's VertexColor node needs.
 
 		// Terrain was previously non-collidable at all (see world-object-plan.html
 		// "Collision-data research pass") — every character fell forever through

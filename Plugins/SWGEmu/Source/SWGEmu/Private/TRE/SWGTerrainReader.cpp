@@ -632,13 +632,10 @@ bool FSWGTerrainReader::ReadLayer(const FSWGIffReader& Reader, const FSWGIffChun
 
 bool FSWGTerrainReader::ReadShadersGroup(const FSWGIffReader& Reader, const FSWGIffChunk& SgrpForm, TArray<FSWGShaderFamily>& OutFamilies)
 {
-	// Ports the wire layout confirmed live via the swg.DumpShaderFamilies
-	// diagnostic — SGRP's own version form directly holds a flat list of
-	// SFAM chunks (not forms): [familyId:int32][familyName][fileName]
-	// [r,g,b:uint8][var7:float][weight:float][numLayers:int32] then that
-	// many {name (string), weight (float)} layer entries. familyName/
-	// fileName/color/var7/weight aren't needed for texture resolution (only
-	// the per-layer names are — see FSWGShaderFamily's own comment).
+	// SGRP's own version form directly holds a flat list of SFAM chunks (not
+	// forms): [familyId:int32][familyName][fileName][r,g,b:uint8][var7:float]
+	// [weight:float][numLayers:int32] then that many {name, weight} layer
+	// entries. Only the per-layer names are needed for texture resolution.
 	const TArray<FSWGIffChunk> VersionForms = FindChildForms(Reader, SgrpForm);
 	if (VersionForms.Num() == 0) return false;
 
@@ -771,11 +768,9 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 		break;
 	}
 
-	// Diagnostic (see chat: tracking down an oversized terrain "cutout" with
-	// buildings sunk into it): find every layer with a real height affector
-	// that's also missing a boundary/filter constraint we don't parse — those
-	// are the layers most likely to be affecting a much larger area than the
-	// retail client actually shows.
+	// Diagnostic: finds every layer with a real height affector that's also
+	// missing a boundary/filter constraint we don't parse — those are the
+	// layers most likely to affect a much larger area than the retail client shows.
 	TFunction<void(const FSWGTerrainLayer&)> DumpSuspectLayers = [&DumpSuspectLayers](const FSWGTerrainLayer& Layer)
 	{
 		const bool bHasHeightAffector = Layer.Affectors.ContainsByPredicate([](const FSWGTerrainAffector& A)

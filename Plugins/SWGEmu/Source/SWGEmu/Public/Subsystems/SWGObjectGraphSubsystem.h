@@ -120,17 +120,10 @@ public:
 
 	/**
 	 * Called from FSWGZoneLoadingState once PostLoadMapWithWorld fires for the
-	 * new zone level — mirrors the guard USWGTerrainSubsystem::BeginLoadTerrain
-	 * already needed for the same reason (see FSWGZoneLoadingState::Enter's
-	 * comment): UGameplayStatics::OpenLevel is deferred to the next world
-	 * travel tick, not immediate, so every SceneCreateObjectByCrc/Baselines/
-	 * SceneEndBaselines message arriving between CmdStartScene and the actual
-	 * level swap — including the local player's own spawn, sent exactly once
-	 * — was being spawned into the OLD, about-to-be-destroyed level and
-	 * silently destroyed the instant OpenLevel took effect (confirmed via a
-	 * dedicated ASWGPlayer::EndPlay log: reason=LevelTransition, ~0.1s after
-	 * the player's own SceneEndBaselines "revealed" line, every single zone
-	 * load). Replays every message queued during that window in order.
+	 * new zone level. UGameplayStatics::OpenLevel is deferred to the next world
+	 * travel tick, so messages arriving between CmdStartScene and the actual
+	 * level swap would otherwise spawn into the old, about-to-be-destroyed
+	 * level. Replays every message queued during that window in order.
 	 */
 	void OnZoneLevelLoaded();
 

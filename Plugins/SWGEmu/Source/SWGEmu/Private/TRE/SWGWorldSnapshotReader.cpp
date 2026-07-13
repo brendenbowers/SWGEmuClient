@@ -138,15 +138,10 @@ bool FSWGWorldSnapshotReader::ReadNode(const FSWGIffReader& Reader, const FSWGIf
 	const float QX = SnapshotReadFloatLE(D, 20);
 	const float QY = SnapshotReadFloatLE(D, 24);
 	const float QZ = SnapshotReadFloatLE(D, 28);
-	// Same Y/Z relabeling as position below (SWG Y-up -> UE Z-up), but a plain
-	// component swap alone represents a *reflection* (Y-up -> Z-up via a
-	// 2-axis swap has determinant -1, not a proper rotation) — for a pure-yaw
-	// quaternion (cos,0,sin,0) that means the surviving axis component must
-	// also be negated to preserve the actual rotation angle/sense instead of
-	// its mirror image (negating just the sin part is exactly the "-theta"
-	// quaternion). Static building placements are yaw-only, so this is the
-	// component that visibly flips a building's facing direction — confirmed
-	// wrong before this fix (starport/SWGBuilding1 faced backwards).
+	// Same Y/Z relabeling as position below, but a plain component swap alone
+	// is a reflection (determinant -1), not a proper rotation — for a pure-yaw
+	// quaternion the surviving axis component must also be negated to preserve
+	// rotation sense instead of mirroring it.
 	OutNode.Direction = FQuat(QX, QZ, -QY, QW);
 
 	const float X = SnapshotReadFloatLE(D, 32);

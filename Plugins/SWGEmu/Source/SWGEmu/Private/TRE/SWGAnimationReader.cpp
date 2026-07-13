@@ -1,13 +1,8 @@
 #include "TRE/SWGAnimationReader.h"
 #include "Common/SWGWorldScale.h"
 
-// Temporary/diagnostic — comma-separated bone-name substrings; set via
-// swg.DumpAnsAnimation (USWGMeshGeneratorSubsystem). Empty = no logging.
-// See WOOKIEE_ANIMATION_POSE_BUG.md ("arms/thighs/root ~40% hot") for why
-// this exists: visual guess-and-check on the CKAT scale calibration burned
-// several sessions with no result: this dumps the actual per-axis scale
-// bytes and decoded swing extent so the miscalibration can be seen directly
-// instead of inferred from screenshots.
+// Comma-separated bone-name substrings; set via swg.DumpAnsAnimation
+// (USWGMeshGeneratorSubsystem) to log per-axis scale/swing for those bones. Empty = no logging.
 SWGEMU_API FString GSWGDebugAnsBoneFilter;
 
 // CKAT per-axis scale slope divisor — see DecodeQchnChunkCompressed.
@@ -104,27 +99,10 @@ TArray<FSWGIffChunk> FSWGAnimationReader::FindAllChildChunks(const FSWGIffReader
 
 FQuat FSWGAnimationReader::DecodeCompressedQuaternion(uint32 Value, float ScaleX, float ScaleY, float ScaleZ)
 {
-	// SWG's CKAT rotation key is NOT "smallest three": it stores the quaternion's
-	// three VECTOR components and reconstructs the scalar W. Layout is
-	// [2 unused/flag bits][10-bit Xq][10-bit Yq][10-bit Zq], high bit to low.
-	// Each 10-bit field maps [0,1023] -> [-1,1] and is multiplied by that axis's
-	// PER-CHANNEL half-range (ScaleX/Y/Z), decoded from the QCHN header's 3 scale
-	// bytes by DecodeQchnChunkCompressed. W = sqrt(1 - x^2 - y^2 - z^2).
-	//
-	// Two bugs previously broke the walk clip, both fixed here:
-	//   1. It was decoded as "smallest three" (a 2-bit dropped-largest index +
-	//      reconstruct the largest). The top 2 bits are NOT a largest-component
-	//      index (verified: they disagree with the actual argmax on 515/798
-	//      real samples), and treating them as one scrambled the axis/scalar
-	//      assignment whenever they varied — the "ball of limbs" / whole-body
-	//      tumble. The per-axis scale keeps X/Y/Z small so W is always the
-	//      dominant component anyway (min reconstructed W = 0.87 over the whole
-	//      clip), which is exactly why storing the vector and rebuilding W works.
-	//   2. The quantization range was a fixed 1/sqrt(2); it's actually per axis
-	//      from the header bytes. Baseline byte ~160 = zero motion, so still
-	//      joints (head/clavicle/wrist) decode to exact identity and moving
-	//      joints to smooth, physically-sane swings. See the header comment and
-	//      WOOKIEE_ANIMATION_POSE_BUG.md for the full derivation.
+	// NOT "smallest three": stores the quaternion's VECTOR components and
+	// reconstructs W = sqrt(1-x²-y²-z²). Layout: [2 unused bits][10-bit Xq]
+	// [10-bit Yq][10-bit Zq], each mapped [0,1023]->[-1,1] and scaled by that
+	// axis's per-channel half-range (ScaleX/Y/Z, decoded from the QCHN header).
 	const uint32 X10 = (Value >> 20) & 0x3FFu;
 	const uint32 Y10 = (Value >> 10) & 0x3FFu;
 	const uint32 Z10 = Value & 0x3FFu;
@@ -134,44 +112,11 @@ FQuat FSWGAnimationReader::DecodeCompressedQuaternion(uint32 Value, float ScaleX
 	const double Z = ((Z10 / 1023.0) * 2.0 - 1.0) * ScaleZ;
 	const double W = FMath::Sqrt(FMath::Max(0.0, 1.0 - (X * X + Y * Y + Z * Z)));
 
-	// EXPERIMENTAL (2026-07-12) — user observation live-watching the run
-	// clip: "it seems like the model is rotated 90 degrees to what the
-	// animation expects" (legs crossing/swinging sideways, arms flying out
-	// to the side instead of front-to-back). The original mapping below
-	// only ever validated against the idle clip, whose rotations are all
-	// near-identity — too small for a horizontal-axis mislabeling (SWG
-	// local X vs local Z assigned to the wrong UE horizontal axis) to be
-	// visible. A locomotion clip's large forward/back swings would expose
-	// exactly that as sideways motion. Testing: swap which local axis feeds
-	// UE.X vs UE.Y (was -X,-Z,-Y; now -Z,-X,-Y) while leaving the vertical
-	// mapping (local Y -> UE.Z) alone, since bind pose / idle already
-	// confirm that part is right. If this doesn't visibly fix it, revert to
-	// (-(float)X, -(float)Z, -(float)Y, (float)W) — do not leave both
-	// changed and undocumented.
-	// Y/Z-swap AND conjugate (negate the vector part) on the way out:
-	// (x,y,z,w) -> (-x,-z,-y,w). That's the proper quaternion basis change
-	// for SWG's Y-up -> UE's Z-up; the swap alone is an improper map, off by
-	// exactly an inversion. Note FSWGSkeletonReader's SkeletonReadRotationLE
-	// keeps the swap-only (x,z,y,w) form for BPRO/RPRE/RPST — the .skt quats
-	// are stored in the opposite (conjugated) convention from .ans samples,
-	// and FSWGSkeletonJoint's Post*mid*Pre composition order was validated
-	// against exactly that pairing.
-	//
-	// REVERTED (2026-07-12) — tried 3 variants of a horizontal-axis
-	// swap/rotation this session chasing a user-reported "rotated 90
-	// degrees" symptom on the run clip (legs crossing/sideways -> torso
-	// bending backwards -> torso left+limbs right, one variant per
-	// attempt). None converged, and by the third attempt the described
-	// wrongness was internally inconsistent (torso one direction, limbs
-	// another) — a signature of this session's OTHER runtime damping/clamp/
-	// smoothing systems (ApplyPose's SoftClampSwing, the arm rest-pose
-	// target, SWGDenseTrackUtils' outlier smoothing) interacting with
-	// whichever axis change was live, not a clean read on the axis
-	// hypothesis itself. Reverted to the last confirmed-good formula so the
-	// next pass can re-test the axis hypothesis against a clean baseline
-	// (all of ApplyPose's damping temporarily no-op'd — see
-	// WOOKIEE_ANIMATION_POSE_BUG.md) instead of through several overlapping
-	// corrections at once.
+	// Y/Z-swap AND conjugate (negate the vector part): (x,y,z,w) -> (-x,-z,-y,w).
+	// Proper quaternion basis change for SWG's Y-up -> UE's Z-up (swap alone is
+	// an improper map, off by an inversion). FSWGSkeletonReader's
+	// SkeletonReadRotationLE keeps the swap-only (x,z,y,w) form for BPRO/RPRE/
+	// RPST since .skt quats use the opposite (conjugated) convention from .ans.
 	return FQuat(-(float)X, -(float)Z, -(float)Y, (float)W);
 }
 
@@ -197,13 +142,9 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	const uint8 RawScaleX = Data[ScaleBytesOffset + 0];
 	const uint8 RawScaleY = Data[ScaleBytesOffset + 1];
 	const uint8 RawScaleZ = Data[ScaleBytesOffset + 2];
-	// The /256 slope is the one part of the CKAT decode that offline analysis
-	// could never pin (still joints decode to identity under ANY slope, and
-	// the continuity metric is slope-invariant). FOOTTRACK FK measurement
-	// (2026-07-13) shows amplitudes uniformly hot — feet lifting 50-80cm on a
-	// walk vs the ~10-15cm physical expectation — so the divisor is now a
-	// live-tunable CVar to calibrate against FOOTTRACK numbers via
-	// swg.ReloadAnim, instead of a rebuild per guess.
+	// The /256 slope is unconfirmed (still joints decode to identity under any
+	// slope, so it's not directly measurable) — kept as a live-tunable CVar so
+	// it can be calibrated via swg.ReloadAnim instead of a rebuild per guess.
 	const float Divisor = FMath::Max(1.0f, GSWGCkatScaleDivisor);
 	const float ScaleX = FMath::Max(0, (int32)RawScaleX - 160) / Divisor;
 	const float ScaleY = FMath::Max(0, (int32)RawScaleY - 160) / Divisor;
@@ -269,18 +210,9 @@ void FSWGAnimationReader::DecodeQchnChunkRaw(const FSWGIffReader& Reader, const 
 	const uint8* Data = Reader.GetChunkData(Qchn);
 	const int32 Size = Qchn.DataSize;
 
-	// [uint32 explicit-sample-count][4 unknown bytes] header (8 bytes), then
-	// frame-0's quat with NO frame-index prefix (implicit, same convention as
-	// CKAT's frame-0 handling), then repeating 20-byte
+	// [uint32 sample-count][4 unknown bytes] header (8 bytes), then frame-0's
+	// quat with no frame-index prefix, then repeating 20-byte
 	// [frame:uint32][4×float32 (W,X,Y,Z)] records — see SWGAnimationReader.h.
-	//
-	// Tried swapping to (X,Y,Z,W) (scalar-last) on the theory that the
-	// original (W,X,Y,Z) assumption was only ever "verified" by the 4 floats
-	// summing to a unit quaternion — true under either labeling, so it never
-	// actually distinguished them — while chasing anatomically wrong
-	// finger/ankle poses. Tested live: (X,Y,Z,W) made the pose clearly worse,
-	// confirming (W,X,Y,Z) was correct after all. Reverted; the hand/foot
-	// oddity has some other cause, not this.
 	constexpr int32 Frame0Offset = 8;
 	constexpr int32 FirstExplicitSampleOffset = 24;
 
@@ -313,19 +245,9 @@ TMap<int32, float> FSWGAnimationReader::DecodeChnlChunk(const FSWGIffReader& Rea
 	const uint8* Data = Reader.GetChunkData(Chnl);
 	const int32 Size = Chnl.DataSize;
 
-	// [count:uint32][frame-0 value:float] header (8 bytes) — frame 0's value
-	// is embedded directly in the header, not read separately — then
-	// repeating 8-byte [value:float][frame:uint32] records (value BEFORE
-	// frame, and frame is a full uint32, not uint16 — confirmed via a raw
-	// byte dump against appearance/animation/all_b_idl_standing_idle1.ans:
-	// the originally-assumed 6-byte [uint16 frame][float value] layout
-	// produced frame indices in the tens of thousands and astronomically
-	// huge "values" for every record past frame 0, while this 8-byte layout
-	// produces a clean, monotonically-varying curve with frames incrementing
-	// 1,2,3,4,... exactly as expected. This bug was invisible until runtime
-	// bone-driven playback existed to actually render root motion — earlier
-	// dumps only ever printed a handful of sampled values without noticing
-	// the astronomical outliers among them).
+	// [count:uint32][frame-0 value:float] header (8 bytes), then repeating
+	// 8-byte [value:float][frame:uint32] records — value before frame, and
+	// frame is a full uint32, not uint16.
 	if (Size < 8) return Result;
 	Result.Add(0, AnimReadFloatLE(Data, 4));
 
@@ -450,15 +372,9 @@ void FSWGAnimationReader::DecodeRootTranslation(const FSWGIffReader& Reader, con
 	for (int32 Frame : AllFrames)
 	{
 		const float RawY = SampleHold(Vertical, Frame); // file's Y (up) axis
-		// Locomotion clips (e.g. the walk) carry a net horizontal root advance
-		// (LOCT: ~1.5m/cycle here). In a real game the ACTOR moves and the
-		// animation plays in place; driving the root bone with that horizontal
-		// delta instead makes the mesh slide forward and snap back at the loop
-		// seam — read as "jerky / too fast". For this in-place preview we keep
-		// only the vertical bob and drop the horizontal advance.
-		// (RawX = SampleHold(HorizontalX, Frame), RawZ = SampleHold(HorizontalY,
-		// Frame) are intentionally not applied; restore them, mapped as
-		// FVector(RawX, RawZ, RawY), if/when the actor is driven by root motion.)
+		// In-place preview: keep only the vertical bob and drop the horizontal
+		// advance (HorizontalX/Y), which would otherwise slide the mesh forward
+		// and snap back at the loop seam since the actor isn't driven by root motion.
 		OutAnimation.RootTranslationDeltas.Add(Frame, FVector(0.0f, 0.0f, RawY) * SWGWorldScale);
 	}
 }

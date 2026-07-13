@@ -651,20 +651,10 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 
 void USWGObjectGraphSubsystem::HandleObjControllerMessage(const FObjControllerMessageIn& Msg)
 {
-	// DataTransformCallback::updateTransform's regular per-tick movement sync
-	// always uses UpdateTransformMessage/LightUpdateTransformMessage (handled
-	// above) — this ObjectController-wrapped envelope is what
-	// GroundZoneComponent::teleport pushes instead, which is what both
-	// zone-in (PlayerZoneComponent::switchZone) AND any bounce-back
-	// correction (DataTransformCallback's speed-hack/invalid-position
-	// rejection calling SceneObject::teleport) route through. Either way
-	// Core3 re-armed PlayerObject::isTeleporting, and every DataTransform we
-	// send afterward is rejected with "!teleporting" until acked (see
-	// FSWGInWorldState::Enter's zone-in ack for the fuller explanation).
-	// TeleportAckCallback::run is an unconditional setTeleporting(false), so
-	// acking on every ObjectController push for our own player — regardless
-	// of its inner sub-type — is a harmless no-op when it wasn't actually
-	// re-armed.
+	// This ObjectController-wrapped envelope is what GroundZoneComponent::teleport
+	// pushes for zone-in and bounce-back corrections, both of which re-arm
+	// PlayerObject::isTeleporting server-side. Acking unconditionally is a
+	// harmless no-op when it wasn't actually re-armed.
 	if (LocalPlayerObjectId != 0 && Msg.ObjectId == LocalPlayerObjectId && Network)
 	{
 		FTeleportAck Ack(LocalPlayerObjectId);

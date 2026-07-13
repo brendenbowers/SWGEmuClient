@@ -26,24 +26,14 @@ namespace
 
 	FVector ReadVector3LE(const uint8* Data, int32 Offset)
 	{
-		// SWG's mesh data is authored Y-up (model space); UE is Z-up. Reading
-		// the file's (x,y,z) straight into UE's (X,Y,Z) with no conversion put
-		// every creature's mesh (which stands upright in its own Y-up model
-		// space) tipped 90 degrees in UE's Z-up world — reported as creatures
-		// lying flat on their backs. Swapping Y/Z maps Y-up model space onto
-		// Z-up world space directly. Applies equally to positions, normals, and
-		// the bounding box (TryReadBoundingBox), all of which share this helper
-		// and all need the same conversion.
+		// SWG's mesh data is authored Y-up (model space); UE is Z-up. Swapping
+		// Y/Z maps Y-up model space onto Z-up world space directly — applies to
+		// positions, normals, and the bounding box, all sharing this helper.
 		return FVector(MeshReadFloatLE(Data, Offset), MeshReadFloatLE(Data, Offset + 8), MeshReadFloatLE(Data, Offset + 4));
 	}
 
-	// Re-enabled (see chat): mesh geometry scales up to human-scale UE units
-	// again. This time the rendered footprint (terrain tile count, world-
-	// snapshot spawn radius) is being cut down alongside it, rather than
-	// leaving those at their old "cover a huge small-scale area" settings,
-	// which would now try to bake/spawn ~100x more effective world area.
-	// Applies to position data only (never normals, which must stay
-	// unit-length, or UVs).
+	// Scales mesh geometry up to human-scale UE units. Applies to position data
+	// only (never normals, which must stay unit-length, or UVs).
 	FVector ReadPositionVector3LE(const uint8* Data, int32 Offset)
 	{
 		return ReadVector3LE(Data, Offset) * SWGWorldScale;
