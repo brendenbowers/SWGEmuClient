@@ -5,6 +5,8 @@
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Network/Messages/Zone/CmdSceneReadyMessage.h"
 #include "Network/Messages/Zone/DataTransformMessage.h"
+#include "Network/Messages/Zone/Object/TeleportAck.h"
+#include "Common/SWGWorldScale.h"
 #include "Engine/GameInstance.h"
 
 void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
@@ -41,11 +43,26 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 			if (USWGObjectGraphSubsystem* ObjectGraph = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>())
 			{
 				const int64 PlayerObjectId = ObjectGraph->GetLocalPlayerObjectId();
+
+				// Core3 sets PlayerObject::isTeleporting on every zone-in
+				// (PlayerZoneComponent::switchZone) and DataTransformCallback::run
+				// rejects every movement update afterward with "!teleporting" until it
+				// sees this ack (TeleportAckCallback::run -> setTeleporting(false)).
+				// Without it every DataTransform we ever send post-login is silently
+				// dropped, forever — not an actual teleport, just a stuck flag.
+				FTeleportAck Ack(PlayerObjectId);
+				Ack.MoveCount = 1;
+				UIStateMachine.Network->SendMessage(Ack.Serialize());
+				UE_LOG(LogTemp, Log, TEXT("FSWGInWorldState::Enter: sent TeleportAck for object %lld"), PlayerObjectId);
+
 				if (const AActor* PlayerActor = ObjectGraph->FindActor(PlayerObjectId))
 				{
 					FDataTransformMessage Transform;
 					Transform.ObjectId = PlayerObjectId;
-					Transform.Position = PlayerActor->GetActorLocation();
+					// Server expects raw (pre-scale) wire-space coordinates, same as
+					// every position it sends us — convert before sending, same as
+					// ASWGPlayer::SendDataTransformUpdate.
+					Transform.Position = SWGToRawSpace(PlayerActor->GetActorLocation());
 					Transform.Direction = PlayerActor->GetActorQuat();
 					Transform.TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
 					Transform.MovementCounter = 1;

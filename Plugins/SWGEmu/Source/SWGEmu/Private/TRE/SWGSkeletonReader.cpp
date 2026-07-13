@@ -1,4 +1,5 @@
 #include "TRE/SWGSkeletonReader.h"
+#include "Common/SWGWorldScale.h"
 
 namespace
 {
@@ -28,14 +29,12 @@ namespace
 	// translations are authored in the same convention as mesh positions
 	// (confirmed empirically: the root joint's raw Y value is ~1.0, a
 	// plausible hip height in meters, not raw UE units).
-	constexpr float MetersToWorldUnits = 100.0f;
-
 	FVector SkeletonReadTranslationLE(const uint8* Data, int32 Offset)
 	{
 		const float X = SkeletonReadFloatLE(Data, Offset);
 		const float Y = SkeletonReadFloatLE(Data, Offset + 4);
 		const float Z = SkeletonReadFloatLE(Data, Offset + 8);
-		return FVector(X, Z, Y) * MetersToWorldUnits;
+		return FVector(X, Z, Y) * SWGWorldScale;
 	}
 
 	// Quaternions are stored (W,X,Y,Z) — confirmed against the root joint's

@@ -9,129 +9,17 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Common/SWGDenseTrackUtils.h"
 
-namespace
-{
-	// Converts one bone's sparse (frame -> rotation) keyframes into a dense,
-	// one-sample-per-frame array via SLERP between the surrounding known
-	// keys — UAnimSequence's bone track API expects uniform per-frame data,
-	// not sparse/keyed input (see SWGAnimationImporter.h).
-	// Dense arrays use double-precision FVector/FQuat (not FVector3f/FQuat4f)
-	// deliberately — IAnimationDataController::SetBoneTrackKeys has TWO
-	// overloads, and the float-vector one silently CheckOuterClass()-fails
-	// (returns false, no warning logged) for every single bone, leaving the
-	// built AnimSequence with NumberOfSampledKeys=1/SequenceLength=0 (no
-	// animation at all — the bug behind "idle and walk do nothing"). The
-	// double-precision overload has no such check and works correctly. See
-	// Engine/Source/Developer/AnimationDataController/Private/
-	// AnimDataController.cpp's two SetBoneTrackKeys overloads.
-	TArray<FQuat> BuildDenseRotationTrack(const TMap<int32, FQuat>& Sparse, int32 FrameCount, const FQuat& Fallback)
-	{
-		TArray<FQuat> Dense;
-		Dense.SetNum(FrameCount);
-
-		if (Sparse.Num() == 0)
-		{
-			for (int32 i = 0; i < FrameCount; ++i)
-			{
-				Dense[i] = Fallback;
-			}
-			return Dense;
-		}
-
-		TArray<int32> KnownFrames;
-		Sparse.GetKeys(KnownFrames);
-		KnownFrames.Sort();
-
-		for (int32 Frame = 0; Frame < FrameCount; ++Frame)
-		{
-			if (const FQuat* Exact = Sparse.Find(Frame))
-			{
-				Dense[Frame] = *Exact;
-				continue;
-			}
-
-			// Find the known keys bracketing this frame.
-			int32 PrevFrame = INDEX_NONE, NextFrame = INDEX_NONE;
-			for (int32 KnownFrame : KnownFrames)
-			{
-				if (KnownFrame < Frame) PrevFrame = KnownFrame;
-				if (KnownFrame > Frame && NextFrame == INDEX_NONE) NextFrame = KnownFrame;
-			}
-
-			if (PrevFrame == INDEX_NONE)
-			{
-				Dense[Frame] = Sparse[NextFrame]; // before the first key — hold it
-			}
-			else if (NextFrame == INDEX_NONE)
-			{
-				Dense[Frame] = Sparse[PrevFrame]; // after the last key — hold it
-			}
-			else
-			{
-				const float Alpha = (float)(Frame - PrevFrame) / (float)(NextFrame - PrevFrame);
-				Dense[Frame] = FQuat::Slerp(Sparse[PrevFrame], Sparse[NextFrame], Alpha);
-			}
-		}
-		return Dense;
-	}
-
-	// Same sparse->dense conversion as rotation, but LERP instead of SLERP
-	// (translation deltas, not rotations) — used for the root bone's
-	// translation track (FSWGAnimationData::RootTranslationDeltas).
-	TArray<FVector> BuildDenseTranslationTrack(const TMap<int32, FVector>& Sparse, int32 FrameCount, const FVector& BindPose)
-	{
-		TArray<FVector> Dense;
-		Dense.SetNum(FrameCount);
-
-		if (Sparse.Num() == 0)
-		{
-			for (int32 i = 0; i < FrameCount; ++i)
-			{
-				Dense[i] = BindPose;
-			}
-			return Dense;
-		}
-
-		TArray<int32> KnownFrames;
-		Sparse.GetKeys(KnownFrames);
-		KnownFrames.Sort();
-
-		for (int32 Frame = 0; Frame < FrameCount; ++Frame)
-		{
-			FVector Delta;
-			if (const FVector* Exact = Sparse.Find(Frame))
-			{
-				Delta = *Exact;
-			}
-			else
-			{
-				int32 PrevFrame = INDEX_NONE, NextFrame = INDEX_NONE;
-				for (int32 KnownFrame : KnownFrames)
-				{
-					if (KnownFrame < Frame) PrevFrame = KnownFrame;
-					if (KnownFrame > Frame && NextFrame == INDEX_NONE) NextFrame = KnownFrame;
-				}
-
-				if (PrevFrame == INDEX_NONE)
-				{
-					Delta = Sparse[NextFrame];
-				}
-				else if (NextFrame == INDEX_NONE)
-				{
-					Delta = Sparse[PrevFrame];
-				}
-				else
-				{
-					const float Alpha = (float)(Frame - PrevFrame) / (float)(NextFrame - PrevFrame);
-					Delta = FMath::Lerp(Sparse[PrevFrame], Sparse[NextFrame], Alpha);
-				}
-			}
-			Dense[Frame] = BindPose + Delta;
-		}
-		return Dense;
-	}
-}
+// Dense arrays use double-precision FVector/FQuat (not FVector3f/FQuat4f)
+// deliberately — IAnimationDataController::SetBoneTrackKeys has TWO
+// overloads, and the float-vector one silently CheckOuterClass()-fails
+// (returns false, no warning logged) for every single bone, leaving the
+// built AnimSequence with NumberOfSampledKeys=1/SequenceLength=0 (no
+// animation at all — the bug behind "idle and walk do nothing"). The
+// double-precision overload has no such check and works correctly. See
+// Engine/Source/Developer/AnimationDataController/Private/
+// AnimDataController.cpp's two SetBoneTrackKeys overloads.
 
 UAnimSequence* FSWGAnimationImporter::BuildAnimSequence(
 	const FSWGAnimationData& Animation,
@@ -204,7 +92,7 @@ UAnimSequence* FSWGAnimationImporter::BuildAnimSequence(
 		TArray<FVector> PosKeys;
 		if (Joint.Name.Equals(TEXT("root"), ESearchCase::IgnoreCase) && Animation.RootTranslationDeltas.Num() > 0)
 		{
-			PosKeys = BuildDenseTranslationTrack(Animation.RootTranslationDeltas, Animation.FrameCount, Joint.BindPoseTranslation);
+			PosKeys = SWGBuildDenseTranslationTrack(Animation.RootTranslationDeltas, Animation.FrameCount, Joint.BindPoseTranslation);
 		}
 		else
 		{
@@ -215,7 +103,7 @@ UAnimSequence* FSWGAnimationImporter::BuildAnimSequence(
 		const FSWGAnimationBoneTrack* const* FoundTrack = BoneNameToTrack.Find(Joint.Name.ToLower());
 		if (FoundTrack)
 		{
-			RotKeys = BuildDenseRotationTrack((*FoundTrack)->Keyframes, Animation.FrameCount, Joint.BindPoseRotation);
+			RotKeys = SWGBuildDenseRotationTrack((*FoundTrack)->Keyframes, Animation.FrameCount, Joint.BindPoseRotation);
 		}
 		else
 		{

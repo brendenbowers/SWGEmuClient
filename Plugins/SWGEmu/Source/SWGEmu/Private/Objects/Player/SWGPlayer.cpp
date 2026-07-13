@@ -9,8 +9,9 @@
 #include "InputActionValue.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
-#include "Network/Messages/Zone/DataTransformMessage.h"
+//#include "Network/Messages/Zone/DataTransformMessage.h"
 #include "Engine/GameInstance.h"
+#include "Network/Messages/Zone/Object/DataTransform.h"
 
 ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -87,16 +88,16 @@ void ASWGPlayer::PossessedBy(AController* NewController)
 	// otherwise defaults to (0,0,0) regardless of whatever heading the
 	// network's spawn quaternion actually gave this actor (see
 	// HandleSceneCreateObject) — without this the boom would start facing
-	// world yaw-zero instead of behind the character. The +90 yaw is the
-	// same empirically-tuned correction found while testing in PIE: the
-	// boom's local axes don't line up with the actor's forward 1:1, so
-	// starting ControlRotation at the actor's own yaw put the camera off to
-	// the character's side instead of behind it. -15 pitch gives the
-	// camera its default slight downward tilt; from here on, mouse-look
-	// (LookMouseX/LookMouseY) freely orbits away from this starting point.
+	// world yaw-zero instead of behind the character. A +90 yaw used to be
+	// needed here because the mesh's visual forward was component +Y; now
+	// that USWGMeshGeneratorSubsystem rotates the PoseableMesh -90 so it
+	// faces actor +X (the standard UE convention bOrientRotationToMovement
+	// assumes), the boom seeds straight off the actor's own yaw. -15 pitch
+	// gives the camera its default slight downward tilt; from here on,
+	// mouse-look (LookMouseX/LookMouseY) freely orbits away from this point.
 	if (NewController)
 	{
-		NewController->SetControlRotation(GetActorRotation() + FRotator(-15.0f, 90.0f, 0.0f));
+		NewController->SetControlRotation(GetActorRotation() + FRotator(-15.0f, 0.0f, 0.0f));
 	}
 }
 
@@ -206,14 +207,13 @@ void ASWGPlayer::Tick(float DeltaTime)
 
 	if (bIsTurningToCamera && Controller)
 	{
-		// -90 matches PossessedBy's ControlRotation seed: CameraBoom sits
-		// "behind" wherever ControlRotation points, but that alignment is
-		// itself 90 degrees off from the actor's true forward (the same
-		// quirk PossessedBy corrects for at spawn) — so turning the actor to
-		// face the camera needs the same correction, or the character ends
-		// up facing 90 degrees away from where the boom actually sits.
+		// With the mesh now facing actor +X (see the PoseableMesh -90 yaw in
+		// USWGMeshGeneratorSubsystem), facing the camera direction is simply
+		// matching ControlRotation's yaw — the old -90 here compensated for
+		// the mesh's pre-fix +Y facing and would now make the body strafe
+		// sideways relative to its own stride whenever RMB steering is held.
 		FRotator NewRotation = GetActorRotation();
-		NewRotation.Yaw = Controller->GetControlRotation().Yaw - 90.0f;
+		NewRotation.Yaw = Controller->GetControlRotation().Yaw;
 		SetActorRotation(NewRotation);
 	}
 
@@ -251,15 +251,30 @@ void ASWGPlayer::SendDataTransformUpdate()
 		return;
 	}
 
-	FDataTransformMessage Transform;
-	Transform.ObjectId = SWGObjectId;
-	// The server expects raw (pre-scale) wire-space coordinates, same as
-	// every position it sends us — convert back before sending our own.
-	Transform.Position = SWGToRawSpace(GetActorLocation());
-	Transform.Direction = GetActorQuat();
-	Transform.TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
-	Transform.MovementCounter = ++TransformMovementCounter;
-	Transform.Speed = GetVelocity().Size();
+	FDataTransform DTMessage(SWGObjectId);
+	DTMessage.Position = SWGToRawSpace(GetActorLocation());
+	DTMessage.Direction = GetActorQuat();
+	DTMessage.TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
+	DTMessage.MoveCount = ++TransformMovementCounter;
+	// Same raw/pre-scale conversion as Position — server compares this against
+	// the character's real WalkSpeed/RunSpeed (meters/sec) in
+	// PlayerManager::checkSpeedHackTests; sending raw UE cm/s here (e.g. 154.9
+	// for a ~1.55 m/s walk) reads as 100x overspeed and trips the speed-hack
+	// bounce back.
+	DTMessage.Speed = SWGToRawSpace(GetVelocity().Size());
 
-	Network->SendMessage(Transform.Serialize());
+	Network->SendMessage(DTMessage.Serialize());
+
+
+	//FDataTransformMessage Transform;
+	//Transform.ObjectId = SWGObjectId;
+	//// The server expects raw (pre-scale) wire-space coordinates, same as
+	//// every position it sends us — convert back before sending our own.
+	//Transform.Position = SWGToRawSpace(GetActorLocation());
+	//Transform.Direction = GetActorQuat();
+	//Transform.TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
+	//Transform.MovementCounter = ++TransformMovementCounter;
+	//Transform.Speed = GetVelocity().Size();
+
+	//Network->SendMessage(Transform.Serialize());
 }

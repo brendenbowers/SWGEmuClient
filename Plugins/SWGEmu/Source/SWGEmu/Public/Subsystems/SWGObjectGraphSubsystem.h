@@ -23,6 +23,7 @@ struct FDeltasMessage;
 struct FCmdStartSceneMessage;
 struct FUpdateContainmentMessage;
 struct FUpdateTransformMessage;
+struct FObjControllerMessageIn;
 class USWGTerrainSubsystem;
 
 /**
@@ -143,6 +144,7 @@ private:
 	void HandleDeltas(const FDeltasMessage& Msg);
 	void HandleUpdateContainment(const FUpdateContainmentMessage& Msg);
 	void HandleUpdateTransform(const FUpdateTransformMessage& Msg);
+	void HandleObjControllerMessage(const FObjControllerMessageIn& Msg);
 
 	/**
 	 * The network sends feet/ground-level Z, but AActor::SetActorLocation

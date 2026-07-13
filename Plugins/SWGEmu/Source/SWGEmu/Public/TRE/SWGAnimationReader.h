@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "TRE/SWGIffReader.h"
 
+// Temporary/diagnostic — see SWGAnimationReader.cpp's definition.
+extern SWGEMU_API FString GSWGDebugAnsBoneFilter;
+
 /** One bone's decoded rotation keyframes — sparse (only frames actually present in the file). */
 struct FSWGAnimationBoneTrack
 {

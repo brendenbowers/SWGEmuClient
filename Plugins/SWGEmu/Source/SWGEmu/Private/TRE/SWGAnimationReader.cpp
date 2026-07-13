@@ -1,4 +1,20 @@
 #include "TRE/SWGAnimationReader.h"
+#include "Common/SWGWorldScale.h"
+
+// Temporary/diagnostic — comma-separated bone-name substrings; set via
+// swg.DumpAnsAnimation (USWGMeshGeneratorSubsystem). Empty = no logging.
+// See WOOKIEE_ANIMATION_POSE_BUG.md ("arms/thighs/root ~40% hot") for why
+// this exists: visual guess-and-check on the CKAT scale calibration burned
+// several sessions with no result: this dumps the actual per-axis scale
+// bytes and decoded swing extent so the miscalibration can be seen directly
+// instead of inferred from screenshots.
+SWGEMU_API FString GSWGDebugAnsBoneFilter;
+
+// CKAT per-axis scale slope divisor — see DecodeQchnChunkCompressed.
+SWGEMU_API float GSWGCkatScaleDivisor = 256.0f;
+static FAutoConsoleVariableRef CVarSWGCkatScaleDivisor(
+	TEXT("swg.CkatScaleDivisor"), GSWGCkatScaleDivisor,
+	TEXT("Divisor for CKAT per-axis quantization half-range: (scaleByte-160)/divisor. Default 256. Re-decode with swg.ReloadAnim after changing."));
 
 namespace
 {
@@ -34,7 +50,6 @@ namespace
 	// scale as SWGMeshReader.cpp/SWGSkeletonReader.cpp — root translation
 	// deltas are authored in the same convention as everything else this
 	// codebase reads from these files.
-	constexpr float MetersToWorldUnits = 100.0f;
 }
 
 bool FSWGAnimationReader::FindChildForm(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& FormType, FSWGIffChunk& OutChunk)
@@ -119,6 +134,20 @@ FQuat FSWGAnimationReader::DecodeCompressedQuaternion(uint32 Value, float ScaleX
 	const double Z = ((Z10 / 1023.0) * 2.0 - 1.0) * ScaleZ;
 	const double W = FMath::Sqrt(FMath::Max(0.0, 1.0 - (X * X + Y * Y + Z * Z)));
 
+	// EXPERIMENTAL (2026-07-12) — user observation live-watching the run
+	// clip: "it seems like the model is rotated 90 degrees to what the
+	// animation expects" (legs crossing/swinging sideways, arms flying out
+	// to the side instead of front-to-back). The original mapping below
+	// only ever validated against the idle clip, whose rotations are all
+	// near-identity — too small for a horizontal-axis mislabeling (SWG
+	// local X vs local Z assigned to the wrong UE horizontal axis) to be
+	// visible. A locomotion clip's large forward/back swings would expose
+	// exactly that as sideways motion. Testing: swap which local axis feeds
+	// UE.X vs UE.Y (was -X,-Z,-Y; now -Z,-X,-Y) while leaving the vertical
+	// mapping (local Y -> UE.Z) alone, since bind pose / idle already
+	// confirm that part is right. If this doesn't visibly fix it, revert to
+	// (-(float)X, -(float)Z, -(float)Y, (float)W) — do not leave both
+	// changed and undocumented.
 	// Y/Z-swap AND conjugate (negate the vector part) on the way out:
 	// (x,y,z,w) -> (-x,-z,-y,w). That's the proper quaternion basis change
 	// for SWG's Y-up -> UE's Z-up; the swap alone is an improper map, off by
@@ -127,6 +156,22 @@ FQuat FSWGAnimationReader::DecodeCompressedQuaternion(uint32 Value, float ScaleX
 	// are stored in the opposite (conjugated) convention from .ans samples,
 	// and FSWGSkeletonJoint's Post*mid*Pre composition order was validated
 	// against exactly that pairing.
+	//
+	// REVERTED (2026-07-12) — tried 3 variants of a horizontal-axis
+	// swap/rotation this session chasing a user-reported "rotated 90
+	// degrees" symptom on the run clip (legs crossing/sideways -> torso
+	// bending backwards -> torso left+limbs right, one variant per
+	// attempt). None converged, and by the third attempt the described
+	// wrongness was internally inconsistent (torso one direction, limbs
+	// another) — a signature of this session's OTHER runtime damping/clamp/
+	// smoothing systems (ApplyPose's SoftClampSwing, the arm rest-pose
+	// target, SWGDenseTrackUtils' outlier smoothing) interacting with
+	// whichever axis change was live, not a clean read on the axis
+	// hypothesis itself. Reverted to the last confirmed-good formula so the
+	// next pass can re-test the axis hypothesis against a clean baseline
+	// (all of ApplyPose's damping temporarily no-op'd — see
+	// WOOKIEE_ANIMATION_POSE_BUG.md) instead of through several overlapping
+	// corrections at once.
 	return FQuat(-(float)X, -(float)Z, -(float)Y, (float)W);
 }
 
@@ -149,20 +194,72 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 
 	if (Size < Frame0QuatOffset + 4) return;
 
-	const float ScaleX = FMath::Max(0, (int32)Data[ScaleBytesOffset + 0] - 160) / 256.0f;
-	const float ScaleY = FMath::Max(0, (int32)Data[ScaleBytesOffset + 1] - 160) / 256.0f;
-	const float ScaleZ = FMath::Max(0, (int32)Data[ScaleBytesOffset + 2] - 160) / 256.0f;
+	const uint8 RawScaleX = Data[ScaleBytesOffset + 0];
+	const uint8 RawScaleY = Data[ScaleBytesOffset + 1];
+	const uint8 RawScaleZ = Data[ScaleBytesOffset + 2];
+	// The /256 slope is the one part of the CKAT decode that offline analysis
+	// could never pin (still joints decode to identity under ANY slope, and
+	// the continuity metric is slope-invariant). FOOTTRACK FK measurement
+	// (2026-07-13) shows amplitudes uniformly hot — feet lifting 50-80cm on a
+	// walk vs the ~10-15cm physical expectation — so the divisor is now a
+	// live-tunable CVar to calibrate against FOOTTRACK numbers via
+	// swg.ReloadAnim, instead of a rebuild per guess.
+	const float Divisor = FMath::Max(1.0f, GSWGCkatScaleDivisor);
+	const float ScaleX = FMath::Max(0, (int32)RawScaleX - 160) / Divisor;
+	const float ScaleY = FMath::Max(0, (int32)RawScaleY - 160) / Divisor;
+	const float ScaleZ = FMath::Max(0, (int32)RawScaleZ - 160) / Divisor;
+
+	bool bDump = false;
+	if (!GSWGDebugAnsBoneFilter.IsEmpty())
+	{
+		TArray<FString> Filters;
+		GSWGDebugAnsBoneFilter.ParseIntoArray(Filters, TEXT(","), true);
+		for (const FString& F : Filters)
+		{
+			if (OutTrack.BoneName.Contains(F))
+			{
+				bDump = true;
+				break;
+			}
+		}
+	}
+
+	if (bDump)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: raw scale bytes X=%d Y=%d Z=%d -> half-range X=%.4f Y=%.4f Z=%.4f"),
+			*OutTrack.BoneName, RawScaleX, RawScaleY, RawScaleZ, ScaleX, ScaleY, ScaleZ);
+	}
 
 	// The count includes frame 0, which is decoded separately below; the
 	// remaining count-1 explicit records are also bounded by the chunk size.
 	const int32 ExplicitSampleCount = (int32)AnimReadUInt16LE(Data, SampleCountOffset);
-	OutTrack.Keyframes.Add(0, DecodeCompressedQuaternion(AnimReadUInt32LE(Data, Frame0QuatOffset), ScaleX, ScaleY, ScaleZ));
+	{
+		const uint32 RawValue = AnimReadUInt32LE(Data, Frame0QuatOffset);
+		const FQuat Decoded = DecodeCompressedQuaternion(RawValue, ScaleX, ScaleY, ScaleZ);
+		OutTrack.Keyframes.Add(0, Decoded);
+		if (bDump)
+		{
+			FVector Axis; float AngleRad;
+			Decoded.ToAxisAndAngle(Axis, AngleRad);
+			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: frame 0 raw=0x%08X swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
+				*OutTrack.BoneName, RawValue, FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
+		}
+	}
 
 	int32 Pos = FirstExplicitSampleOffset;
 	for (int32 i = 1; i < ExplicitSampleCount && Pos + 6 <= Size; ++i)
 	{
 		const int32 FrameIndex = (int32)AnimReadUInt16LE(Data, Pos);
-		OutTrack.Keyframes.Add(FrameIndex, DecodeCompressedQuaternion(AnimReadUInt32LE(Data, Pos + 2), ScaleX, ScaleY, ScaleZ));
+		const uint32 RawValue = AnimReadUInt32LE(Data, Pos + 2);
+		const FQuat Decoded = DecodeCompressedQuaternion(RawValue, ScaleX, ScaleY, ScaleZ);
+		OutTrack.Keyframes.Add(FrameIndex, Decoded);
+		if (bDump)
+		{
+			FVector Axis; float AngleRad;
+			Decoded.ToAxisAndAngle(Axis, AngleRad);
+			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: frame %d raw=0x%08X swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
+				*OutTrack.BoneName, FrameIndex, RawValue, FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
+		}
 		Pos += 6;
 	}
 }
@@ -330,6 +427,26 @@ void FSWGAnimationReader::DecodeRootTranslation(const FSWGIffReader& Reader, con
 		return BestFrame >= 0 ? Best : Map.CreateConstIterator()->Value;
 	};
 
+	// Diagnostic (swg.DumpAnsAnimation): the horizontal channels encode the
+	// clip's authored travel direction in file space — logging first/last per
+	// channel answers WHICH file axis the character walks along, which pins
+	// down the animation frame vs. the mesh's visual forward independently of
+	// any bone-rotation decoding.
+	if (!GSWGDebugAnsBoneFilter.IsEmpty())
+	{
+		auto NetOf = [](const TMap<int32, float>& Map) -> FVector2D
+		{
+			if (Map.Num() == 0) return FVector2D::ZeroVector;
+			int32 MinF = TNumericLimits<int32>::Max(), MaxF = TNumericLimits<int32>::Min();
+			for (const auto& Pair : Map) { MinF = FMath::Min(MinF, Pair.Key); MaxF = FMath::Max(MaxF, Pair.Key); }
+			return FVector2D(Map[MinF], Map[MaxF]);
+		};
+		const FVector2D NX = NetOf(HorizontalX), NZ = NetOf(HorizontalY), NV = NetOf(Vertical);
+		UE_LOG(LogTemp, Warning, TEXT("ANSDUMP-LOCT: hasLOCT=%d samples X=%d Z=%d V=%d | fileX first=%.4f last=%.4f net=%.4f | fileZ first=%.4f last=%.4f net=%.4f | fileY(up) first=%.4f last=%.4f net=%.4f"),
+			bHasLoct ? 1 : 0, HorizontalX.Num(), HorizontalY.Num(), Vertical.Num(),
+			NX.X, NX.Y, NX.Y - NX.X, NZ.X, NZ.Y, NZ.Y - NZ.X, NV.X, NV.Y, NV.Y - NV.X);
+	}
+
 	for (int32 Frame : AllFrames)
 	{
 		const float RawY = SampleHold(Vertical, Frame); // file's Y (up) axis
@@ -342,7 +459,7 @@ void FSWGAnimationReader::DecodeRootTranslation(const FSWGIffReader& Reader, con
 		// (RawX = SampleHold(HorizontalX, Frame), RawZ = SampleHold(HorizontalY,
 		// Frame) are intentionally not applied; restore them, mapped as
 		// FVector(RawX, RawZ, RawY), if/when the actor is driven by root motion.)
-		OutAnimation.RootTranslationDeltas.Add(Frame, FVector(0.0f, 0.0f, RawY) * MetersToWorldUnits);
+		OutAnimation.RootTranslationDeltas.Add(Frame, FVector(0.0f, 0.0f, RawY) * SWGWorldScale);
 	}
 }
 

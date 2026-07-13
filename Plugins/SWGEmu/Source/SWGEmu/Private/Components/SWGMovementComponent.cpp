@@ -17,15 +17,17 @@ namespace
 
 USWGMovementComponent::USWGMovementComponent()
 {
-	// MOVE_Flying stands in for MOVE_Walking until real terrain collision
-	// exists (see ASWGPlayer::PossessedBy) — but BrakingDecelerationFlying
-	// defaults to 0 in the engine (deliberate for drone/ghost-style flight
-	// with momentum), which for a walking stand-in means the character never
-	// slows down on its own: releasing all movement keys would leave it
-	// drifting at whatever velocity it last had, forever. Matching
-	// UCharacterMovementComponent's own MOVE_Walking default (2048) makes it
-	// stop promptly instead, like an actual walking character would.
-	BrakingDecelerationFlying = 2048.0f;
+	// ASWGPlayer::PossessedBy sets MOVE_Walking unconditionally, independent
+	// of whether the CREO base4 baseline (RunSpeed/WalkSpeed, applied below
+	// in ApplyBase4Part3) has arrived yet — until it does, MaxWalkSpeed/
+	// MaxAcceleration sit at UCharacterMovementComponent's own stock defaults
+	// (600 uu/s, 2048 uu/s^2 — both far above SWG's real ~1.55-5.38 m/s).
+	// Any movement input in that window trips Core3's speed-hack check on
+	// the very first step. Start conservative (walk-speed-ish) instead of at
+	// engine defaults; ApplyBase4Part3 overwrites these with the real values
+	// as soon as they're known.
+	MaxWalkSpeed = 155.0f;
+	MaxAcceleration = 100.0f;
 }
 
 void USWGMovementComponent::ApplyBase4Part1(FSWGPacket& Packet)

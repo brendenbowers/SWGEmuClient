@@ -547,6 +547,78 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 
 				UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeAnimations: done"));
 			}));
+
+	// Diagnostic — see GSWGDebugAnsBoneFilter's comment (SWGAnimationReader.cpp)
+	// and WOOKIEE_ANIMATION_POSE_BUG.md. Re-parses the given .ans and logs raw
+	// QCHN scale bytes + every decoded keyframe's swing angle/axis for bones
+	// whose name contains any of the comma-separated filter terms, e.g.
+	// "swg.DumpAnsAnimation appearance/animation/all_b_loc_walk_male.ans root,thigh,elbow".
+	static FAutoConsoleCommand DumpAnsAnimationCmd(
+		TEXT("swg.DumpAnsAnimation"),
+		TEXT("swg.DumpAnsAnimation <virtualPath> <comma,separated,boneNameFilters> — logs raw CKAT scale bytes and per-keyframe swing angle/axis for matching bones."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 2)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpAnsAnimation <virtualPath> <comma,separated,boneNameFilters>"));
+					return;
+				}
+				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
+				USWGTreSubsystem* TreSubsystem = Self ? Self->TreSubsystem.Get() : nullptr;
+				if (!TreSubsystem)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpAnsAnimation: no TreSubsystem"));
+					return;
+				}
+
+				GSWGDebugAnsBoneFilter = Args[1];
+
+				FSWGIffReader Reader = TreSubsystem->CreateIffReader(Args[0]);
+				FSWGAnimationData Animation;
+				if (!FSWGAnimationReader::ReadAnimation(Reader, Animation))
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpAnsAnimation: failed to parse '%s'"), *Args[0]);
+				}
+
+				GSWGDebugAnsBoneFilter.Empty();
+			}));
+
+	// Diagnostic — re-parses the given .ans (default: the walk clip) and swaps
+	// it into every currently-playing runtime animation WITHOUT a respawn.
+	// Exists so decode-parameter experiments (swg.CkatScaleDivisor) can be
+	// iterated live against swg.DebugFootTrack measurements.
+	static FAutoConsoleCommand ReloadAnimCmd(
+		TEXT("swg.ReloadAnim"),
+		TEXT("swg.ReloadAnim [virtualPath] — re-decodes the clip (default all_b_loc_walk_male.ans) and swaps it into the playing animation in place."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+			{
+				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
+				USWGTreSubsystem* TreSubsystem = Self ? Self->TreSubsystem.Get() : nullptr;
+				if (!TreSubsystem)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.ReloadAnim: no TreSubsystem"));
+					return;
+				}
+				const FString Path = Args.Num() > 0 ? Args[0] : TEXT("appearance/animation/all_b_loc_walk_male.ans");
+				int32 Reloaded = 0;
+				for (FSWGPlayingAnimation& Playing : Self->PlayingAnimations)
+				{
+					FSWGIffReader ClipReader = TreSubsystem->CreateIffReader(Path);
+					FSWGAnimationData ClipAnimation;
+					if (!FSWGAnimationReader::ReadAnimation(ClipReader, ClipAnimation))
+					{
+						UE_LOG(LogTemp, Warning, TEXT("swg.ReloadAnim: failed to parse '%s'"), *Path);
+						return;
+					}
+					// RestMidRotations (idle-clip arm reference) is preserved
+					// as-is — it's only consumed by the damping path.
+					TArray<FQuat> SavedRest = MoveTemp(Playing.RuntimeAnim.RestMidRotations);
+					Playing.RuntimeAnim = FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(ClipAnimation, Playing.Skeleton);
+					Playing.RuntimeAnim.RestMidRotations = MoveTemp(SavedRest);
+					++Reloaded;
+				}
+				UE_LOG(LogTemp, Warning, TEXT("swg.ReloadAnim: reloaded '%s' into %d playing animation(s)"), *Path, Reloaded);
+			}));
 #endif
 }
 
@@ -1977,6 +2049,21 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		PoseableMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -Capsule->GetScaledCapsuleHalfHeight()));
 	}
 
+	// SWG's data convention is consistently 90 degrees off from what Unreal
+	// expects for "forward" — the same quirk ASWGPlayer::PossessedBy/
+	// OnRightMouseButtonPressed already correct for on CameraBoom/actor yaw
+	// (see those comments). That fix only covers camera/control rotation;
+	// it doesn't touch the mesh itself, so the Wookiee's animation-driven
+	// pose (root -> the rest of the skeleton) still swings relative to the
+	// SWG-authored forward axis, not the actor's. Rather than bake a
+	// correction into individual joint rotations in ApplyPose (which would
+	// fight FSWGSkeletalMeshImporter's reference skeleton / inverse-bind
+	// matrices — runtime and bind composition must match exactly), rotate
+	// the whole mesh rigidly here, the same way CameraBoom is offset
+	// relative to the actor rather than baked into per-bone math.
+	// +90 tried first and confirmed backwards by visual test; using -90.
+	PoseableMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
+
 	// The importer creates material slots named after each submesh's shader
 	// path (see FSWGSkeletalMeshImporter::BuildSkeletalMesh) but leaves the
 	// actual material null — build/assign the same real per-shader textured
@@ -2002,11 +2089,11 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 	{
 		FSWGIffReader SkeletonIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/skeleton/all_b.skt"));
 		FSWGSkeletonData Skeleton;
-		// Walk clip (CKAT/compressed). The compressed "smallest three" decoder
-		// now recovers the per-axis quantization scale from each QCHN header
-		// (see FSWGAnimationReader::DecodeCompressedQuaternion), fixing the previously
-		// corrupted walk pose.
-		FSWGIffReader ClipIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/animation/all_b_idl_standing_idle1.ans"));
+		// Diagnosis 2026-07-13: back on the walk clip (the most offline-
+		// validated CKAT data) for the FOOTTRACK stride-axis check — the run
+		// clip's foot trajectories were too corrupted to read an axis from.
+		// See WOOKIEE_ANIMATION_POSE_BUG.md.
+		FSWGIffReader ClipIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/animation/all_b_loc_walk_male.ans"));
 		FSWGAnimationData ClipAnimation;
 
 		if (FSWGSkeletonReader::ReadSkeleton(SkeletonIffReader, Skeleton) && FSWGAnimationReader::ReadAnimation(ClipIffReader, ClipAnimation))
@@ -2015,6 +2102,28 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 			Playing.PoseableMesh = PoseableMesh;
 			Playing.Skeleton = MoveTemp(Skeleton);
 			Playing.RuntimeAnim = FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(ClipAnimation, Playing.Skeleton);
+
+			// Arm damping in ApplyPose needs a real "arms resting" reference
+			// (identity Mid means T-pose for limb joints, not resting at the
+			// sides — see WOOKIEE_ANIMATION_POSE_BUG.md). The idle clip is
+			// confirmed to render arms correctly, so decode it too and hand
+			// its (near-static) frame-0 Mid rotations over as that reference.
+			// Best-effort: if this fails, RestMidRotations stays empty and
+			// ApplyPose simply skips arm damping (same as before this change).
+			FSWGIffReader IdleIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/animation/all_b_idl_standing_idle1.ans"));
+			FSWGAnimationData IdleAnimation;
+			if (FSWGAnimationReader::ReadAnimation(IdleIffReader, IdleAnimation))
+			{
+				const FSWGRuntimeAnimation IdleRuntimeAnim = FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(IdleAnimation, Playing.Skeleton);
+				Playing.RuntimeAnim.RestMidRotations.SetNum(Playing.Skeleton.Joints.Num());
+				for (int32 JointIndex = 0; JointIndex < Playing.Skeleton.Joints.Num(); ++JointIndex)
+				{
+					Playing.RuntimeAnim.RestMidRotations[JointIndex] = IdleRuntimeAnim.BoneTracks.IsValidIndex(JointIndex) && IdleRuntimeAnim.BoneTracks[JointIndex].DenseRotations.Num() > 0
+						? IdleRuntimeAnim.BoneTracks[JointIndex].DenseRotations[0]
+						: FQuat::Identity;
+				}
+			}
+
 			PlayingAnimations.Add(MoveTemp(Playing));
 		}
 		else

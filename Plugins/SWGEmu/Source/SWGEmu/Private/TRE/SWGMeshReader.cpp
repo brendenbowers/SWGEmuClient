@@ -1,4 +1,5 @@
 #include "TRE/SWGMeshReader.h"
+#include "Common/SWGWorldScale.h"
 
 namespace
 {
@@ -43,11 +44,9 @@ namespace
 	// which would now try to bake/spawn ~100x more effective world area.
 	// Applies to position data only (never normals, which must stay
 	// unit-length, or UVs).
-	constexpr float MetersToWorldUnits = 100.0f;
-
 	FVector ReadPositionVector3LE(const uint8* Data, int32 Offset)
 	{
-		return ReadVector3LE(Data, Offset) * MetersToWorldUnits;
+		return ReadVector3LE(Data, Offset) * SWGWorldScale;
 	}
 }
 

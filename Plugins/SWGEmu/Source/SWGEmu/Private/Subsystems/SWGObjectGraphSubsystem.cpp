@@ -18,6 +18,8 @@
 #include "Network/Messages/Zone/CmdStartSceneMessage.h"
 #include "Network/Messages/Zone/UpdateContainmentMessage.h"
 #include "Network/Messages/Zone/UpdateTransformMessage.h"
+#include "Network/Messages/Zone/ObjControllerMessageIn.h"
+#include "Network/Messages/Zone/Object/TeleportAck.h"
 
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
@@ -403,6 +405,10 @@ void USWGObjectGraphSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> 
 	{
 		HandleUpdateTransform(*static_cast<const FUpdateTransformMessage*>(Msg.Get()));
 	}
+	else if (Opcode == static_cast<uint32>(ESWGMessageOp::ObjControllerMessage))
+	{
+		HandleObjControllerMessage(*static_cast<const FObjControllerMessageIn*>(Msg.Get()));
+	}
 }
 
 void USWGObjectGraphSubsystem::HandleCmdStartScene(const FCmdStartSceneMessage& Msg)
@@ -641,6 +647,30 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	FRotator NewRotation = Actor->GetActorRotation();
 	NewRotation.Yaw = YawDegrees;
 	Actor->SetActorRotation(NewRotation);
+}
+
+void USWGObjectGraphSubsystem::HandleObjControllerMessage(const FObjControllerMessageIn& Msg)
+{
+	// DataTransformCallback::updateTransform's regular per-tick movement sync
+	// always uses UpdateTransformMessage/LightUpdateTransformMessage (handled
+	// above) — this ObjectController-wrapped envelope is what
+	// GroundZoneComponent::teleport pushes instead, which is what both
+	// zone-in (PlayerZoneComponent::switchZone) AND any bounce-back
+	// correction (DataTransformCallback's speed-hack/invalid-position
+	// rejection calling SceneObject::teleport) route through. Either way
+	// Core3 re-armed PlayerObject::isTeleporting, and every DataTransform we
+	// send afterward is rejected with "!teleporting" until acked (see
+	// FSWGInWorldState::Enter's zone-in ack for the fuller explanation).
+	// TeleportAckCallback::run is an unconditional setTeleporting(false), so
+	// acking on every ObjectController push for our own player — regardless
+	// of its inner sub-type — is a harmless no-op when it wasn't actually
+	// re-armed.
+	if (LocalPlayerObjectId != 0 && Msg.ObjectId == LocalPlayerObjectId && Network)
+	{
+		FTeleportAck Ack(LocalPlayerObjectId);
+		Ack.MoveCount = 1;
+		Network->SendMessage(Ack.Serialize());
+	}
 }
 
 void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ContainerId)

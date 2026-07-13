@@ -47,6 +47,18 @@ struct FSWGRuntimeAnimation
 
 	/** Dense per-frame translation for the root joint only (bind pose + delta) — every other joint stays at its constant bind pose translation, same as FSWGAnimationImporter. Empty if the clip has no root translation curve. */
 	TArray<FVector> DenseRootTranslations;
+
+	/**
+	 * Optional per-joint "rest" Mid rotation (index-parallel with Joints),
+	 * used only as ApplyPose's damping target for limb joints (arms) where
+	 * FQuat::Identity is NOT a usable rest reference — unlike root/spine/legs,
+	 * a T-pose's arm bind orientation is held out to the side, not resting at
+	 * the body. Populated from a separately-decoded idle clip's frame-0 Mid
+	 * rotations (idle is confirmed to render arms-at-sides correctly — see
+	 * WOOKIEE_ANIMATION_POSE_BUG.md), left empty to fall back to no arm
+	 * damping.
+	 */
+	TArray<FQuat> RestMidRotations;
 };
 
 class SWGEMU_API FSWGRuntimeAnimationPlayer
