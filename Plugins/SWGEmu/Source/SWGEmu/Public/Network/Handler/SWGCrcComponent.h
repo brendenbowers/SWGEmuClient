@@ -12,7 +12,7 @@ struct FSWGSession;
  * Outgoing: append the 2-byte CRC.
  *
  */
-class FSWGCrcComponent : public HandlerComponent
+class SWGEMU_API FSWGCrcComponent : public HandlerComponent
 {
 public:
 

@@ -17,7 +17,7 @@
  * values for equip slots vs vehicle seats. Not needed for basic show/hide;
  * kept for whenever real per-slot placement is added.
  */
-struct FUpdateContainmentMessage : public FSWGNetMessage
+struct SWGEMU_API FUpdateContainmentMessage : public FSWGNetMessage
 {
 	int64  ObjectId    = 0;
 	int64  ContainerId = 0;

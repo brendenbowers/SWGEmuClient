@@ -12,7 +12,7 @@
  * Wire layout:
  *   [0x01][0x43FD1C22]
  */
-struct FCmdSceneReadyMessage
+struct SWGEMU_API FCmdSceneReadyMessage
 {
 	FSWGPacket Serialize() const;
 };

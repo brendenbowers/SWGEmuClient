@@ -27,7 +27,7 @@ enum class ESWGSessionState : uint8
  *   IncomingMessages — written by reader thread (ReliabilityComponent), drained by
  *     game thread Tick (ProcessIncomingMessages).
  */
-struct FSWGSession
+struct SWGEMU_API FSWGSession
 {
 	// ── Connection parameters (set by HandshakeComponent on SessionResponse) ──
 	uint32 ConnectionID    = 0;

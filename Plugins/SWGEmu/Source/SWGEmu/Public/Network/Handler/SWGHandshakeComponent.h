@@ -14,7 +14,7 @@ class FSWGPacketHandler;
  * NotifyHandshakeBegin sends SessionRequest; Incoming parses SessionResponse, sets the
  * key on the encryption component + enables encryption, then fires HandshakeComplete.
  */
-class FSWGHandshakeComponent : public HandlerComponent
+class SWGEMU_API FSWGHandshakeComponent : public HandlerComponent
 {
 public:
 	static FString GetComponentName();

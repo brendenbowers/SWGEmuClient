@@ -18,7 +18,7 @@
 		{
 			"Name": "SWGAutoLogin",
 			"Type": "Runtime",
-			"LoadingPhase": "PreDefault"
+			"LoadingPhase": "PostDefault"
 		}
 	],
 	"Plugins": [

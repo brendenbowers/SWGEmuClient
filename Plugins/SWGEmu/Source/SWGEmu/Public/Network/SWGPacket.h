@@ -27,7 +27,7 @@
  * cursor. Direct array manipulation does not advance Pos — callers set the
  * mode and position explicitly with SetReadMode() / SetWriteMode() / Seek().
  */
-struct FSWGPacket : public FArchive
+struct SWGEMU_API FSWGPacket : public FArchive
 {
 	// Raw packet bytes. Public so handlers can Append / MoveTemp / index directly.
 	TArray<uint8> Data;

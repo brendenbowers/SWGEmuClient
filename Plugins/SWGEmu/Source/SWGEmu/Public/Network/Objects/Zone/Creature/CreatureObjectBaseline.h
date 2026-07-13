@@ -17,7 +17,7 @@
  * (server/zone/packets/creature/). Slot 1 and 4 are standalone BaseLineMessages
  * (not Tangible-derived); slots 3 and 6 append to the Tangible3/6 payload.
  */
-struct FCreatureObjectBaseline
+struct SWGEMU_API FCreatureObjectBaseline
 {
 	FTangibleObjectBaseline Tangible;
 

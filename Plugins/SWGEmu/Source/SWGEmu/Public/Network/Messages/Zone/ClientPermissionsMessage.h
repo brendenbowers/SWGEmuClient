@@ -12,7 +12,7 @@
  * Wire layout:
  *   [0x04][0xE00730E5] galaxyOpen(bool) canCreateChar(bool) unlimitedCreation(bool) unknown(bool)
  */
-struct FClientPermissionsMessage : public FSWGNetMessage
+struct SWGEMU_API FClientPermissionsMessage : public FSWGNetMessage
 {
 	uint8 GalaxyOpen        = 0;
 	uint8 CanCreateChar     = 0;

@@ -12,7 +12,7 @@
  * Wire layout:
  *   [0x04][0x41131F96] username(ascii) password(ascii) version(ascii)
  */
-struct FLoginIDMessage
+struct SWGEMU_API FLoginIDMessage
 {
 	FString Username;
 	FString Password;

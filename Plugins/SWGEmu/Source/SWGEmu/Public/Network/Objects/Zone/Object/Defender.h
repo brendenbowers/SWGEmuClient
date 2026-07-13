@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
 
-struct FDefender
+struct SWGEMU_API FDefender
 {
 	uint64 DefenderObjectId = 0;
 	uint8 DefenderEndPosture = 0;

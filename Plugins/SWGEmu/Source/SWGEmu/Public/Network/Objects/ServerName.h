@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/Messages/SWGMessage.h"
 
-struct FServerName
+struct SWGEMU_API FServerName
 {
 	uint32 ServerID = 0;
 	FString ServerDisplayName;

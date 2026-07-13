@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/Messages/SWGMessage.h"
 
-struct FCharacter
+struct SWGEMU_API FCharacter
 {
 	FString Name;
 	uint32 RaceGenderCRC = 0;

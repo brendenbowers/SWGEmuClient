@@ -13,7 +13,7 @@
  * Wire layout:
  *   [0x02][0x6137556F] unknown(int32=0)
  */
-struct FConnectPlayerResponseMessage : public FSWGNetMessage
+struct SWGEMU_API FConnectPlayerResponseMessage : public FSWGNetMessage
 {
 	int32 Unknown = 0;
 

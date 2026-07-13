@@ -14,7 +14,7 @@ struct FSWGMessage;
  * Wire layout (at payload cursor):
  *   count(4)  [ name(unicode) raceCRC(4) objectID(8) galaxyID(4) status(4) ] x count
  */
-struct FEnumerateCharacterIdMessage : public FSWGNetMessage
+struct SWGEMU_API FEnumerateCharacterIdMessage : public FSWGNetMessage
 {
 	TArray<FCharacter> Characters;
 

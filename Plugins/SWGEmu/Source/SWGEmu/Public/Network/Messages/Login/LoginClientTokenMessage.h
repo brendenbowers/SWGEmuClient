@@ -16,7 +16,7 @@ struct FSWGMessage;
  * The server embeds accountID as the last 4 bytes of the blob,
  * so blobSize = tokenLength + 4. The full blob is stored in SessionKey.
  */
-struct FLoginClientTokenMessage : public FSWGNetMessage
+struct SWGEMU_API FLoginClientTokenMessage : public FSWGNetMessage
 {
 	int32         SessionKeySize = 0;
 	TArray<uint8> SessionKey;

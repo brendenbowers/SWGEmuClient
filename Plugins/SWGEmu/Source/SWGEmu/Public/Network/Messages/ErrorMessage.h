@@ -15,7 +15,7 @@
  * Wire layout:
  *   [0x03][0xB5ABF91A] errorType(ascii) errorMsg(ascii) fatal(uint8)
  */
-struct FErrorMessage : public FSWGNetMessage
+struct SWGEMU_API FErrorMessage : public FSWGNetMessage
 {
 	FString ErrorType;
 	FString ErrorMsg;

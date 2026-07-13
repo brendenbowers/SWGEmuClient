@@ -15,7 +15,7 @@ struct FSWGMessage;
  *   count(4) [ serverID(4) ip(str) port(2) pingPort(2) pop(4) maxCap(4)
  *              maxChars(4) distance(4) status(4) notRecommended(1) ] x count
  */
-struct FLoginClusterStatusMessage : public FSWGNetMessage
+struct SWGEMU_API FLoginClusterStatusMessage : public FSWGNetMessage
 {
 public:
 	FLoginClusterStatusMessage(uint32 OPCode, FSWGMessage& Reader)

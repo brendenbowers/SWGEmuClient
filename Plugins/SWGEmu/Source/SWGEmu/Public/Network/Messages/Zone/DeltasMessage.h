@@ -23,7 +23,7 @@
  *   messageSize(uint32) updateCount(uint16)
  *   rawUpdates(messageSize - 2 bytes)                 ← opaque [fieldIndex][value]...
  */
-struct FDeltasMessage : public FSWGNetMessage
+struct SWGEMU_API FDeltasMessage : public FSWGNetMessage
 {
 	int64         ObjectId    = 0;
 	uint32        ObjectType  = 0; // FourCC, e.g. CREO/PLAY/TANO — see ESWGMessageOp

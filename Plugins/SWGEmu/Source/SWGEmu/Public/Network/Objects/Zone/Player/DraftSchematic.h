@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
 
-struct FDraftSchematic
+struct SWGEMU_API FDraftSchematic
 {
 	uint32 ServerSchematicCRC = 0;
 	uint32 SchematicCRC = 0;

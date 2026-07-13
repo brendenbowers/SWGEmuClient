@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
 
-struct FExperience
+struct SWGEMU_API FExperience
 {
 	FString Type;
 	int32 Value = 0;

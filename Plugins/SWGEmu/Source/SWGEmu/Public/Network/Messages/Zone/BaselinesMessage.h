@@ -22,7 +22,7 @@
  *   messageSize(uint32) operationCount(uint16)
  *   rawPayload(messageSize - 2 bytes)                 ← opaque per-type field data
  */
-struct FBaselinesMessage : public FSWGNetMessage
+struct SWGEMU_API FBaselinesMessage : public FSWGNetMessage
 {
 	int64         ObjectId       = 0;
 	uint32        ObjectType     = 0; // FourCC, e.g. CREO/PLAY/TANO — see ESWGMessageOp

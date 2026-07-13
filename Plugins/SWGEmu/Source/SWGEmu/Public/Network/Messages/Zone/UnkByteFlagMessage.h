@@ -13,7 +13,7 @@
  * Wire layout:
  *   [0x02][0x7102B15F] value(uint8)
  */
-struct FUnkByteFlagMessage : public FSWGNetMessage
+struct SWGEMU_API FUnkByteFlagMessage : public FSWGNetMessage
 {
 	uint8 Value = 0;
 

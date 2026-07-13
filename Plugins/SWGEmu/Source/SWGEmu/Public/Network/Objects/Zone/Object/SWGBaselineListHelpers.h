@@ -26,7 +26,7 @@ struct TSWGBaselineList
 };
 
 /** Reads a StringId: ascii(file) + int32(filler, always 0) + ascii(stringId). */
-struct FSWGStringId
+struct SWGEMU_API FSWGStringId
 {
 	FString File;
 	FString StringTableId;

@@ -22,7 +22,7 @@ using FSWGSeqNum = TSequenceNumber<16, uint16>;
  *           multi-packets, then push finished payloads to Session.IncomingMessages.
  * Tick:     resend unacked window packets past the retransmit interval.
  */
-class FSWGReliabilityComponent : public HandlerComponent
+class SWGEMU_API FSWGReliabilityComponent : public HandlerComponent
 {
 public:
 	static FString GetComponentName();

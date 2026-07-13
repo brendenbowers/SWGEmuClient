@@ -12,7 +12,7 @@
  * Wire layout:
  *   [0x02][0xB5098D76] charID(int64) swgemuHash(uint32=0x928D8F6A)
  */
-struct FSelectCharacterMessage
+struct SWGEMU_API FSelectCharacterMessage
 {
 	int64 CharacterID = 0;
 

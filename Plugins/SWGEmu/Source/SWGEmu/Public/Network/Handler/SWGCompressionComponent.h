@@ -12,7 +12,7 @@ struct FSWGSession;
  * Outgoing: FSWGCrypto::Compress and set/clear the flag byte.
  *
  */
-class FSWGCompressionComponent : public HandlerComponent
+class SWGEMU_API FSWGCompressionComponent : public HandlerComponent
 {
 public:
 	static FString GetComponentName();

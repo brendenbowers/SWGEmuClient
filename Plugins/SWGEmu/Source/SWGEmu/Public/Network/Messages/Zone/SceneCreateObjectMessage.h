@@ -18,7 +18,7 @@
  *   objectCrc(uint32)                                  ← template CRC (client_object_crc)
  *   hyperspacing(uint8)
  */
-struct FSceneCreateObjectMessage : public FSWGNetMessage
+struct SWGEMU_API FSceneCreateObjectMessage : public FSWGNetMessage
 {
 	int64  ObjectId       = 0;
 	float  DirX           = 0.f;

@@ -14,7 +14,7 @@ class FSWGPacketHandler;
  * decompress, reliability, handshake) is handled by the pipeline components;
  * the reader thread knows nothing about the SOE protocol.
  */
-class FSWGSocketReader : public FRunnable
+class SWGEMU_API FSWGSocketReader : public FRunnable
 {
 public:
 	FSWGSocketReader(FSocket* InSocket, FSWGPacketHandler* InHandler);

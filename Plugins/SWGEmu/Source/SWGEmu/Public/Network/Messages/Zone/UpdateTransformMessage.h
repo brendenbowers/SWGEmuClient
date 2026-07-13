@@ -21,7 +21,7 @@
  * units. DirectionAngle is a single byte encoding facing (0-255 mapping to
  * 0-360 degrees) — cheap per-tick facing without a full quaternion.
  */
-struct FUpdateTransformMessage : public FSWGNetMessage
+struct SWGEMU_API FUpdateTransformMessage : public FSWGNetMessage
 {
 	int64 ObjectId         = 0;
 	float PosX             = 0.f;

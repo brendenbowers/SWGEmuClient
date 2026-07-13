@@ -18,7 +18,7 @@ public class SWGAutoLogin : ModuleRules
 			{
 				"CoreUObject",
 				"Engine",
-				"SWGEmu",
+				"SWGEmuClient",
 			}
 		);
 	}

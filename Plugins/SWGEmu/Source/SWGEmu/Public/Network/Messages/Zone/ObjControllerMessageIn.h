@@ -18,7 +18,7 @@
  * see USWGObjectGraphSubsystem's handler for why an unconditional ack is
  * safe regardless of Type.
  */
-struct FObjControllerMessageIn : public FSWGNetMessage
+struct SWGEMU_API FObjControllerMessageIn : public FSWGNetMessage
 {
 	uint32 Priority = 0;
 	uint32 Type = 0;

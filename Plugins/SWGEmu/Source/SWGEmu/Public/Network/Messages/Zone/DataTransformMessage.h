@@ -27,7 +27,7 @@
  *   [posX(4)][posZ(4)][posY(4)]
  *   [speed(4)]
  */
-struct FDataTransformMessage
+struct SWGEMU_API FDataTransformMessage
 {
 	int64 ObjectId = 0;
 	FVector Position = FVector::ZeroVector;

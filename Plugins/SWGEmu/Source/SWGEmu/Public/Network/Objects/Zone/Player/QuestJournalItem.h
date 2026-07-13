@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
 
-struct FQuestJournalItem
+struct SWGEMU_API FQuestJournalItem
 {
 	uint32 QuestCRC = 0;
 	uint64 OwnerId = 0;

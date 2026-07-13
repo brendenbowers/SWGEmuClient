@@ -14,7 +14,7 @@
  * 2=CustomName, 4=CustomizationString, 6=OptionsBitmask, 7=UseCount,
  * 8=ConditionDamage, 9=MaxCondition — matching baseline declaration order).
  */
-struct FTangibleObjectBaseline
+struct SWGEMU_API FTangibleObjectBaseline
 {
 	// ── Base3 ──────────────────────────────────────────────────────
 	float          Complexity      = 0.f;
