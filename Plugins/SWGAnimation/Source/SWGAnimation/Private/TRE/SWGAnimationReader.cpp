@@ -5,11 +5,26 @@
 // (USWGMeshGeneratorSubsystem) to log per-axis scale/swing for those bones. Empty = no logging.
 SWGANIMATION_API FString GSWGDebugAnsBoneFilter;
 
-// CKAT per-axis scale slope divisor — see DecodeQchnChunkCompressed.
+// CKAT per-axis scale slope divisor — see DecodeQchnChunkCompressed. Kept
+// live-tunable in case the true 160/256 baseline/divisor needs revisiting,
+// but the previous per-joint-group "hot" corrections it required are gone
+// now that the real 4-byte-per-component QCHN layout is used (see
+// DecodeCompressedQuaternion and WOOKIEE_ANIMATION_POSE_BUG.md).
 SWGANIMATION_API float GSWGCkatScaleDivisor = 256.0f;
 static FAutoConsoleVariableRef CVarSWGCkatScaleDivisor(
 	TEXT("swg.CkatScaleDivisor"), GSWGCkatScaleDivisor,
 	TEXT("Divisor for CKAT per-axis quantization half-range: (scaleByte-160)/divisor. Default 256. Re-decode with swg.ReloadAnim after changing."));
+
+// DIAGNOSTIC: axis-swap/sign convention to apply to the newly-confirmed
+// 4-independent-byte CKAT decode (WOOKIEE_ANIMATION_POSE_BUG.md) — the old
+// swap+conjugate convention was only ever validated against the WRONG
+// (packed-32-bit) bit-layout, so it needs re-deriving for this one.
+// 0 = direct (X,Y,Z,W), 1 = swap only (X,Z,Y,W), 2 = swap+conjugate
+// (-X,-Z,-Y,W) [old default], 3 = conjugate only (-X,-Y,-Z,W).
+SWGANIMATION_API int32 GSWGCkatSwapMode = 0;
+static FAutoConsoleVariableRef CVarSWGCkatSwapMode(
+	TEXT("swg.CkatSwapMode"), GSWGCkatSwapMode,
+	TEXT("Axis-swap/sign convention for CKAT decode: 0=direct, 1=swap, 2=swap+conjugate, 3=conjugate. Default 0."));
 
 namespace
 {
@@ -97,27 +112,35 @@ TArray<FSWGIffChunk> FSWGAnimationReader::FindAllChildChunks(const FSWGIffReader
 	return Result;
 }
 
-FQuat FSWGAnimationReader::DecodeCompressedQuaternion(uint32 Value, float ScaleX, float ScaleY, float ScaleZ)
+FQuat FSWGAnimationReader::DecodeCompressedQuaternion(uint8 RawX, uint8 RawY, uint8 RawZ, uint8 RawW, float ScaleX, float ScaleY, float ScaleZ)
 {
-	// NOT "smallest three": stores the quaternion's VECTOR components and
-	// reconstructs W = sqrt(1-x²-y²-z²). Layout: [2 unused bits][10-bit Xq]
-	// [10-bit Yq][10-bit Zq], each mapped [0,1023]->[-1,1] and scaled by that
-	// axis's per-channel half-range (ScaleX/Y/Z, decoded from the QCHN header).
-	const uint32 X10 = (Value >> 20) & 0x3FFu;
-	const uint32 Y10 = (Value >> 10) & 0x3FFu;
-	const uint32 Z10 = Value & 0x3FFu;
+	// CONFIRMED (2026-07-13) via Sytner's IFF Editor's real-data template match
+	// against our own .ans files, cross-checked against the community
+	// SWGModelExporter's anim_parser.cpp: the compressed quaternion is FOUR
+	// INDEPENDENT BYTES [CompressedX][CompressedY][CompressedZ][CompressedW],
+	// not a packed 32-bit value with a reconstructed W — that was the wrong
+	// model (see WOOKIEE_ANIMATION_POSE_BUG.md for how this was found and the
+	// per-joint "hot" scale correction it made unnecessary). Each byte maps
+	// [0,255] -> [-1,1]; X/Y/Z are further scaled by this channel's per-axis
+	// half-range (ScaleX/Y/Z, from the QCHN header's 3 format bytes); W has no
+	// format byte and is used unscaled, matching that it's the dominant
+	// component (large half-range headroom isn't needed). The result isn't
+	// exactly unit length after quantization, so it's normalized.
+	const double X = ((RawX / 255.0) * 2.0 - 1.0) * ScaleX;
+	const double Y = ((RawY / 255.0) * 2.0 - 1.0) * ScaleY;
+	const double Z = ((RawZ / 255.0) * 2.0 - 1.0) * ScaleZ;
+	const double W = (RawW / 255.0) * 2.0 - 1.0;
 
-	const double X = ((X10 / 1023.0) * 2.0 - 1.0) * ScaleX;
-	const double Y = ((Y10 / 1023.0) * 2.0 - 1.0) * ScaleY;
-	const double Z = ((Z10 / 1023.0) * 2.0 - 1.0) * ScaleZ;
-	const double W = FMath::Sqrt(FMath::Max(0.0, 1.0 - (X * X + Y * Y + Z * Z)));
-
-	// Y/Z-swap AND conjugate (negate the vector part): (x,y,z,w) -> (-x,-z,-y,w).
-	// Proper quaternion basis change for SWG's Y-up -> UE's Z-up (swap alone is
-	// an improper map, off by an inversion). FSWGSkeletonReader's
-	// SkeletonReadRotationLE keeps the swap-only (x,z,y,w) form for BPRO/RPRE/
-	// RPST since .skt quats use the opposite (conjugated) convention from .ans.
-	return FQuat(-(float)X, -(float)Z, -(float)Y, (float)W);
+	FQuat Result;
+	switch (GSWGCkatSwapMode)
+	{
+	case 1:  Result = FQuat((float)X, (float)Z, (float)Y, (float)W); break;
+	case 2:  Result = FQuat(-(float)X, -(float)Z, -(float)Y, (float)W); break;
+	case 3:  Result = FQuat(-(float)X, -(float)Y, -(float)Z, (float)W); break;
+	default: Result = FQuat((float)X, (float)Y, (float)Z, (float)W); break;
+	}
+	Result.Normalize();
+	return Result;
 }
 
 void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader, const FSWGIffChunk& Qchn, FSWGAnimationBoneTrack& OutTrack)
@@ -125,13 +148,15 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	const uint8* Data = Reader.GetChunkData(Qchn);
 	const int32 Size = Qchn.DataSize;
 
-	// Fully-decoded QCHN layout (see SWGAnimationReader.h):
-	//   [uint16 sample-count][3 per-axis scale bytes], then `sample-count`
-	//   6-byte records [uint16 frame][uint32 quat], the first being frame 0.
-	// The 3 scale bytes are this channel's per-axis (X,Y,Z) quantization
-	// half-range: half-range = max(0, byte - 160) / 256. Byte 160 (~0xA0) is
-	// the zero-motion baseline, so a still axis (byte <= 160) decodes to
-	// exactly 0. DecodeCompressedQuaternion stores X,Y,Z and rebuilds W.
+	// CONFIRMED QCHN layout (see DecodeCompressedQuaternion's comment for how
+	// this was pinned down): [uint16 sample-count][3 per-axis scale/"format"
+	// bytes X,Y,Z], then `sample-count` 6-byte records
+	// [uint16 frame][byte CompressedX][byte CompressedY][byte CompressedZ]
+	// [byte CompressedW], the first being frame 0. The 3 format bytes are this
+	// channel's per-axis (X,Y,Z) quantization half-range: half-range =
+	// max(0, byte - 160) / 256. Byte 160 (~0xA0) is the zero-motion baseline,
+	// so a still axis (byte <= 160) decodes to exactly 0. W has no format byte
+	// and decodes unscaled.
 	constexpr int32 SampleCountOffset = 0;
 	constexpr int32 ScaleBytesOffset = 2;   // 3 bytes: [X][Y][Z]
 	constexpr int32 Frame0QuatOffset = 7;   // = 5-byte header + frame-0's uint16 index (0)
@@ -142,9 +167,6 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	const uint8 RawScaleX = Data[ScaleBytesOffset + 0];
 	const uint8 RawScaleY = Data[ScaleBytesOffset + 1];
 	const uint8 RawScaleZ = Data[ScaleBytesOffset + 2];
-	// The /256 slope is unconfirmed (still joints decode to identity under any
-	// slope, so it's not directly measurable) — kept as a live-tunable CVar so
-	// it can be calibrated via swg.ReloadAnim instead of a rebuild per guess.
 	const float Divisor = FMath::Max(1.0f, GSWGCkatScaleDivisor);
 	const float ScaleX = FMath::Max(0, (int32)RawScaleX - 160) / Divisor;
 	const float ScaleY = FMath::Max(0, (int32)RawScaleY - 160) / Divisor;
@@ -175,15 +197,15 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	// remaining count-1 explicit records are also bounded by the chunk size.
 	const int32 ExplicitSampleCount = (int32)AnimReadUInt16LE(Data, SampleCountOffset);
 	{
-		const uint32 RawValue = AnimReadUInt32LE(Data, Frame0QuatOffset);
-		const FQuat Decoded = DecodeCompressedQuaternion(RawValue, ScaleX, ScaleY, ScaleZ);
+		const FQuat Decoded = DecodeCompressedQuaternion(Data[Frame0QuatOffset], Data[Frame0QuatOffset + 1], Data[Frame0QuatOffset + 2], Data[Frame0QuatOffset + 3], ScaleX, ScaleY, ScaleZ);
 		OutTrack.Keyframes.Add(0, Decoded);
 		if (bDump)
 		{
 			FVector Axis; float AngleRad;
 			Decoded.ToAxisAndAngle(Axis, AngleRad);
-			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: frame 0 raw=0x%08X swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
-				*OutTrack.BoneName, RawValue, FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
+			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: frame 0 raw=(%d,%d,%d,%d) swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
+				*OutTrack.BoneName, Data[Frame0QuatOffset], Data[Frame0QuatOffset + 1], Data[Frame0QuatOffset + 2], Data[Frame0QuatOffset + 3],
+				FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
 		}
 	}
 
@@ -191,15 +213,15 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	for (int32 i = 1; i < ExplicitSampleCount && Pos + 6 <= Size; ++i)
 	{
 		const int32 FrameIndex = (int32)AnimReadUInt16LE(Data, Pos);
-		const uint32 RawValue = AnimReadUInt32LE(Data, Pos + 2);
-		const FQuat Decoded = DecodeCompressedQuaternion(RawValue, ScaleX, ScaleY, ScaleZ);
+		const FQuat Decoded = DecodeCompressedQuaternion(Data[Pos + 2], Data[Pos + 3], Data[Pos + 4], Data[Pos + 5], ScaleX, ScaleY, ScaleZ);
 		OutTrack.Keyframes.Add(FrameIndex, Decoded);
 		if (bDump)
 		{
 			FVector Axis; float AngleRad;
 			Decoded.ToAxisAndAngle(Axis, AngleRad);
-			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: frame %d raw=0x%08X swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
-				*OutTrack.BoneName, FrameIndex, RawValue, FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
+			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: frame %d raw=(%d,%d,%d,%d) swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
+				*OutTrack.BoneName, FrameIndex, Data[Pos + 2], Data[Pos + 3], Data[Pos + 4], Data[Pos + 5],
+				FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
 		}
 		Pos += 6;
 	}
@@ -217,13 +239,37 @@ void FSWGAnimationReader::DecodeQchnChunkRaw(const FSWGIffReader& Reader, const 
 	constexpr int32 FirstExplicitSampleOffset = 24;
 
 	if (Size < Frame0Offset + 16) return;
+
+	bool bDump = false;
+	if (!GSWGDebugAnsBoneFilter.IsEmpty())
+	{
+		TArray<FString> Filters;
+		GSWGDebugAnsBoneFilter.ParseIntoArray(Filters, TEXT(","), true);
+		for (const FString& F : Filters)
+		{
+			if (OutTrack.BoneName.Contains(F))
+			{
+				bDump = true;
+				break;
+			}
+		}
+	}
+
 	{
 		const float W = AnimReadFloatLE(Data, Frame0Offset);
 		const float X = AnimReadFloatLE(Data, Frame0Offset + 4);
 		const float Y = AnimReadFloatLE(Data, Frame0Offset + 8);
 		const float Z = AnimReadFloatLE(Data, Frame0Offset + 12);
 		// Y/Z swap + conjugate — see DecodeCompressedQuaternion's comment.
-		OutTrack.Keyframes.Add(0, FQuat(-X, -Z, -Y, W));
+		const FQuat Decoded(-X, -Z, -Y, W);
+		OutTrack.Keyframes.Add(0, Decoded);
+		if (bDump)
+		{
+			FVector Axis; float AngleRad;
+			Decoded.ToAxisAndAngle(Axis, AngleRad);
+			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP-KFAT %s: frame 0 swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
+				*OutTrack.BoneName, FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
+		}
 	}
 
 	int32 Pos = FirstExplicitSampleOffset;
@@ -234,7 +280,15 @@ void FSWGAnimationReader::DecodeQchnChunkRaw(const FSWGIffReader& Reader, const 
 		const float X = AnimReadFloatLE(Data, Pos + 8);
 		const float Y = AnimReadFloatLE(Data, Pos + 12);
 		const float Z = AnimReadFloatLE(Data, Pos + 16);
-		OutTrack.Keyframes.Add(FrameIndex, FQuat(-X, -Z, -Y, W));
+		const FQuat Decoded(-X, -Z, -Y, W);
+		OutTrack.Keyframes.Add(FrameIndex, Decoded);
+		if (bDump)
+		{
+			FVector Axis; float AngleRad;
+			Decoded.ToAxisAndAngle(Axis, AngleRad);
+			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP-KFAT %s: frame %d swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
+				*OutTrack.BoneName, FrameIndex, FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
+		}
 		Pos += 20;
 	}
 }

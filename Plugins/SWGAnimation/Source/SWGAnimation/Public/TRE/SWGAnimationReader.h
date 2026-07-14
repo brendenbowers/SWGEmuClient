@@ -76,11 +76,12 @@ private:
 	/** All direct leaf children with a given tag, in file order (unlike FindChildChunk, which only returns the first). */
 	static TArray<FSWGIffChunk> FindAllChildChunks(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag);
 
-	/** Decodes one CKAT compressed quaternion: stores the vector (X,Y,Z) and
-	 *  reconstructs the scalar W. ScaleX/Y/Z are the channel's per-axis
-	 *  quantization half-ranges (from the QCHN header scale bytes) — see this
-	 *  file's class comment. */
-	static FQuat DecodeCompressedQuaternion(uint32 Value, float ScaleX, float ScaleY, float ScaleZ);
+	/** Decodes one CKAT compressed quaternion from its four independent bytes
+	 *  (X,Y,Z,W). ScaleX/Y/Z are the channel's per-axis quantization
+	 *  half-ranges (from the QCHN header scale bytes); W has no format byte
+	 *  and decodes unscaled. Result is normalized to correct quantization
+	 *  residue. See this file's class comment. */
+	static FQuat DecodeCompressedQuaternion(uint8 RawX, uint8 RawY, uint8 RawZ, uint8 RawW, float ScaleX, float ScaleY, float ScaleZ);
 
 	/** Decodes a single QCHN chunk's sparse keyframes into OutTrack.Keyframes — CKAT's compressed encoding. */
 	static void DecodeQchnChunkCompressed(const FSWGIffReader& Reader, const FSWGIffChunk& Qchn, FSWGAnimationBoneTrack& OutTrack);
