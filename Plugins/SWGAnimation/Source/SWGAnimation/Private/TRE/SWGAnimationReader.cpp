@@ -119,13 +119,13 @@ FQuat FSWGAnimationReader::DecodeCompressedQuaternion(uint8 RawX, uint8 RawY, ui
 	// SWGModelExporter's anim_parser.cpp: the compressed quaternion is FOUR
 	// INDEPENDENT BYTES [CompressedX][CompressedY][CompressedZ][CompressedW],
 	// not a packed 32-bit value with a reconstructed W — that was the wrong
-	// model (see WOOKIEE_ANIMATION_POSE_BUG.md for how this was found and the
 	// per-joint "hot" scale correction it made unnecessary). Each byte maps
 	// [0,255] -> [-1,1]; X/Y/Z are further scaled by this channel's per-axis
 	// half-range (ScaleX/Y/Z, from the QCHN header's 3 format bytes); W has no
 	// format byte and is used unscaled, matching that it's the dominant
 	// component (large half-range headroom isn't needed). The result isn't
 	// exactly unit length after quantization, so it's normalized.
+	// TODO: this still isnt correct
 	const double X = ((RawX / 255.0) * 2.0 - 1.0) * ScaleX;
 	const double Y = ((RawY / 255.0) * 2.0 - 1.0) * ScaleY;
 	const double Z = ((RawZ / 255.0) * 2.0 - 1.0) * ScaleZ;
@@ -157,6 +157,7 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	// max(0, byte - 160) / 256. Byte 160 (~0xA0) is the zero-motion baseline,
 	// so a still axis (byte <= 160) decodes to exactly 0. W has no format byte
 	// and decodes unscaled.
+	// TODO: Still seems to be incorrect
 	constexpr int32 SampleCountOffset = 0;
 	constexpr int32 ScaleBytesOffset = 2;   // 3 bytes: [X][Y][Z]
 	constexpr int32 Frame0QuatOffset = 7;   // = 5-byte header + frame-0's uint16 index (0)
