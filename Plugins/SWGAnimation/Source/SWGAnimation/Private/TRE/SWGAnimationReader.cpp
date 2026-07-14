@@ -5,18 +5,8 @@
 // (USWGMeshGeneratorSubsystem) to log per-axis scale/swing for those bones. Empty = no logging.
 SWGANIMATION_API FString GSWGDebugAnsBoneFilter;
 
-// CKAT per-axis scale slope divisor — see DecodeQchnChunkCompressed. Kept
-// live-tunable in case the true 160/256 baseline/divisor needs revisiting,
-// but the previous per-joint-group "hot" corrections it required are gone
-// now that the real 4-byte-per-component QCHN layout is used (see
-// DecodeCompressedQuaternion and WOOKIEE_ANIMATION_POSE_BUG.md).
-SWGANIMATION_API float GSWGCkatScaleDivisor = 256.0f;
-static FAutoConsoleVariableRef CVarSWGCkatScaleDivisor(
-	TEXT("swg.CkatScaleDivisor"), GSWGCkatScaleDivisor,
-	TEXT("Divisor for CKAT per-axis quantization half-range: (scaleByte-160)/divisor. Default 256. Re-decode with swg.ReloadAnim after changing."));
-
 // DIAGNOSTIC: axis-swap/sign convention to apply to the newly-confirmed
-// 4-independent-byte CKAT decode (WOOKIEE_ANIMATION_POSE_BUG.md) — the old
+// 4-independent-byte CKAT decode the old
 // swap+conjugate convention was only ever validated against the WRONG
 // (packed-32-bit) bit-layout, so it needs re-deriving for this one.
 // 0 = direct (X,Y,Z,W), 1 = swap only (X,Z,Y,W), 2 = swap+conjugate
@@ -237,10 +227,6 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	const uint8 RawScaleX = Data[ScaleBytesOffset + 0];
 	const uint8 RawScaleY = Data[ScaleBytesOffset + 1];
 	const uint8 RawScaleZ = Data[ScaleBytesOffset + 2];
-	const float Divisor = FMath::Max(1.0f, GSWGCkatScaleDivisor);
-	const float ScaleX = FMath::Max(0, (int32)RawScaleX - 160) / Divisor;
-	const float ScaleY = FMath::Max(0, (int32)RawScaleY - 160) / Divisor;
-	const float ScaleZ = FMath::Max(0, (int32)RawScaleZ - 160) / Divisor;
 
 	bool bDump = false;
 	if (!GSWGDebugAnsBoneFilter.IsEmpty())
@@ -259,8 +245,8 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 
 	if (bDump)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: raw scale bytes X=%d Y=%d Z=%d -> half-range X=%.4f Y=%.4f Z=%.4f"),
-			*OutTrack.BoneName, RawScaleX, RawScaleY, RawScaleZ, ScaleX, ScaleY, ScaleZ);
+		UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: raw scale bytes X=%d Y=%d Z=%d"),
+			*OutTrack.BoneName, RawScaleX, RawScaleY, RawScaleZ);
 	}
 
 	// The count includes frame 0, which is decoded separately below; the
