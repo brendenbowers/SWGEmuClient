@@ -88,6 +88,7 @@ private:
 
 	/** Decodes a single QCHN chunk's sparse keyframes into OutTrack.Keyframes — KFAT's raw-float encoding. */
 	static void DecodeQchnChunkRaw(const FSWGIffReader& Reader, const FSWGIffChunk& Qchn, FSWGAnimationBoneTrack& OutTrack);
+	static TArray<FQuat> DecodeStaticRotations(const FSWGIffReader& Reader,	const FSWGIffChunk& Srot, bool bIsCompressed);
 
 	/** Decodes a single CHNL chunk (one scalar channel) into a sparse frame->value map. */
 	static TMap<int32, float> DecodeChnlChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Chnl);
@@ -97,4 +98,10 @@ private:
 
 	/** Parses FORM ATRN's CHNL children plus an optional sibling LOCT chunk into OutAnimation.RootTranslationDeltas. */
 	static void DecodeRootTranslation(const FSWGIffReader& Reader, const FSWGIffChunk& InnerForm, FSWGAnimationData& OutAnimation);
+	static FQuat DecodeCompressedQuaternion(
+		uint32 PackedValue,
+		uint8 FormatX,
+		uint8 FormatY,
+		uint8 FormatZ);
+
 };

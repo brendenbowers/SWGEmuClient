@@ -21,7 +21,7 @@ static FAutoConsoleVariableRef CVarSWGCkatScaleDivisor(
 // (packed-32-bit) bit-layout, so it needs re-deriving for this one.
 // 0 = direct (X,Y,Z,W), 1 = swap only (X,Z,Y,W), 2 = swap+conjugate
 // (-X,-Z,-Y,W) [old default], 3 = conjugate only (-X,-Y,-Z,W).
-SWGANIMATION_API int32 GSWGCkatSwapMode = 0;
+SWGANIMATION_API int32 GSWGCkatSwapMode = 2;
 static FAutoConsoleVariableRef CVarSWGCkatSwapMode(
 	TEXT("swg.CkatSwapMode"), GSWGCkatSwapMode,
 	TEXT("Axis-swap/sign convention for CKAT decode: 0=direct, 1=swap, 2=swap+conjugate, 3=conjugate. Default 0."));
@@ -54,6 +54,80 @@ namespace
 		double Value;
 		FMemory::Memcpy(&Value, Data + Offset, sizeof(double));
 		return Value;
+	}
+
+
+	struct FSWGQuatFormatInfo
+	{
+		uint8 FormatId;
+		uint8 BaseIndexMask;
+		uint8 BaseShiftCount;
+	};
+
+	constexpr FSWGQuatFormatInfo QuatFormatInfos[] =
+	{
+		{ 0xFE, 0x00, 0 },
+		{ 0xFC, 0x01, 1 },
+		{ 0xF8, 0x03, 2 },
+		{ 0xF0, 0x07, 3 },
+		{ 0xE0, 0x0F, 4 },
+		{ 0xC0, 0x1F, 5 },
+		{ 0x80, 0x3F, 6 },
+	};
+
+	bool DecodeQuatFormat(uint8 Format, float& OutBaseValue, float& OutHalfRange)
+	{
+		for (const FSWGQuatFormatInfo& Info : QuatFormatInfos)
+		{
+			if ((Format & ~Info.BaseIndexMask) == Info.FormatId)
+			{
+				const int32 BaseCount = 1 << Info.BaseShiftCount;
+				const int32 BaseIndex = Format & Info.BaseIndexMask;
+
+				if (BaseIndex >= BaseCount)
+				{
+					return false;
+				}
+
+				OutHalfRange = 2.0f / (float)(BaseCount + 1);
+				OutBaseValue = -1.0f + (float)(BaseIndex + 1) * OutHalfRange;
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	float ExpandQuat11(uint32 Value, uint8 Format)
+	{
+		float BaseValue = 0.0f;
+		float HalfRange = 0.0f;
+		if (!DecodeQuatFormat(Format, BaseValue, HalfRange))
+		{
+			return 0.0f;
+		}
+
+		constexpr uint32 SignBit = 0x400;
+		constexpr uint32 MagnitudeMask = 0x3FF;
+		const float Offset = (float)(Value & MagnitudeMask) * (HalfRange / 1023.0f);
+
+		return (Value & SignBit) ? BaseValue - Offset : BaseValue + Offset;
+	}
+
+	float ExpandQuat10(uint32 Value, uint8 Format)
+	{
+		float BaseValue = 0.0f;
+		float HalfRange = 0.0f;
+		if (!DecodeQuatFormat(Format, BaseValue, HalfRange))
+		{
+			return 0.0f;
+		}
+
+		constexpr uint32 SignBit = 0x200;
+		constexpr uint32 MagnitudeMask = 0x1FF;
+		const float Offset = (float)(Value & MagnitudeMask) * (HalfRange / 511.0f);
+
+		return (Value & SignBit) ? BaseValue - Offset : BaseValue + Offset;
 	}
 
 	// Same Y-up (model space) -> Z-up (UE) axis swap and meters -> 100-units
@@ -112,33 +186,28 @@ TArray<FSWGIffChunk> FSWGAnimationReader::FindAllChildChunks(const FSWGIffReader
 	return Result;
 }
 
-FQuat FSWGAnimationReader::DecodeCompressedQuaternion(uint8 RawX, uint8 RawY, uint8 RawZ, uint8 RawW, float ScaleX, float ScaleY, float ScaleZ)
+FQuat FSWGAnimationReader::DecodeCompressedQuaternion(
+	uint32 PackedValue,
+	uint8 FormatX,
+	uint8 FormatY,
+	uint8 FormatZ)
 {
-	// CONFIRMED (2026-07-13) via Sytner's IFF Editor's real-data template match
-	// against our own .ans files, cross-checked against the community
-	// SWGModelExporter's anim_parser.cpp: the compressed quaternion is FOUR
-	// INDEPENDENT BYTES [CompressedX][CompressedY][CompressedZ][CompressedW],
-	// not a packed 32-bit value with a reconstructed W — that was the wrong
-	// per-joint "hot" scale correction it made unnecessary). Each byte maps
-	// [0,255] -> [-1,1]; X/Y/Z are further scaled by this channel's per-axis
-	// half-range (ScaleX/Y/Z, from the QCHN header's 3 format bytes); W has no
-	// format byte and is used unscaled, matching that it's the dominant
-	// component (large half-range headroom isn't needed). The result isn't
-	// exactly unit length after quantization, so it's normalized.
-	// TODO: this still isnt correct
-	const double X = ((RawX / 255.0) * 2.0 - 1.0) * ScaleX;
-	const double Y = ((RawY / 255.0) * 2.0 - 1.0) * ScaleY;
-	const double Z = ((RawZ / 255.0) * 2.0 - 1.0) * ScaleZ;
-	const double W = (RawW / 255.0) * 2.0 - 1.0;
+	// Packed layout: X=11 bits, Y=11 bits, Z=10 bits.
+	const float X = ExpandQuat11(PackedValue >> 21, FormatX);
+	const float Y = ExpandQuat11(PackedValue >> 10, FormatY);
+	const float Z = ExpandQuat10(PackedValue, FormatZ);
+	const float W = FMath::Sqrt(FMath::Max(0.0f, 1.0f - X * X - Y * Y - Z * Z));
 
+	// Keep the current configurable UE-axis conversion while validating it.
 	FQuat Result;
 	switch (GSWGCkatSwapMode)
 	{
-	case 1:  Result = FQuat((float)X, (float)Z, (float)Y, (float)W); break;
-	case 2:  Result = FQuat(-(float)X, -(float)Z, -(float)Y, (float)W); break;
-	case 3:  Result = FQuat(-(float)X, -(float)Y, -(float)Z, (float)W); break;
-	default: Result = FQuat((float)X, (float)Y, (float)Z, (float)W); break;
+	case 1:  Result = FQuat(X, Z, Y, W); break;
+	case 2:  Result = FQuat(-X, -Z, -Y, W); break;
+	case 3:  Result = FQuat(-X, -Y, -Z, W); break;
+	default: Result = FQuat(X, Y, Z, W); break;
 	}
+
 	Result.Normalize();
 	return Result;
 }
@@ -198,7 +267,9 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	// remaining count-1 explicit records are also bounded by the chunk size.
 	const int32 ExplicitSampleCount = (int32)AnimReadUInt16LE(Data, SampleCountOffset);
 	{
-		const FQuat Decoded = DecodeCompressedQuaternion(Data[Frame0QuatOffset], Data[Frame0QuatOffset + 1], Data[Frame0QuatOffset + 2], Data[Frame0QuatOffset + 3], ScaleX, ScaleY, ScaleZ);
+		const uint32 Packed = AnimReadUInt32LE(Data, Frame0QuatOffset);
+		const FQuat Decoded = DecodeCompressedQuaternion(
+			Packed, RawScaleX, RawScaleY, RawScaleZ);
 		OutTrack.Keyframes.Add(0, Decoded);
 		if (bDump)
 		{
@@ -214,7 +285,9 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	for (int32 i = 1; i < ExplicitSampleCount && Pos + 6 <= Size; ++i)
 	{
 		const int32 FrameIndex = (int32)AnimReadUInt16LE(Data, Pos);
-		const FQuat Decoded = DecodeCompressedQuaternion(Data[Pos + 2], Data[Pos + 3], Data[Pos + 4], Data[Pos + 5], ScaleX, ScaleY, ScaleZ);
+		const uint32 Packed = AnimReadUInt32LE(Data, Pos + 2);
+		const FQuat Decoded = DecodeCompressedQuaternion(
+			Packed, RawScaleX, RawScaleY, RawScaleZ);
 		OutTrack.Keyframes.Add(FrameIndex, Decoded);
 		if (bDump)
 		{
@@ -292,6 +365,46 @@ void FSWGAnimationReader::DecodeQchnChunkRaw(const FSWGIffReader& Reader, const 
 		}
 		Pos += 20;
 	}
+}
+
+TArray<FQuat> FSWGAnimationReader::DecodeStaticRotations(
+	const FSWGIffReader& Reader,
+	const FSWGIffChunk& Srot,
+	bool bIsCompressed)
+{
+	TArray<FQuat> Result;
+	const uint8* Data = Reader.GetChunkData(Srot);
+	const int32 Size = Srot.DataSize;
+
+	if (bIsCompressed)
+	{
+		for (int32 Pos = 0; Pos + 7 <= Size; Pos += 7)
+		{
+			const uint32 Packed = AnimReadUInt32LE(Data, Pos + 3);
+
+			Result.Add(DecodeCompressedQuaternion(
+				Packed,
+				Data[Pos],
+				Data[Pos + 1],
+				Data[Pos + 2]));
+		}
+	}
+	else
+	{
+		// KFAT SROT: repeated W, X, Y, Z float quaternions.
+		constexpr int32 EntrySize = 16;
+
+		for (int32 Pos = 0; Pos + EntrySize <= Size; Pos += EntrySize)
+		{
+			const float W = AnimReadFloatLE(Data, Pos + 0);
+			const float X = AnimReadFloatLE(Data, Pos + 4);
+			const float Y = AnimReadFloatLE(Data, Pos + 8);
+			const float Z = AnimReadFloatLE(Data, Pos + 12);
+			Result.Add(FQuat(-X, -Z, -Y, W));
+		}
+	}
+
+	return Result;
 }
 
 TMap<int32, float> FSWGAnimationReader::DecodeChnlChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Chnl)
@@ -474,54 +587,89 @@ bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimati
 		AnimatedBoneCount = (int32)AnimReadUInt32LE(InfoData, 12);
 	}
 
-	FSWGIffChunk XfrmForm, ArotForm;
+	FSWGIffChunk XfrmForm, ArotForm, SrotChunk;
 	if (!FindChildForm(Reader, InnerForm, TEXT("XFRM"), XfrmForm)) return false;
 	if (!FindChildForm(Reader, InnerForm, TEXT("AROT"), ArotForm)) return false;
 
 	const TArray<FSWGIffChunk> QchnChunks = FindAllChildChunks(Reader, ArotForm, TEXT("QCHN"));
+	const bool bHasSrot =
+		FindChildChunk(Reader, ArotForm, TEXT("SROT"), SrotChunk);
+
+	const TArray<FQuat> StaticRotations = bHasSrot
+		? DecodeStaticRotations(Reader, SrotChunk, bIsCompressed)
+		: TArray<FQuat>();
 	if (QchnChunks.Num() != AnimatedBoneCount)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGAnimationReader: expected %d animated bone(s) per INFO, found %d QCHN chunk(s) — bone/track mapping may be wrong"),
 			AnimatedBoneCount, QchnChunks.Num());
 	}
 
-	int32 NextQchnIndex = 0;
 	for (const FSWGIffChunk& Xfin : Reader.ReadChildren(XfrmForm))
 	{
-		if (Xfin.IsForm() || Xfin.Tag != TEXT("XFIN")) continue;
+		if (Xfin.IsForm() || Xfin.Tag != TEXT("XFIN"))
+		{
+			continue;
+		}
 
 		const uint8* Data = Reader.GetChunkData(Xfin);
 		const int32 Size = Xfin.DataSize;
 
 		int32 NameEnd = 0;
-		while (NameEnd < Size && Data[NameEnd] != 0) ++NameEnd;
-		if (NameEnd >= Size) continue; // no null terminator found — malformed entry
+		while (NameEnd < Size && Data[NameEnd] != 0)
+		{
+			++NameEnd;
+		}
+		if (NameEnd >= Size)
+		{
+			continue;
+		}
 
 		const FString BoneName = FString::ConstructFromPtrSize((const ANSICHAR*)Data, NameEnd);
 		const int32 HasTrackOffset = NameEnd + 1;
-		if (HasTrackOffset >= Size) continue;
-		const bool bHasTrack = Data[HasTrackOffset] != 0;
-
-		if (!bHasTrack) continue; // stays at the skeleton's bind pose for this clip
-
-		if (!QchnChunks.IsValidIndex(NextQchnIndex))
+		if (HasTrackOffset >= Size)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("FSWGAnimationReader: ran out of QCHN chunks at bone '%s' — truncating"), *BoneName);
-			break;
+			continue;
 		}
+
+		const bool bHasTrack = Data[HasTrackOffset] != 0;
+		const int32 RotationChannelOffset = HasTrackOffset + 1;
+		const int32 RotationChannelSize = bIsCompressed ? 2 : 4;
+
+		if (RotationChannelOffset + RotationChannelSize > Size)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("FSWGAnimationReader: truncated XFIN rotation index for bone '%s'"),
+				*BoneName);
+			continue;
+		}
+
+		const int32 RotationChannelIndex = bIsCompressed
+			? (int32)AnimReadUInt16LE(Data, RotationChannelOffset)
+			: (int32)AnimReadUInt32LE(Data, RotationChannelOffset);
 
 		FSWGAnimationBoneTrack Track;
 		Track.BoneName = BoneName;
-		if (bIsCompressed)
+
+		if (bHasTrack)
 		{
-			DecodeQchnChunkCompressed(Reader, QchnChunks[NextQchnIndex], Track);
+			// Dynamic rotation: use QCHN[RotationChannelIndex].
+			DecodeQchnChunkCompressed(
+				Reader,
+				QchnChunks[RotationChannelIndex],
+				Track);
+		}
+		else if (StaticRotations.IsValidIndex(RotationChannelIndex))
+		{
+			// Static rotation: use SROT[RotationChannelIndex].
+			Track.Keyframes.Add(0, StaticRotations[RotationChannelIndex]);
 		}
 		else
 		{
-			DecodeQchnChunkRaw(Reader, QchnChunks[NextQchnIndex], Track);
+			// No static entry: runtime falls back to the skeleton BPRO bind rotation.
+			continue;
 		}
+
 		OutAnimation.BoneTracks.Add(MoveTemp(Track));
-		++NextQchnIndex;
 	}
 
 	DecodeRootTranslation(Reader, InnerForm, OutAnimation);
