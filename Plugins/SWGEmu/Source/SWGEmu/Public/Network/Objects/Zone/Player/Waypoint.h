@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
 
-struct FWaypoint
+struct SWGEMU_API FWaypoint
 {
 	uint64 MapKey = 0; // WaypointList's DeltaVectorMap key — read by the caller, not this struct
 	int32 CellId = 0;

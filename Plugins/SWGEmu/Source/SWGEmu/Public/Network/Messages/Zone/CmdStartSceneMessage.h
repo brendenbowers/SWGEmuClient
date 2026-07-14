@@ -15,7 +15,7 @@
  *   posX(float) posZ(float) posY(float)          ← NOTE: Z before Y on wire
  *   raceTemplate(ascii) galacticTime(int64)
  */
-struct FCmdStartSceneMessage : public FSWGNetMessage
+struct SWGEMU_API FCmdStartSceneMessage : public FSWGNetMessage
 {
 	uint8   IgnoreLayout  = 0;
 	int64   CharacterID   = 0;

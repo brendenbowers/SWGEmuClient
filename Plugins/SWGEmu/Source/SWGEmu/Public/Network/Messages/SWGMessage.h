@@ -15,7 +15,7 @@
  *   [0x00][sub-op(1)][opcode(4)][payload...]
  * The cursor is positioned at byte 6 (payload start) after construction.
  */
-struct FSWGMessage
+struct SWGEMU_API FSWGMessage
 {
 	uint32 Opcode = 0;
 

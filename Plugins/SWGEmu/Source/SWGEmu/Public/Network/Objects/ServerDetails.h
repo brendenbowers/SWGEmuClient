@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
 
-struct FServerDetails
+struct SWGEMU_API FServerDetails
 {
 	uint32 ServerID = 0;
 	FString ServerIP;

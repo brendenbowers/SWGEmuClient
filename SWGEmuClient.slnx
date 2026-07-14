@@ -37,26 +37,8 @@
     <Project Path="../UE_5.8/Engine/Source/Programs/AutomationTool/AutomationTool.csproj">
       <BuildType Project="Development" />
     </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/AutomationToolLauncher/AutomationToolLauncher.csproj">
-      <BuildType Project="Development" />
-    </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj">
       <BuildType Project="Development" />
-    </Project>
-    <Project Path="Intermediate/ProjectFiles/DotNetPerforceLib.vcxproj" Id="0fab5303-7ade-3af7-bb39-3bcad6a54e82">
-      <BuildType Solution="DebugGame Editor|Win64" Project="DebugGame" />
-      <BuildType Solution="DebugGame Editor|Win64-arm64" Project="Win64_arm64_DebugGame" />
-      <BuildType Solution="DebugGame Editor|Win64-arm64ec" Project="Win64_arm64ec_DebugGame" />
-      <BuildType Solution="DebugGame|Win64-arm64" Project="Win64_arm64_DebugGame" />
-      <BuildType Solution="DebugGame|Win64-arm64ec" Project="Win64_arm64ec_DebugGame" />
-      <BuildType Solution="Development Editor|Win64" Project="Development" />
-      <BuildType Solution="Development Editor|Win64-arm64" Project="Win64_arm64_Development" />
-      <BuildType Solution="Development Editor|Win64-arm64ec" Project="Win64_arm64ec_Development" />
-      <BuildType Solution="Development|Win64-arm64" Project="Win64_arm64_Development" />
-      <BuildType Solution="Development|Win64-arm64ec" Project="Win64_arm64ec_Development" />
-      <BuildType Solution="Shipping|Win64-arm64" Project="Win64_arm64_Shipping" />
-      <BuildType Solution="Shipping|Win64-arm64ec" Project="Win64_arm64ec_Shipping" />
-      <Platform Project="x64" />
     </Project>
   </Folder>
   <Folder Name="/Programs/Automation/">
@@ -136,70 +118,6 @@
       <BuildType Project="Development" />
     </Project>
   </Folder>
-  <Folder Name="/Programs/LiveLink/">
-    <Project Path="Intermediate/ProjectFiles/LiveLinkHub.vcxproj" Id="662b429d-9eba-3747-b3de-e59885463be9">
-      <BuildType Solution="DebugGame Editor|Win64" Project="DebugGame_Editor" />
-      <BuildType Solution="DebugGame Editor|Win64-arm64" Project="Win64_arm64_DebugGame_Editor" />
-      <BuildType Solution="DebugGame Editor|Win64-arm64ec" Project="Win64_arm64ec_DebugGame_Editor" />
-      <BuildType Solution="DebugGame|*" Project="Invalid" />
-      <BuildType Solution="Development Editor|Win64" Project="Development_Editor" />
-      <BuildType Solution="Development Editor|Win64-arm64" Project="Win64_arm64_Development_Editor" />
-      <BuildType Solution="Development Editor|Win64-arm64ec" Project="Win64_arm64ec_Development_Editor" />
-      <BuildType Solution="Development|*" Project="Invalid" />
-      <BuildType Solution="Shipping|*" Project="Invalid" />
-      <Platform Project="x64" />
-      <Build Solution="DebugGame|*" Project="false" />
-      <Build Solution="Development|*" Project="false" />
-      <Build Solution="Shipping|*" Project="false" />
-    </Project>
-  </Folder>
-  <Folder Name="/Programs/LowLevelTests/">
-    <Project Path="Intermediate/ProjectFiles/ChaosTestHarness.vcxproj" Id="e26ed660-07e2-3be5-b964-cdcc9fde6519">
-      <BuildType Solution="DebugGame Editor|Win64" Project="DebugGame" />
-      <BuildType Solution="DebugGame Editor|Win64-arm64" Project="Win64_arm64_DebugGame" />
-      <BuildType Solution="DebugGame Editor|Win64-arm64ec" Project="Win64_arm64ec_DebugGame" />
-      <BuildType Solution="DebugGame|Win64-arm64" Project="Win64_arm64_DebugGame" />
-      <BuildType Solution="DebugGame|Win64-arm64ec" Project="Win64_arm64ec_DebugGame" />
-      <BuildType Solution="Development Editor|Win64" Project="Development" />
-      <BuildType Solution="Development Editor|Win64-arm64" Project="Win64_arm64_Development" />
-      <BuildType Solution="Development Editor|Win64-arm64ec" Project="Win64_arm64ec_Development" />
-      <BuildType Solution="Development|Win64-arm64" Project="Win64_arm64_Development" />
-      <BuildType Solution="Development|Win64-arm64ec" Project="Win64_arm64ec_Development" />
-      <BuildType Solution="Shipping|Win64-arm64" Project="Win64_arm64_Shipping" />
-      <BuildType Solution="Shipping|Win64-arm64ec" Project="Win64_arm64ec_Shipping" />
-      <Platform Project="x64" />
-    </Project>
-    <Project Path="Intermediate/ProjectFiles/EventLoopUnitTests.vcxproj" Id="46fbb638-6786-3a3a-a03e-c03fa94a9f7e">
-      <BuildType Solution="DebugGame Editor|Win64" Project="DebugGame" />
-      <BuildType Solution="DebugGame Editor|Win64-arm64" Project="Win64_arm64_DebugGame" />
-      <BuildType Solution="DebugGame Editor|Win64-arm64ec" Project="Win64_arm64ec_DebugGame" />
-      <BuildType Solution="DebugGame|Win64-arm64" Project="Win64_arm64_DebugGame" />
-      <BuildType Solution="DebugGame|Win64-arm64ec" Project="Win64_arm64ec_DebugGame" />
-      <BuildType Solution="Development Editor|Win64" Project="Development" />
-      <BuildType Solution="Development Editor|Win64-arm64" Project="Win64_arm64_Development" />
-      <BuildType Solution="Development Editor|Win64-arm64ec" Project="Win64_arm64ec_Development" />
-      <BuildType Solution="Development|Win64-arm64" Project="Win64_arm64_Development" />
-      <BuildType Solution="Development|Win64-arm64ec" Project="Win64_arm64ec_Development" />
-      <BuildType Solution="Shipping|Win64-arm64" Project="Win64_arm64_Shipping" />
-      <BuildType Solution="Shipping|Win64-arm64ec" Project="Win64_arm64ec_Shipping" />
-      <Platform Project="x64" />
-    </Project>
-    <Project Path="Intermediate/ProjectFiles/IoStoreOnDemandTests.vcxproj" Id="32c62211-fadb-3250-969e-194e7af4706a">
-      <BuildType Solution="DebugGame Editor|Win64" Project="DebugGame" />
-      <BuildType Solution="DebugGame Editor|Win64-arm64" Project="Win64_arm64_DebugGame" />
-      <BuildType Solution="DebugGame Editor|Win64-arm64ec" Project="Win64_arm64ec_DebugGame" />
-      <BuildType Solution="DebugGame|Win64-arm64" Project="Win64_arm64_DebugGame" />
-      <BuildType Solution="DebugGame|Win64-arm64ec" Project="Win64_arm64ec_DebugGame" />
-      <BuildType Solution="Development Editor|Win64" Project="Development" />
-      <BuildType Solution="Development Editor|Win64-arm64" Project="Win64_arm64_Development" />
-      <BuildType Solution="Development Editor|Win64-arm64ec" Project="Win64_arm64ec_Development" />
-      <BuildType Solution="Development|Win64-arm64" Project="Win64_arm64_Development" />
-      <BuildType Solution="Development|Win64-arm64ec" Project="Win64_arm64ec_Development" />
-      <BuildType Solution="Shipping|Win64-arm64" Project="Win64_arm64_Shipping" />
-      <BuildType Solution="Shipping|Win64-arm64ec" Project="Win64_arm64ec_Shipping" />
-      <Platform Project="x64" />
-    </Project>
-  </Folder>
   <Folder Name="/Programs/Shared/">
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Analytics.Generators/EpicGames.Analytics.Generators.csproj">
       <BuildType Project="Development" />
@@ -216,37 +134,19 @@
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Benchmarks/EpicGames.Benchmarks.csproj">
       <BuildType Project="Development" />
     </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Build.Tests/EpicGames.Build.Tests.csproj">
-      <BuildType Project="Development" />
-    </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Build/EpicGames.Build.csproj">
-      <BuildType Project="Development" />
-    </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.BuildGraph.Tests/EpicGames.BuildGraph.Tests.csproj">
       <BuildType Project="Development" />
     </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.BuildGraph/EpicGames.BuildGraph.csproj">
       <BuildType Project="Development" />
     </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Core.Tests/EpicGames.Core.Tests.csproj">
-      <BuildType Project="Development" />
-    </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Core/EpicGames.Core.csproj">
-      <BuildType Project="Development" />
-    </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Horde.Tests/EpicGames.Horde.Tests.csproj">
       <BuildType Project="Development" />
     </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Horde/EpicGames.Horde.csproj">
       <BuildType Project="Development" />
     </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.IoHash.Tests/EpicGames.IoHash.Tests.csproj">
-      <BuildType Project="Development" />
-    </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.IoHash/EpicGames.IoHash.csproj">
-      <BuildType Project="Development" />
-    </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.LogMatchers.Tests/EpicGames.LogMatchers.Tests.csproj">
       <BuildType Project="Development" />
     </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.LogMatchers/EpicGames.LogMatchers.csproj">
@@ -267,13 +167,7 @@
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Perforce.Fixture/EpicGames.Perforce.Fixture.csproj">
       <BuildType Project="Development" />
     </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Perforce.Managed.Tests/EpicGames.Perforce.Managed.Tests.csproj">
-      <BuildType Project="Development" />
-    </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Perforce.Managed/EpicGames.Perforce.Managed.csproj">
-      <BuildType Project="Development" />
-    </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Perforce.Tests/EpicGames.Perforce.Tests.csproj">
       <BuildType Project="Development" />
     </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Perforce/EpicGames.Perforce.csproj">
@@ -282,25 +176,16 @@
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.ProjectStore/EpicGames.ProjectStore.csproj">
       <BuildType Project="Development" />
     </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Redis.Tests/EpicGames.Redis.Tests.csproj">
-      <BuildType Project="Development" />
-    </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Redis/EpicGames.Redis.csproj">
       <BuildType Project="Development" />
     </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.ScriptBuild/EpicGames.ScriptBuild.csproj">
       <BuildType Project="Development" />
     </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Serialization.Tests/EpicGames.Serialization.Tests.csproj">
-      <BuildType Project="Development" />
-    </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Serialization/EpicGames.Serialization.csproj">
       <BuildType Project="Development" />
     </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Slack/EpicGames.Slack.csproj">
-      <BuildType Project="Development" />
-    </Project>
-    <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Tracing.Tests/EpicGames.Tracing.Tests.csproj">
       <BuildType Project="Development" />
     </Project>
     <Project Path="../UE_5.8/Engine/Source/Programs/Shared/EpicGames.Tracing/EpicGames.Tracing.csproj">

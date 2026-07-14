@@ -13,7 +13,7 @@
  * Wire layout:
  *   [0x02][0x487652DA] value(uint32)
  */
-struct FParametersMessage : public FSWGNetMessage
+struct SWGEMU_API FParametersMessage : public FSWGNetMessage
 {
 	uint32 Value = 0;
 

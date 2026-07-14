@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
 
-struct FStringFile
+struct SWGEMU_API FStringFile
 {
 	FString STFFile;
 	FString STFName;

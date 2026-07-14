@@ -1,0 +1,35 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SWG Emu Animation & Model Loading",
+	"Description": "Parses Star Wars Galaxies .msh/.mgn/.skt/.ans animation and mesh data and builds/plays runtime skeletal assets from it.",
+	"Category": "Animation",
+	"CreatedBy": "SWG Emu Team",
+	"CreatedByURL": "https://github.com/swgemu",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SWGAnimation",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "SWGTre",
+			"Enabled": true
+		}
+	]
+}

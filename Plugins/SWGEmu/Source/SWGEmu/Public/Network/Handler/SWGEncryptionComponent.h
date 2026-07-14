@@ -13,7 +13,7 @@ struct FSWGSession;
  *
  * Incoming: FSWGCrypto::Decrypt. Outgoing: FSWGCrypto::Encrypt.
  */
-class FSWGEncryptionComponent : public FEncryptionComponent
+class SWGEMU_API FSWGEncryptionComponent : public FEncryptionComponent
 {
 public:
 	static FString GetComponentName();

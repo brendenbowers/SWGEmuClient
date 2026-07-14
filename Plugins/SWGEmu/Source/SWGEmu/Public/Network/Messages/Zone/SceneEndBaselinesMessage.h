@@ -13,7 +13,7 @@
  * Wire layout (matches Core3 SceneObjectCloseMessage):
  *   [0x02][0x2C436037] objectId(int64)
  */
-struct FSceneEndBaselinesMessage : public FSWGNetMessage
+struct SWGEMU_API FSceneEndBaselinesMessage : public FSWGNetMessage
 {
 	int64 ObjectId = 0;
 

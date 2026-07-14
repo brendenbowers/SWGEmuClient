@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
 
-struct FGroupMissionCriticalObject
+struct SWGEMU_API FGroupMissionCriticalObject
 {
 	uint64 MissionOwnerId = 0;
 	uint64 MissionCriticalObjectId = 0;

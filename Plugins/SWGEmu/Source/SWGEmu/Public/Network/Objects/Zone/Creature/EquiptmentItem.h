@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
 
-struct FEquiptmentItem
+struct SWGEMU_API FEquiptmentItem
 {
 	FString CustomizationString;
 	int32 ContainmentType = 0;

@@ -36,6 +36,14 @@
 			"Enabled": true
 		},
 		{
+			"Name": "SWGTre",
+			"Enabled": true
+		},
+		{
+			"Name": "SWGAnimation",
+			"Enabled": true
+		},
+		{
 			"Name": "CommonUI",
 			"Enabled": true
 		},
@@ -61,6 +69,10 @@
 		},
 		{
 			"Name": "ModelViewViewModelPreview",
+			"Enabled": true
+		},
+		{
+			"Name": "SWGAutoLogin",
 			"Enabled": true
 		}
 	]

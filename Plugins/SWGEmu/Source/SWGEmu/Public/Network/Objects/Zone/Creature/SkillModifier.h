@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
 
-struct FSkillModifier
+struct SWGEMU_API FSkillModifier
 {
 	FString SkillModString; // Map key (skill mod name)
 	int32 BaseValue = 0;    // SkillModEntry::skillMod

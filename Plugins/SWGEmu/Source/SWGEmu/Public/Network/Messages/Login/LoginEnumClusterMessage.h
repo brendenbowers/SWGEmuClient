@@ -14,7 +14,7 @@ struct FSWGMessage;
  * Wire layout (at payload cursor):
  *   count(4)  [ serverID(4) displayName(ascii) timezone(4) ] x count  maxCharsPerAccount(4)
  */
-struct FLoginEnumClusterMessage : public FSWGNetMessage
+struct SWGEMU_API FLoginEnumClusterMessage : public FSWGNetMessage
 {
 	TArray<FServerName> Servers;
 	int32               MaxCharactersPerAccount = 0;

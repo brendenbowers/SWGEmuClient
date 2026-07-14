@@ -15,7 +15,7 @@
  *
  * Server reads: gameBits, totalSize, (totalSize-4) token bytes, 4-byte accountID, version string.
  */
-struct FClientIdMessage
+struct SWGEMU_API FClientIdMessage
 {
 	TArray<uint8> SessionKey;
 	FString       ClientVersion;

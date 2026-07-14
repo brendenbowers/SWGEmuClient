@@ -22,7 +22,13 @@ public class SWGEmuClient : ModuleRules
 			"SlateCore",
 			"CommonUI",
 			"CommonInput",
-			"SWGEmu"
+			"GameplayTags",
+			"Landscape",
+			"GeometryFramework",
+			"GeometryCore",
+			"SWGEmu",
+			"SWGTre",
+			"SWGAnimation"
         });
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

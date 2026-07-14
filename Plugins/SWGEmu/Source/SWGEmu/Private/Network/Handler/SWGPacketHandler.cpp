@@ -37,6 +37,20 @@ void FSWGPacketHandler::Initialize()
 
 	Handshake->SetActive(true);
 
+	// See FSWGReliabilityComponent::SetUnhandledOpForwarder's comment — sub-packets
+	// unwrapped from a MultiPacket that Reliability doesn't itself handle (e.g. a
+	// NetStatRequest bundled alongside other traffic) need an explicit path to the
+	// Handshake component, since they never pass through FSWGPacketHandler's own
+	// per-component loop the way a top-level packet does.
+	TWeakPtr<FSWGHandshakeComponent> HandshakeWeak = Handshake;
+	Reliability->SetUnhandledOpForwarder([HandshakeWeak](FBitReader& SubPacket)
+	{
+		if (TSharedPtr<FSWGHandshakeComponent> HandshakePtr = HandshakeWeak.Pin())
+		{
+			HandshakePtr->Incoming(SubPacket);
+		}
+	});
+
 	for (TSharedPtr<HandlerComponent>& Comp : Components)
 	{
 		Comp->Initialize();

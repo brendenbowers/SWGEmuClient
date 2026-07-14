@@ -16,7 +16,7 @@ struct FSWGSession;
  * A small custom owner is used instead of UE's stock PacketHandler because the
  * SOE pipeline is fixed and domain-specific.
  */
-class FSWGPacketHandler
+class SWGEMU_API FSWGPacketHandler
 {
 public:
 	explicit FSWGPacketHandler(TWeakPtr<FSWGSession> InSession);

@@ -18,7 +18,7 @@
  * - Resend unacknowledged packets
  *
  */
-class FSWGSocketWriter : public FRunnable
+class SWGEMU_API FSWGSocketWriter : public FRunnable
 {
 public:
 	/**

@@ -13,7 +13,7 @@
  * Wire layout:
  *   [0x02][0x2E365218]
  */
-struct FConnectPlayerMessage
+struct SWGEMU_API FConnectPlayerMessage
 {
 	FSWGPacket Serialize() const;
 };

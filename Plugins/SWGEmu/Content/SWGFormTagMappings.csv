@@ -1,0 +1,14 @@
+Name,TemplateClassName,ActorClass,Notes
+SCOT,SharedCreatureObjectTemplate,/Script/SWGEmu.SWGCreature,Covers both biped NPCs/players AND ground vehicles (speederbike/landspeeder samples are SCOT too)
+STOT,SharedTangibleObjectTemplate,/Script/SWGEmu.SWGItem,Generic tangible - components wearables etc.
+SWOT,SharedWeaponObjectTemplate,/Script/SWGEmu.SWGItem,Equippable weapon still a plain tangible actor in the world
+RCCT,SharedResourceContainerObjectTemplate,/Script/SWGEmu.SWGItem,Resource container
+STAT,SharedStaticObjectTemplate,/Script/SWGEmu.SWGStaticProp,World decoration - extends SHOT directly not STOT
+SBOT,SharedBuildingObjectTemplate,/Script/SWGEmu.SWGBuilding,Live baseline construction path still unconfirmed in Core3 - see plan doc gap
+SIOT,SharedInstallationObjectTemplate,/Script/SWGEmu.SWGInstallation,Harvesters turrets factories
+CCLT,SharedCellObjectTemplate,/Script/SWGEmu.SWGCell,Building interior keyed by cellNumber not object id
+SSHP,SharedShipObjectTemplate,,No actor class yet - starships are a separate hierarchy from SCOT ground vehicles - out of scope this milestone
+SITN,SharedIntangibleObjectTemplate,,No visual actor - no world presence
+SDSC,SharedDraftSchematicObjectTemplate,,Data-only no actor
+SPLY,SharedPlayerObjectTemplate,,Attaches to the player's ASWGCreature rather than spawning its own actor
+SHOT,SharedObjectTemplate,,Root/abstract - never appears as a standalone top-level FORM in practice

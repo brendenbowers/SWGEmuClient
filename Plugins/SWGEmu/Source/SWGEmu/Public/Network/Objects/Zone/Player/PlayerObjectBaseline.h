@@ -20,7 +20,7 @@
  * sends as zero; they're still decoded so future server versions that
  * populate them don't desync the field layout.
  */
-struct FPlayerObjectBaseline
+struct SWGEMU_API FPlayerObjectBaseline
 {
 	// ── Base3 ──────────────────────────────────────────────────────
 	float        Complexity = 0.f; // Always 1 server-side

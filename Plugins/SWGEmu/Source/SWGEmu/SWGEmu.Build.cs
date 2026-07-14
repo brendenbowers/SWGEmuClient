@@ -18,18 +18,13 @@ public class SWGEmu : ModuleRules
 				"Networking",
                 "PacketHandler",
                 "zlib",
-				"CommonUI",
-				"CommonInput",
-				"GameplayTags",
-				"UMG",
-				"Landscape",
+				"SWGTre",
 			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
-				// Add private dependencies as needed
 			}
 		);
 
