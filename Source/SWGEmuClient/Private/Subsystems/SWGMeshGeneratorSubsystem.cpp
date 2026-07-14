@@ -1994,7 +1994,8 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 	{
 		FSWGIffReader SkeletonIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/skeleton/all_b.skt"));
 		FSWGSkeletonData Skeleton;
-		FSWGIffReader ClipIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/animation/all_b_loc_walk_male.ans"));
+		// Walk: appearance/animation/all_b_loc_walk_male.ans
+		FSWGIffReader ClipIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/animation/all_b_idl_standing_idle1.ans"));
 		FSWGAnimationData ClipAnimation;
 
 		if (FSWGSkeletonReader::ReadSkeleton(SkeletonIffReader, Skeleton) && FSWGAnimationReader::ReadAnimation(ClipIffReader, ClipAnimation))
