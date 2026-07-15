@@ -4,9 +4,13 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Math/RotationMatrix.h"
 #include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
 #include "InputActionValue.h"
+#include "InputMappingContext.h"
+#include "Engine/LocalPlayer.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 //#include "Network/Messages/Zone/DataTransformMessage.h"
@@ -49,6 +53,12 @@ ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	if (MoveActionFinder.Succeeded())
 	{
 		MoveAction = MoveActionFinder.Object;
+	}
+
+	static ConstructorHelpers::FObjectFinder<UInputMappingContext> MappingContextFinder(TEXT("/Game/Input/IMC_Default.IMC_Default"));
+	if (MappingContextFinder.Succeeded())
+	{
+		DefaultMappingContext = MappingContextFinder.Object;
 	}
 }
 
@@ -98,6 +108,21 @@ void ASWGPlayer::PossessedBy(AController* NewController)
 	if (NewController)
 	{
 		NewController->SetControlRotation(GetActorRotation() + FRotator(-15.0f, 0.0f, 0.0f));
+	}
+
+	// This player is spawned and possessed at runtime. Install its mapping
+	// context here rather than relying solely on Blueprint controller defaults
+	// that may have run before possession or may be empty on another controller.
+	if (DefaultMappingContext)
+	{
+		if (const APlayerController* PlayerController = Cast<APlayerController>(NewController))
+		{
+			if (UEnhancedInputLocalPlayerSubsystem* Subsystem =
+				ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
+			{
+				Subsystem->AddMappingContext(DefaultMappingContext, 0);
+			}
+		}
 	}
 }
 
@@ -174,15 +199,11 @@ void ASWGPlayer::Move(const FInputActionValue& Value)
 {
 	const FVector2D MovementVector = Value.Get<FVector2D>();
 
-	if (Controller == nullptr)
+	if (!Controller)
 	{
 		return;
 	}
 
-	// Movement is relative to the camera's current yaw, not the character's
-	// own facing — WASD always means "forward relative to view" regardless
-	// of which way the body is currently turned, and bOrientRotationToMovement
-	// then turns the body to catch up to whichever direction that resolves to.
 	const FRotator YawRotation(0.0f, Controller->GetControlRotation().Yaw, 0.0f);
 	const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
 	const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);

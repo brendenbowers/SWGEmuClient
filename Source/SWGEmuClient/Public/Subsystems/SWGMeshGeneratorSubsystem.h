@@ -25,7 +25,10 @@ struct FSWGPlayingAnimation
 {
 	TWeakObjectPtr<UPoseableMeshComponent> PoseableMesh;
 	FSWGSkeletonData Skeleton;
-	FSWGRuntimeAnimation RuntimeAnim;
+
+	/** Idle, walk, jog, run in that order. All are decoded once when the mesh is attached. */
+	TArray<FSWGRuntimeAnimation> LocomotionAnimations;
+	int32 ActiveLocomotionIndex = 0;
 	float PlaybackTimeSeconds = 0.0f;
 };
 

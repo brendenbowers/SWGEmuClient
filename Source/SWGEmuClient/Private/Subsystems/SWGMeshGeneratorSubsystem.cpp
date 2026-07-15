@@ -25,6 +25,7 @@
 #include "Objects/World/SWGInstallation.h"
 #include "Objects/Tangible/SWGItem.h"
 #include "Objects/Player/SWGPlayer.h"
+#include "Components/SWGMovementComponent.h"
 #include "Components/SWGTangibleComponent.h"
 #include "HAL/FileManager.h"
 #include "Misc/ScopeExit.h"
@@ -594,6 +595,10 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 				int32 Reloaded = 0;
 				for (FSWGPlayingAnimation& Playing : Self->PlayingAnimations)
 				{
+					if (!Playing.LocomotionAnimations.IsValidIndex(Playing.ActiveLocomotionIndex))
+					{
+						continue;
+					}
 					FSWGIffReader ClipReader = TreSubsystem->CreateIffReader(Path);
 					FSWGAnimationData ClipAnimation;
 					if (!FSWGAnimationReader::ReadAnimation(ClipReader, ClipAnimation))
@@ -603,9 +608,10 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 					}
 					// RestMidRotations (idle-clip arm reference) is preserved
 					// as-is — it's only consumed by the damping path.
-					TArray<FQuat> SavedRest = MoveTemp(Playing.RuntimeAnim.RestMidRotations);
-					Playing.RuntimeAnim = FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(ClipAnimation, Playing.Skeleton);
-					Playing.RuntimeAnim.RestMidRotations = MoveTemp(SavedRest);
+					FSWGRuntimeAnimation& ActiveAnimation = Playing.LocomotionAnimations[Playing.ActiveLocomotionIndex];
+					TArray<FQuat> SavedRest = MoveTemp(ActiveAnimation.RestMidRotations);
+					ActiveAnimation = FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(ClipAnimation, Playing.Skeleton);
+					ActiveAnimation.RestMidRotations = MoveTemp(SavedRest);
 					++Reloaded;
 				}
 				UE_LOG(LogTemp, Warning, TEXT("swg.ReloadAnim: reloaded '%s' into %d playing animation(s)"), *Path, Reloaded);
@@ -641,8 +647,65 @@ void USWGMeshGeneratorSubsystem::Tick(float DeltaTime)
 			continue;
 		}
 
-		Playing.PlaybackTimeSeconds += DeltaTime;
-		FSWGRuntimeAnimationPlayer::ApplyPose(*PoseableMesh, Playing.Skeleton, Playing.RuntimeAnim, Playing.PlaybackTimeSeconds);
+		if (Playing.LocomotionAnimations.Num() != 4)
+		{
+			continue;
+		}
+
+		const ACharacter* Character = Cast<ACharacter>(PoseableMesh->GetOwner());
+		const float HorizontalSpeed = Character ? Character->GetVelocity().Size2D() : 0.0f;
+		const USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr;
+
+		// CREO base4 is authoritative for the creature's physical walk/run speeds.
+		// Jog is the midpoint because all_m.lat exposes a parametric walk/run
+		// locomotion pair rather than a separate jog threshold; we use SWG's real
+		// all_b_loc_jog clip at that midpoint for a more expressive four-tier set.
+		const float WalkSpeed = Movement && Movement->WalkSpeed > KINDA_SMALL_NUMBER
+			? Movement->WalkSpeed * 100.0f
+			: 155.0f;
+		const float RunSpeed = Movement && Movement->RunSpeed > Movement->WalkSpeed
+			? Movement->RunSpeed * 100.0f
+			: FMath::Max(WalkSpeed * 2.0f, Movement ? Movement->MaxWalkSpeed : 310.0f);
+		const float JogSpeed = (WalkSpeed + RunSpeed) * 0.5f;
+
+		int32 DesiredIndex = 0; // idle
+		float ReferenceSpeed = 1.0f;
+		if (HorizontalSpeed > 3.0f)
+		{
+			const float WalkJogBoundary = (WalkSpeed + JogSpeed) * 0.5f;
+			const float JogRunBoundary = (JogSpeed + RunSpeed) * 0.5f;
+			if (HorizontalSpeed < WalkJogBoundary)
+			{
+				DesiredIndex = 1;
+				ReferenceSpeed = WalkSpeed;
+			}
+			else if (HorizontalSpeed < JogRunBoundary)
+			{
+				DesiredIndex = 2;
+				ReferenceSpeed = JogSpeed;
+			}
+			else
+			{
+				DesiredIndex = 3;
+				ReferenceSpeed = RunSpeed;
+			}
+		}
+
+		if (DesiredIndex != Playing.ActiveLocomotionIndex)
+		{
+			Playing.ActiveLocomotionIndex = DesiredIndex;
+			Playing.PlaybackTimeSeconds = 0.0f;
+		}
+
+		const float PlaybackRate = DesiredIndex == 0
+			? 1.0f
+			: FMath::Clamp(HorizontalSpeed / ReferenceSpeed, 0.25f, 1.5f);
+		Playing.PlaybackTimeSeconds += DeltaTime * PlaybackRate;
+		FSWGRuntimeAnimationPlayer::ApplyPose(
+			*PoseableMesh,
+			Playing.Skeleton,
+			Playing.LocomotionAnimations[Playing.ActiveLocomotionIndex],
+			Playing.PlaybackTimeSeconds);
 	}
 }
 
@@ -1986,7 +2049,7 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		}
 	}
 
-	// Parses the skeleton + idle clip fresh from the TRE and drives
+	// Parses the skeleton + locomotion clips fresh from the TRE and drives
 	// PoseableMesh's bones directly every tick instead of playing a built
 	// UAnimSequence, since IAnimationDataController silently discards every
 	// keyframe in this engine build.
@@ -1994,43 +2057,88 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 	{
 		FSWGIffReader SkeletonIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/skeleton/all_b.skt"));
 		FSWGSkeletonData Skeleton;
-		// Walk: appearance/animation/all_b_loc_walk_male.ans
-		FSWGIffReader ClipIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/animation/all_b_idl_standing_idle1.ans"));
-		FSWGAnimationData ClipAnimation;
-
-		if (FSWGSkeletonReader::ReadSkeleton(SkeletonIffReader, Skeleton) && FSWGAnimationReader::ReadAnimation(ClipIffReader, ClipAnimation))
+		if (FSWGSkeletonReader::ReadSkeleton(SkeletonIffReader, Skeleton))
 		{
 			FSWGPlayingAnimation Playing;
 			Playing.PoseableMesh = PoseableMesh;
 			Playing.Skeleton = MoveTemp(Skeleton);
-			Playing.RuntimeAnim = FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(ClipAnimation, Playing.Skeleton);
 
-			// Arm damping in ApplyPose needs a real "arms resting" reference
-			// (identity Mid means T-pose for limb joints, not resting at the
-			// sides — see WOOKIEE_ANIMATION_POSE_BUG.md). The idle clip is
-			// confirmed to render arms correctly, so decode it too and hand
-			// its (near-static) frame-0 Mid rotations over as that reference.
-			// Best-effort: if this fails, RestMidRotations stays empty and
-			// ApplyPose simply skips arm damping (same as before this change).
-			FSWGIffReader IdleIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/animation/all_b_idl_standing_idle1.ans"));
-			FSWGAnimationData IdleAnimation;
-			if (FSWGAnimationReader::ReadAnimation(IdleIffReader, IdleAnimation))
+			static const TCHAR* LocomotionPaths[] =
 			{
-				const FSWGRuntimeAnimation IdleRuntimeAnim = FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(IdleAnimation, Playing.Skeleton);
-				Playing.RuntimeAnim.RestMidRotations.SetNum(Playing.Skeleton.Joints.Num());
-				for (int32 JointIndex = 0; JointIndex < Playing.Skeleton.Joints.Num(); ++JointIndex)
+				// all_m.lat's zero_speed locomotion entry. The similarly named
+				// standing_idle1 clip is an ambient variant, not the base idle.
+				TEXT("appearance/animation/all_b_idl_breathe_normally.ans"),
+				TEXT("appearance/animation/all_b_loc_walk_male.ans"),
+				TEXT("appearance/animation/all_b_loc_jog.ans"),
+				TEXT("appearance/animation/all_b_loc_run.ans")
+			};
+
+			bool bLoadedIdle = false;
+			for (const TCHAR* ClipPath : LocomotionPaths)
+			{
+				FSWGAnimationData ClipAnimation;
+				if (!FSWGAnimationReader::ReadAnimation(TreSubsystem->CreateIffReader(ClipPath), ClipAnimation))
 				{
-					Playing.RuntimeAnim.RestMidRotations[JointIndex] = IdleRuntimeAnim.BoneTracks.IsValidIndex(JointIndex) && IdleRuntimeAnim.BoneTracks[JointIndex].DenseRotations.Num() > 0
-						? IdleRuntimeAnim.BoneTracks[JointIndex].DenseRotations[0]
-						: FQuat::Identity;
+					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to decode locomotion clip '%s'"), ClipPath);
+
+					// Idle must always exist because it is the safe alternative to
+					// exposing the reference skeleton's T-pose. A missing movement
+					// clip falls back to idle while preserving the four state slots.
+					if (!bLoadedIdle)
+					{
+						break;
+					}
+					Playing.LocomotionAnimations.Add(Playing.LocomotionAnimations[0]);
+					continue;
 				}
+				Playing.LocomotionAnimations.Add(FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(ClipAnimation, Playing.Skeleton));
+				bLoadedIdle = true;
 			}
 
-			PlayingAnimations.Add(MoveTemp(Playing));
+			if (bLoadedIdle && Playing.LocomotionAnimations.Num() == 4)
+			{
+				// ApplyPose's arm damping needs the idle pose as its rest target.
+				const FSWGRuntimeAnimation& Idle = Playing.LocomotionAnimations[0];
+				TArray<FQuat> RestMidRotations;
+				RestMidRotations.SetNum(Playing.Skeleton.Joints.Num());
+				for (int32 JointIndex = 0; JointIndex < Playing.Skeleton.Joints.Num(); ++JointIndex)
+				{
+					RestMidRotations[JointIndex] = Idle.BoneTracks.IsValidIndex(JointIndex) && Idle.BoneTracks[JointIndex].DenseRotations.Num() > 0
+						? Idle.BoneTracks[JointIndex].DenseRotations[0]
+						: FQuat::Identity;
+				}
+
+				for (FSWGRuntimeAnimation& RuntimeAnimation : Playing.LocomotionAnimations)
+				{
+					RuntimeAnimation.RestMidRotations = RestMidRotations;
+				}
+
+				// Do not expose the imported skeleton's bind/T-pose for even one
+				// frame. The component becomes visible above, so establish the
+				// zero-speed idle pose synchronously before returning.
+				FSWGRuntimeAnimationPlayer::ApplyPose(
+					*PoseableMesh,
+					Playing.Skeleton,
+					Playing.LocomotionAnimations[0],
+					0.0f);
+
+				PlayingAnimations.Add(MoveTemp(Playing));
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s could not decode the Wookiee idle clip; leaving the procedural mesh visible instead of showing a T-pose"), *Actor.GetName());
+				PoseableMesh->SetVisibility(false);
+				PoseableMesh->SetHiddenInGame(true);
+				if (DynamicMeshComponent)
+				{
+					DynamicMeshComponent->SetVisibility(true);
+					DynamicMeshComponent->SetHiddenInGame(false);
+				}
+			}
 		}
 		else
 		{
-			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s got SK_Wookiee but failed to parse the skeleton/walk animation for runtime playback — mesh will show in bind pose"),
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s got SK_Wookiee but failed to parse the skeleton for runtime playback — mesh will show in bind pose"),
 				*Actor.GetName());
 		}
 	}

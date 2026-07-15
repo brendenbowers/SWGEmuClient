@@ -638,11 +638,25 @@ bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimati
 
 		if (bHasTrack)
 		{
-			// Dynamic rotation: use QCHN[RotationChannelIndex].
-			DecodeQchnChunkCompressed(
-				Reader,
-				QchnChunks[RotationChannelIndex],
-				Track);
+			if (!QchnChunks.IsValidIndex(RotationChannelIndex))
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("FSWGAnimationReader: rotation channel %d for bone '%s' is outside %d QCHN chunk(s)"),
+					RotationChannelIndex, *BoneName, QchnChunks.Num());
+				continue;
+			}
+
+			// XFIN uses the same explicit channel index for both encodings, but
+			// their QCHN payload layouts are different. The compressed-channel
+			// mapping fix must not route raw KFAT clips through the CKAT decoder.
+			if (bIsCompressed)
+			{
+				DecodeQchnChunkCompressed(Reader, QchnChunks[RotationChannelIndex], Track);
+			}
+			else
+			{
+				DecodeQchnChunkRaw(Reader, QchnChunks[RotationChannelIndex], Track);
+			}
 		}
 		else if (StaticRotations.IsValidIndex(RotationChannelIndex))
 		{

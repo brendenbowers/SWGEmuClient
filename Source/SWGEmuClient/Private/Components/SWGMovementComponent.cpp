@@ -41,17 +41,30 @@ void USWGMovementComponent::ApplyBase4Part3(FSWGPacket& Packet)
 	WaterModPercent = Packet.ReadFloat();
 	bHasBase4 = true;
 
-	// No run/walk state bit is available in this baseline slot to choose between
-	// RunSpeed/WalkSpeed — defaulting to WalkSpeed; a later posture/state update
-	// can override this once that bit's source is confirmed.
-	MaxWalkSpeed = WalkSpeed * MetersToUnrealUnits;
+	// Unreal uses MaxWalkSpeed as the top ground speed for both digital and
+	// analog movement. Use SWG's run speed as that ceiling; analog magnitude
+	// naturally produces the walk/jog ranges below it, while a full keyboard
+	// or stick input reaches the server-provided run speed.
+	const float BaselineRunSpeed = RunSpeed * MetersToUnrealUnits;
+	const float BaselineWalkSpeed = WalkSpeed * MetersToUnrealUnits;
+	MaxWalkSpeed = BaselineRunSpeed > KINDA_SMALL_NUMBER ? BaselineRunSpeed : BaselineWalkSpeed;
 	// Same unit conversion as MaxWalkSpeed above — this is missing it would
 	// leave MaxAcceleration at ~1 uu/s^2 (the raw multiplier product), so tiny
 	// that reaching MaxWalkSpeed from a standstill takes on the order of
 	// minutes: the character would visibly only rotate to face movement
 	// input (bOrientRotationToMovement doesn't need acceleration) while never
 	// actually translating within any reasonable test window.
-	MaxAcceleration = AccelerationMultiplierBase * AccelerationMultiplierMod * MetersToUnrealUnits;
+	const float BaselineAcceleration =
+		AccelerationMultiplierBase * AccelerationMultiplierMod * MetersToUnrealUnits;
+
+	// Some Core3 baselines currently send one or both acceleration multipliers
+	// as zero. Do not replace the usable constructor default with zero: a
+	// CharacterMovementComponent with MaxAcceleration == 0 accepts movement
+	// input but can never turn it into velocity.
+	if (BaselineAcceleration > KINDA_SMALL_NUMBER)
+	{
+		MaxAcceleration = BaselineAcceleration;
+	}
 	RotationRate = FRotator(0.0f, TurnScale, 0.0f);
 	SetWalkableFloorAngle(SlopeModAngle);
 	MaxSwimSpeed = WaterModPercent * MetersToUnrealUnits;

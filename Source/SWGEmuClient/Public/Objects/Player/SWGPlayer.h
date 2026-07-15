@@ -7,6 +7,7 @@
 class UCameraComponent;
 class USpringArmComponent;
 class UInputAction;
+class UInputMappingContext;
 struct FInputActionValue;
 
 /**
@@ -105,15 +106,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
 	TObjectPtr<UCameraComponent> FollowCamera;
 
-	// Same Enhanced Input action ASWGEmuClientCharacter's third-person
-	// Blueprint uses (/Game/Input/Actions/IA_Move) — the project's existing
-	// IMC_Default mapping context already routes WASD to this, so binding the
-	// same asset here means input keeps working across the swap from the
-	// default free-fly pawn to this one without touching any input assets.
-	// (Look uses the legacy MouseX/MouseY axis path instead — see
-	// SetupPlayerInputComponent — so there's no equivalent LookAction here.)
+	// IA_Move is mapped to both WASD and the left gamepad stick by IMC_Default.
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
 	TObjectPtr<UInputAction> MoveAction;
+
+	// Installed on runtime possession so input does not depend on a particular
+	// PlayerController Blueprint having populated its mapping-context arrays.
+	UPROPERTY(EditDefaultsOnly, Category = "Input")
+	TObjectPtr<UInputMappingContext> DefaultMappingContext;
 
 private:
 	float TimeSinceLastTransformSend = 0.0f;
