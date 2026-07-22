@@ -4,7 +4,7 @@
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Network/Messages/Zone/CmdSceneReadyMessage.h"
-#include "Network/Messages/Zone/DataTransformMessage.h"
+#include "Network/Messages/Zone/Object/DataTransform.h"
 #include "Network/Messages/Zone/Object/TeleportAck.h"
 #include "Common/SWGWorldScale.h"
 #include "Engine/GameInstance.h"
@@ -52,15 +52,14 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 
 				if (const AActor* PlayerActor = ObjectGraph->FindActor(PlayerObjectId))
 				{
-					FDataTransformMessage Transform;
-					Transform.ObjectId = PlayerObjectId;
+					FDataTransform Transform(PlayerObjectId);
 					// Server expects raw (pre-scale) wire-space coordinates, same as
 					// every position it sends us — convert before sending, same as
 					// ASWGPlayer::SendDataTransformUpdate.
 					Transform.Position = SWGToRawSpace(PlayerActor->GetActorLocation());
 					Transform.Direction = PlayerActor->GetActorQuat();
 					Transform.TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
-					Transform.MovementCounter = 1;
+					Transform.MoveCount = 1;
 					Transform.Speed = 0.0f;
 
 					UIStateMachine.Network->SendMessage(Transform.Serialize());
