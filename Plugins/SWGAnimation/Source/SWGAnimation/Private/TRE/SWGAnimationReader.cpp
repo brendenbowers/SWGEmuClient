@@ -1,52 +1,14 @@
 #include "TRE/SWGAnimationReader.h"
+#include "TRE/SWGIffTags.h"
+#include "TRE/SWGIFFChunkReader.h"
 #include "Common/SWGWorldScale.h"
 
 // Comma-separated bone-name substrings; set via swg.DumpAnsAnimation
 // (USWGMeshGeneratorSubsystem) to log per-axis scale/swing for those bones. Empty = no logging.
 SWGANIMATION_API FString GSWGDebugAnsBoneFilter;
 
-// DIAGNOSTIC: axis-swap/sign convention to apply to the newly-confirmed
-// 4-independent-byte CKAT decode the old
-// swap+conjugate convention was only ever validated against the WRONG
-// (packed-32-bit) bit-layout, so it needs re-deriving for this one.
-// 0 = direct (X,Y,Z,W), 1 = swap only (X,Z,Y,W), 2 = swap+conjugate
-// (-X,-Z,-Y,W) [old default], 3 = conjugate only (-X,-Y,-Z,W).
-SWGANIMATION_API int32 GSWGCkatSwapMode = 2;
-static FAutoConsoleVariableRef CVarSWGCkatSwapMode(
-	TEXT("swg.CkatSwapMode"), GSWGCkatSwapMode,
-	TEXT("Axis-swap/sign convention for CKAT decode: 0=direct, 1=swap, 2=swap+conjugate, 3=conjugate. Default 0."));
-
 namespace
 {
-	float AnimReadFloatLE(const uint8* Data, int32 Offset)
-	{
-		float Value;
-		FMemory::Memcpy(&Value, Data + Offset, sizeof(float));
-		return Value;
-	}
-
-	uint16 AnimReadUInt16LE(const uint8* Data, int32 Offset)
-	{
-		uint16 Value;
-		FMemory::Memcpy(&Value, Data + Offset, sizeof(uint16));
-		return Value;
-	}
-
-	uint32 AnimReadUInt32LE(const uint8* Data, int32 Offset)
-	{
-		uint32 Value;
-		FMemory::Memcpy(&Value, Data + Offset, sizeof(uint32));
-		return Value;
-	}
-
-	double AnimReadDoubleLE(const uint8* Data, int32 Offset)
-	{
-		double Value;
-		FMemory::Memcpy(&Value, Data + Offset, sizeof(double));
-		return Value;
-	}
-
-
 	struct FSWGQuatFormatInfo
 	{
 		uint8 FormatId;
@@ -126,56 +88,6 @@ namespace
 	// codebase reads from these files.
 }
 
-bool FSWGAnimationReader::FindChildForm(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& FormType, FSWGIffChunk& OutChunk)
-{
-	for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
-	{
-		if (Child.IsForm() && Child.FormType == FormType)
-		{
-			OutChunk = Child;
-			return true;
-		}
-	}
-	return false;
-}
-
-bool FSWGAnimationReader::FindChildChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag, FSWGIffChunk& OutChunk)
-{
-	for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
-	{
-		if (!Child.IsForm() && Child.Tag == Tag)
-		{
-			OutChunk = Child;
-			return true;
-		}
-	}
-	return false;
-}
-
-TArray<FSWGIffChunk> FSWGAnimationReader::FindChildForms(const FSWGIffReader& Reader, const FSWGIffChunk& Parent)
-{
-	TArray<FSWGIffChunk> Result;
-	for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
-	{
-		if (Child.IsForm())
-			Result.Add(Child);
-	}
-	return Result;
-}
-
-TArray<FSWGIffChunk> FSWGAnimationReader::FindAllChildChunks(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag)
-{
-	TArray<FSWGIffChunk> Result;
-	for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
-	{
-		if (!Child.IsForm() && Child.Tag == Tag)
-		{
-			Result.Add(Child);
-		}
-	}
-	return Result;
-}
-
 FQuat FSWGAnimationReader::DecodeCompressedQuaternion(
 	uint32 PackedValue,
 	uint8 FormatX,
@@ -189,23 +101,14 @@ FQuat FSWGAnimationReader::DecodeCompressedQuaternion(
 	const float W = FMath::Sqrt(FMath::Max(0.0f, 1.0f - X * X - Y * Y - Z * Z));
 
 	// Keep the current configurable UE-axis conversion while validating it.
-	FQuat Result;
-	switch (GSWGCkatSwapMode)
-	{
-	case 1:  Result = FQuat(X, Z, Y, W); break;
-	case 2:  Result = FQuat(-X, -Z, -Y, W); break;
-	case 3:  Result = FQuat(-X, -Y, -Z, W); break;
-	default: Result = FQuat(X, Y, Z, W); break;
-	}
-
+	FQuat Result(-X, -Z, -Y, W);
 	Result.Normalize();
 	return Result;
 }
 
 void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader, const FSWGIffChunk& Qchn, FSWGAnimationBoneTrack& OutTrack)
 {
-	const uint8* Data = Reader.GetChunkData(Qchn);
-	const int32 Size = Qchn.DataSize;
+	FSWGIFFChunkReader QchnReader(Qchn, Reader);
 
 	// CONFIRMED QCHN layout (see DecodeCompressedQuaternion's comment for how
 	// this was pinned down): [uint16 sample-count][3 per-axis scale/"format"
@@ -217,16 +120,14 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	// so a still axis (byte <= 160) decodes to exactly 0. W has no format byte
 	// and decodes unscaled.
 	// TODO: Still seems to be incorrect
-	constexpr int32 SampleCountOffset = 0;
-	constexpr int32 ScaleBytesOffset = 2;   // 3 bytes: [X][Y][Z]
-	constexpr int32 Frame0QuatOffset = 7;   // = 5-byte header + frame-0's uint16 index (0)
-	constexpr int32 FirstExplicitSampleOffset = 11;
+	if (!QchnReader.CanRead(5)) return;
 
-	if (Size < Frame0QuatOffset + 4) return;
-
-	const uint8 RawScaleX = Data[ScaleBytesOffset + 0];
-	const uint8 RawScaleY = Data[ScaleBytesOffset + 1];
-	const uint8 RawScaleZ = Data[ScaleBytesOffset + 2];
+	// The count includes frame 0, which is decoded separately below; the
+	// remaining count-1 explicit records are also bounded by the chunk size.
+	const int32 ExplicitSampleCount = (int32)QchnReader.ReadValueLE<uint16>();
+	const uint8 RawScaleX = QchnReader.ReadValueLE<uint8>();
+	const uint8 RawScaleY = QchnReader.ReadValueLE<uint8>();
+	const uint8 RawScaleZ = QchnReader.ReadValueLE<uint8>();
 
 	bool bDump = false;
 	if (!GSWGDebugAnsBoneFilter.IsEmpty())
@@ -249,29 +150,11 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 			*OutTrack.BoneName, RawScaleX, RawScaleY, RawScaleZ);
 	}
 
-	// The count includes frame 0, which is decoded separately below; the
-	// remaining count-1 explicit records are also bounded by the chunk size.
-	const int32 ExplicitSampleCount = (int32)AnimReadUInt16LE(Data, SampleCountOffset);
-	{
-		const uint32 Packed = AnimReadUInt32LE(Data, Frame0QuatOffset);
-		const FQuat Decoded = DecodeCompressedQuaternion(
-			Packed, RawScaleX, RawScaleY, RawScaleZ);
-		OutTrack.Keyframes.Add(0, Decoded);
-		if (bDump)
-		{
-			FVector Axis; float AngleRad;
-			Decoded.ToAxisAndAngle(Axis, AngleRad);
-			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: frame 0 raw=(%d,%d,%d,%d) swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
-				*OutTrack.BoneName, Data[Frame0QuatOffset], Data[Frame0QuatOffset + 1], Data[Frame0QuatOffset + 2], Data[Frame0QuatOffset + 3],
-				FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
-		}
-	}
+	if (!QchnReader.CanRead(6)) return;
 
-	int32 Pos = FirstExplicitSampleOffset;
-	for (int32 i = 1; i < ExplicitSampleCount && Pos + 6 <= Size; ++i)
+	auto DecodeSample = [&](int32 FrameIndex)
 	{
-		const int32 FrameIndex = (int32)AnimReadUInt16LE(Data, Pos);
-		const uint32 Packed = AnimReadUInt32LE(Data, Pos + 2);
+		const uint32 Packed = QchnReader.ReadValueLE<uint32>();
 		const FQuat Decoded = DecodeCompressedQuaternion(
 			Packed, RawScaleX, RawScaleY, RawScaleZ);
 		OutTrack.Keyframes.Add(FrameIndex, Decoded);
@@ -280,25 +163,30 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 			FVector Axis; float AngleRad;
 			Decoded.ToAxisAndAngle(Axis, AngleRad);
 			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: frame %d raw=(%d,%d,%d,%d) swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
-				*OutTrack.BoneName, FrameIndex, Data[Pos + 2], Data[Pos + 3], Data[Pos + 4], Data[Pos + 5],
+				*OutTrack.BoneName, FrameIndex, Packed & 0xFF, (Packed >> 8) & 0xFF, (Packed >> 16) & 0xFF, (Packed >> 24) & 0xFF,
 				FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
 		}
-		Pos += 6;
+	};
+
+	QchnReader.Skip<uint16>(); // frame-0's explicit frame index (always 0)
+	DecodeSample(0);
+
+	for (int32 i = 1; i < ExplicitSampleCount && QchnReader.CanRead(6); ++i)
+	{
+		const int32 FrameIndex = (int32)QchnReader.ReadValueLE<uint16>();
+		DecodeSample(FrameIndex);
 	}
 }
 
 void FSWGAnimationReader::DecodeQchnChunkRaw(const FSWGIffReader& Reader, const FSWGIffChunk& Qchn, FSWGAnimationBoneTrack& OutTrack)
 {
-	const uint8* Data = Reader.GetChunkData(Qchn);
-	const int32 Size = Qchn.DataSize;
+	FSWGIFFChunkReader QchnReader(Qchn, Reader);
 
 	// [uint32 sample-count][4 unknown bytes] header (8 bytes), then frame-0's
 	// quat with no frame-index prefix, then repeating 20-byte
 	// [frame:uint32][4×float32 (W,X,Y,Z)] records — see SWGAnimationReader.h.
-	constexpr int32 Frame0Offset = 8;
-	constexpr int32 FirstExplicitSampleOffset = 24;
-
-	if (Size < Frame0Offset + 16) return;
+	if (!QchnReader.CanRead(8 + 16)) return;
+	QchnReader.Skip(8);
 
 	bool bDump = false;
 	if (!GSWGDebugAnsBoneFilter.IsEmpty())
@@ -315,31 +203,13 @@ void FSWGAnimationReader::DecodeQchnChunkRaw(const FSWGIffReader& Reader, const 
 		}
 	}
 
+	auto DecodeSample = [&](int32 FrameIndex)
 	{
-		const float W = AnimReadFloatLE(Data, Frame0Offset);
-		const float X = AnimReadFloatLE(Data, Frame0Offset + 4);
-		const float Y = AnimReadFloatLE(Data, Frame0Offset + 8);
-		const float Z = AnimReadFloatLE(Data, Frame0Offset + 12);
+		const float W = QchnReader.ReadValueLE<float>();
+		const float X = QchnReader.ReadValueLE<float>();
+		const float Y = QchnReader.ReadValueLE<float>();
+		const float Z = QchnReader.ReadValueLE<float>();
 		// Y/Z swap + conjugate — see DecodeCompressedQuaternion's comment.
-		const FQuat Decoded(-X, -Z, -Y, W);
-		OutTrack.Keyframes.Add(0, Decoded);
-		if (bDump)
-		{
-			FVector Axis; float AngleRad;
-			Decoded.ToAxisAndAngle(Axis, AngleRad);
-			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP-KFAT %s: frame 0 swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
-				*OutTrack.BoneName, FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
-		}
-	}
-
-	int32 Pos = FirstExplicitSampleOffset;
-	while (Pos + 20 <= Size)
-	{
-		const int32 FrameIndex = (int32)AnimReadUInt32LE(Data, Pos);
-		const float W = AnimReadFloatLE(Data, Pos + 4);
-		const float X = AnimReadFloatLE(Data, Pos + 8);
-		const float Y = AnimReadFloatLE(Data, Pos + 12);
-		const float Z = AnimReadFloatLE(Data, Pos + 16);
 		const FQuat Decoded(-X, -Z, -Y, W);
 		OutTrack.Keyframes.Add(FrameIndex, Decoded);
 		if (bDump)
@@ -349,7 +219,14 @@ void FSWGAnimationReader::DecodeQchnChunkRaw(const FSWGIffReader& Reader, const 
 			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP-KFAT %s: frame %d swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
 				*OutTrack.BoneName, FrameIndex, FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
 		}
-		Pos += 20;
+	};
+
+	DecodeSample(0);
+
+	while (QchnReader.CanRead(20))
+	{
+		const int32 FrameIndex = (int32)QchnReader.ReadValueLE<uint32>();
+		DecodeSample(FrameIndex);
 	}
 }
 
@@ -359,33 +236,29 @@ TArray<FQuat> FSWGAnimationReader::DecodeStaticRotations(
 	bool bIsCompressed)
 {
 	TArray<FQuat> Result;
-	const uint8* Data = Reader.GetChunkData(Srot);
-	const int32 Size = Srot.DataSize;
+	FSWGIFFChunkReader SrotReader(Srot, Reader);
 
 	if (bIsCompressed)
 	{
-		for (int32 Pos = 0; Pos + 7 <= Size; Pos += 7)
+		while (SrotReader.CanRead(7))
 		{
-			const uint32 Packed = AnimReadUInt32LE(Data, Pos + 3);
+			const uint8 FormatX = SrotReader.ReadValueLE<uint8>();
+			const uint8 FormatY = SrotReader.ReadValueLE<uint8>();
+			const uint8 FormatZ = SrotReader.ReadValueLE<uint8>();
+			const uint32 Packed = SrotReader.ReadValueLE<uint32>();
 
-			Result.Add(DecodeCompressedQuaternion(
-				Packed,
-				Data[Pos],
-				Data[Pos + 1],
-				Data[Pos + 2]));
+			Result.Add(DecodeCompressedQuaternion(Packed, FormatX, FormatY, FormatZ));
 		}
 	}
 	else
 	{
 		// KFAT SROT: repeated W, X, Y, Z float quaternions.
-		constexpr int32 EntrySize = 16;
-
-		for (int32 Pos = 0; Pos + EntrySize <= Size; Pos += EntrySize)
+		while (SrotReader.CanRead(16))
 		{
-			const float W = AnimReadFloatLE(Data, Pos + 0);
-			const float X = AnimReadFloatLE(Data, Pos + 4);
-			const float Y = AnimReadFloatLE(Data, Pos + 8);
-			const float Z = AnimReadFloatLE(Data, Pos + 12);
+			const float W = SrotReader.ReadValueLE<float>();
+			const float X = SrotReader.ReadValueLE<float>();
+			const float Y = SrotReader.ReadValueLE<float>();
+			const float Z = SrotReader.ReadValueLE<float>();
 			Result.Add(FQuat(-X, -Z, -Y, W));
 		}
 	}
@@ -396,58 +269,54 @@ TArray<FQuat> FSWGAnimationReader::DecodeStaticRotations(
 TMap<int32, float> FSWGAnimationReader::DecodeChnlChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Chnl)
 {
 	TMap<int32, float> Result;
-	const uint8* Data = Reader.GetChunkData(Chnl);
-	const int32 Size = Chnl.DataSize;
+	FSWGIFFChunkReader ChnlReader(Chnl, Reader);
 
 	// [count:uint32][frame-0 value:float] header (8 bytes), then repeating
 	// 8-byte [value:float][frame:uint32] records — value before frame, and
 	// frame is a full uint32, not uint16.
-	if (Size < 8) return Result;
-	Result.Add(0, AnimReadFloatLE(Data, 4));
+	if (!ChnlReader.CanRead(8)) return Result;
+	ChnlReader.Skip<uint32>(); // count — unused, frame indices below are explicit
+	Result.Add(0, ChnlReader.ReadValueLE<float>());
 
-	int32 Pos = 8;
-	while (Pos + 8 <= Size)
+	while (ChnlReader.CanRead(8))
 	{
-		const float Value = AnimReadFloatLE(Data, Pos);
-		const int32 FrameIndex = (int32)AnimReadUInt32LE(Data, Pos + 4);
+		const float Value = ChnlReader.ReadValueLE<float>();
+		const int32 FrameIndex = (int32)ChnlReader.ReadValueLE<uint32>();
 		Result.Add(FrameIndex, Value);
-		Pos += 8;
 	}
 	return Result;
 }
 
 void FSWGAnimationReader::DecodeLoctChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Loct, TMap<int32, float>& OutX, TMap<int32, float>& OutY)
 {
-	const uint8* Data = Reader.GetChunkData(Loct);
-	const int32 Size = Loct.DataSize;
+	FSWGIFFChunkReader LoctReader(Loct, Reader);
 
 	// [total-distance:float][count:uint32] header (8 bytes), then frame-0
 	// with no index prefix — [X:float][Y:double] (12 bytes, Y is 8 bytes,
 	// not 4 — see this reader's header comment) — then repeating 14-byte
 	// [frame:uint16][X:float][Y:double] records.
-	if (Size < 20) return;
-	OutX.Add(0, AnimReadFloatLE(Data, 8));
-	OutY.Add(0, (float)AnimReadDoubleLE(Data, 12));
+	if (!LoctReader.CanRead(20)) return;
+	LoctReader.Skip(8); // total-distance + count — unused
+	OutX.Add(0, LoctReader.ReadValueLE<float>());
+	OutY.Add(0, (float)LoctReader.ReadValueLE<double>());
 
-	int32 Pos = 20;
-	while (Pos + 14 <= Size)
+	while (LoctReader.CanRead(14))
 	{
-		const int32 FrameIndex = (int32)AnimReadUInt16LE(Data, Pos);
-		OutX.Add(FrameIndex, AnimReadFloatLE(Data, Pos + 2));
-		OutY.Add(FrameIndex, (float)AnimReadDoubleLE(Data, Pos + 6));
-		Pos += 14;
+		const int32 FrameIndex = (int32)LoctReader.ReadValueLE<uint16>();
+		OutX.Add(FrameIndex, LoctReader.ReadValueLE<float>());
+		OutY.Add(FrameIndex, (float)LoctReader.ReadValueLE<double>());
 	}
 }
 
 void FSWGAnimationReader::DecodeRootTranslation(const FSWGIffReader& Reader, const FSWGIffChunk& InnerForm, FSWGAnimationData& OutAnimation)
 {
 	FSWGIffChunk AtrnForm;
-	if (!FindChildForm(Reader, InnerForm, TEXT("ATRN"), AtrnForm)) return;
+	if (!Reader.FindChildForm(InnerForm, SWG_IFF_TAG('A','T','R','N'), AtrnForm)) return;
 
-	const TArray<FSWGIffChunk> ChnlChunks = FindAllChildChunks(Reader, AtrnForm, TEXT("CHNL"));
+	const TArray<FSWGIffChunk> ChnlChunks = Reader.FindAllChildChunks(AtrnForm, SWG_IFF_TAG('C','H','N','L'));
 
 	FSWGIffChunk LoctChunk;
-	const bool bHasLoct = FindChildChunk(Reader, InnerForm, TEXT("LOCT"), LoctChunk);
+	const bool bHasLoct = Reader.FindChildChunk(InnerForm, SWG_IFF_TAG('L','O','C','T'), LoctChunk);
 
 	TMap<int32, float> HorizontalX, HorizontalY, Vertical;
 	if (bHasLoct)
@@ -538,48 +407,76 @@ bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimati
 	if (!Reader.IsValid()) return false;
 
 	const TArray<FSWGIffChunk> TopLevel = Reader.ReadChunks();
-	if (TopLevel.Num() == 0 || !TopLevel[0].IsForm()) return false;
+	if (TopLevel.Num() == 0 || !TopLevel[0].IsForm())
+	{
+		return false;
+	}
 
 	// Two distinct top-level encodings — see this file's header comment.
-	const bool bIsCompressed = TopLevel[0].FormType == TEXT("CKAT");
-	const bool bIsRaw = TopLevel[0].FormType == TEXT("KFAT");
-	if (!bIsCompressed && !bIsRaw) return false;
+	const bool bIsCompressed = TopLevel[0].FormType == SWG_IFF_TAG('C','K','A','T');
+	const bool bIsRaw = TopLevel[0].FormType == SWG_IFF_TAG('K','F','A','T');
+	if (!bIsCompressed && !bIsRaw)
+	{
+		return false;
+	}
 
 	const FSWGIffChunk& OuterForm = TopLevel[0];
 
 	// Same version-tag-drift pattern as the mesh/skeleton readers.
-	const TArray<FSWGIffChunk> VersionForms = FindChildForms(Reader, OuterForm);
-	if (VersionForms.Num() == 0) return false;
+	const TArray<FSWGIffChunk> VersionForms = Reader.FindChildForms(OuterForm);
+	if (VersionForms.Num() == 0)
+	{
+		return false;
+	}
 	const FSWGIffChunk& InnerForm = VersionForms[0];
 
 	FSWGIffChunk InfoChunk;
-	if (!FindChildChunk(Reader, InnerForm, TEXT("INFO"), InfoChunk)) return false;
-
-	const uint8* InfoData = Reader.GetChunkData(InfoChunk);
-	int32 AnimatedBoneCount = 0;
-	OutAnimation.FrameRate = AnimReadFloatLE(InfoData, 0);
-	if (bIsCompressed)
+	if (!Reader.FindChildChunk(InnerForm, SWGIffTags::Info, InfoChunk))
 	{
-		// CKAT: fields are packed as uint16 (16-byte INFO total).
-		if (InfoChunk.DataSize < 10) return false;
-		OutAnimation.FrameCount = (int32)AnimReadUInt16LE(InfoData, 4);
-		AnimatedBoneCount = (int32)AnimReadUInt16LE(InfoData, 8);
+		return false;
 	}
-	else
+
+
+	int32 AnimatedBoneCount = 0;
 	{
-		// KFAT: same fields, but each padded out to uint32 (28-byte INFO total).
-		if (InfoChunk.DataSize < 16) return false;
-		OutAnimation.FrameCount = (int32)AnimReadUInt32LE(InfoData, 4);
-		AnimatedBoneCount = (int32)AnimReadUInt32LE(InfoData, 12);
+		FSWGIFFChunkReader InfoReader(InfoChunk, Reader);
+		InfoReader.ReadValueLE<float>(OutAnimation.FrameRate);
+
+		if (bIsCompressed)
+		{
+			// CKAT: fields are packed as uint16 (16-byte INFO total).
+			if (InfoChunk.DataSize < 10)
+			{
+				return false;
+			}
+
+			OutAnimation.FrameCount = InfoReader.ReadValueLE<uint16>();
+			InfoReader.Skip(2); // reserved — AnimatedBoneCount is at offset 8, not 6
+			AnimatedBoneCount = InfoReader.ReadValueLE<uint16>();
+
+		}
+		else
+		{
+			// KFAT: same fields, but each padded out to uint32 (28-byte INFO total).
+			if (InfoChunk.DataSize < 16)
+			{
+				return false;
+			}
+
+			OutAnimation.FrameCount = InfoReader.ReadValueLE<uint32>();
+			InfoReader.Skip(4); // reserved — AnimatedBoneCount is at offset 12, not 8
+			AnimatedBoneCount = InfoReader.ReadValueLE<uint32>();
+		}
+
 	}
 
 	FSWGIffChunk XfrmForm, ArotForm, SrotChunk;
-	if (!FindChildForm(Reader, InnerForm, TEXT("XFRM"), XfrmForm)) return false;
-	if (!FindChildForm(Reader, InnerForm, TEXT("AROT"), ArotForm)) return false;
+	if (!Reader.FindChildForm(InnerForm, SWG_IFF_TAG('X','F','R','M'), XfrmForm)) return false;
+	if (!Reader.FindChildForm(InnerForm, SWG_IFF_TAG('A','R','O','T'), ArotForm)) return false;
 
-	const TArray<FSWGIffChunk> QchnChunks = FindAllChildChunks(Reader, ArotForm, TEXT("QCHN"));
+	const TArray<FSWGIffChunk> QchnChunks = Reader.FindAllChildChunks(ArotForm, SWG_IFF_TAG('Q','C','H','N'));
 	const bool bHasSrot =
-		FindChildChunk(Reader, ArotForm, TEXT("SROT"), SrotChunk);
+		Reader.FindChildChunk(ArotForm, SWG_IFF_TAG('S','R','O','T'), SrotChunk);
 
 	const TArray<FQuat> StaticRotations = bHasSrot
 		? DecodeStaticRotations(Reader, SrotChunk, bIsCompressed)
@@ -592,36 +489,20 @@ bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimati
 
 	for (const FSWGIffChunk& Xfin : Reader.ReadChildren(XfrmForm))
 	{
-		if (Xfin.IsForm() || Xfin.Tag != TEXT("XFIN"))
+		if (Xfin.IsForm() || Xfin.Tag != SWG_IFF_TAG('X','F','I','N'))
 		{
 			continue;
 		}
 
-		const uint8* Data = Reader.GetChunkData(Xfin);
-		const int32 Size = Xfin.DataSize;
-
-		int32 NameEnd = 0;
-		while (NameEnd < Size && Data[NameEnd] != 0)
-		{
-			++NameEnd;
-		}
-		if (NameEnd >= Size)
+		FSWGIFFChunkReader XfinReader(Xfin, Reader);
+		const FString BoneName = XfinReader.ReadTerminiatedString();
+		if (XfinReader.AtEnd())
 		{
 			continue;
 		}
 
-		const FString BoneName = FString::ConstructFromPtrSize((const ANSICHAR*)Data, NameEnd);
-		const int32 HasTrackOffset = NameEnd + 1;
-		if (HasTrackOffset >= Size)
-		{
-			continue;
-		}
-
-		const bool bHasTrack = Data[HasTrackOffset] != 0;
-		const int32 RotationChannelOffset = HasTrackOffset + 1;
-		const int32 RotationChannelSize = bIsCompressed ? 2 : 4;
-
-		if (RotationChannelOffset + RotationChannelSize > Size)
+		const bool bHasTrack = XfinReader.ReadValueLE<uint8>() != 0;
+		if (!XfinReader.CanRead(bIsCompressed ? 2 : 4))
 		{
 			UE_LOG(LogTemp, Warning,
 				TEXT("FSWGAnimationReader: truncated XFIN rotation index for bone '%s'"),
@@ -630,8 +511,8 @@ bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimati
 		}
 
 		const int32 RotationChannelIndex = bIsCompressed
-			? (int32)AnimReadUInt16LE(Data, RotationChannelOffset)
-			: (int32)AnimReadUInt32LE(Data, RotationChannelOffset);
+			? XfinReader.ReadValueLE<uint16>()
+			: XfinReader.ReadValueLE<uint32>();
 
 		FSWGAnimationBoneTrack Track;
 		Track.BoneName = BoneName;

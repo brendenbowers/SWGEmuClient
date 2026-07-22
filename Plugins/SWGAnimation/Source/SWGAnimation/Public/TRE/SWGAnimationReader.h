@@ -69,13 +69,6 @@ public:
 	static bool ReadAnimation(const FSWGIffReader& Reader, FSWGAnimationData& OutAnimation);
 
 private:
-	static bool FindChildForm(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& FormType, FSWGIffChunk& OutChunk);
-	static bool FindChildChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag, FSWGIffChunk& OutChunk);
-	static TArray<FSWGIffChunk> FindChildForms(const FSWGIffReader& Reader, const FSWGIffChunk& Parent);
-
-	/** All direct leaf children with a given tag, in file order (unlike FindChildChunk, which only returns the first). */
-	static TArray<FSWGIffChunk> FindAllChildChunks(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag);
-
 	/** Decodes one CKAT compressed quaternion from its four independent bytes
 	 *  (X,Y,Z,W). ScaleX/Y/Z are the channel's per-axis quantization
 	 *  half-ranges (from the QCHN header scale bytes); W has no format byte

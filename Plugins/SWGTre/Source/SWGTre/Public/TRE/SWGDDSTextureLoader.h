@@ -24,5 +24,6 @@ public:
 	 * EPixelFormat mapping below — every format SWG actually ships, BC1/BC3/
 	 * BC5/BC7 diffuse+normal maps, is supported).
 	 */
-	static UTexture2D* LoadTexture2D(const TArray<uint8>& DDSBytes, const FName& TextureName, bool bSRGB);
+	static UTexture2D* LoadTexture2D(const TArray<uint8>& DDSBytes, const FName& TextureName, bool bSRGB,
+		bool bLegacyDXT5Normal = false);
 };

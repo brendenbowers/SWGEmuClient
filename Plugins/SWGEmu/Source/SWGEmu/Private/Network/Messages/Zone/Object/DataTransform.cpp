@@ -38,26 +38,12 @@ FSWGPacket FDataTransform::Serialize() const
 	//	Pkt << W;
 	//}
 
+	// Core3's Transform::parsePosition reads the wire as X, Z, Y. Position is
+	// already in raw SWG units here, but FVector's native X,Y,Z order must not
+	// be sent directly or the server treats height as horizontal movement.
 	Pkt.WriteFloat(Position.X);
-	Pkt.WriteFloat(Position.Y);
 	Pkt.WriteFloat(Position.Z);
-
-	//{
-	//	// Position wire order is X, Z, Y (Core3's own send order — see
-	//	// Transform::parsePosition and DataTransformMessage.cpp's matching
-	//	// comment), NOT UE's native X, Y, Z. Sending raw FVector order here
-	//	// swapped the server's internal height/horizontal-Y fields on every
-	//	// regular movement update (zone-in's FDataTransformMessage already
-	//	// had this right; this sibling class — used by
-	//	// ASWGPlayer::SendDataTransformUpdate — didn't).
-	//	float X = Position.X;
-	//	float Y = Position.Y;
-	//	float Z = Position.Z;
-
-	//	Pkt << X;
-	//	Pkt << Z;
-	//	Pkt << Y;
-	//}
+	Pkt.WriteFloat(Position.Y);
 
 	Pkt.WriteFloat(Speed);
 

@@ -232,10 +232,6 @@ public:
 	static bool ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData& OutData);
 
 private:
-	static bool FindChildForm(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& FormType, FSWGIffChunk& OutChunk);
-	static bool FindChildChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag, FSWGIffChunk& OutChunk);
-	/** All FORM children (any FormType) among Parent's direct children. */
-	static TArray<FSWGIffChunk> FindChildForms(const FSWGIffReader& Reader, const FSWGIffChunk& Parent);
 	static FString ReadNullTerminatedStringAt(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk, int32 Offset);
 
 	/** FORM IHDR > FORM 0001 > DATA[int32 enabled][string name]. Shared by Layer, every Boundary, every Affector. */

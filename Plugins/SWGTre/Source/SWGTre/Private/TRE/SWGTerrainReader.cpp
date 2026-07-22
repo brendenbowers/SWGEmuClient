@@ -1,4 +1,5 @@
 #include "TRE/SWGTerrainReader.h"
+#include "TRE/SWGIffTags.h"
 
 namespace
 {
@@ -17,43 +18,6 @@ namespace
 	}
 }
 
-bool FSWGTerrainReader::FindChildForm(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& FormType, FSWGIffChunk& OutChunk)
-{
-	for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
-	{
-		if (Child.IsForm() && Child.FormType == FormType)
-		{
-			OutChunk = Child;
-			return true;
-		}
-	}
-	return false;
-}
-
-TArray<FSWGIffChunk> FSWGTerrainReader::FindChildForms(const FSWGIffReader& Reader, const FSWGIffChunk& Parent)
-{
-	TArray<FSWGIffChunk> Result;
-	for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
-	{
-		if (Child.IsForm())
-			Result.Add(Child);
-	}
-	return Result;
-}
-
-bool FSWGTerrainReader::FindChildChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag, FSWGIffChunk& OutChunk)
-{
-	for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
-	{
-		if (!Child.IsForm() && Child.Tag == Tag)
-		{
-			OutChunk = Child;
-			return true;
-		}
-	}
-	return false;
-}
-
 FString FSWGTerrainReader::ReadNullTerminatedStringAt(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk, int32 Offset)
 {
 	const uint8* Data = Reader.GetChunkData(Chunk);
@@ -64,8 +28,8 @@ FString FSWGTerrainReader::ReadNullTerminatedStringAt(const FSWGIffReader& Reade
 bool FSWGTerrainReader::ReadInformationHeader(const FSWGIffReader& Reader, const FSWGIffChunk& IhdrForm, FString& OutName, bool& bOutEnabled)
 {
 	FSWGIffChunk F0001, DataChunk;
-	if (!FindChildForm(Reader, IhdrForm, TEXT("0001"), F0001)) return false;
-	if (!FindChildChunk(Reader, F0001, TEXT("DATA"), DataChunk)) return false;
+	if (!Reader.FindChildForm(IhdrForm, SWG_IFF_TAG('0','0','0','1'), F0001)) return false;
+	if (!Reader.FindChildChunk(F0001, SWGIffTags::Data, DataChunk)) return false;
 
 	const uint8* Data = Reader.GetChunkData(DataChunk);
 	bOutEnabled = ReadUInt32LE(Data, 0) != 0;
@@ -76,13 +40,13 @@ bool FSWGTerrainReader::ReadInformationHeader(const FSWGIffReader& Reader, const
 bool FSWGTerrainReader::ReadBoundaryCircle(const FSWGIffReader& Reader, const FSWGIffChunk& BcirForm, FSWGTerrainBoundary& OutBoundary)
 {
 	FSWGIffChunk Version, Ihdr, DataChunk;
-	if (!FindChildForm(Reader, BcirForm, TEXT("0002"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(BcirForm, SWG_IFF_TAG('0','0','0','2'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutBoundary.bEnabled);
 
-	if (!FindChildChunk(Reader, Version, TEXT("DATA"), DataChunk)) return false;
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(DataChunk);
 	OutBoundary.Type = ESWGTerrainBoundaryType::Circle;
@@ -97,16 +61,16 @@ bool FSWGTerrainReader::ReadBoundaryCircle(const FSWGIffReader& Reader, const FS
 bool FSWGTerrainReader::ReadBoundaryRectangle(const FSWGIffReader& Reader, const FSWGIffChunk& BrecForm, FSWGTerrainBoundary& OutBoundary)
 {
 	FSWGIffChunk Version;
-	const bool bV3 = FindChildForm(Reader, BrecForm, TEXT("0003"), Version);
-	if (!bV3 && !FindChildForm(Reader, BrecForm, TEXT("0002"), Version)) return false;
+	const bool bV3 = Reader.FindChildForm(BrecForm, SWG_IFF_TAG('0','0','0','3'), Version);
+	if (!bV3 && !Reader.FindChildForm(BrecForm, SWG_IFF_TAG('0','0','0','2'), Version)) return false;
 
 	FSWGIffChunk Ihdr, DataChunk;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutBoundary.bEnabled);
 
-	if (!FindChildChunk(Reader, Version, TEXT("DATA"), DataChunk)) return false;
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(DataChunk);
 	OutBoundary.Type = ESWGTerrainBoundaryType::Rectangle;
@@ -130,13 +94,13 @@ bool FSWGTerrainReader::ReadBoundaryRectangle(const FSWGIffReader& Reader, const
 bool FSWGTerrainReader::ReadBoundaryPolygon(const FSWGIffReader& Reader, const FSWGIffChunk& BpolForm, FSWGTerrainBoundary& OutBoundary)
 {
 	FSWGIffChunk Version, Ihdr, DataChunk;
-	if (!FindChildForm(Reader, BpolForm, TEXT("0005"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(BpolForm, SWG_IFF_TAG('0','0','0','5'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutBoundary.bEnabled);
 
-	if (!FindChildChunk(Reader, Version, TEXT("DATA"), DataChunk)) return false;
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(DataChunk);
 	OutBoundary.Type = ESWGTerrainBoundaryType::Polygon;
@@ -164,13 +128,13 @@ bool FSWGTerrainReader::ReadBoundaryPolygon(const FSWGIffReader& Reader, const F
 bool FSWGTerrainReader::ReadBoundaryPolyline(const FSWGIffReader& Reader, const FSWGIffChunk& BplnForm, FSWGTerrainBoundary& OutBoundary)
 {
 	FSWGIffChunk Version, Ihdr, DataChunk;
-	if (!FindChildForm(Reader, BplnForm, TEXT("0001"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(BplnForm, SWG_IFF_TAG('0','0','0','1'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutBoundary.bEnabled);
 
-	if (!FindChildChunk(Reader, Version, TEXT("DATA"), DataChunk)) return false;
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(DataChunk);
 	OutBoundary.Type = ESWGTerrainBoundaryType::Polyline;
@@ -195,23 +159,23 @@ bool FSWGTerrainReader::ReadBoundaryPolyline(const FSWGIffReader& Reader, const 
 
 bool FSWGTerrainReader::ReadBoundary(const FSWGIffReader& Reader, const FSWGIffChunk& BoundaryForm, FSWGTerrainBoundary& OutBoundary)
 {
-	if (BoundaryForm.FormType == TEXT("BCIR")) return ReadBoundaryCircle(Reader, BoundaryForm, OutBoundary);
-	if (BoundaryForm.FormType == TEXT("BREC")) return ReadBoundaryRectangle(Reader, BoundaryForm, OutBoundary);
-	if (BoundaryForm.FormType == TEXT("BPOL")) return ReadBoundaryPolygon(Reader, BoundaryForm, OutBoundary);
-	if (BoundaryForm.FormType == TEXT("BPLN")) return ReadBoundaryPolyline(Reader, BoundaryForm, OutBoundary);
+	if (BoundaryForm.FormType == SWG_IFF_TAG('B','C','I','R')) return ReadBoundaryCircle(Reader, BoundaryForm, OutBoundary);
+	if (BoundaryForm.FormType == SWG_IFF_TAG('B','R','E','C')) return ReadBoundaryRectangle(Reader, BoundaryForm, OutBoundary);
+	if (BoundaryForm.FormType == SWG_IFF_TAG('B','P','O','L')) return ReadBoundaryPolygon(Reader, BoundaryForm, OutBoundary);
+	if (BoundaryForm.FormType == SWG_IFF_TAG('B','P','L','N')) return ReadBoundaryPolyline(Reader, BoundaryForm, OutBoundary);
 	return false;
 }
 
 bool FSWGTerrainReader::ReadAffectorHeightConstant(const FSWGIffReader& Reader, const FSWGIffChunk& AhcnForm, FSWGTerrainAffector& OutAffector)
 {
 	FSWGIffChunk Version, Ihdr, DataChunk;
-	if (!FindChildForm(Reader, AhcnForm, TEXT("0000"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(AhcnForm, SWG_IFF_TAG('0','0','0','0'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
 
-	if (!FindChildChunk(Reader, Version, TEXT("DATA"), DataChunk)) return false;
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(DataChunk);
 	OutAffector.Type = ESWGTerrainAffectorType::HeightConstant;
@@ -223,8 +187,8 @@ bool FSWGTerrainReader::ReadAffectorHeightConstant(const FSWGIffReader& Reader, 
 bool FSWGTerrainReader::ReadAffectorHeightFractal(const FSWGIffReader& Reader, const FSWGIffChunk& AhfrForm, FSWGTerrainAffector& OutAffector)
 {
 	FSWGIffChunk Version, Ihdr, DataForm, ParmChunk;
-	if (!FindChildForm(Reader, AhfrForm, TEXT("0003"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(AhfrForm, SWG_IFF_TAG('0','0','0','3'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
@@ -232,8 +196,8 @@ bool FSWGTerrainReader::ReadAffectorHeightFractal(const FSWGIffReader& Reader, c
 	// Unlike every other affector/boundary, HeightFractal wraps its fields in a
 	// nested FORM 'DATA' (not a plain leaf chunk) containing a 'PARM' leaf —
 	// confirmed against AffectorHeightFractal.cpp's parseFromIffStream(Version<'0003'>).
-	if (!FindChildForm(Reader, Version, TEXT("DATA"), DataForm)) return false;
-	if (!FindChildChunk(Reader, DataForm, TEXT("PARM"), ParmChunk)) return false;
+	if (!Reader.FindChildForm(Version, SWGIffTags::Data, DataForm)) return false;
+	if (!Reader.FindChildChunk(DataForm, SWG_IFF_TAG('P','A','R','M'), ParmChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(ParmChunk);
 	OutAffector.Type = ESWGTerrainAffectorType::HeightFractal;
@@ -246,13 +210,13 @@ bool FSWGTerrainReader::ReadAffectorHeightFractal(const FSWGIffReader& Reader, c
 bool FSWGTerrainReader::ReadAffectorHeightTerrace(const FSWGIffReader& Reader, const FSWGIffChunk& AhtrForm, FSWGTerrainAffector& OutAffector)
 {
 	FSWGIffChunk Version, Ihdr, DataChunk;
-	if (!FindChildForm(Reader, AhtrForm, TEXT("0004"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(AhtrForm, SWG_IFF_TAG('0','0','0','4'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
 
-	if (!FindChildChunk(Reader, Version, TEXT("DATA"), DataChunk)) return false;
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(DataChunk);
 	OutAffector.Type = ESWGTerrainAffectorType::HeightTerrace;
@@ -344,8 +308,8 @@ void FSWGTerrainReader::GenerateRoadRectangles(FSWGTerrainAffector& OutAffector,
 bool FSWGTerrainReader::ReadAffectorRoad(const FSWGIffReader& Reader, const FSWGIffChunk& AroaForm, FSWGTerrainAffector& OutAffector)
 {
 	FSWGIffChunk Version, Ihdr;
-	if (!FindChildForm(Reader, AroaForm, TEXT("0005"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(AroaForm, SWG_IFF_TAG('0','0','0','5'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
@@ -356,14 +320,14 @@ bool FSWGTerrainReader::ReadAffectorRoad(const FSWGIffReader& Reader, const FSWG
 	// out of scope — or 'HDTA', the height profile we need), then a sibling
 	// leaf CHUNK also tagged "DATA" with the path coordinates/width/etc.
 	FSWGIffChunk OuterDataForm;
-	if (!FindChildForm(Reader, Version, TEXT("DATA"), OuterDataForm)) return false;
+	if (!Reader.FindChildForm(Version, SWGIffTags::Data, OuterDataForm)) return false;
 
 	FSWGIffChunk InnerDataChunk;
 	bool bFoundInnerDataChunk = false;
 
 	for (const FSWGIffChunk& Child : Reader.ReadChildren(OuterDataForm))
 	{
-		if (Child.IsForm() && Child.FormType == TEXT("HDTA"))
+		if (Child.IsForm() && Child.FormType == SWG_IFF_TAG('H','D','T','A'))
 		{
 			OutAffector.bRoadIsHeightType = true;
 
@@ -371,11 +335,11 @@ bool FSWGTerrainReader::ReadAffectorRoad(const FSWGIffReader& Reader, const FSWG
 			// packed list of (x,z,y) float triples — confirmed port of
 			// HeightData::parseFromIffStream/Segment::readObject.
 			FSWGIffChunk HdtaVersion;
-			if (FindChildForm(Reader, Child, TEXT("0001"), HdtaVersion))
+			if (Reader.FindChildForm(Child, SWG_IFF_TAG('0','0','0','1'), HdtaVersion))
 			{
 				for (const FSWGIffChunk& SegChild : Reader.ReadChildren(HdtaVersion))
 				{
-					if (SegChild.Tag != TEXT("SGMT")) continue;
+					if (SegChild.Tag != SWG_IFF_TAG('S','G','M','T')) continue;
 
 					const uint8* D = Reader.GetChunkData(SegChild);
 					const int32 Size = Reader.GetChunkSize(SegChild);
@@ -405,7 +369,7 @@ bool FSWGTerrainReader::ReadAffectorRoad(const FSWGIffReader& Reader, const FSWG
 		// FORM 'ROAD' (shader/visual road type) is deliberately not parsed —
 		// AffectorRoad::process itself only ever touches height for the
 		// 'HDTA' type, so there's nothing for GetHeight to gain from it.
-		else if (!Child.IsForm() && Child.Tag == TEXT("DATA"))
+		else if (!Child.IsForm() && Child.Tag == SWGIffTags::Data)
 		{
 			InnerDataChunk = Child;
 			bFoundInnerDataChunk = true;
@@ -445,8 +409,13 @@ bool FSWGTerrainReader::ReadAffectorRoad(const FSWGIffReader& Reader, const FSWG
 
 	const float RawWidth = ReadFloatLE(D, Offset);
 	OutAffector.RoadWidth = RawWidth * 0.7f; // Core3's own fudge factor.
-	// familyID/featheringType/featheringAmount/featheringShader/featheringShaderDistance
-	// follow — not needed for height evaluation, so not read.
+	Offset += 4;
+	// ROAD's visual shader family follows the width. It is unused for height
+	// evaluation but is required to paint roads/plazas such as Theed brick.
+	if (Offset + 4 <= InnerDataChunk.DataSize)
+	{
+		OutAffector.ShaderFamilyId = (int32)ReadUInt32LE(D, Offset);
+	}
 
 	GenerateRoadRectangles(OutAffector, MidPositions, EndPoint);
 
@@ -457,13 +426,13 @@ bool FSWGTerrainReader::ReadAffectorShaderConstant(const FSWGIffReader& Reader, 
 {
 	// Confirmed port of AffectorShaderConstant::parseFromIffStream(Version<'0001'>).
 	FSWGIffChunk Version, Ihdr, DataChunk;
-	if (!FindChildForm(Reader, AscnForm, TEXT("0001"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(AscnForm, SWG_IFF_TAG('0','0','0','1'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
 
-	if (!FindChildChunk(Reader, Version, TEXT("DATA"), DataChunk)) return false;
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(DataChunk);
 	OutAffector.Type = ESWGTerrainAffectorType::ShaderConstant;
@@ -477,13 +446,13 @@ bool FSWGTerrainReader::ReadAffectorShaderReplace(const FSWGIffReader& Reader, c
 {
 	// Confirmed port of AffectorShaderReplace::parseFromIffStream(Version<'0001'>).
 	FSWGIffChunk Version, Ihdr, DataChunk;
-	if (!FindChildForm(Reader, AsrpForm, TEXT("0001"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(AsrpForm, SWG_IFF_TAG('0','0','0','1'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
 
-	if (!FindChildChunk(Reader, Version, TEXT("DATA"), DataChunk)) return false;
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(DataChunk);
 	OutAffector.Type = ESWGTerrainAffectorType::ShaderReplace;
@@ -496,25 +465,25 @@ bool FSWGTerrainReader::ReadAffectorShaderReplace(const FSWGIffReader& Reader, c
 
 bool FSWGTerrainReader::ReadAffector(const FSWGIffReader& Reader, const FSWGIffChunk& AffectorForm, FSWGTerrainAffector& OutAffector)
 {
-	if (AffectorForm.FormType == TEXT("AHCN")) return ReadAffectorHeightConstant(Reader, AffectorForm, OutAffector);
-	if (AffectorForm.FormType == TEXT("AHFR")) return ReadAffectorHeightFractal(Reader, AffectorForm, OutAffector);
-	if (AffectorForm.FormType == TEXT("AHTR")) return ReadAffectorHeightTerrace(Reader, AffectorForm, OutAffector);
-	if (AffectorForm.FormType == TEXT("AROA")) return ReadAffectorRoad(Reader, AffectorForm, OutAffector);
-	if (AffectorForm.FormType == TEXT("ASCN")) return ReadAffectorShaderConstant(Reader, AffectorForm, OutAffector);
-	if (AffectorForm.FormType == TEXT("ASRP")) return ReadAffectorShaderReplace(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','H','C','N')) return ReadAffectorHeightConstant(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','H','F','R')) return ReadAffectorHeightFractal(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','H','T','R')) return ReadAffectorHeightTerrace(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','R','O','A')) return ReadAffectorRoad(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','S','C','N')) return ReadAffectorShaderConstant(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','S','R','P')) return ReadAffectorShaderReplace(Reader, AffectorForm, OutAffector);
 	return false;
 }
 
 bool FSWGTerrainReader::ReadFilterHeight(const FSWGIffReader& Reader, const FSWGIffChunk& FhgtForm, FSWGTerrainFilter& OutFilter)
 {
 	FSWGIffChunk Version, Ihdr, DataChunk;
-	if (!FindChildForm(Reader, FhgtForm, TEXT("0002"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(FhgtForm, SWG_IFF_TAG('0','0','0','2'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutFilter.bEnabled);
 
-	if (!FindChildChunk(Reader, Version, TEXT("DATA"), DataChunk)) return false;
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(DataChunk);
 	OutFilter.Type = ESWGTerrainFilterType::Height;
@@ -531,14 +500,14 @@ bool FSWGTerrainReader::ReadFilterFractal(const FSWGIffReader& Reader, const FSW
 	// version form 0005 > IHDR, then (unlike FilterHeight) a FORM DATA
 	// containing a CHUNK PARM, not a bare DATA chunk.
 	FSWGIffChunk Version, Ihdr, DataForm, ParmChunk;
-	if (!FindChildForm(Reader, FfraForm, TEXT("0005"), Version)) return false;
-	if (!FindChildForm(Reader, Version, TEXT("IHDR"), Ihdr)) return false;
+	if (!Reader.FindChildForm(FfraForm, SWG_IFF_TAG('0','0','0','5'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
 
 	FString UnusedName;
 	ReadInformationHeader(Reader, Ihdr, UnusedName, OutFilter.bEnabled);
 
-	if (!FindChildForm(Reader, Version, TEXT("DATA"), DataForm)) return false;
-	if (!FindChildChunk(Reader, DataForm, TEXT("PARM"), ParmChunk)) return false;
+	if (!Reader.FindChildForm(Version, SWGIffTags::Data, DataForm)) return false;
+	if (!Reader.FindChildChunk(DataForm, SWG_IFF_TAG('P','A','R','M'), ParmChunk)) return false;
 
 	const uint8* D = Reader.GetChunkData(ParmChunk);
 	OutFilter.Type = ESWGTerrainFilterType::Fractal;
@@ -557,29 +526,29 @@ bool FSWGTerrainReader::ReadFilterFractal(const FSWGIffReader& Reader, const FSW
 
 bool FSWGTerrainReader::ReadFilter(const FSWGIffReader& Reader, const FSWGIffChunk& FilterForm, FSWGTerrainFilter& OutFilter)
 {
-	if (FilterForm.FormType == TEXT("FHGT")) return ReadFilterHeight(Reader, FilterForm, OutFilter);
-	if (FilterForm.FormType == TEXT("FFRA")) return ReadFilterFractal(Reader, FilterForm, OutFilter);
+	if (FilterForm.FormType == SWG_IFF_TAG('F','H','G','T')) return ReadFilterHeight(Reader, FilterForm, OutFilter);
+	if (FilterForm.FormType == SWG_IFF_TAG('F','F','R','A')) return ReadFilterFractal(Reader, FilterForm, OutFilter);
 	return false;
 }
 
 bool FSWGTerrainReader::ReadLayer(const FSWGIffReader& Reader, const FSWGIffChunk& LayrForm, FSWGTerrainLayer& OutLayer)
 {
 	FSWGIffChunk Form0003;
-	if (!FindChildForm(Reader, LayrForm, TEXT("0003"), Form0003)) return false;
+	if (!Reader.FindChildForm(LayrForm, SWG_IFF_TAG('0','0','0','3'), Form0003)) return false;
 
 	for (const FSWGIffChunk& Child : Reader.ReadChildren(Form0003))
 	{
-		if (Child.IsForm() && Child.FormType == TEXT("IHDR"))
+		if (Child.IsForm() && Child.FormType == SWG_IFF_TAG('I','H','D','R'))
 		{
 			ReadInformationHeader(Reader, Child, OutLayer.Name, OutLayer.bEnabled);
 		}
-		else if (!Child.IsForm() && Child.Tag == TEXT("ADTA"))
+		else if (!Child.IsForm() && Child.Tag == SWG_IFF_TAG('A','D','T','A'))
 		{
 			const uint8* D = Reader.GetChunkData(Child);
 			OutLayer.bInvertBoundaries = ReadUInt32LE(D, 0) != 0;
 			OutLayer.bInvertFilters = ReadUInt32LE(D, 4) != 0;
 		}
-		else if (Child.IsForm() && (Child.FormType == TEXT("BCIR") || Child.FormType == TEXT("BREC") || Child.FormType == TEXT("BPOL") || Child.FormType == TEXT("BPLN")))
+		else if (Child.IsForm() && (Child.FormType == SWG_IFF_TAG('B','C','I','R') || Child.FormType == SWG_IFF_TAG('B','R','E','C') || Child.FormType == SWG_IFF_TAG('B','P','O','L') || Child.FormType == SWG_IFF_TAG('B','P','L','N')))
 		{
 			FSWGTerrainBoundary Boundary;
 			if (ReadBoundary(Reader, Child, Boundary))
@@ -587,7 +556,7 @@ bool FSWGTerrainReader::ReadLayer(const FSWGIffReader& Reader, const FSWGIffChun
 				OutLayer.Boundaries.Add(MoveTemp(Boundary));
 			}
 		}
-		else if (Child.IsForm() && (Child.FormType == TEXT("FHGT") || Child.FormType == TEXT("FFRA")))
+		else if (Child.IsForm() && (Child.FormType == SWG_IFF_TAG('F','H','G','T') || Child.FormType == SWG_IFF_TAG('F','F','R','A')))
 		{
 			FSWGTerrainFilter Filter;
 			if (ReadFilter(Reader, Child, Filter))
@@ -595,7 +564,7 @@ bool FSWGTerrainReader::ReadLayer(const FSWGIffReader& Reader, const FSWGIffChun
 				OutLayer.Filters.Add(MoveTemp(Filter));
 			}
 		}
-		else if (Child.IsForm() && (Child.FormType == TEXT("AHCN") || Child.FormType == TEXT("AHFR") || Child.FormType == TEXT("AHTR") || Child.FormType == TEXT("AROA") || Child.FormType == TEXT("ASCN") || Child.FormType == TEXT("ASRP")))
+		else if (Child.IsForm() && (Child.FormType == SWG_IFF_TAG('A','H','C','N') || Child.FormType == SWG_IFF_TAG('A','H','F','R') || Child.FormType == SWG_IFF_TAG('A','H','T','R') || Child.FormType == SWG_IFF_TAG('A','R','O','A') || Child.FormType == SWG_IFF_TAG('A','S','C','N') || Child.FormType == SWG_IFF_TAG('A','S','R','P')))
 		{
 			FSWGTerrainAffector Affector;
 			if (ReadAffector(Reader, Child, Affector))
@@ -603,7 +572,7 @@ bool FSWGTerrainReader::ReadLayer(const FSWGIffReader& Reader, const FSWGIffChun
 				OutLayer.Affectors.Add(MoveTemp(Affector));
 			}
 		}
-		else if (Child.IsForm() && Child.FormType == TEXT("LAYR"))
+		else if (Child.IsForm() && Child.FormType == SWG_IFF_TAG('L','A','Y','R'))
 		{
 			FSWGTerrainLayer ChildLayer;
 			if (ReadLayer(Reader, Child, ChildLayer))
@@ -615,14 +584,14 @@ bool FSWGTerrainReader::ReadLayer(const FSWGIffReader& Reader, const FSWGIffChun
 		// BALL/BPLN/BSPL, Fxxx) isn't modeled yet; skipped, matching Core3's own
 		// graceful fallback for unrecognized types (Layer::parseAffector/parseBoundary
 		// return nullptr and the caller just moves on).
-		else if (Child.IsForm() && Child.FormType != TEXT("0003") && Child.FormType != TEXT("ADTA"))
+		else if (Child.IsForm() && Child.FormType != SWG_IFF_TAG('0','0','0','3') && Child.FormType != SWG_IFF_TAG('A','D','T','A'))
 		{
 			UE_LOG(LogTemp, Warning, TEXT("FSWGTerrainReader: unrecognized layer child form '%s' (layer '%s') — skipped"),
-				*Child.FormType, *OutLayer.Name);
+				*Child.FormType.ToString(), *OutLayer.Name);
 
-			if (Child.FormType.StartsWith(TEXT("B")) || Child.FormType.StartsWith(TEXT("F")))
+			if (Child.FormType.FirstChar() == TEXT('B') || Child.FormType.FirstChar() == TEXT('F'))
 			{
-				OutLayer.SkippedBoundaryOrFilterTags.Add(Child.FormType);
+				OutLayer.SkippedBoundaryOrFilterTags.Add(Child.FormType.ToString());
 			}
 		}
 	}
@@ -636,12 +605,12 @@ bool FSWGTerrainReader::ReadShadersGroup(const FSWGIffReader& Reader, const FSWG
 	// forms): [familyId:int32][familyName][fileName][r,g,b:uint8][var7:float]
 	// [weight:float][numLayers:int32] then that many {name, weight} layer
 	// entries. Only the per-layer names are needed for texture resolution.
-	const TArray<FSWGIffChunk> VersionForms = FindChildForms(Reader, SgrpForm);
+	const TArray<FSWGIffChunk> VersionForms = Reader.FindChildForms(SgrpForm);
 	if (VersionForms.Num() == 0) return false;
 
 	for (const FSWGIffChunk& Child : Reader.ReadChildren(VersionForms[0]))
 	{
-		if (Child.IsForm() || Child.Tag != TEXT("SFAM"))
+		if (Child.IsForm() || Child.Tag != SWG_IFF_TAG('S','F','A','M'))
 		{
 			continue;
 		}
@@ -692,19 +661,19 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 	if (!Reader.IsValid()) return false;
 
 	const TArray<FSWGIffChunk> TopLevel = Reader.ReadChunks();
-	if (TopLevel.Num() == 0 || !TopLevel[0].IsForm() || TopLevel[0].FormType != TEXT("PTAT"))
+	if (TopLevel.Num() == 0 || !TopLevel[0].IsForm() || TopLevel[0].FormType != SWG_IFF_TAG('P','T','A','T'))
 		return false;
 
 	// PTAT wraps a single version-tagged form (seen as "0013" on a small test file,
 	// "0014" on real planet data like tatooine.trn) — take whichever one is there
 	// rather than hardcoding a version, since nothing below this depends on which.
-	const TArray<FSWGIffChunk> PtatChildren = FindChildForms(Reader, TopLevel[0]);
+	const TArray<FSWGIffChunk> PtatChildren = Reader.FindChildForms(TopLevel[0]);
 	if (PtatChildren.Num() == 0) return false;
 	const FSWGIffChunk& PtatVersionForm = PtatChildren[0];
 
 	FSWGIffChunk TgenForm, TgenForm0000;
-	if (!FindChildForm(Reader, PtatVersionForm, TEXT("TGEN"), TgenForm)) return false;
-	if (!FindChildForm(Reader, TgenForm, TEXT("0000"), TgenForm0000)) return false;
+	if (!Reader.FindChildForm(PtatVersionForm, SWG_IFF_TAG('T','G','E','N'), TgenForm)) return false;
+	if (!Reader.FindChildForm(TgenForm, SWG_IFF_TAG('0','0','0','0'), TgenForm0000)) return false;
 
 	// FGRP/RGRP/EGRP (flora/radial/environment groups) are skipped structurally —
 	// not needed until flora rendering is tackled (deferred). SGRP (shader group,
@@ -713,7 +682,7 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 	// second MGRP occurrence (Core3's "bitmap group") is skipped. Once past the
 	// groups, per TerrainGenerator::parseFromIffStream the next child is either a
 	// single root LAYR or a LYRS wrapper containing multiple top-level LAYR entries.
-	static const TSet<FString> SkippedGroupTags = { TEXT("FGRP"), TEXT("RGRP"), TEXT("EGRP") };
+	static const TSet<FSWGIffTag> SkippedGroupTags = { SWG_IFF_TAG('F','G','R','P'), SWG_IFF_TAG('R','G','R','P'), SWG_IFF_TAG('E','G','R','P') };
 
 	bool bFoundMapGroup = false;
 
@@ -725,13 +694,13 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 		if (SkippedGroupTags.Contains(Child.FormType))
 			continue;
 
-		if (Child.FormType == TEXT("SGRP"))
+		if (Child.FormType == SWG_IFF_TAG('S','G','R','P'))
 		{
 			ReadShadersGroup(Reader, Child, OutData.ShaderFamilies);
 			continue;
 		}
 
-		if (Child.FormType == TEXT("MGRP"))
+		if (Child.FormType == SWG_IFF_TAG('M','G','R','P'))
 		{
 			if (!bFoundMapGroup)
 			{
@@ -742,7 +711,7 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 			continue;
 		}
 
-		if (Child.FormType == TEXT("LAYR"))
+		if (Child.FormType == SWG_IFF_TAG('L','A','Y','R'))
 		{
 			FSWGTerrainLayer Layer;
 			if (ReadLayer(Reader, Child, Layer))
@@ -750,11 +719,11 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 				OutData.TopLevelLayers.Add(MoveTemp(Layer));
 			}
 		}
-		else if (Child.FormType == TEXT("LYRS"))
+		else if (Child.FormType == SWG_IFF_TAG('L','Y','R','S'))
 		{
 			for (const FSWGIffChunk& LayrChild : Reader.ReadChildren(Child))
 			{
-				if (LayrChild.IsForm() && LayrChild.FormType == TEXT("LAYR"))
+				if (LayrChild.IsForm() && LayrChild.FormType == SWG_IFF_TAG('L','A','Y','R'))
 				{
 					FSWGTerrainLayer Layer;
 					if (ReadLayer(Reader, LayrChild, Layer))
@@ -804,23 +773,23 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 bool FSWGTerrainReader::ReadMapGroup(const FSWGIffReader& Reader, const FSWGIffChunk& MgrpForm, FSWGMapGroup& OutGroup)
 {
 	FSWGIffChunk Version;
-	if (!FindChildForm(Reader, MgrpForm, TEXT("0000"), Version)) return false;
+	if (!Reader.FindChildForm(MgrpForm, SWG_IFF_TAG('0','0','0','0'), Version)) return false;
 
 	for (const FSWGIffChunk& MfamForm : Reader.ReadChildren(Version))
 	{
-		if (!MfamForm.IsForm() || MfamForm.FormType != TEXT("MFAM"))
+		if (!MfamForm.IsForm() || MfamForm.FormType != SWG_IFF_TAG('M','F','A','M'))
 			continue;
 
 		FSWGIffChunk FamilyDataChunk;
-		if (!FindChildChunk(Reader, MfamForm, TEXT("DATA"), FamilyDataChunk)) continue;
+		if (!Reader.FindChildChunk(MfamForm, SWGIffTags::Data, FamilyDataChunk)) continue;
 
 		const uint8* FamilyData = Reader.GetChunkData(FamilyDataChunk);
 		const int32 FamilyId = (int32)ReadUInt32LE(FamilyData, 0);
 
 		FSWGIffChunk MfrcForm, MfrcVersion, MfrcData;
-		if (!FindChildForm(Reader, MfamForm, TEXT("MFRC"), MfrcForm)) continue;
-		if (!FindChildForm(Reader, MfrcForm, TEXT("0001"), MfrcVersion)) continue;
-		if (!FindChildChunk(Reader, MfrcVersion, TEXT("DATA"), MfrcData)) continue;
+		if (!Reader.FindChildForm(MfamForm, SWG_IFF_TAG('M','F','R','C'), MfrcForm)) continue;
+		if (!Reader.FindChildForm(MfrcForm, SWG_IFF_TAG('0','0','0','1'), MfrcVersion)) continue;
+		if (!Reader.FindChildChunk(MfrcVersion, SWGIffTags::Data, MfrcData)) continue;
 
 		const uint8* D = Reader.GetChunkData(MfrcData);
 		FSWGMapFractal Fractal;

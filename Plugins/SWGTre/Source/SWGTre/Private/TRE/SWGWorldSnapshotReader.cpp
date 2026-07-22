@@ -1,4 +1,5 @@
 #include "TRE/SWGWorldSnapshotReader.h"
+#include "TRE/SWGIffTags.h"
 
 namespace
 {
@@ -23,7 +24,7 @@ namespace
 bool FSWGWorldSnapshotReader::ReadWorldSnapshot(const FSWGIffReader& Reader, FSWGWorldSnapshotData& OutData)
 {
 	TArray<FSWGIffChunk> TopChunks = Reader.ReadChunks();
-	if (TopChunks.Num() == 0 || !TopChunks[0].IsForm() || TopChunks[0].FormType != TEXT("WSNP"))
+	if (TopChunks.Num() == 0 || !TopChunks[0].IsForm() || TopChunks[0].FormType != SWG_IFF_TAG('W','S','N','P'))
 	{
 		UE_LOG(LogTemp, Error, TEXT("FSWGWorldSnapshotReader: top-level chunk is not FORM WSNP"));
 		return false;
@@ -37,11 +38,11 @@ bool FSWGWorldSnapshotReader::ReadWorldSnapshot(const FSWGIffReader& Reader, FSW
 	}
 
 	const FSWGIffChunk& VersionForm = WsnpChildren[0];
-	if (VersionForm.FormType != TEXT("0001"))
+	if (VersionForm.FormType != SWG_IFF_TAG('0','0','0','1'))
 	{
 		// Matches Core3's own WorldSnapshotIff::readObject — only version 0001
 		// is handled; 0000 (and anything else) is an explicit unhandled case there too.
-		UE_LOG(LogTemp, Error, TEXT("FSWGWorldSnapshotReader: unhandled WSNP version '%s'"), *VersionForm.FormType);
+		UE_LOG(LogTemp, Error, TEXT("FSWGWorldSnapshotReader: unhandled WSNP version '%s'"), *VersionForm.FormType.ToString());
 		return false;
 	}
 
@@ -50,12 +51,12 @@ bool FSWGWorldSnapshotReader::ReadWorldSnapshot(const FSWGIffReader& Reader, FSW
 	int32 NodeCount = 0;
 	for (const FSWGIffChunk& Child : VersionChildren)
 	{
-		if (Child.IsForm() && Child.FormType == TEXT("NODS"))
+		if (Child.IsForm() && Child.FormType == SWG_IFF_TAG('N','O','D','S'))
 		{
 			TArray<FSWGIffChunk> NodeForms = Reader.ReadChildren(Child);
 			for (const FSWGIffChunk& NodeForm : NodeForms)
 			{
-				if (!NodeForm.IsForm() || NodeForm.Tag != TEXT("FORM"))
+				if (!NodeForm.IsForm() || NodeForm.Tag != SWG_IFF_TAG('F','O','R','M'))
 					continue;
 
 				FSWGWorldSnapshotNode Node;
@@ -66,7 +67,7 @@ bool FSWGWorldSnapshotReader::ReadWorldSnapshot(const FSWGIffReader& Reader, FSW
 				}
 			}
 		}
-		else if (!Child.IsForm() && Child.Tag == TEXT("OTNL"))
+		else if (!Child.IsForm() && Child.Tag == SWG_IFF_TAG('O','T','N','L'))
 		{
 			const uint8* Data = Reader.GetChunkData(Child);
 			const int32 Size = Reader.GetChunkSize(Child);
@@ -107,14 +108,14 @@ bool FSWGWorldSnapshotReader::ReadNode(const FSWGIffReader& Reader, const FSWGIf
 	}
 
 	const FSWGIffChunk& VersionForm = NodeChildren[0];
-	if (VersionForm.FormType != TEXT("0000"))
+	if (VersionForm.FormType != SWG_IFF_TAG('0','0','0','0'))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("FSWGWorldSnapshotReader: unhandled NODE version '%s'"), *VersionForm.FormType);
+		UE_LOG(LogTemp, Warning, TEXT("FSWGWorldSnapshotReader: unhandled NODE version '%s'"), *VersionForm.FormType.ToString());
 		return false;
 	}
 
 	TArray<FSWGIffChunk> VersionChildren = Reader.ReadChildren(VersionForm);
-	if (VersionChildren.Num() == 0 || VersionChildren[0].IsForm() || VersionChildren[0].Tag != TEXT("DATA"))
+	if (VersionChildren.Num() == 0 || VersionChildren[0].IsForm() || VersionChildren[0].Tag != SWGIffTags::Data)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGWorldSnapshotReader: NODE version form's first child isn't DATA"));
 		return false;
@@ -157,7 +158,7 @@ bool FSWGWorldSnapshotReader::ReadNode(const FSWGIffReader& Reader, const FSWGIf
 	for (int32 i = 1; i < VersionChildren.Num(); ++i)
 	{
 		const FSWGIffChunk& ChildForm = VersionChildren[i];
-		if (!ChildForm.IsForm() || ChildForm.Tag != TEXT("FORM"))
+		if (!ChildForm.IsForm() || ChildForm.Tag != SWG_IFF_TAG('F','O','R','M'))
 			continue;
 
 		FSWGWorldSnapshotNode ChildNode;

@@ -67,15 +67,6 @@ public:
 	static bool ReadSkeleton(const FSWGIffReader& Reader, FSWGSkeletonData& OutSkeleton);
 
 private:
-	/** Finds the first FORM child with the given FormType among Parent's direct children. */
-	static bool FindChildForm(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& FormType, FSWGIffChunk& OutChunk);
-
-	/** Finds the first leaf chunk with the given Tag among Parent's direct children. */
-	static bool FindChildChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag, FSWGIffChunk& OutChunk);
-
-	/** All FORM children (any FormType) among Parent's direct children. */
-	static TArray<FSWGIffChunk> FindChildForms(const FSWGIffReader& Reader, const FSWGIffChunk& Parent);
-
 	/** Splits a chunk of back-to-back null-terminated strings (NAME) into Count individual names. */
 	static TArray<FString> ReadNullTerminatedStrings(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk, int32 Count);
 };

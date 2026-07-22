@@ -88,7 +88,7 @@ void USWGMessageWaitSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> 
 
 	const uint32 Opcode = Msg->Opcode;
 
-	UE_LOG(LogTemp, Log, TEXT("SWGMessageWaitSubsystem: received message 0x%08X (%s)"), Opcode, *GetMessageOpName(Opcode));
+	UE_LOG(LogTemp, Verbose, TEXT("SWGMessageWaitSubsystem: received message 0x%08X (%s)"), Opcode, *GetMessageOpName(Opcode));
 
 	// ErrorMessage isn't a reply to any specific opcode — it's the server telling us
 	// why our *last* request failed (bad character ID, server locked, zone disabled,

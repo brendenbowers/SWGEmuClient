@@ -8,6 +8,7 @@
 #include "TRE/SWGWorldSnapshotReader.h"
 #include "TRE/SWGFormTagMapping.h"
 #include "TRE/SWGDDSTextureLoader.h"
+#include "TRE/SWGShaderReader.h"
 #include "Landscape.h"
 #include "LandscapeComponent.h"
 #include "LandscapeDataAccess.h"
@@ -22,6 +23,14 @@
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/DirectionalLight.h"
+#include "Engine/SkyLight.h"
+#include "Engine/ExponentialHeightFog.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
+#include "EngineUtils.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 
@@ -33,6 +42,9 @@ namespace
 	// be pre-divided by this same constant before packing (see PackHeightMip) —
 	// SpawnLandscapeActor uses it directly as the actor's Z scale.
 	constexpr float HeightZScale = 8.0f; // +/-2048 world units of representable height
+	// Terrain layers are detail textures, not a single decal for an entire
+	// 2km baked tile. Raw world coordinates keep adjacent tiles in phase.
+	constexpr float TerrainTextureRepeatWorldSize = 8.0f;
 
 	// Per-2x2-quad {Min,Max,Average} stats for one mip level — see
 	// LandscapeComponent.h:503-512 (MipToMipMaxDeltas) for what these feed into.
@@ -273,7 +285,7 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 				}
 
 				FSWGIffChunk SgrpForm;
-				if (!Reader.FindForm(TEXT("SGRP"), SgrpForm))
+				if (!Reader.FindForm(SWG_IFF_TAG('S', 'G', 'R', 'P'), SgrpForm))
 				{
 					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderFamilies: no SGRP form found"));
 					return;
@@ -286,7 +298,7 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 					return;
 				}
 
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderFamilies: SGRP version form '%s'"), *VersionForms[0].FormType);
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderFamilies: SGRP version form '%s'"), *VersionForms[0].FormType.ToString());
 
 				auto ReadNullTerminated = [](const uint8* D, int32 Size, int32& Offset) -> FString
 				{
@@ -300,7 +312,7 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 				int32 Count = 0;
 				for (const FSWGIffChunk& Child : Reader.ReadChildren(VersionForms[0]))
 				{
-					if (Child.IsForm() || Child.Tag != TEXT("SFAM"))
+					if (Child.IsForm() || Child.Tag != SWG_IFF_TAG('S', 'F', 'A', 'M'))
 					{
 						continue;
 					}
@@ -394,7 +406,7 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 					if (Chunk.IsForm())
 					{
-						UE_LOG(LogTemp, Warning, TEXT("%sFORM %s (%d bytes)"), *Indent, *Chunk.FormType, Chunk.DataSize);
+						UE_LOG(LogTemp, Warning, TEXT("%sFORM %s (%d bytes)"), *Indent, *Chunk.FormType.ToString(), Chunk.DataSize);
 						for (const FSWGIffChunk& Child : Reader.ReadChildren(Chunk))
 						{
 							DumpRecursive(Child, Depth + 1);
@@ -412,7 +424,7 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 						// the generic printable-guess below bails out on any
 						// chunk that mixes a readable key with binary value
 						// bytes (which is most of them).
-						if (Chunk.Tag == TEXT("XXXX"))
+						if (Chunk.Tag == SWG_IFF_TAG('X', 'X', 'X', 'X'))
 						{
 							int32 KeyEnd = 0;
 							while (KeyEnd < Size && D[KeyEnd] != 0) { ++KeyEnd; }
@@ -463,7 +475,7 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 						if (bPrintable)
 						{
 							FString Preview = FString::ConstructFromPtrSize((const ANSICHAR*)D, Size);
-							UE_LOG(LogTemp, Warning, TEXT("%sCHUNK %s (%d bytes): '%s'"), *Indent, *Chunk.Tag, Size, *Preview);
+							UE_LOG(LogTemp, Warning, TEXT("%sCHUNK %s (%d bytes): '%s'"), *Indent, *Chunk.Tag.ToString(), Size, *Preview);
 						}
 						else
 						{
@@ -472,7 +484,7 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 							{
 								Hex += FString::Printf(TEXT("%02X "), D[i]);
 							}
-							UE_LOG(LogTemp, Warning, TEXT("%sCHUNK %s (%d bytes, binary): %s"), *Indent, *Chunk.Tag, Size, *Hex);
+							UE_LOG(LogTemp, Warning, TEXT("%sCHUNK %s (%d bytes, binary): %s"), *Indent, *Chunk.Tag.ToString(), Size, *Hex);
 						}
 					}
 				};
@@ -654,15 +666,105 @@ void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const 
 	// dispatched onto. Marshal back before touching any of that. Caching
 	// TerrainData here too (rather than back on the background thread) avoids a
 	// write/read race with GetHeightAt, which is only ever called from the game thread.
-	AsyncTask(ENamedThreads::GameThread, [this, Grid = MoveTemp(Grid), GridOrigin, Spacing, TerrainData = MoveTemp(TerrainData), SnapshotObjects = MoveTemp(SnapshotObjects)]()
+	AsyncTask(ENamedThreads::GameThread, [this, TerrainVirtualPath, Grid = MoveTemp(Grid), GridOrigin, Spacing, TerrainData = MoveTemp(TerrainData), SnapshotObjects = MoveTemp(SnapshotObjects)]()
 		{
 			CachedTerrainData = TerrainData;
 			bTerrainDataCached = true;
 
+			SetupPlanetLighting(TerrainVirtualPath);
 			SpawnDynamicMeshTerrainGrid(Grid, GridOrigin, Spacing);
 			SpawnWorldSnapshotObjects(SnapshotObjects);
 			OnTerrainReady.Broadcast();
 		});
+}
+
+void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// Terrain reloads are allowed during zone travel. Remove only the actors we
+	// created, leaving level-authored lighting untouched.
+	static const FName PlanetLightingTag(TEXT("SWGPlanetLighting"));
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (It->ActorHasTag(PlanetLightingTag))
+		{
+			It->Destroy();
+		}
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	ADirectionalLight* Sun = nullptr;
+	for (TActorIterator<ADirectionalLight> It(World); It; ++It)
+	{
+		Sun = *It;
+		break;
+	}
+	if (!Sun)
+	{
+		Sun = World->SpawnActor<ADirectionalLight>(FVector::ZeroVector, FRotator(-38.0f, -35.0f, 0.0f), SpawnParams);
+		if (Sun)
+		{
+			Sun->Tags.Add(PlanetLightingTag);
+		}
+	}
+	if (Sun)
+	{
+		Sun->SetActorRotation(FRotator(-38.0f, -35.0f, 0.0f));
+		UDirectionalLightComponent* SunComponent = Sun->GetComponent();
+		SunComponent->SetMobility(EComponentMobility::Movable);
+		SunComponent->SetAtmosphereSunLight(true);
+		SunComponent->SetUseTemperature(true);
+		SunComponent->SetTemperature(5600.0f);
+		SunComponent->SetIntensity(3.0f);
+	}
+
+	ASkyLight* SkyLight = World->SpawnActor<ASkyLight>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	if (SkyLight)
+	{
+		SkyLight->Tags.Add(PlanetLightingTag);
+		USkyLightComponent* SkyLightComponent = SkyLight->GetLightComponent();
+		SkyLightComponent->SetMobility(EComponentMobility::Movable);
+		SkyLightComponent->SetIntensity(1.0f);
+		SkyLightComponent->SetRealTimeCaptureEnabled(true);
+	}
+
+	// A SkyAtmosphere is the UE equivalent of SWG's gradient-sky backdrop. The
+	// selected Naboo texture is retained as the planet's data source while the
+	// original effect's proprietary shader is still being ported.
+	AActor* AtmosphereActor = World->SpawnActor<AActor>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	if (AtmosphereActor)
+	{
+		AtmosphereActor->Tags.Add(PlanetLightingTag);
+		USceneComponent* Root = NewObject<USceneComponent>(AtmosphereActor, TEXT("SWGSkyRoot"));
+		AtmosphereActor->SetRootComponent(Root);
+		Root->RegisterComponent();
+		USkyAtmosphereComponent* Atmosphere = NewObject<USkyAtmosphereComponent>(AtmosphereActor, TEXT("SWGSkyAtmosphere"));
+		Atmosphere->SetupAttachment(Root);
+		Atmosphere->RegisterComponent();
+	}
+
+	AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	if (Fog)
+	{
+		Fog->Tags.Add(PlanetLightingTag);
+		Fog->GetComponent()->SetFogDensity(0.0015f);
+		Fog->GetComponent()->SetFogInscatteringColor(FLinearColor(0.60f, 0.72f, 0.78f));
+	}
+
+	// TODO: fix this so it determines based on what is in the trn/ws file
+	const FString ZoneName = FPaths::GetBaseFilename(TerrainVirtualPath).ToLower();
+	const FString GradientPath = ZoneName == TEXT("naboo")
+		? TEXT("texture/grad_sky_nboo.dds")
+		: FString::Printf(TEXT("texture/grad_sky_%s.dds"), *ZoneName.Left(4));
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %s outdoor lighting active (SWG gradient source: %s; server sun direction not currently present in scene messages)"),
+		*ZoneName, *GradientPath);
 }
 
 TArray<FSWGWorldSnapshotSpawnInfo> USWGTerrainSubsystem::LoadWorldSnapshotObjects(const FString& TerrainVirtualPath, const FVector& SpawnPosition)
@@ -896,9 +998,29 @@ void USWGTerrainSubsystem::BakeShaderWeights(const FSWGTerrainData& TerrainData,
 	SortedFamilies.Sort([](const TPair<int32, float>& A, const TPair<int32, float>& B) { return A.Value > B.Value; });
 
 	constexpr int32 MaxLayers = 4;
+	// One baked tile covers roughly 2km, while roads, plazas, and other hard
+	// surface details may occupy only a small part of it. Keep the families
+	// that actually paint the tile centre (where this one-tile grid spawns the
+	// player) before using the whole-tile totals for the remaining slots.
+	const int32 CentreIndex = (Resolution / 2) * Resolution + (Resolution / 2);
+	TArray<TPair<int32, float>> CentreFamilies;
+	for (const TPair<int32, float>& Pair : PerVertexWeights[CentreIndex])
+	{
+		if (Pair.Value > 0.0f)
+		{
+			CentreFamilies.Add(Pair);
+		}
+	}
+	CentreFamilies.Sort([](const TPair<int32, float>& A, const TPair<int32, float>& B) { return A.Value > B.Value; });
+	for (const TPair<int32, float>& Pair : CentreFamilies)
+	{
+		if (Heightmap.ChosenShaderFamilyIds.Num() >= MaxLayers) break;
+		Heightmap.ChosenShaderFamilyIds.AddUnique(Pair.Key);
+	}
 	for (int32 i = 0; i < FMath::Min(SortedFamilies.Num(), MaxLayers); ++i)
 	{
-		Heightmap.ChosenShaderFamilyIds.Add(SortedFamilies[i].Key);
+		if (Heightmap.ChosenShaderFamilyIds.Num() >= MaxLayers) break;
+		Heightmap.ChosenShaderFamilyIds.AddUnique(SortedFamilies[i].Key);
 	}
 
 	if (Heightmap.ChosenShaderFamilyIds.Num() == 0)
@@ -926,9 +1048,10 @@ void USWGTerrainSubsystem::BakeShaderWeights(const FSWGTerrainData& TerrainData,
 		*FString::JoinBy(Heightmap.ChosenShaderFamilyIds, TEXT(","), [](int32 Id) { return FString::FromInt(Id); }));
 }
 
-UTexture2D* USWGTerrainSubsystem::GetOrLoadShaderTexture(const FString& LayerName)
+UTexture2D* USWGTerrainSubsystem::GetOrLoadShaderTexture(const FString& LayerName, bool bNormalMap)
 {
-	if (TObjectPtr<UTexture2D>* Existing = LoadedShaderTextures.Find(LayerName))
+	const FString CacheKey = FString::Printf(TEXT("%s|%s"), *LayerName, bNormalMap ? TEXT("normal") : TEXT("diffuse"));
+	if (TObjectPtr<UTexture2D>* Existing = LoadedShaderTextures.Find(CacheKey))
 	{
 		return *Existing;
 	}
@@ -937,11 +1060,40 @@ UTexture2D* USWGTerrainSubsystem::GetOrLoadShaderTexture(const FString& LayerNam
 	// (and re-log) on every tile that happens to reference the same family.
 	UTexture2D* Result = nullptr;
 
-	const FString VirtualPath = FString::Printf(TEXT("texture/%s.dds"), *LayerName);
+	FString VirtualPath;
+	const FString ShaderPath = FString::Printf(TEXT("shader/%s.sht"), *LayerName);
+	if (TreSubsystem && TreSubsystem->FileExists(ShaderPath))
+	{
+		FSWGShaderData ShaderData;
+		if (FSWGShaderReader::ReadShader(TreSubsystem->CreateIffReader(ShaderPath), ShaderData))
+		{
+			const ESWGShaderTextureUsage Usage = bNormalMap
+				? ESWGShaderTextureUsage::Normal
+				: ESWGShaderTextureUsage::Diffuse;
+			if (const FSWGShaderTexture* Texture = ShaderData.FindTexture(Usage))
+			{
+				VirtualPath = Texture->VirtualPath;
+			}
+		}
+	}
+
+	// Older terrain families without a .sht use the direct texture convention.
+	if (VirtualPath.IsEmpty())
+	{
+		VirtualPath = FString::Printf(TEXT("texture/%s%s.dds"), *LayerName, bNormalMap ? TEXT("_n") : TEXT(""));
+	}
 	if (TreSubsystem && TreSubsystem->FileExists(VirtualPath))
 	{
 		const TArray<uint8> Bytes = TreSubsystem->ExtractFile(VirtualPath);
-		Result = FSWGDDSTextureLoader::LoadTexture2D(Bytes, FName(*VirtualPath), /*bSRGB=*/true);
+		Result = FSWGDDSTextureLoader::LoadTexture2D(Bytes, FName(*VirtualPath), /*bSRGB=*/!bNormalMap);
+		if (Result)
+		{
+			// Terrain UVs use repeating world-space coordinates. Runtime DDS
+			// textures are configured to wrap by FSWGDDSTextureLoader before its
+			// initial resource creation.
+			Result->AddressX = TA_Wrap;
+			Result->AddressY = TA_Wrap;
+		}
 	}
 
 	if (!Result)
@@ -949,7 +1101,7 @@ UTexture2D* USWGTerrainSubsystem::GetOrLoadShaderTexture(const FString& LayerNam
 		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: failed to load shader texture '%s'"), *VirtualPath);
 	}
 
-	LoadedShaderTextures.Add(LayerName, Result);
+	LoadedShaderTextures.Add(CacheKey, Result);
 	return Result;
 }
 
@@ -975,6 +1127,7 @@ UMaterialInterface* USWGTerrainSubsystem::BuildTerrainTileMaterial(const FSWGBak
 	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(TerrainBlendMaterial, this);
 
 	static const FName LayerParamNames[4] = { TEXT("Layer0"), TEXT("Layer1"), TEXT("Layer2"), TEXT("Layer3") };
+	static const FName NormalParamNames[4] = { TEXT("Layer0Normal"), TEXT("Layer1Normal"), TEXT("Layer2Normal"), TEXT("Layer3Normal") };
 
 	for (int32 Channel = 0; Channel < Heightmap.ChosenShaderFamilyIds.Num(); ++Channel)
 	{
@@ -983,10 +1136,16 @@ UMaterialInterface* USWGTerrainSubsystem::BuildTerrainTileMaterial(const FSWGBak
 		{
 			continue;
 		}
+		UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: terrain material slot %d uses family %d '%s', layer '%s'"),
+			Channel, Heightmap.ChosenShaderFamilyIds[Channel], *Family->Name, *Family->LayerNames[0]);
 
 		if (UTexture2D* Texture = GetOrLoadShaderTexture(Family->LayerNames[0]))
 		{
 			MID->SetTextureParameterValue(LayerParamNames[Channel], Texture);
+		}
+		if (UTexture2D* NormalTexture = GetOrLoadShaderTexture(Family->LayerNames[0], /*bNormalMap=*/true))
+		{
+			MID->SetTextureParameterValue(NormalParamNames[Channel], NormalTexture);
 		}
 	}
 
@@ -1231,13 +1390,21 @@ void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHei
 		// heights were baked in world-space against — no encoding/scale
 		// indirection at all, just a direct offset.
 		const FVector LocalOrigin = Heightmap.Origin - GridOrigin;
+		// Dynamic-mesh UVs reach the GPU in a compact representation. Keeping
+		// absolute SWG world coordinates here loses fractional precision once a
+		// player is far from (0,0), turning detail textures into noisy mips.
+		// Rebase within this tile, but retain the tile origin's modulo so adjacent
+		// tiles still meet at the same world-space texture phase.
+		const FVector2f TerrainUVOrigin(
+			FMath::Fmod(Heightmap.Origin.X, TerrainTextureRepeatWorldSize) / TerrainTextureRepeatWorldSize,
+			FMath::Fmod(Heightmap.Origin.Y, TerrainTextureRepeatWorldSize) / TerrainTextureRepeatWorldSize);
 
 		UDynamicMeshComponent* MeshComponent = NewObject<UDynamicMeshComponent>(TerrainActor, NAME_None, RF_Transactional);
 		MeshComponent->SetupAttachment(TerrainRoot);
 
 		const bool bHasShaderWeights = Heightmap.ShaderWeightColors.Num() == Resolution * Resolution;
 
-		MeshComponent->EditMesh([&Heightmap, Resolution, LocalOrigin, bHasShaderWeights](FDynamicMesh3& EditMesh)
+		MeshComponent->EditMesh([&Heightmap, Resolution, LocalOrigin, TerrainUVOrigin, bHasShaderWeights](FDynamicMesh3& EditMesh)
 		{
 			EditMesh.EnableAttributes();
 			FDynamicMeshNormalOverlay* Normals = EditMesh.Attributes()->PrimaryNormals();
@@ -1248,13 +1415,17 @@ void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHei
 			// 1-R-G-B, computed in the material) — see BakeShaderWeights.
 			if (bHasShaderWeights)
 			{
-				EditMesh.EnableVertexColors(FVector3f::ZeroVector);
+				// UDynamicMeshComponent's VertexColor material node consumes the
+				// primary color overlay, not FDynamicMesh3's legacy color buffer.
+				EditMesh.Attributes()->EnablePrimaryColors();
 			}
+			FDynamicMeshColorOverlay* Colors = bHasShaderWeights ? EditMesh.Attributes()->PrimaryColors() : nullptr;
 
-			TArray<int32> VertexIds, NormalIds, UVIds;
+			TArray<int32> VertexIds, NormalIds, UVIds, ColorIds;
 			VertexIds.SetNumUninitialized(Resolution * Resolution);
 			NormalIds.SetNumUninitialized(Resolution * Resolution);
 			UVIds.SetNumUninitialized(Resolution * Resolution);
+			if (bHasShaderWeights) ColorIds.SetNumUninitialized(Resolution * Resolution);
 
 			for (int32 Row = 0; Row < Resolution; ++Row)
 			{
@@ -1273,12 +1444,13 @@ void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHei
 					VertexIds[Idx] = EditMesh.AppendVertex(Pos);
 					NormalIds[Idx] = Normals->AppendElement(FVector3f(0, 0, 1));
 					UVIds[Idx] = UVs->AppendElement(FVector2f(
-						(float)Col / (Resolution - 1),
-						(float)Row / (Resolution - 1)));
+						TerrainUVOrigin.X + Col * Heightmap.Spacing / TerrainTextureRepeatWorldSize,
+						TerrainUVOrigin.Y + Row * Heightmap.Spacing / TerrainTextureRepeatWorldSize));
 
 					if (bHasShaderWeights)
 					{
-						EditMesh.SetVertexColor(VertexIds[Idx], Heightmap.ShaderWeightColors[Idx]);
+						const FVector3f Weight = Heightmap.ShaderWeightColors[Idx];
+						ColorIds[Idx] = Colors->AppendElement(FVector4f(Weight.X, Weight.Y, Weight.Z, 1.0f));
 					}
 				}
 			}
@@ -1297,6 +1469,7 @@ void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHei
 					{
 						Normals->SetTriangle(TriA, FIndex3i(NormalIds[I00], NormalIds[I01], NormalIds[I10]));
 						UVs->SetTriangle(TriA, FIndex3i(UVIds[I00], UVIds[I01], UVIds[I10]));
+						if (bHasShaderWeights) Colors->SetTriangle(TriA, FIndex3i(ColorIds[I00], ColorIds[I01], ColorIds[I10]));
 					}
 
 					const int32 TriB = EditMesh.AppendTriangle(VertexIds[I10], VertexIds[I01], VertexIds[I11]);
@@ -1304,6 +1477,7 @@ void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHei
 					{
 						Normals->SetTriangle(TriB, FIndex3i(NormalIds[I10], NormalIds[I01], NormalIds[I11]));
 						UVs->SetTriangle(TriB, FIndex3i(UVIds[I10], UVIds[I01], UVIds[I11]));
+						if (bHasShaderWeights) Colors->SetTriangle(TriB, FIndex3i(ColorIds[I10], ColorIds[I01], ColorIds[I11]));
 					}
 				}
 			}

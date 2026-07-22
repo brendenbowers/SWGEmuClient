@@ -74,16 +74,13 @@ public:
 	/** Parses a .mgn buffer (FORM SKMG) in bind pose, no skinning applied. Returns false if unrecognized. */
 	static bool ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGMeshData& OutMesh);
 
+	/** Returns the skeleton virtual path stored in a skeletal mesh's SKTM chunk. */
+	static FString ReadSkeletalMeshSkeletonPath(const FSWGIffReader& Reader);
+
+	/** Returns every skeleton path in SKTM; head meshes commonly add a face skeleton after the shared body skeleton. */
+	static TArray<FString> ReadSkeletalMeshSkeletonPaths(const FSWGIffReader& Reader);
+
 private:
-	/** Finds the first FORM child with the given FormType among Parent's direct children. */
-	static bool FindChildForm(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& FormType, FSWGIffChunk& OutChunk);
-
-	/** Finds the first leaf chunk with the given Tag among Parent's direct children. */
-	static bool FindChildChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag, FSWGIffChunk& OutChunk);
-
-	/** All FORM children (any FormType) among Parent's direct children. */
-	static TArray<FSWGIffChunk> FindChildForms(const FSWGIffReader& Reader, const FSWGIffChunk& Parent);
-
 	static FString ReadNullTerminatedString(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk);
 
 	/** Best-effort bounding box from FORM APPR > FORM 0003 > FORM EXBX > FORM 0001 > "BOX ". Leaves OutMesh untouched if any step is missing. */

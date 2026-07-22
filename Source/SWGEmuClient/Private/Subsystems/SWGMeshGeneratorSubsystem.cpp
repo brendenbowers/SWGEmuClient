@@ -1,4 +1,5 @@
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
+#include "TRE/SWGIffTags.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Components/DynamicMeshComponent.h"
 #include "DynamicMesh/DynamicMesh3.h"
@@ -7,9 +8,11 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGDDSTextureLoader.h"
+#include "TRE/SWGShaderReader.h"
 #include "TRE/SWGSkeletonReader.h"
 #include "TRE/SWGAnimationReader.h"
 #include "TRE/SWGRuntimeAnimationPlayer.h"
+#include "TRE/SWGIFFChunkReader.h"
 #include "Import/SWGSkeletalMeshImporter.h"
 #include "Import/SWGAnimationImporter.h"
 #include "Animation/Skeleton.h"
@@ -44,44 +47,77 @@ namespace
 		return FString::ConstructFromPtrSize((const ANSICHAR*)Data, Len);
 	}
 
-	bool FindChildForm(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& FormType, FSWGIffChunk& OutChunk)
+	// Most static MSH files use the common SWG forward-axis convention after
+	// ReadVector3LE's Y-up -> Z-up conversion. A small set of kiosk/terminal
+	// assets are authored with their local forward axis rotated right by one
+	// quarter turn. Keep this at the component level: actor rotation remains
+	// the server-authoritative world facing.
+	float GetStaticMeshYawCorrection(const TArray<FString>& MeshVirtualPaths)
 	{
-		for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
-		{
-			if (Child.IsForm() && Child.FormType == FormType)
-			{
-				OutChunk = Child;
-				return true;
-			}
-		}
-		return false;
+		return 0.0f;
 	}
 
-	/** All FORM children (any FormType) among Parent's direct children — used where a version-tagged wrapper form's exact tag isn't consistent (see ResolveShaderDiffuseTexturePath). */
-	TArray<FSWGIffChunk> FindChildForms(const FSWGIffReader& Reader, const FSWGIffChunk& Parent)
+	bool ReadDefaultLocomotionPaths(const FSWGIffReader& Reader, TArray<FString>& OutPaths)
 	{
-		TArray<FSWGIffChunk> Result;
-		for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
+		TArray<FString> Clips;
+		auto Visit = [&Reader, &Clips](auto&& Self, const FSWGIffChunk& Node) -> void
 		{
-			if (Child.IsForm())
+			if (Node.IsForm())
 			{
-				Result.Add(Child);
+				for (const FSWGIffChunk& Child : Reader.ReadChildren(Node)) Self(Self, Child);
+				return;
 			}
-		}
-		return Result;
+
+			FSWGIFFChunkReader ChunkReader(Node, Reader);
+			const FString Value = ChunkReader.ReadTerminiatedString();
+		
+			if (Value.EndsWith(TEXT(".ans"), ESearchCase::IgnoreCase))
+			{
+				Clips.AddUnique(Value);
+			}
+		};
+
+		for (const FSWGIffChunk& Root : Reader.ReadChunks()) Visit(Visit, Root);
+		auto FindClip = [&Clips](const TCHAR* Needle) -> FString
+		{
+			const FString* Found = Clips.FindByPredicate([Needle](const FString& Path) { return Path.Contains(Needle, ESearchCase::IgnoreCase); });
+			return Found ? *Found : FString();
+		};
+
+		const FString Idle = FindClip(TEXT("_idl_breathe_normally."));
+		const FString Walk = FindClip(TEXT("_loc_walk"));
+		const FString Run = FindClip(TEXT("_loc_run."));
+		if (Idle.IsEmpty() || Walk.IsEmpty() || Run.IsEmpty()) return false;
+
+		OutPaths = { Idle, Walk, Walk, Run }; // LAT provides a parametric walk/run pair, not a distinct jog clip.
+		return true;
 	}
 
-	bool FindChildChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Parent, const FString& Tag, FSWGIffChunk& OutChunk)
+	bool ReadSatLatPaths(const FSWGIffReader& Reader, const FSWGIffChunk& LatxChunk, TMap<FString, FString>& OutPaths)
 	{
-		for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
+		const uint8* Data = Reader.GetChunkData(LatxChunk);
+		const int32 Size = Reader.GetChunkSize(LatxChunk);
+		if (Size < 2) return false;
+
+		const int32 Count = Data[0] | (Data[1] << 8); // LATX count is little-endian.
+		int32 Offset = 2;
+		for (int32 Index = 0; Index < Count; ++Index)
 		{
-			if (!Child.IsForm() && Child.Tag == Tag)
+			auto ReadString = [&Data, Size, &Offset](FString& OutValue) -> bool
 			{
-				OutChunk = Child;
-				return true;
-			}
+				const int32 Start = Offset;
+				while (Offset < Size && Data[Offset] != 0) ++Offset;
+				if (Offset >= Size) return false;
+				OutValue = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + Start), Offset - Start);
+				++Offset;
+				return !OutValue.IsEmpty();
+			};
+
+			FString SkeletonPath, LatPath;
+			if (!ReadString(SkeletonPath) || !ReadString(LatPath)) return false;
+			OutPaths.Add(MoveTemp(SkeletonPath), MoveTemp(LatPath));
 		}
-		return false;
+		return !OutPaths.IsEmpty();
 	}
 
 	// Finds the one non-DERV FORM child of a SCOT/STOT/SHOT node — the
@@ -92,7 +128,7 @@ namespace
 	{
 		for (const FSWGIffChunk& Child : Reader.ReadChildren(Parent))
 		{
-			if (Child.IsForm() && Child.FormType != TEXT("DERV"))
+			if (Child.IsForm() && Child.FormType != SWG_IFF_TAG('D','E','R','V'))
 			{
 				OutForm = Child;
 				return true;
@@ -110,34 +146,54 @@ namespace
 	{
 		for (const FSWGIffChunk& Child : Reader.ReadChildren(DataForm))
 		{
-			if (Child.Tag != TEXT("XXXX"))
+			if (Child.Tag != SWG_IFF_TAG('X','X','X','X'))
 			{
 				continue;
 			}
 
-			const uint8* Data = Reader.GetChunkData(Child);
-			const int32 Size = Reader.GetChunkSize(Child);
-
-			int32 KeyEnd = 0;
-			while (KeyEnd < Size && Data[KeyEnd] != 0) { ++KeyEnd; }
-
-			if (FString::ConstructFromPtrSize((const ANSICHAR*)Data, KeyEnd) != Key)
+			FSWGIFFChunkReader ChunkReader(Child, Reader);
+			if (!ChunkReader.SkipString())
 			{
-				continue;
+				return false;
 			}
 
-			const int32 FlagOffset = KeyEnd + 1;
-			if (FlagOffset >= Size || Data[FlagOffset] == 0)
+			//FString Key = ChunkReader.ReadTerminiatedString();
+			//if (ChunkReader.AtEnd())
+			//{
+			//	return false;
+			//}
+
+			const uint32 Flag = ChunkReader.ReadValueLE<uint32>();
+			if (Flag == 0)
 			{
-				return false; // no value set
+				return false;
 			}
 
-			const int32 ValueOffset = FlagOffset + 1;
-			int32 ValueEnd = ValueOffset;
-			while (ValueEnd < Size && Data[ValueEnd] != 0) { ++ValueEnd; }
+			return ChunkReader.ReadTerminiatedString(OutValue) && !OutValue.IsEmpty();
+			
+			//const uint8* Data = Reader.GetChunkData(Child);
+			//const int32 Size = Reader.GetChunkSize(Child);
 
-			OutValue = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + ValueOffset), ValueEnd - ValueOffset);
-			return !OutValue.IsEmpty();
+			//int32 KeyEnd = 0;
+			//while (KeyEnd < Size && Data[KeyEnd] != 0) { ++KeyEnd; }
+
+			//if (FString::ConstructFromPtrSize((const ANSICHAR*)Data, KeyEnd) != Key)
+			//{
+			//	continue;
+			//}
+
+			//const int32 FlagOffset = KeyEnd + 1;
+			//if (FlagOffset >= Size || Data[FlagOffset] == 0)
+			//{
+			//	return false; // no value set
+			//}
+
+			//const int32 ValueOffset = FlagOffset + 1;
+			//int32 ValueEnd = ValueOffset;
+			//while (ValueEnd < Size && Data[ValueEnd] != 0) { ++ValueEnd; }
+
+			//OutValue = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + ValueOffset), ValueEnd - ValueOffset);
+			//return !OutValue.IsEmpty();
 		}
 
 		return false;
@@ -156,7 +212,7 @@ namespace
 	bool ReadPobExteriorMeshPath(const FSWGIffReader& Reader, FString& OutAppearancePath)
 	{
 		FSWGIffChunk PrtoForm;
-		if (!Reader.FindForm(TEXT("PRTO"), PrtoForm))
+		if (!Reader.FindForm(SWG_IFF_TAG('P','R','T','O'), PrtoForm))
 		{
 			return false;
 		}
@@ -172,7 +228,7 @@ namespace
 		bool bFoundCels = false;
 		for (const FSWGIffChunk& Child : Reader.ReadChildren(VersionForm))
 		{
-			if (Child.IsForm() && Child.FormType == TEXT("CELS"))
+			if (Child.IsForm() && Child.FormType == SWG_IFF_TAG('C','E','L','S'))
 			{
 				CelsForm = Child;
 				bFoundCels = true;
@@ -185,7 +241,7 @@ namespace
 		}
 
 		TArray<FSWGIffChunk> CellForms = Reader.ReadChildren(CelsForm);
-		if (CellForms.Num() == 0 || !CellForms[0].IsForm() || CellForms[0].FormType != TEXT("CELL"))
+		if (CellForms.Num() == 0 || !CellForms[0].IsForm() || CellForms[0].FormType != SWG_IFF_TAG('C','E','L','L'))
 		{
 			return false;
 		}
@@ -202,7 +258,7 @@ namespace
 		bool bFoundData = false;
 		for (const FSWGIffChunk& Child : Reader.ReadChildren(CellVersionForm))
 		{
-			if (Child.Tag == TEXT("DATA"))
+			if (Child.Tag == SWGIffTags::Data)
 			{
 				DataChunk = Child;
 				bFoundData = true;
@@ -250,11 +306,11 @@ namespace
 	{
 		for (const FSWGIffChunk& Child : Reader.ReadChildren(ShotForm))
 		{
-			if (Child.IsForm() && Child.FormType == TEXT("DERV"))
+			if (Child.IsForm() && Child.FormType == SWG_IFF_TAG('D','E','R','V'))
 			{
 				for (const FSWGIffChunk& DervChild : Reader.ReadChildren(Child))
 				{
-					if (DervChild.Tag == TEXT("XXXX"))
+					if (DervChild.Tag == SWG_IFF_TAG('X','X','X','X'))
 					{
 						OutParentPath = ReadFullChunkString(Reader, DervChild);
 						return !OutParentPath.IsEmpty();
@@ -274,7 +330,7 @@ namespace
 	{
 		for (const FSWGIffChunk& Child : Reader.ReadChildren(DataForm))
 		{
-			if (Child.Tag != TEXT("XXXX"))
+			if (Child.Tag != SWG_IFF_TAG('X','X','X','X'))
 				continue;
 
 			const uint8* Data = Reader.GetChunkData(Child);
@@ -410,7 +466,7 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 	// fold into that flow once this is validated.
 	static FAutoConsoleCommand BuildWookieeSkeletalMeshCmd(
 		TEXT("swg.BuildWookieeSkeletalMesh"),
-		TEXT("swg.BuildWookieeSkeletalMesh — builds /Game/SWGEmu/Generated/SK_Wookiee from appearance/skeleton/all_b.skt + the Wookiee body/head .mgn meshes."),
+		TEXT("swg.BuildWookieeSkeletalMesh — builds /Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed from appearance/skeleton/all_b.skt + the Wookiee body/head .mgn meshes."),
 		FConsoleCommandDelegate::CreateLambda([]()
 			{
 				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
@@ -445,15 +501,83 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 					return;
 				}
 
+				FSWGSkeletonData FaceSkeleton;
+				if (FSWGSkeletonReader::ReadSkeleton(TreSubsystem->CreateIffReader(TEXT("appearance/skeleton/wke_m_face.skt")), FaceSkeleton))
+				{
+					const int32 HeadJointIndex = Skeleton.Joints.IndexOfByPredicate([](const FSWGSkeletonJoint& Joint) { return Joint.Name.Equals(TEXT("head"), ESearchCase::IgnoreCase); });
+					if (HeadJointIndex != INDEX_NONE)
+					{
+						const int32 FaceBaseIndex = Skeleton.Joints.Num();
+						for (FSWGSkeletonJoint Joint : FaceSkeleton.Joints)
+						{
+							Joint.ParentIndex = Joint.ParentIndex == INDEX_NONE ? HeadJointIndex : FaceBaseIndex + Joint.ParentIndex;
+							Skeleton.Joints.Add(MoveTemp(Joint));
+						}
+					}
+				}
+
 				const TArray<const FSWGMeshData*> MeshParts = { &BodyMesh, &HeadMesh };
-				USkeletalMesh* Result = FSWGSkeletalMeshImporter::BuildSkeletalMesh(Skeleton, MeshParts, TEXT("/Game/SWGEmu/Generated/SK_Wookiee"));
+				USkeletalMesh* Result = FSWGSkeletalMeshImporter::BuildSkeletalMesh(Skeleton, MeshParts, TEXT("/Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed"));
 				if (!Result)
 				{
 					UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeSkeletalMesh: build failed — see preceding warnings"));
 					return;
 				}
 
-				UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeSkeletalMesh: success — /Game/SWGEmu/Generated/SK_Wookiee"));
+				UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeSkeletalMesh: success — /Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed"));
+			}));
+
+	// Live material-slot isolation for the generated Wookiee. The body and
+	// head source meshes each contribute their own sections, so this pinpoints
+	// a stray texture patch without rebuilding the skeletal asset. For example:
+	//   swg.WookieeShowMaterial 0 0
+	// hides slot 0; pass 1 to show it again. Slot -1 restores every slot.
+	static FAutoConsoleCommand WookieeShowMaterialCmd(
+		TEXT("swg.WookieeShowMaterial"),
+		TEXT("swg.WookieeShowMaterial <slot|-1> <0|1> — hides/shows a generated Wookiee material slot; -1 restores all slots."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 2)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.WookieeShowMaterial <slot|-1> <0|1>"));
+					return;
+				}
+
+				const int32 SlotIndex = FCString::Atoi(*Args[0]);
+				const bool bShow = FCString::Atoi(*Args[1]) != 0;
+				int32 AffectedComponents = 0;
+				for (TObjectIterator<UPoseableMeshComponent> It; It; ++It)
+				{
+					UPoseableMeshComponent* Component = *It;
+					if (!IsValid(Component) || !Component->GetWorld() || !Component->GetWorld()->IsGameWorld())
+					{
+						continue;
+					}
+					const USkeletalMesh* Mesh = Cast<USkeletalMesh>(Component->GetSkinnedAsset());
+					if (!Mesh || !Mesh->GetPathName().Contains(TEXT("SK_Wookiee_MaterialTableFixed")))
+					{
+						continue;
+					}
+
+					if (SlotIndex < 0)
+					{
+						Component->ShowAllMaterialSections(0);
+					}
+					else if (Mesh->GetMaterials().IsValidIndex(SlotIndex))
+					{
+						// INDEX_NONE deliberately bypasses any LOD section remap: this
+						// command addresses the generated asset's material slot directly.
+						Component->ShowMaterialSection(SlotIndex, INDEX_NONE, bShow, 0);
+					}
+					else
+					{
+						UE_LOG(LogTemp, Warning, TEXT("swg.WookieeShowMaterial: slot %d is invalid (mesh has %d slots)"), SlotIndex, Mesh->GetMaterials().Num());
+						continue;
+					}
+					++AffectedComponents;
+				}
+
+				UE_LOG(LogTemp, Warning, TEXT("swg.WookieeShowMaterial: %s slot %d on %d Wookiee component(s)"), bShow ? TEXT("showed") : TEXT("hid"), SlotIndex, AffectedComponents);
 			}));
 
 	// Temporary diagnostic for the Wookiee flat-white/palette-tint
@@ -657,9 +781,8 @@ void USWGMeshGeneratorSubsystem::Tick(float DeltaTime)
 		const USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr;
 
 		// CREO base4 is authoritative for the creature's physical walk/run speeds.
-		// Jog is the midpoint because all_m.lat exposes a parametric walk/run
-		// locomotion pair rather than a separate jog threshold; we use SWG's real
-		// all_b_loc_jog clip at that midpoint for a more expressive four-tier set.
+		// all_m.lat exposes a parametric walk/run pair rather than a separate jog
+		// clip, so the midpoint reuses walk until runtime blend support is added.
 		const float WalkSpeed = Movement && Movement->WalkSpeed > KINDA_SMALL_NUMBER
 			? Movement->WalkSpeed * 100.0f
 			: 155.0f;
@@ -775,223 +898,238 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 		return;
 	}
 
-	FSWGPendingMeshRequest Request = PendingRequests.Pop();
-	// Diagnostic: pins down where a request silently vanishes without hitting
-	// any existing error/warning log.
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ProcessNextRequest starting for actor %s (crc %08X, %d path(s) already resolved)"),
-		Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, Request.MeshVirtualPaths.Num());
-	Async(EAsyncExecution::Thread, [this, Request = MoveTemp(Request)]() mutable
-		{
+	uint64 StartTime = FPlatformTime::Cycles64();
+	uint64 Limit = 3 * (FPlatformTime::SecondsToCycles64(1) / 1000);
 
-			if (Request.TemplateCrc != 0 && Request.MeshVirtualPaths.IsEmpty())
+	while (FPlatformTime::Cycles64() - StartTime < Limit && PendingRequests.Num() > 0)
+	{
+
+		FSWGPendingMeshRequest Request = PendingRequests.Pop();
+		// Diagnostic: pins down where a request silently vanishes without hitting
+		// any existing error/warning log.
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ProcessNextRequest starting for actor %s (crc %08X, %d path(s) already resolved)"),
+			Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, Request.MeshVirtualPaths.Num());
+		Async(EAsyncExecution::Thread, [this, Request = MoveTemp(Request)]() mutable
 			{
-				if (!ResolveMeshPath(Request.TemplateCrc, Request.MeshVirtualPaths, Request.bSkeletal))
+
+				if (Request.TemplateCrc != 0 && Request.MeshVirtualPaths.IsEmpty())
 				{
-					UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template CRC %08X"), Request.TemplateCrc);
+					if (!ResolveMeshPath(Request.TemplateCrc, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal))
+					{
+						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template CRC %08X"), Request.TemplateCrc);
+						return;
+					}
+				}
+				else if (!Request.TemplatePath.IsEmpty() && Request.MeshVirtualPaths.IsEmpty())
+				{
+					if (!ResolveMeshPathForTemplate(Request.TemplatePath, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal))
+					{
+						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template %s"), *Request.TemplatePath);
+						return;
+					}
+				}
+
+				if (Request.MeshVirtualPaths.IsEmpty())
+				{
+					UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: no mesh path to parse for actor %s (template CRC %08X)"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc);
 					return;
 				}
-			}
-			else if (!Request.TemplatePath.IsEmpty() && Request.MeshVirtualPaths.IsEmpty())
-			{
-				if (!ResolveMeshPathForTemplate(Request.TemplatePath, Request.MeshVirtualPaths, Request.bSkeletal))
+
+				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: resolved %d mesh path(s) for actor %s (crc %08X): %s"),
+					Request.MeshVirtualPaths.Num(), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
+
+				// Cache key includes the actor's class alongside the resolved mesh
+				// paths: PlaceholderColor (baked directly into the cached mesh's
+				// vertex colors — see BuildDynamicMesh) is a pure function of
+				// actor class, so two different classes sharing the same
+				// underlying mesh file(s) must not share one cache entry, or
+				// whichever built it first "poisons" the tint for the other.
+				const FString ActorClassName = Request.Actor.IsValid() ? Request.Actor->GetClass()->GetName() : TEXT("Unknown");
+				const uint32 PathsHash = GetTypeHash(Request.MeshVirtualPaths);
+				const FString MeshCacheDir = FPaths::ProjectSavedDir() / TEXT("MeshCache");
+				const FString MeshCachePath = FString::Printf(TEXT("%s/%u_%s.dmesh"), *MeshCacheDir, PathsHash, *ActorClassName);
+
+				// Two actors sharing the same template can request this exact cache
+				// path at nearly the same moment; read-vs-write-vs-skip must be
+				// decided atomically under one lock or two requests can both see
+				// "file doesn't exist yet" and race on writing/reading it.
+				bool bTryCacheRead = false;
+				bool bShouldWriteCache = false;
 				{
-					UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template %s"), *Request.TemplatePath);
-					return;
+					FScopeLock Lock(&CacheWriteLock);
+					if (InFlightCacheWrites.Contains(MeshCachePath))
+					{
+						// Someone else is already building+writing this exact
+						// entry — don't race them. Just parse and build fresh for
+						// this request, without reading or writing the cache.
+					}
+					else if (IFileManager::Get().FileExists(*MeshCachePath))
+					{
+						bTryCacheRead = true;
+					}
+					else
+					{
+						InFlightCacheWrites.Add(MeshCachePath);
+						bShouldWriteCache = true;
+					}
 				}
-			}
 
-			if (Request.MeshVirtualPaths.IsEmpty())
-			{
-				UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: no mesh path to parse for actor %s (template CRC %08X)"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc);
-				return;
-			}
-
-			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: resolved %d mesh path(s) for actor %s (crc %08X): %s"),
-				Request.MeshVirtualPaths.Num(), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
-
-			// Cache key includes the actor's class alongside the resolved mesh
-			// paths: PlaceholderColor (baked directly into the cached mesh's
-			// vertex colors — see BuildDynamicMesh) is a pure function of
-			// actor class, so two different classes sharing the same
-			// underlying mesh file(s) must not share one cache entry, or
-			// whichever built it first "poisons" the tint for the other.
-			const FString ActorClassName = Request.Actor.IsValid() ? Request.Actor->GetClass()->GetName() : TEXT("Unknown");
-			const uint32 PathsHash = GetTypeHash(Request.MeshVirtualPaths);
-			const FString MeshCacheDir = FPaths::ProjectSavedDir() / TEXT("MeshCache");
-			const FString MeshCachePath = FString::Printf(TEXT("%s/%u_%s.dmesh"), *MeshCacheDir, PathsHash, *ActorClassName);
-
-			// Two actors sharing the same template can request this exact cache
-			// path at nearly the same moment; read-vs-write-vs-skip must be
-			// decided atomically under one lock or two requests can both see
-			// "file doesn't exist yet" and race on writing/reading it.
-			bool bTryCacheRead = false;
-			bool bShouldWriteCache = false;
-			{
-				FScopeLock Lock(&CacheWriteLock);
-				if (InFlightCacheWrites.Contains(MeshCachePath))
+				if (bTryCacheRead)
 				{
-					// Someone else is already building+writing this exact
-					// entry — don't race them. Just parse and build fresh for
-					// this request, without reading or writing the cache.
-				}
-				else if (IFileManager::Get().FileExists(*MeshCachePath))
-				{
-					bTryCacheRead = true;
+					// UObject creation (NewObject) and anything touching the actor
+					// itself has to happen on the game thread — only the
+					// existence check above is safe to do here. See the
+					// fresh-parse branch below for the same actor-gone-mid-async
+					// guard this mirrors.
+					AsyncTask(ENamedThreads::GameThread, [this, Request, MeshCachePath]() mutable
+						{
+							if (!Request.Actor.IsValid())
+							{
+								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before cached mesh could be loaded for %s — skipping"), *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
+								return;
+							}
+
+							FArchive* FileReader = IFileManager::Get().CreateFileReader(*MeshCachePath);
+							if (!FileReader)
+							{
+								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: cache file %s vanished before it could be read — skipping this mesh"), *MeshCachePath);
+								return;
+							}
+
+							// UDynamicMesh::Serialize also runs Super::Serialize (UObject's
+							// tagged-property path), which needs a real linker/package
+							// archive context — round-tripping through a bare IFileManager
+							// archive breaks it. FDynamicMesh3::Serialize (GetMeshRef()) is
+							// a plain data serializer with no UObject involvement, safe here.
+							UDynamicMesh* DynamicMesh = NewObject<UDynamicMesh>(this);
+							DynamicMesh->GetMeshRef().Serialize(*FileReader);
+
+							// Per-submesh shader names, persisted right after the mesh
+							// data itself (see the write side below) — needed to build
+							// real per-shader textured materials on a cache hit, not
+							// just the geometry. Cache files from before this was added
+							// simply fail here (harmless: dev-only on-disk cache,
+							// delete Saved/MeshCache to regenerate in the new format).
+							TArray<FString> ShaderNames;
+							*FileReader << ShaderNames;
+
+							const bool bReadOk = !FileReader->IsError();
+							FileReader->Close();
+							delete FileReader;
+
+							if (!bReadOk)
+							{
+								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: corrupt mesh cache %s — deleting and skipping this mesh"), *MeshCachePath);
+								IFileManager::Get().Delete(*MeshCachePath);
+								return;
+							}
+
+							UE_LOG(LogTemp, Log, TEXT("USWGMeshGeneratorSubsystem: loaded cached mesh for %s from %s"), *Request.Actor->GetName(), *MeshCachePath);
+							UMeshComponent* MeshComponent = BuildDynamicMesh(*Request.Actor, DynamicMesh, ShaderNames);
+							if (MeshComponent)
+							{
+								MeshComponent->SetRelativeRotation(FRotator(0.0f, GetStaticMeshYawCorrection(Request.MeshVirtualPaths), 0.0f));
+							}
+							TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent);
+						});
 				}
 				else
 				{
-					InFlightCacheWrites.Add(MeshCachePath);
-					bShouldWriteCache = true;
-				}
-			}
+					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: parsing fresh for actor %s (crc %08X)"),
+						Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc);
 
-			if (bTryCacheRead)
-			{
-				// UObject creation (NewObject) and anything touching the actor
-				// itself has to happen on the game thread — only the
-				// existence check above is safe to do here. See the
-				// fresh-parse branch below for the same actor-gone-mid-async
-				// guard this mirrors.
-				AsyncTask(ENamedThreads::GameThread, [this, Request, MeshCachePath]() mutable
+					FSWGMeshData MeshData;
+					const bool bParsed = ParseMesh(Request, MeshData);
+
+					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ParseMesh returned %s for actor %s (crc %08X), %d submesh(es)"),
+						bParsed ? TEXT("true") : TEXT("false"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, MeshData.Submeshes.Num());
+
+					// Temporary diagnostic: investigating real object texturing —
+					// need to see what ShaderName actually looks like on disk
+					// (bare name vs. full virtual path, .sht extension or not)
+					// before a shader->texture resolver can be written.
+					for (const FSWGMeshSubmesh& Submesh : MeshData.Submeshes)
 					{
-						if (!Request.Actor.IsValid())
-						{
-							UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before cached mesh could be loaded for %s — skipping"), *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
-							return;
-						}
+						UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: submesh ShaderName='%s'"), *Submesh.ShaderName);
+					}
 
-						FArchive* FileReader = IFileManager::Get().CreateFileReader(*MeshCachePath);
-						if (!FileReader)
-						{
-							UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: cache file %s vanished before it could be read — skipping this mesh"), *MeshCachePath);
-							return;
-						}
-
-						// UDynamicMesh::Serialize also runs Super::Serialize (UObject's
-						// tagged-property path), which needs a real linker/package
-						// archive context — round-tripping through a bare IFileManager
-						// archive breaks it. FDynamicMesh3::Serialize (GetMeshRef()) is
-						// a plain data serializer with no UObject involvement, safe here.
-						UDynamicMesh* DynamicMesh = NewObject<UDynamicMesh>(this);
-						DynamicMesh->GetMeshRef().Serialize(*FileReader);
-
-						// Per-submesh shader names, persisted right after the mesh
-						// data itself (see the write side below) — needed to build
-						// real per-shader textured materials on a cache hit, not
-						// just the geometry. Cache files from before this was added
-						// simply fail here (harmless: dev-only on-disk cache,
-						// delete Saved/MeshCache to regenerate in the new format).
-						TArray<FString> ShaderNames;
-						*FileReader << ShaderNames;
-
-						const bool bReadOk = !FileReader->IsError();
-						FileReader->Close();
-						delete FileReader;
-
-						if (!bReadOk)
-						{
-							UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: corrupt mesh cache %s — deleting and skipping this mesh"), *MeshCachePath);
-							IFileManager::Get().Delete(*MeshCachePath);
-							return;
-						}
-
-						UE_LOG(LogTemp, Log, TEXT("USWGMeshGeneratorSubsystem: loaded cached mesh for %s from %s"), *Request.Actor->GetName(), *MeshCachePath);
-						UMeshComponent* MeshComponent = BuildDynamicMesh(*Request.Actor, DynamicMesh, ShaderNames);
-						TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, MeshComponent);
-					});
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: parsing fresh for actor %s (crc %08X)"),
-					Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc);
-
-				FSWGMeshData MeshData;
-				const bool bParsed = ParseMesh(Request, MeshData);
-
-				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ParseMesh returned %s for actor %s (crc %08X), %d submesh(es)"),
-					bParsed ? TEXT("true") : TEXT("false"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, MeshData.Submeshes.Num());
-
-				// Temporary diagnostic: investigating real object texturing —
-				// need to see what ShaderName actually looks like on disk
-				// (bare name vs. full virtual path, .sht extension or not)
-				// before a shader->texture resolver can be written.
-				for (const FSWGMeshSubmesh& Submesh : MeshData.Submeshes)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: submesh ShaderName='%s'"), *Submesh.ShaderName);
-				}
-
-				if (bParsed)
-				{
-					// Back on the game thread to build the mesh component and attach it to the actor.
-					// The actor can be destroyed/GC'd during this background parse (streaming out,
-					// zone change, etc.) — Request.Actor is a TWeakObjectPtr specifically for that
-					// reason, but nothing here checked it before dereferencing, which crashed
-					// NewObject (null Outer) once an actor happened to go away mid-parse.
-					AsyncTask(ENamedThreads::GameThread, [this, Request, MeshData, MeshCacheDir, MeshCachePath, bShouldWriteCache]()
-						{
-							// Whichever branch this lambda exits through, the
-							// in-flight marker (if we set one) must come off,
-							// or every later request for this same mesh would
-							// be permanently treated as "someone else is
-							// writing it" and never actually cache/build.
-							ON_SCOPE_EXIT
+					if (bParsed)
+					{
+						// Back on the game thread to build the mesh component and attach it to the actor.
+						// The actor can be destroyed/GC'd during this background parse (streaming out,
+						// zone change, etc.) — Request.Actor is a TWeakObjectPtr specifically for that
+						// reason, but nothing here checked it before dereferencing, which crashed
+						// NewObject (null Outer) once an actor happened to go away mid-parse.
+						AsyncTask(ENamedThreads::GameThread, [this, Request, MeshData, MeshCacheDir, MeshCachePath, bShouldWriteCache]()
 							{
-								if (bShouldWriteCache)
+								// Whichever branch this lambda exits through, the
+								// in-flight marker (if we set one) must come off,
+								// or every later request for this same mesh would
+								// be permanently treated as "someone else is
+								// writing it" and never actually cache/build.
+								ON_SCOPE_EXIT
 								{
-									FScopeLock Lock(&CacheWriteLock);
-									InFlightCacheWrites.Remove(MeshCachePath);
-								}
-							};
+									if (bShouldWriteCache)
+									{
+										FScopeLock Lock(&CacheWriteLock);
+										InFlightCacheWrites.Remove(MeshCachePath);
+									}
+								};
 
-							if (!Request.Actor.IsValid())
-							{
-								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before mesh build completed for %s — skipping"), *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
-								return;
-							}
-
-							UMeshComponent* MeshComponent = BuildDynamicMesh(*Request.Actor, MeshData);
-							TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, MeshComponent);
-
-							UDynamicMeshComponent* DynamicMeshComponent = Cast<UDynamicMeshComponent>(MeshComponent);
-							if (!DynamicMeshComponent || !bShouldWriteCache)
-							{
-								return;
-							}
-
-							IFileManager::Get().MakeDirectory(*MeshCacheDir, true);
-							if (FArchive* FileWriter = IFileManager::Get().CreateFileWriter(*MeshCachePath))
-							{
-								// See the cache-read branch's comment — plain
-								// FDynamicMesh3::Serialize, not UDynamicMesh::Serialize.
-								DynamicMeshComponent->GetDynamicMesh()->GetMeshRef().Serialize(*FileWriter);
-
-								TArray<FString> ShaderNames;
-								ShaderNames.Reserve(MeshData.Submeshes.Num());
-								for (const FSWGMeshSubmesh& Submesh : MeshData.Submeshes)
+								if (!Request.Actor.IsValid())
 								{
-									ShaderNames.Add(Submesh.ShaderName);
+									UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before mesh build completed for %s — skipping"), *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
+									return;
 								}
-								*FileWriter << ShaderNames;
 
-								FileWriter->Close();
-								delete FileWriter;
-							}
-							else
-							{
-								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to open %s for writing — mesh not cached this time"), *MeshCachePath);
-							}
-						});
+								UMeshComponent* MeshComponent = BuildDynamicMesh(*Request.Actor, MeshData);
+								if (MeshComponent)
+								{
+									MeshComponent->SetRelativeRotation(FRotator(0.0f, GetStaticMeshYawCorrection(Request.MeshVirtualPaths), 0.0f));
+								}
+								TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent);
+
+								UDynamicMeshComponent* DynamicMeshComponent = Cast<UDynamicMeshComponent>(MeshComponent);
+								if (!DynamicMeshComponent || !bShouldWriteCache)
+								{
+									return;
+								}
+
+								IFileManager::Get().MakeDirectory(*MeshCacheDir, true);
+								if (FArchive* FileWriter = IFileManager::Get().CreateFileWriter(*MeshCachePath))
+								{
+									// See the cache-read branch's comment — plain
+									// FDynamicMesh3::Serialize, not UDynamicMesh::Serialize.
+									DynamicMeshComponent->GetDynamicMesh()->GetMeshRef().Serialize(*FileWriter);
+
+									TArray<FString> ShaderNames;
+									ShaderNames.Reserve(MeshData.Submeshes.Num());
+									for (const FSWGMeshSubmesh& Submesh : MeshData.Submeshes)
+									{
+										ShaderNames.Add(Submesh.ShaderName);
+									}
+									*FileWriter << ShaderNames;
+
+									FileWriter->Close();
+									delete FileWriter;
+								}
+								else
+								{
+									UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to open %s for writing — mesh not cached this time"), *MeshCachePath);
+								}
+							});
+					}
+					else if (bShouldWriteCache)
+					{
+						// ParseMesh itself failed — still have to release the
+						// marker so a later attempt for this same mesh isn't
+						// permanently blocked from ever using the cache.
+						FScopeLock Lock(&CacheWriteLock);
+						InFlightCacheWrites.Remove(MeshCachePath);
+					}
 				}
-				else if (bShouldWriteCache)
-				{
-					// ParseMesh itself failed — still have to release the
-					// marker so a later attempt for this same mesh isn't
-					// permanently blocked from ever using the cache.
-					FScopeLock Lock(&CacheWriteLock);
-					InFlightCacheWrites.Remove(MeshCachePath);
-				}
-			}
-		});
+			});
+	}
 }
 
 namespace
@@ -1023,7 +1161,7 @@ namespace
 	}
 }
 
-bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, bool& bOutSkeletal)
+bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal)
 {
 	const FString TemplatePath = TreSubsystem->ResolveTemplatePath(TemplateCrc);
 	if (TemplatePath.IsEmpty())
@@ -1032,10 +1170,10 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FStr
 		return false;
 	}
 
-	return ResolveMeshPathForTemplate(TemplatePath, OutMeshVirtualPaths, bOutSkeletal);
+	return ResolveMeshPathForTemplate(TemplatePath, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal);
 }
 
-bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, bool& bOutSkeletal)
+bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal)
 {
 	// Resolution chain:
 	//   template .iff (SCOT/STOT > FORM SHOT > versioned data form > XXXX
@@ -1056,7 +1194,7 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 	}
 
 	FSWGIffChunk ShotForm, ShotDataForm;
-	if (!TemplateReader.FindForm(TEXT("SHOT"), ShotForm) || !FindVersionedDataForm(TemplateReader, ShotForm, ShotDataForm))
+	if (!TemplateReader.FindForm(SWG_IFF_TAG('S','H','O','T'), ShotForm) || !FindVersionedDataForm(TemplateReader, ShotForm, ShotDataForm))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: template %s has no SHOT data form"), *TemplatePath);
 		return false;
@@ -1105,7 +1243,7 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 			FSWGIffReader ParentReader = TreSubsystem->CreateIffReader(ParentPath);
 			FSWGIffChunk ParentShotForm, ParentDataForm;
 			if (!ParentReader.IsValid()
-				|| !ParentReader.FindForm(TEXT("SHOT"), ParentShotForm)
+				|| !ParentReader.FindForm(SWG_IFF_TAG('S','H','O','T'), ParentShotForm)
 				|| !FindVersionedDataForm(ParentReader, ParentShotForm, ParentDataForm))
 			{
 				UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: DERV parent %s (from %s) has no usable SHOT data form"), *ParentPath, *CurrentPath);
@@ -1175,10 +1313,10 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 
 	if (bIsSat)
 	{
-		FSWGIffChunk SmatForm, F0003, MsgnChunk;
-		if (!AppearanceReader.FindForm(TEXT("SMAT"), SmatForm)
-			|| !FindChildForm(AppearanceReader, SmatForm, TEXT("0003"), F0003)
-			|| !FindChildChunk(AppearanceReader, F0003, TEXT("MSGN"), MsgnChunk))
+		FSWGIffChunk SmatForm, F0003, MsgnChunk, LatxChunk;
+		if (!AppearanceReader.FindForm(SWG_IFF_TAG('S','M','A','T'), SmatForm)
+			|| !AppearanceReader.FindChildForm(SmatForm, SWG_IFF_TAG('0','0','0','3'), F0003)
+			|| !AppearanceReader.FindChildChunk(F0003, SWG_IFF_TAG('M','S','G','N'), MsgnChunk))
 		{
 			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing SMAT/0003/MSGN structure"), *AppearancePath);
 			return false;
@@ -1187,14 +1325,18 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 		// One or more null-terminated body-part .lmg references packed into
 		// this single chunk (see SplitNullTerminatedStrings comment).
 		MeshGroupPaths = SplitNullTerminatedStrings(AppearanceReader, MsgnChunk);
+		if (AppearanceReader.FindChildChunk(F0003, SWG_IFF_TAG('L','A','T','X'), LatxChunk))
+		{
+			ReadSatLatPaths(AppearanceReader, LatxChunk, OutAnimationLatPaths);
+		}
 		bOutSkeletal = true;
 	}
 	else
 	{
 		FSWGIffChunk AptForm, Form0000, NameChunk;
-		if (!AppearanceReader.FindForm(TEXT("APT "), AptForm)
-			|| !FindChildForm(AppearanceReader, AptForm, TEXT("0000"), Form0000)
-			|| !FindChildChunk(AppearanceReader, Form0000, TEXT("NAME"), NameChunk))
+		if (!AppearanceReader.FindForm(SWG_IFF_TAG('A','P','T',' '), AptForm)
+			|| !AppearanceReader.FindChildForm(AptForm, SWG_IFF_TAG('0','0','0','0'), Form0000)
+			|| !AppearanceReader.FindChildChunk(Form0000, SWGIffTags::Name, NameChunk))
 		{
 			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing APT/0000/NAME structure"), *AppearancePath);
 			return false;
@@ -1225,14 +1367,14 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 		{
 			// .lmg: FORM MLOD > FORM 0000 > multiple NAME (full paths already).
 			FSWGIffChunk MlodForm, Form0000;
-			if (!GroupReader.FindForm(TEXT("MLOD"), MlodForm) || !FindChildForm(GroupReader, MlodForm, TEXT("0000"), Form0000))
+			if (!GroupReader.FindForm(SWG_IFF_TAG('M','L','O','D'), MlodForm) || !GroupReader.FindChildForm(MlodForm, SWG_IFF_TAG('0','0','0','0'), Form0000))
 			{
 				UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing MLOD/0000 structure"), *MeshGroupPath);
 				continue;
 			}
 			for (const FSWGIffChunk& Child : GroupReader.ReadChildren(Form0000))
 			{
-				if (Child.Tag == TEXT("NAME"))
+				if (Child.Tag == SWGIffTags::Name)
 				{
 					Candidates.Add(ReadFullChunkString(GroupReader, Child));
 				}
@@ -1243,16 +1385,16 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 			// .lod: FORM DTLA > FORM 0007 > FORM DATA > multiple CHLD
 			// ([4-byte index][path relative to "appearance/", not full]).
 			FSWGIffChunk DtlaForm, Form0007, DataForm;
-			if (!GroupReader.FindForm(TEXT("DTLA"), DtlaForm)
-				|| !FindChildForm(GroupReader, DtlaForm, TEXT("0007"), Form0007)
-				|| !FindChildForm(GroupReader, Form0007, TEXT("DATA"), DataForm))
+			if (!GroupReader.FindForm(SWG_IFF_TAG('D','T','L','A'), DtlaForm)
+				|| !GroupReader.FindChildForm(DtlaForm, SWG_IFF_TAG('0','0','0','7'), Form0007)
+				|| !GroupReader.FindChildForm(Form0007, SWGIffTags::Data, DataForm))
 			{
 				UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing DTLA/0007/DATA structure"), *MeshGroupPath);
 				continue;
 			}
 			for (const FSWGIffChunk& Child : GroupReader.ReadChildren(DataForm))
 			{
-				if (Child.Tag == TEXT("CHLD") && Child.DataSize > 4)
+				if (Child.Tag == SWG_IFF_TAG('C','H','L','D') && Child.DataSize > 4)
 				{
 					const uint8* Data = GroupReader.GetChunkData(Child);
 					const FString RelativePath = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + 4), Child.DataSize - 4 - 1);
@@ -1340,7 +1482,7 @@ namespace
 	// FORM SSHT, and animated shaders (console screens, signs) use a
 	// completely different top-level FORM SWTS. Recurses to find whichever
 	// TargetFormType form is present, regardless of what wraps it.
-	bool FindFormRecursive(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk, const FString& TargetFormType, FSWGIffChunk& OutForm, int32 MaxDepth)
+	bool FindFormRecursive(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk, FSWGIffTag TargetFormType, FSWGIffChunk& OutForm, int32 MaxDepth)
 	{
 		if (!Chunk.IsForm())
 		{
@@ -1374,7 +1516,7 @@ namespace
 	// approximation of the animation — true frame animation is out of scope.
 	FString ResolveAnimatedShaderDiffuseTexturePath(const FSWGIffReader& Reader, const FSWGIffChunk& SwtsForm)
 	{
-		const TArray<FSWGIffChunk> VersionForms = FindChildForms(Reader, SwtsForm);
+		const TArray<FSWGIffChunk> VersionForms = Reader.FindChildForms(SwtsForm);
 		if (VersionForms.Num() == 0)
 		{
 			return FString();
@@ -1384,7 +1526,7 @@ namespace
 
 		for (const FSWGIffChunk& Child : Reader.ReadChildren(VersionForms[0]))
 		{
-			if (Child.IsForm() || Child.Tag != TEXT("TEXT"))
+			if (Child.IsForm() || Child.Tag != SWG_IFF_TAG('T','E','X','T'))
 			{
 				continue;
 			}
@@ -1438,24 +1580,24 @@ FString USWGMeshGeneratorSubsystem::ResolveShaderDiffuseTexturePath(const FStrin
 	}
 
 	FSWGIffChunk SshtForm;
-	if (!FindFormRecursive(Reader, TopLevel[0], TEXT("SSHT"), SshtForm, 3))
+	if (!FindFormRecursive(Reader, TopLevel[0], SWG_IFF_TAG('S','S','H','T'), SshtForm, 3))
 	{
 		FSWGIffChunk SwtsForm;
-		if (FindFormRecursive(Reader, TopLevel[0], TEXT("SWTS"), SwtsForm, 3))
+		if (FindFormRecursive(Reader, TopLevel[0], SWG_IFF_TAG('S','W','T','S'), SwtsForm, 3))
 		{
 			FString Result = ResolveAnimatedShaderDiffuseTexturePath(Reader, SwtsForm);
 			Result.ReplaceInline(TEXT("\\"), TEXT("/"));
 			return Result;
 		}
 
-		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: shader %s has no SSHT or SWTS form (top-level FORM %s)"), *ShaderVirtualPath, *TopLevel[0].FormType);
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: shader %s has no SSHT or SWTS form (top-level FORM %s)"), *ShaderVirtualPath, *TopLevel[0].FormType.ToString());
 		return FString();
 	}
 
 	// SSHT's version-tagged wrapper form isn't always "0000" (same version-drift
 	// pattern already hit for .trn's PTAT and .msh's MESH forms) — take
 	// whichever single FORM child is actually present rather than hardcode it.
-	const TArray<FSWGIffChunk> SshtChildForms = FindChildForms(Reader, SshtForm);
+	const TArray<FSWGIffChunk> SshtChildForms = Reader.FindChildForms(SshtForm);
 	if (SshtChildForms.Num() == 0)
 	{
 		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: shader %s SSHT has no version form"), *ShaderVirtualPath);
@@ -1464,9 +1606,9 @@ FString USWGMeshGeneratorSubsystem::ResolveShaderDiffuseTexturePath(const FStrin
 	const FSWGIffChunk& Form0000 = SshtChildForms[0];
 
 	FSWGIffChunk TxmsForm;
-	if (!FindChildForm(Reader, Form0000, TEXT("TXMS"), TxmsForm))
+	if (!Reader.FindChildForm(Form0000, SWG_IFF_TAG('T','X','M','S'), TxmsForm))
 	{
-		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: shader %s (version form %s) has no TXMS"), *ShaderVirtualPath, *Form0000.FormType);
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: shader %s (version form %s) has no TXMS"), *ShaderVirtualPath, *Form0000.FormType.ToString());
 		return FString();
 	}
 
@@ -1474,15 +1616,15 @@ FString USWGMeshGeneratorSubsystem::ResolveShaderDiffuseTexturePath(const FStrin
 
 	for (const FSWGIffChunk& TxmForm : Reader.ReadChildren(TxmsForm))
 	{
-		if (!TxmForm.IsForm() || TxmForm.FormType != TEXT("TXM "))
+		if (!TxmForm.IsForm() || TxmForm.FormType != SWG_IFF_TAG('T','X','M',' '))
 		{
 			continue;
 		}
 
 		FSWGIffChunk InnerForm0001, DataChunk, NameChunk;
-		if (!FindChildForm(Reader, TxmForm, TEXT("0001"), InnerForm0001)) continue;
-		if (!FindChildChunk(Reader, InnerForm0001, TEXT("DATA"), DataChunk)) continue;
-		if (!FindChildChunk(Reader, InnerForm0001, TEXT("NAME"), NameChunk)) continue;
+		if (!Reader.FindChildForm(TxmForm, SWG_IFF_TAG('0','0','0','1'), InnerForm0001)) continue;
+		if (!Reader.FindChildChunk(InnerForm0001, SWGIffTags::Data, DataChunk)) continue;
+		if (!Reader.FindChildChunk(InnerForm0001, SWGIffTags::Name, NameChunk)) continue;
 
 		const FString TexturePath = ReadFullChunkString(Reader, NameChunk);
 		if (TexturePath.IsEmpty())
@@ -1543,7 +1685,7 @@ FString USWGMeshGeneratorSubsystem::ResolveShaderTintPalettePath(const FString& 
 	// does for TXMS) would never find it — hit exactly that bug first try
 	// (TintColor silently stayed at its default white, no visible change).
 	FSWGIffChunk TfacForm;
-	if (!FindFormRecursive(Reader, TopLevel[0], TEXT("TFAC"), TfacForm, 4))
+	if (!FindFormRecursive(Reader, TopLevel[0], SWG_IFF_TAG('T','F','A','C'), TfacForm, 4))
 	{
 		// No customization palette on this shader — normal for plain object/weapon/building shaders.
 		return FString();
@@ -1553,7 +1695,7 @@ FString USWGMeshGeneratorSubsystem::ResolveShaderTintPalettePath(const FString& 
 
 	for (const FSWGIffChunk& PalChunk : Reader.ReadChildren(TfacForm))
 	{
-		if (PalChunk.IsForm() || PalChunk.Tag != TEXT("PAL "))
+		if (PalChunk.IsForm() || PalChunk.Tag != SWG_IFF_TAG('P','A','L',' '))
 		{
 			continue;
 		}
@@ -1639,14 +1781,17 @@ FLinearColor USWGMeshGeneratorSubsystem::LoadPaletteAverageTint(const FString& P
 	return FLinearColor(Average.X, Average.Y, Average.Z);
 }
 
-UTexture2D* USWGMeshGeneratorSubsystem::GetOrLoadObjectTexture(const FString& TextureVirtualPath)
+UTexture2D* USWGMeshGeneratorSubsystem::GetOrLoadObjectTexture(const FString& TextureVirtualPath, bool bSRGB,
+	bool bLegacyDXT5Normal)
 {
 	if (TextureVirtualPath.IsEmpty())
 	{
 		return nullptr;
 	}
 
-	if (TObjectPtr<UTexture2D>* Existing = LoadedObjectTextures.Find(TextureVirtualPath))
+	const FString CacheKey = FString::Printf(TEXT("%s|%s|%s"), *TextureVirtualPath,
+		bSRGB ? TEXT("sRGB") : TEXT("linear"), bLegacyDXT5Normal ? TEXT("dxt5nm") : TEXT("native"));
+	if (TObjectPtr<UTexture2D>* Existing = LoadedObjectTextures.Find(CacheKey))
 	{
 		return *Existing;
 	}
@@ -1655,7 +1800,7 @@ UTexture2D* USWGMeshGeneratorSubsystem::GetOrLoadObjectTexture(const FString& Te
 	if (TreSubsystem && TreSubsystem->FileExists(TextureVirtualPath))
 	{
 		const TArray<uint8> Bytes = TreSubsystem->ExtractFile(TextureVirtualPath);
-		Result = FSWGDDSTextureLoader::LoadTexture2D(Bytes, FName(*TextureVirtualPath), /*bSRGB=*/true);
+		Result = FSWGDDSTextureLoader::LoadTexture2D(Bytes, FName(*TextureVirtualPath), bSRGB, bLegacyDXT5Normal);
 	}
 
 	if (!Result)
@@ -1663,7 +1808,7 @@ UTexture2D* USWGMeshGeneratorSubsystem::GetOrLoadObjectTexture(const FString& Te
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to load object texture '%s'"), *TextureVirtualPath);
 	}
 
-	LoadedObjectTextures.Add(TextureVirtualPath, Result);
+	LoadedObjectTextures.Add(CacheKey, Result);
 	return Result;
 }
 
@@ -1680,8 +1825,20 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 	}
 
 	UMaterialInterface* Result = nullptr;
-	const FString TexturePath = ResolveShaderDiffuseTexturePath(ShaderVirtualPath);
-	UTexture2D* Texture = GetOrLoadObjectTexture(TexturePath);
+	FSWGShaderData ShaderData;
+	FSWGShaderReader::ReadShader(TreSubsystem->CreateIffReader(ShaderVirtualPath), ShaderData);
+
+	const FSWGShaderTexture* DiffuseDef = ShaderData.FindTexture(ESWGShaderTextureUsage::Diffuse);
+	const FSWGShaderTexture* NormalDef = ShaderData.FindTexture(ESWGShaderTextureUsage::Normal);
+	const FSWGShaderTexture* SpecularDef = ShaderData.FindTexture(ESWGShaderTextureUsage::Specular);
+
+	// SWTS animated shaders and unusual legacy templates still use the older
+	// diffuse resolver as a fallback.
+	const FString TexturePath = DiffuseDef ? DiffuseDef->VirtualPath : ResolveShaderDiffuseTexturePath(ShaderVirtualPath);
+	UTexture2D* Texture = GetOrLoadObjectTexture(TexturePath, /*bSRGB=*/true);
+	UTexture2D* NormalTexture = NormalDef ? GetOrLoadObjectTexture(NormalDef->VirtualPath, /*bSRGB=*/false,
+		/*bLegacyDXT5Normal=*/NormalDef->Tag.Equals(TEXT("CNRM"), ESearchCase::IgnoreCase)) : nullptr;
+	UTexture2D* SpecularTexture = SpecularDef ? GetOrLoadObjectTexture(SpecularDef->VirtualPath, /*bSRGB=*/false) : nullptr;
 
 	if (!Texture)
 	{
@@ -1704,6 +1861,14 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 			if (UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(ObjectMaterialParent, this))
 			{
 				MID->SetTextureParameterValue(TEXT("Diffuse"), Texture);
+				if (NormalTexture)
+				{
+					MID->SetTextureParameterValue(TEXT("Normal"), NormalTexture);
+				}
+				if (SpecularTexture)
+				{
+					MID->SetTextureParameterValue(TEXT("Specular"), SpecularTexture);
+				}
 
 				// Creature/player skins are a pattern texture meant to be
 				// tinted by a customization palette, not a ready-to-use
@@ -1977,7 +2142,7 @@ void USWGMeshGeneratorSubsystem::FinalizeMeshComponent(AActor& Actor, UDynamicMe
 	OnMeshReady.Broadcast(&Actor, &MeshComponent);
 }
 
-bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, UMeshComponent* DynamicMeshComponent)
+bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* DynamicMeshComponent)
 {
 	const bool bIsWookiee = MeshVirtualPaths.ContainsByPredicate([](const FString& Path)
 		{
@@ -1995,10 +2160,10 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		return false;
 	}
 
-	USkeletalMesh* GeneratedMesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/SWGEmu/Generated/SK_Wookiee.SK_Wookiee"));
+	USkeletalMesh* GeneratedMesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed.SK_Wookiee_MaterialTableFixed"));
 	if (!GeneratedMesh)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s resolved to the Wookiee's meshes, but /Game/SWGEmu/Generated/SK_Wookiee isn't built yet (run swg.BuildWookieeSkeletalMesh) — falling back to the procedural bind-pose mesh"),
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s resolved to the Wookiee's meshes, but /Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed isn't built yet (run swg.BuildWookieeSkeletalMesh) — falling back to the procedural bind-pose mesh"),
 			*Actor.GetName());
 		return false;
 	}
@@ -2055,7 +2220,36 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 	// keyframe in this engine build.
 	if (TreSubsystem)
 	{
-		FSWGIffReader SkeletonIffReader = TreSubsystem->CreateIffReader(TEXT("appearance/skeleton/all_b.skt"));
+		FString SkeletonPath;
+		for (const FString& MeshPath : MeshVirtualPaths)
+		{
+			SkeletonPath = FSWGMeshReader::ReadSkeletalMeshSkeletonPath(TreSubsystem->CreateIffReader(MeshPath));
+			if (!SkeletonPath.IsEmpty()) break;
+		}
+		if (SkeletonPath.IsEmpty())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s has no SKTM skeleton reference; leaving its procedural mesh visible"), *Actor.GetName());
+			PoseableMesh->SetVisibility(false);
+			PoseableMesh->SetHiddenInGame(true);
+			return false;
+		}
+
+		const FString* LatPath = AnimationLatPaths.Find(SkeletonPath);
+		TArray<FString> LocomotionPaths;
+		if (!LatPath || !ReadDefaultLocomotionPaths(TreSubsystem->CreateIffReader(*LatPath), LocomotionPaths))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no usable LATX locomotion LAT for skeleton '%s'"), *SkeletonPath);
+			PoseableMesh->SetVisibility(false);
+			PoseableMesh->SetHiddenInGame(true);
+			if (DynamicMeshComponent)
+			{
+				DynamicMeshComponent->SetVisibility(true);
+				DynamicMeshComponent->SetHiddenInGame(false);
+			}
+			return false;
+		}
+
+		FSWGIffReader SkeletonIffReader = TreSubsystem->CreateIffReader(SkeletonPath);
 		FSWGSkeletonData Skeleton;
 		if (FSWGSkeletonReader::ReadSkeleton(SkeletonIffReader, Skeleton))
 		{
@@ -2063,23 +2257,13 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 			Playing.PoseableMesh = PoseableMesh;
 			Playing.Skeleton = MoveTemp(Skeleton);
 
-			static const TCHAR* LocomotionPaths[] =
-			{
-				// all_m.lat's zero_speed locomotion entry. The similarly named
-				// standing_idle1 clip is an ambient variant, not the base idle.
-				TEXT("appearance/animation/all_b_idl_breathe_normally.ans"),
-				TEXT("appearance/animation/all_b_loc_walk_male.ans"),
-				TEXT("appearance/animation/all_b_loc_jog.ans"),
-				TEXT("appearance/animation/all_b_loc_run.ans")
-			};
-
 			bool bLoadedIdle = false;
-			for (const TCHAR* ClipPath : LocomotionPaths)
+			for (const FString& ClipPath : LocomotionPaths)
 			{
 				FSWGAnimationData ClipAnimation;
 				if (!FSWGAnimationReader::ReadAnimation(TreSubsystem->CreateIffReader(ClipPath), ClipAnimation))
 				{
-					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to decode locomotion clip '%s'"), ClipPath);
+					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to decode locomotion clip '%s'"), *ClipPath);
 
 					// Idle must always exist because it is the safe alternative to
 					// exposing the reference skeleton's T-pose. A missing movement
@@ -2138,15 +2322,24 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		}
 		else
 		{
-			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s got SK_Wookiee but failed to parse the skeleton for runtime playback — mesh will show in bind pose"),
-				*Actor.GetName());
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s failed to parse SKTM skeleton '%s' for runtime playback — mesh will show in bind pose"),
+				*Actor.GetName(), *SkeletonPath);
 		}
 	}
 
-	if (DynamicMeshComponent)
+	// A player can receive more than one asynchronous mesh request (and a
+	// previous PIE run can leave an actor-owned procedural component around).
+	// Hiding only the component from *this* request left an older bind-pose
+	// mesh rendering through the generated skeletal mesh, which looked like a
+	// second, incorrectly UV-mapped face at the Wookiee's waist.
+	TInlineComponentArray<UDynamicMeshComponent*> ProceduralMeshComponents(&Actor);
+	for (UDynamicMeshComponent* ProceduralMesh : ProceduralMeshComponents)
 	{
-		DynamicMeshComponent->SetVisibility(false);
-		DynamicMeshComponent->SetHiddenInGame(true);
+		if (ProceduralMesh)
+		{
+			ProceduralMesh->SetVisibility(false);
+			ProceduralMesh->SetHiddenInGame(true);
+		}
 	}
 
 	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s resolved to the generated SK_Wookiee skeletal mesh"), *Actor.GetName());

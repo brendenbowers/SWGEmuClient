@@ -2,7 +2,7 @@
 #include "Components/PoseableMeshComponent.h"
 #include "Common/SWGDenseTrackUtils.h"
 
-// Diagnostic (WOOKIEE_ANIMATION_POSE_BUG.md): while >0, each ApplyPose call
+// Diagnostic: while >0, each ApplyPose call
 // logs the ankle joints' composed COMPONENT-SPACE positions and decrements.
 // Settles "which horizontal axis do the feet actually stride along" with FK
 // data instead of visual judgment — component Y matches the mesh's visual

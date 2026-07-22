@@ -1,4 +1,5 @@
 #include "Subsystems/SWGTreSubsystem.h"
+#include "TRE/SWGIffTags.h"
 #include "TRE/SWGIffReader.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
@@ -152,7 +153,7 @@ void USWGTreSubsystem::BuildCrcTable()
 
 	FSWGIffReader Reader(Bytes);
 	FSWGIffChunk RootChunk;
-	if (!Reader.FindForm(TEXT("0000"), RootChunk))
+	if (!Reader.FindForm(SWG_IFF_TAG('0','0','0','0'), RootChunk))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGTreSubsystem: CRC table FORM 0000 not found"));
 		return;
@@ -166,10 +167,10 @@ void USWGTreSubsystem::BuildCrcTable()
 
 	for (const FSWGIffChunk& Child : Reader.ReadChildren(RootChunk))
 	{
-		if (Child.Tag == TEXT("DATA"))      DataBytes = Reader.GetChunkData(Child);
-		else if (Child.Tag == TEXT("CRCT")) { CrctBytes = Reader.GetChunkData(Child); CrctSize = Child.DataSize; }
-		else if (Child.Tag == TEXT("STRT")) { StrtBytes = Reader.GetChunkData(Child); StrtSize = Child.DataSize; }
-		else if (Child.Tag == TEXT("STNG")) { StngBytes = Reader.GetChunkData(Child); StngSize = Child.DataSize; }
+		if (Child.Tag == SWGIffTags::Data)      DataBytes = Reader.GetChunkData(Child);
+		else if (Child.Tag == SWG_IFF_TAG('C','R','C','T')) { CrctBytes = Reader.GetChunkData(Child); CrctSize = Child.DataSize; }
+		else if (Child.Tag == SWG_IFF_TAG('S','T','R','T')) { StrtBytes = Reader.GetChunkData(Child); StrtSize = Child.DataSize; }
+		else if (Child.Tag == SWG_IFF_TAG('S','T','N','G')) { StngBytes = Reader.GetChunkData(Child); StngSize = Child.DataSize; }
 	}
 
 	if (!DataBytes || !CrctBytes || !StrtBytes || !StngBytes)

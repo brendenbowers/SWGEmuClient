@@ -732,15 +732,42 @@ float FSWGTerrainEvaluator::ProcessShaderLayer(const FSWGTerrainLayer& Layer, fl
 
 	if (TransformValue != 0.0f)
 	{
-		// Only shader-type affectors contribute here — height/road affectors
-		// are silently skipped, matching Core3's own requestedType-filtered
-		// dispatch (see AffectorProceduralRule::process's affectorType check).
 		for (const FSWGTerrainAffector& Affector : Layer.Affectors)
 		{
 			if (!Affector.bEnabled) continue;
-			if (Affector.Type != ESWGTerrainAffectorType::ShaderConstant && Affector.Type != ESWGTerrainAffectorType::ShaderReplace) continue;
+			if (Affector.Type == ESWGTerrainAffectorType::ShaderConstant || Affector.Type == ESWGTerrainAffectorType::ShaderReplace)
+			{
+				ApplyShaderAffector(Affector, TransformValue * ParentTransform, OutWeights);
+				continue;
+			}
 
-			ApplyShaderAffector(Affector, TransformValue * ParentTransform, OutWeights);
+			// ROAD visual affectors are not height data, but their family ID paints
+			// the authored road surface. The reader already builds Core3-compatible
+			// oriented road rectangles for both ROAD and HDTA variants.
+			if (Affector.Type != ESWGTerrainAffectorType::Road || Affector.bRoadIsHeightType || Affector.ShaderFamilyId < 0)
+			{
+				continue;
+			}
+
+			for (const FSWGTerrainRoadRectangle& Rect : Affector.RoadRectangles)
+			{
+				const float DeltaX = Rect.CenterX - X;
+				const float DeltaY = Rect.CenterY - Y;
+				const float LocalX = DeltaX * FMath::Cos(-Rect.Direction) + DeltaY * FMath::Sin(-Rect.Direction);
+				const float LocalY = DeltaX * FMath::Sin(-Rect.Direction) - DeltaY * FMath::Cos(-Rect.Direction);
+				if (FMath::Abs(LocalX) > Rect.Width * 0.5f || FMath::Abs(LocalY) > Rect.Height * 0.5f)
+				{
+					continue;
+				}
+
+				const float Strength = TransformValue * ParentTransform;
+				for (TPair<int32, float>& Pair : OutWeights)
+				{
+					Pair.Value *= (1.0f - Strength);
+				}
+				OutWeights.FindOrAdd(Affector.ShaderFamilyId) += Strength;
+				break;
+			}
 		}
 
 		for (const FSWGTerrainLayer& Child : Layer.Children)

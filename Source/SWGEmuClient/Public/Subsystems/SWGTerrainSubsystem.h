@@ -102,6 +102,9 @@ private:
 
 	void LoadTerrain(const FString& TerrainVirtualPath, const FVector& SpawnPosition);
 
+	/** Creates the outdoor sky, sun, and ambient fill for the active planet. */
+	void SetupPlanetLighting(const FString& TerrainVirtualPath);
+
 	/** ti3: check Saved/TerrainCache/ for this (TerrainVirtualPath, region) before parsing/baking. RegionOrigin is a component's min corner (see BakeHeightmap). */
 	bool FindCachedHeightmap(const FString& TerrainVirtualPath, const FVector& RegionOrigin, FSWGBakedHeightmap& OutHeightmap);
 
@@ -138,8 +141,8 @@ private:
 	 */
 	UMaterialInterface* BuildTerrainTileMaterial(const FSWGBakedHeightmap& Heightmap);
 
-	/** Loads/decodes texture/<FamilyLayerName>.dds once and caches the result — see BuildTerrainTileMaterial. */
-	UTexture2D* GetOrLoadShaderTexture(const FString& LayerName);
+	/** Resolves shader/<FamilyLayerName>.sht and loads its tagged texture slot. */
+	UTexture2D* GetOrLoadShaderTexture(const FString& LayerName, bool bNormalMap = false);
 
 	/** ti6: spawn one ALandscape actor at the whole grid's min corner (game thread). */
 	ALandscape* SpawnLandscapeActor(const FVector& GridOrigin, float Spacing);

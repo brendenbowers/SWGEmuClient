@@ -318,12 +318,12 @@ void USWGNetworkSubsystem::ProcessIncomingMessages()
 		TSharedPtr<FSWGNetMessage> Msg = FSWGMessageRegistry::Get().Create(Opcode, Reader);
 		if (!Msg)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("SWG MSG: unhandled opcode 0x%08X (%d payload bytes)"),
+			UE_LOG(LogTemp, Verbose, TEXT("SWG MSG: unhandled opcode 0x%08X (%d payload bytes)"),
 				Opcode, Pkt.Data.Num());
 			continue;
 		}
 
-		UE_LOG(LogTemp, Log, TEXT("SWG MSG: dispatched opcode 0x%08X"), Opcode);
+		UE_LOG(LogTemp, Verbose, TEXT("SWG MSG: dispatched opcode 0x%08X"), Opcode);
 
 		OnMessageReceived.Broadcast(Msg);
 

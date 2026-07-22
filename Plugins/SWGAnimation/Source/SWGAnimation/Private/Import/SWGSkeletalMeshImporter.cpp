@@ -105,6 +105,13 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 		{
 			const int32 MatIndex = GlobalMaterialIndex++;
 			OutMaterialSlotNames.Add(Submesh.ShaderName);
+			// MeshBuilder validates/remaps every face's MatIndex against this
+			// raw-import material table. Leaving it empty silently collapses all
+			// sections to material zero, even though the triangles themselves
+			// carry distinct material IDs.
+			SkeletalMeshImportData::FMaterial ImportMaterial;
+			ImportMaterial.MaterialImportName = Submesh.ShaderName;
+			OutImportData.Materials.Add(MoveTemp(ImportMaterial));
 
 			// Points and Wedges grow 1:1 in this loop — every corner becomes
 			// its own Point rather than deduping shared positions across UV
@@ -225,6 +232,16 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 	SkeletalMesh->GetImportedModel()->LODModels.Add(new FSkeletalMeshLODModel());
 
 	FSkeletalMeshLODInfo& LODInfo = SkeletalMesh->AddLODInfo();
+	// The raw import faces carry a distinct MatIndex for every SWG submesh.
+	// Explicitly preserve that section -> material-slot mapping: the default
+	// empty map makes UE render every generated section with slot 0, which is
+	// particularly visible on the Wookiee as mouth/alpha sections sampling the
+	// body pattern atlas (the erroneous face at the hip).
+	LODInfo.LODMaterialMap.SetNum(MaterialSlotNames.Num());
+	for (int32 MaterialIndex = 0; MaterialIndex < MaterialSlotNames.Num(); ++MaterialIndex)
+	{
+		LODInfo.LODMaterialMap[MaterialIndex] = MaterialIndex;
+	}
 	LODInfo.ReductionSettings.NumOfTrianglesPercentage = 1.0f;
 	LODInfo.ReductionSettings.NumOfVertPercentage = 1.0f;
 	LODInfo.ReductionSettings.MaxDeviationPercentage = 0.0f;

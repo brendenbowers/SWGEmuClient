@@ -53,6 +53,9 @@ struct FSWGPendingMeshRequest
 	 *  one combined mesh. */
 	TArray<FString> MeshVirtualPaths;
 
+	/** SAT LATX entries, keyed by the skeleton path they animate. */
+	TMap<FString, FString> AnimationLatPaths;
+
 	/** .mgn (skeletal) needs FSWGMeshReader::ReadSkeletalMeshBindPose instead of
 	 *  ReadStaticMesh — set by whichever resolution step determines the file kind. */
 	bool bSkeletal = false;
@@ -114,10 +117,10 @@ private:
 	 * resolved MeshVirtualPath, but callers that only have a CRC/template will
 	 * need this once it's implemented.
 	 */
-	bool ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, bool& bOutSkeletal);
+	bool ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal);
 
 	/** The path-based half of ResolveMeshPath, factored out so RequestMeshForTemplatePath can skip the CRC->path lookup. */
-	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, bool& bOutSkeletal);
+	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal);
 
 	/** mg4: FSWGMeshReader::ReadStaticMesh/ReadSkeletalMeshBindPose — intended to run off the game thread, like USWGTerrainSubsystem::BakeHeightmap. */
 	bool ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData);
@@ -153,7 +156,7 @@ private:
 	 * FSWGRuntimeAnimationPlayer's header comment. Returns false (no-op) for
 	 * anything that isn't a recognized generated model.
 	 */
-	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, UMeshComponent* DynamicMeshComponent);
+	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* DynamicMeshComponent);
 
 	/**
 	 * Parses a .sht shader template (e.g. "shader/dl44_main_as9.sht") and
@@ -193,7 +196,8 @@ private:
 	FLinearColor LoadPaletteAverageTint(const FString& PaletteVirtualPath);
 
 	/** Loads/decodes texture/<name>.dds once and caches the result (see LoadedObjectTextures) — same pattern as USWGTerrainSubsystem::GetOrLoadShaderTexture. */
-	UTexture2D* GetOrLoadObjectTexture(const FString& TextureVirtualPath);
+	UTexture2D* GetOrLoadObjectTexture(const FString& TextureVirtualPath, bool bSRGB = true,
+		bool bLegacyDXT5Normal = false);
 
 	/**
 	 * Builds (or returns an already-built) UMaterialInstanceDynamic for one
