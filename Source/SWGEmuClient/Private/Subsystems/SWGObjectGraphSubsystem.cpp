@@ -466,10 +466,23 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 	// negated to preserve rotation sense instead of mirroring yaw.
 	const FQuat Rotation(Msg.DirX, Msg.DirZ, -Msg.DirY, Msg.DirW);
 
+	// Characters stand upright, so their server heading is effectively
+	// yaw-only and whatever pitch/roll the quaternion decomposes to is noise.
+	// Left in, it doesn't just tilt the mesh: APlayerController::OnPossess
+	// overwrites ControlRotation with the pawn's actor rotation immediately
+	// after PossessedBy returns, so a rolled spawn rotation rolls the entire
+	// camera. Static objects (buildings, props, items) keep the full rotation
+	// — they genuinely use it.
+	FQuat SpawnRotation = Rotation;
+	if (ActorClass->IsChildOf(ACharacter::StaticClass()))
+	{
+		SpawnRotation = FRotator(0.0f, Rotation.Rotator().Yaw, 0.0f).Quaternion();
+	}
+
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	AActor* NewActor = World->SpawnActor<AActor>(ActorClass, FTransform(Rotation, Location), SpawnParams);
+	AActor* NewActor = World->SpawnActor<AActor>(ActorClass, FTransform(SpawnRotation, Location), SpawnParams);
 	if (!NewActor)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGObjectGraphSubsystem: failed to spawn %s for object %lld"), *ActorClass->GetName(), Msg.ObjectId);
@@ -637,7 +650,35 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	// feet/ground-level; GroundedLocationFor corrects for ACharacter's capsule
 	// center being the actual actor origin (see its own comment / the header's).
 	// Raw wire position -> UE space at this boundary, same as the initial spawn.
-	Actor->SetActorLocation(GroundedLocationFor(Actor, SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ))));
+	const FVector OldLocation = Actor->GetActorLocation();
+	const FVector NewLocation = GroundedLocationFor(Actor, SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ)));
+	Actor->SetActorLocation(NewLocation);
+
+	// This is a raw position teleport, not movement driven through the
+	// character's own CharacterMovementComponent simulation (no
+	// AddMovementInput, no physics step) — Velocity is never otherwise
+	// touched for a network-driven actor, which left USWGMeshGeneratorSubsystem::
+	// Tick()'s Character->GetVelocity() read (used to feed the locomotion
+	// blend space) permanently zero even while visibly moving. Derive it
+	// from the position delta since the last update instead; see
+	// USWGMovementComponent::LastNetworkUpdateTime's comment for how
+	// staleness (the creature stopped) gets handled on the read side.
+	if (ACharacter* Character = Cast<ACharacter>(Actor))
+	{
+		if (USWGMovementComponent* Movement = Cast<USWGMovementComponent>(Character->GetCharacterMovement()))
+		{
+			const float CurrentTime = Actor->GetWorld()->GetTimeSeconds();
+			if (Movement->LastNetworkUpdateTime > 0.0f)
+			{
+				const float DeltaTime = CurrentTime - Movement->LastNetworkUpdateTime;
+				if (DeltaTime > KINDA_SMALL_NUMBER)
+				{
+					Movement->Velocity = (NewLocation - OldLocation) / DeltaTime;
+				}
+			}
+			Movement->LastNetworkUpdateTime = CurrentTime;
+		}
+	}
 
 	// DirectionAngle is a single byte (0-255) mapping to a full 0-360 degree
 	// yaw — cheap per-tick facing without transmitting a full quaternion like

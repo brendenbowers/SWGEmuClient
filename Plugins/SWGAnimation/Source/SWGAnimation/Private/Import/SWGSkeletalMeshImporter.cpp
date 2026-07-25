@@ -31,8 +31,8 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 	// its header), matching FSkeletalMeshImportData::FBone's own convention
 	// directly. RPRE/RPST are part of the joint's actual local rotation even
 	// at bind (see FSWGSkeletonJoint) and must be composed identically here
-	// and in FSWGRuntimeAnimationPlayer::ApplyPose, or animated poses fight
-	// the inverse-bind matrices derived from this reference skeleton.
+	// and in FSWGAnimationImporter::BuildAnimSequence, or animated poses
+	// fight the inverse-bind matrices derived from this reference skeleton.
 	OutImportData.RefBonesBinary.Reserve(Skeleton.Joints.Num());
 	for (const FSWGSkeletonJoint& Joint : Skeleton.Joints)
 	{

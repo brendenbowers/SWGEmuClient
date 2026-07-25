@@ -94,22 +94,6 @@ void ASWGPlayer::PossessedBy(AController* NewController)
 
 	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 
-	// CameraBoom orbits off ControlRotation (bUsePawnControlRotation), which
-	// otherwise defaults to (0,0,0) regardless of whatever heading the
-	// network's spawn quaternion actually gave this actor (see
-	// HandleSceneCreateObject) — without this the boom would start facing
-	// world yaw-zero instead of behind the character. Only Yaw is taken from
-	// the actor's rotation: Pitch/Roll on a spawned actor come from the
-	// network quaternion's own decomposition and aren't meaningful camera
-	// tilt, so carrying them into ControlRotation rolls/pitches the whole
-	// view. -15 pitch gives the camera its default slight downward tilt;
-	// from here on, mouse-look (LookMouseX/LookMouseY) freely orbits away
-	// from this point.
-	if (NewController)
-	{
-		NewController->SetControlRotation(FRotator(-15.0f, GetActorRotation().Yaw, 0.0f));
-	}
-
 	// This player is spawned and possessed at runtime. Install its mapping
 	// context here rather than relying solely on Blueprint controller defaults
 	// that may have run before possession or may be empty on another controller.
@@ -123,6 +107,21 @@ void ASWGPlayer::PossessedBy(AController* NewController)
 				Subsystem->AddMappingContext(DefaultMappingContext, 0);
 			}
 		}
+	}
+}
+
+void ASWGPlayer::PawnClientRestart()
+{
+	Super::PawnClientRestart();
+
+	// CameraBoom orbits off ControlRotation (bUsePawnControlRotation), and
+	// OnPossess has just set that to this pawn's full actor rotation. Take
+	// its yaw so the boom starts behind the character, and pin pitch to a
+	// slight downward tilt with zero roll — from here mouse-look
+	// (LookMouseX/LookMouseY) freely orbits away from this point.
+	if (AController* OwningController = GetController())
+	{
+		OwningController->SetControlRotation(FRotator(-15.0f, GetActorRotation().Yaw, 0.0f));
 	}
 }
 

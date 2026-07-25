@@ -38,6 +38,19 @@ public:
 	float WaterModPercent = 0.f;
 	bool  bHasBase4 = false;
 
+	// World time (GetWorld()->GetTimeSeconds()) of the last server position
+	// update this creature received — see USWGObjectGraphSubsystem::
+	// HandleUpdateTransform, which derives Velocity from the position delta
+	// since this timestamp (network-driven actors bypass this movement
+	// component's own physics simulation entirely, going straight through
+	// SetActorLocation, so Velocity is never otherwise touched for them).
+	// -1 means no network update has arrived yet. USWGMeshGeneratorSubsystem::
+	// Tick() also reads this to zero out Velocity once updates go stale
+	// (the creature stopped and the server simply stops sending updates,
+	// rather than sending an explicit zero-speed one), so Velocity doesn't
+	// stay frozen mid-stride forever.
+	float LastNetworkUpdateTime = -1.0f;
+
 	// Split in three: CREO base4 interleaves these with USWGEncumbranceComponent/
 	// USWGSkillComponent/USWGSpaceMissionComponent fields mid-stream — see
 	// SWGCreatureBaselineParser::ParseBase4. Part3 recomputes the actual

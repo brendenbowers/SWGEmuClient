@@ -5,9 +5,8 @@
 /**
  * Converts a bone's sparse (frame -> value) keyframes into a dense,
  * one-sample-per-frame array via interpolation between the surrounding
- * known keys. Shared by FSWGAnimationImporter (building UAnimSequence
- * tracks) and FSWGRuntimeAnimationPlayer (direct runtime sampling) — both
- * need the same resampling, just feeding it to different consumers.
+ * known keys. Used by FSWGAnimationImporter when building UAnimSequence
+ * bone tracks.
  */
 inline TArray<FQuat> SWGBuildDenseRotationTrack(const TMap<int32, FQuat>& Sparse, int32 FrameCount, const FQuat& Fallback)
 {

@@ -33,6 +33,14 @@ public class SWGEmuClient : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
 
+		if (Target.bBuildEditor)
+		{
+			// USWGMeshGeneratorSubsystem::GetOrBuildLocomotionBlendSpace registers
+			// its generated UBlendSpace assets via FAssetRegistryModule (WITH_EDITOR
+			// only) — same reasoning as SWGAnimation's own editor-only asset building.
+			PrivateDependencyModuleNames.AddRange(new string[] { "AssetRegistry" });
+		}
+
 		PublicIncludePaths.AddRange(new string[] {
 			"SWGEmuClient",
 			"SWGEmuClient/Variant_Platforming",

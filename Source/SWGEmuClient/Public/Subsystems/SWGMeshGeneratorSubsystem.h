@@ -5,7 +5,6 @@
 #include "Tickable.h"
 #include "TRE/SWGMeshReader.h"
 #include "TRE/SWGSkeletonReader.h"
-#include "TRE/SWGRuntimeAnimationPlayer.h"
 #include "SWGMeshGeneratorSubsystem.generated.h"
 
 class USWGTreSubsystem;
@@ -14,23 +13,22 @@ class UDynamicMesh;
 class UDynamicMeshComponent;
 class UMaterialInterface;
 class UTexture2D;
-class UPoseableMeshComponent;
 class USkeletalMesh;
+class USkeletalMeshComponent;
+class USkeleton;
+class UAnimSequence;
+class UBlendSpace;
+class UAnimSingleNodeInstance;
 
 /**
- * One actor's live procedural animation playback — see
- * TryApplyGeneratedAnimatedMesh's comment for why this drives bones directly
- * every tick instead of using a built UAnimSequence.
+ * One actor's live animation playback — a real UBlendSpace played on
+ * Character->GetMesh() via UAnimSingleNodeInstance, driven every tick by the
+ * actor's current horizontal speed. See TryApplyGeneratedAnimatedMesh.
  */
 struct FSWGPlayingAnimation
 {
-	TWeakObjectPtr<UPoseableMeshComponent> PoseableMesh;
-	FSWGSkeletonData Skeleton;
-
-	/** Idle, walk, jog, run in that order. All are decoded once when the mesh is attached. */
-	TArray<FSWGRuntimeAnimation> LocomotionAnimations;
-	int32 ActiveLocomotionIndex = 0;
-	float PlaybackTimeSeconds = 0.0f;
+	TWeakObjectPtr<USkeletalMeshComponent> MeshComponent;
+	TWeakObjectPtr<UAnimSingleNodeInstance> AnimInstance;
 };
 
 /** One entity waiting for its mesh to be resolved, parsed, and built. */
@@ -151,14 +149,12 @@ private:
 	 * Generic per-species resolution: works for any ACharacter whose resolved
 	 * mesh/skeleton data yields a SKTM skeleton reference and a usable LATX
 	 * locomotion LAT. Swaps in the generated skeletal mesh (see
-	 * GetOrBuildGeneratedSkeletalMesh) on a new UPoseableMeshComponent (not
-	 * ACharacter::GetMesh()), hiding DynamicMeshComponent instead. Animation
-	 * is driven directly at runtime (bones sampled from FSWGRuntimeAnimation
-	 * every tick) rather than via a built UAnimSequence, since
-	 * IAnimationDataController silently discards every keyframe in this
-	 * engine build — see FSWGRuntimeAnimationPlayer's header comment. Returns
-	 * false (no-op) for anything without a skeleton (non-animated actors) or
-	 * whose generated assets aren't available.
+	 * GetOrBuildGeneratedSkeletalMesh) directly on Character->GetMesh() (no
+	 * longer kept hidden), hiding DynamicMeshComponent instead, and plays a
+	 * generated UBlendSpace (see GetOrBuildLocomotionBlendSpace) via
+	 * UAnimSingleNodeInstance. Returns false (no-op) for anything without a
+	 * skeleton (non-animated actors) or whose generated assets aren't
+	 * available.
 	 */
 	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* DynamicMeshComponent);
 
@@ -173,22 +169,42 @@ private:
 	 * cache-hit path, same role MeshCache's .dmesh files play for procedural
 	 * meshes. If MeshVirtualPaths includes a "*_head*" part, also looks for a
 	 * matching "<prefix>_face.skt" skeleton and merges it under the "head"
-	 * joint for the mesh build only — the caller's own Skeleton (used for
-	 * runtime animation) is left untouched since locomotion clips never
-	 * animate face bones.
+	 * joint for the mesh build only — the caller's own Skeleton (used to
+	 * build locomotion animations) is left untouched since locomotion clips
+	 * never animate face bones.
 	 */
 	USkeletalMesh* GetOrBuildGeneratedSkeletalMesh(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton);
 
 	/**
-	 * Cache-aware equivalent of decoding LocomotionPaths into dense runtime
-	 * animations: reads/writes Saved/AnimCache/<hash>.danim (keyed by
-	 * SkeletonPath + LocomotionPaths, mirroring MeshCache's .dmesh naming) so
-	 * repeat requests for the same species skip re-parsing .ans clips and
-	 * rebuilding FSWGRuntimeAnimation. Runs entirely on the game thread
-	 * (TryApplyGeneratedAnimatedMesh is only ever called there), so unlike
-	 * MeshCache's write path this needs no in-flight-write guard.
+	 * Loads the once-built UAnimSequence for this skeleton+mesh-parts+clip
+	 * combination (package name hashed from SkeletonPath + MeshVirtualPaths +
+	 * ClipPath, under /Game/SWGEmu/Generated/ — MeshVirtualPaths is included
+	 * because it's also part of GetOrBuildGeneratedSkeletalMesh's own hash:
+	 * two species can share one SkeletonPath's source .skt data but still get
+	 * two distinct generated USkeleton objects, one per generated mesh, so an
+	 * anim sequence built against the wrong one would be silently
+	 * incompatible with whichever mesh is actually on screen), or builds and
+	 * saves it via FSWGAnimationImporter::BuildAnimSequence if it doesn't
+	 * exist yet and this is an editor/PIE build. TargetSkeleton is the
+	 * USkeleton the playing USkeletalMeshComponent actually uses
+	 * (GeneratedMesh->GetSkeleton(), which may include merged face bones) —
+	 * Skeleton is the plain joint list used to build the animated tracks
+	 * themselves.
 	 */
-	bool GetOrBuildLocomotionAnimations(const FString& SkeletonPath, const TArray<FString>& LocomotionPaths, const FSWGSkeletonData& Skeleton, TArray<FSWGRuntimeAnimation>& OutAnimations);
+	UAnimSequence* GetOrBuildLocomotionAnimSequence(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FString& ClipPath, const FSWGSkeletonData& Skeleton, USkeleton* TargetSkeleton);
+
+	/**
+	 * Loads the once-built UBlendSpace for this skeleton+mesh-parts+locomotion-clips
+	 * combination (package name hashed the same way as
+	 * GetOrBuildLocomotionAnimSequence, for the same reason — see its
+	 * comment), or builds and saves it if missing and this is an editor/PIE
+	 * build: a single horizontal-speed axis with idle/walk/run samples at
+	 * 0/WalkSpeed/RunSpeed. AxisToScaleAnimation is set to that axis, so the
+	 * engine scales each sample's playback rate by how far the live blend
+	 * input is from its own sample speed — no manual play-rate bookkeeping
+	 * needed at runtime.
+	 */
+	UBlendSpace* GetOrBuildLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const TArray<FString>& LocomotionPaths, UAnimSequence* IdleSequence, UAnimSequence* WalkSequence, UAnimSequence* RunSequence, float WalkSpeed, float RunSpeed, USkeleton* TargetSkeleton);
 
 	/**
 	 * Parses a .sht shader template (e.g. "shader/dl44_main_as9.sht") and
@@ -267,6 +283,6 @@ private:
 	UPROPERTY()
 	TMap<FString, TObjectPtr<UMaterialInterface>> ObjectMaterialCache;
 
-	/** Actors whose UPoseableMeshComponent is being driven directly every tick — see TryApplyGeneratedAnimatedMesh and FSWGRuntimeAnimationPlayer. */
+	/** Actors whose blend space's speed input needs updating every tick — see TryApplyGeneratedAnimatedMesh and Tick. */
 	TArray<FSWGPlayingAnimation> PlayingAnimations;
 };

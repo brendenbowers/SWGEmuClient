@@ -65,6 +65,13 @@ public:
 	// Walking.
 	virtual void PossessedBy(AController* NewController) override;
 
+	// Seeds the camera's starting orientation. This runs from ClientRestart,
+	// which OnPossess calls *after* its own
+	// SetControlRotation(Pawn->GetActorRotation()) — doing it in PossessedBy
+	// instead is silently discarded, since the engine overwrites
+	// ControlRotation one line after PossessedBy returns.
+	virtual void PawnClientRestart() override;
+
 protected:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 

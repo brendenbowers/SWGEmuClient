@@ -23,9 +23,9 @@ struct FSWGSkeletonJoint
 	// 180° X flip and rShin's translation as +43 up — the right knee only
 	// lands below the hip once the flip is composed in. (SWG mirrors the
 	// right side and reorients wrists/fingers via these.) The reference
-	// skeleton (FSWGSkeletalMeshImporter) and runtime posing
-	// (FSWGRuntimeAnimationPlayer) must both compose them, and identically,
-	// or skinning breaks against the inverse-bind matrices.
+	// skeleton (FSWGSkeletalMeshImporter) and animation tracks
+	// (FSWGAnimationImporter) must both compose them, and identically, or
+	// skinning breaks against the inverse-bind matrices.
 	// Identity for joints the file gives no pre/post rotation.
 	FQuat PreRotation = FQuat::Identity;
 	FQuat PostRotation = FQuat::Identity;

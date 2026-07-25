@@ -11,16 +11,17 @@
 #include "TRE/SWGShaderReader.h"
 #include "TRE/SWGSkeletonReader.h"
 #include "TRE/SWGAnimationReader.h"
-#include "TRE/SWGRuntimeAnimationPlayer.h"
 #include "TRE/SWGIFFChunkReader.h"
 #include "Import/SWGSkeletalMeshImporter.h"
 #include "Import/SWGAnimationImporter.h"
 #include "Animation/Skeleton.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/BlendSpace.h"
+#include "Animation/BlendSpace1D.h"
+#include "Animation/AnimSingleNodeInstance.h"
 #include "UObject/SoftObjectPath.h"
 #include "GameFramework/Character.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Components/PoseableMeshComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Misc/Optional.h"
 #include "Objects/World/SWGBuilding.h"
@@ -33,6 +34,10 @@
 #include "HAL/FileManager.h"
 #include "Misc/ScopeExit.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/UnrealType.h"
+#include "UObject/Package.h"
+#include "UObject/SavePackage.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 using namespace UE::Geometry;
 
@@ -529,9 +534,9 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 				const int32 SlotIndex = FCString::Atoi(*Args[0]);
 				const bool bShow = FCString::Atoi(*Args[1]) != 0;
 				int32 AffectedComponents = 0;
-				for (TObjectIterator<UPoseableMeshComponent> It; It; ++It)
+				for (TObjectIterator<USkeletalMeshComponent> It; It; ++It)
 				{
-					UPoseableMeshComponent* Component = *It;
+					USkeletalMeshComponent* Component = *It;
 					if (!IsValid(Component) || !Component->GetWorld() || !Component->GetWorld()->IsGameWorld())
 					{
 						continue;
@@ -682,47 +687,6 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 				GSWGDebugAnsBoneFilter.Empty();
 			}));
 
-	// Diagnostic — re-parses the given .ans (default: the walk clip) and swaps
-	// it into every currently-playing runtime animation WITHOUT a respawn.
-	// Exists so decode-parameter experiments (swg.CkatScaleDivisor) can be
-	// iterated live against swg.DebugFootTrack measurements.
-	static FAutoConsoleCommand ReloadAnimCmd(
-		TEXT("swg.ReloadAnim"),
-		TEXT("swg.ReloadAnim [virtualPath] — re-decodes the clip (default all_b_loc_walk_male.ans) and swaps it into the playing animation in place."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-			{
-				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				USWGTreSubsystem* TreSubsystem = Self ? Self->TreSubsystem.Get() : nullptr;
-				if (!TreSubsystem)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.ReloadAnim: no TreSubsystem"));
-					return;
-				}
-				const FString Path = Args.Num() > 0 ? Args[0] : TEXT("appearance/animation/all_b_loc_walk_male.ans");
-				int32 Reloaded = 0;
-				for (FSWGPlayingAnimation& Playing : Self->PlayingAnimations)
-				{
-					if (!Playing.LocomotionAnimations.IsValidIndex(Playing.ActiveLocomotionIndex))
-					{
-						continue;
-					}
-					FSWGIffReader ClipReader = TreSubsystem->CreateIffReader(Path);
-					FSWGAnimationData ClipAnimation;
-					if (!FSWGAnimationReader::ReadAnimation(ClipReader, ClipAnimation))
-					{
-						UE_LOG(LogTemp, Warning, TEXT("swg.ReloadAnim: failed to parse '%s'"), *Path);
-						return;
-					}
-					// RestMidRotations (idle-clip arm reference) is preserved
-					// as-is — it's only consumed by the damping path.
-					FSWGRuntimeAnimation& ActiveAnimation = Playing.LocomotionAnimations[Playing.ActiveLocomotionIndex];
-					TArray<FQuat> SavedRest = MoveTemp(ActiveAnimation.RestMidRotations);
-					ActiveAnimation = FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(ClipAnimation, Playing.Skeleton);
-					ActiveAnimation.RestMidRotations = MoveTemp(SavedRest);
-					++Reloaded;
-				}
-				UE_LOG(LogTemp, Warning, TEXT("swg.ReloadAnim: reloaded '%s' into %d playing animation(s)"), *Path, Reloaded);
-			}));
 #endif
 }
 
@@ -741,77 +705,42 @@ void USWGMeshGeneratorSubsystem::Tick(float DeltaTime)
 		ProcessNextRequest();
 	}
 
-	// Drives UPoseableMeshComponent bones directly every tick — see
-	// TryApplyGeneratedAnimatedMesh and FSWGRuntimeAnimationPlayer's header
-	// comment for why this replaces UAnimSequence playback.
+	// Feeds each actor's live horizontal speed into its blend space every
+	// tick — the blend space itself owns sample selection, blending, and
+	// (via AxisToScaleAnimation, set in GetOrBuildLocomotionBlendSpace)
+	// playback-rate scaling; see TryApplyGeneratedAnimatedMesh.
 	for (int32 i = PlayingAnimations.Num() - 1; i >= 0; --i)
 	{
 		FSWGPlayingAnimation& Playing = PlayingAnimations[i];
-		UPoseableMeshComponent* PoseableMesh = Playing.PoseableMesh.Get();
-		if (!PoseableMesh)
+		USkeletalMeshComponent* MeshComponent = Playing.MeshComponent.Get();
+		UAnimSingleNodeInstance* AnimInstance = Playing.AnimInstance.Get();
+		if (!MeshComponent || !AnimInstance)
 		{
 			PlayingAnimations.RemoveAtSwap(i);
 			continue;
 		}
 
-		if (Playing.LocomotionAnimations.Num() != 4)
+		const ACharacter* Character = Cast<ACharacter>(MeshComponent->GetOwner());
+		float HorizontalSpeed = Character ? Character->GetVelocity().Size2D() : 0.0f;
+		if (const USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr)
 		{
-			continue;
-		}
-
-		const ACharacter* Character = Cast<ACharacter>(PoseableMesh->GetOwner());
-		const float HorizontalSpeed = Character ? Character->GetVelocity().Size2D() : 0.0f;
-		const USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr;
-
-		// CREO base4 is authoritative for the creature's physical walk/run speeds.
-		// all_m.lat exposes a parametric walk/run pair rather than a separate jog
-		// clip, so the midpoint reuses walk until runtime blend support is added.
-		const float WalkSpeed = Movement && Movement->WalkSpeed > KINDA_SMALL_NUMBER
-			? Movement->WalkSpeed * 100.0f
-			: 155.0f;
-		const float RunSpeed = Movement && Movement->RunSpeed > Movement->WalkSpeed
-			? Movement->RunSpeed * 100.0f
-			: FMath::Max(WalkSpeed * 2.0f, Movement ? Movement->MaxWalkSpeed : 310.0f);
-		const float JogSpeed = (WalkSpeed + RunSpeed) * 0.5f;
-
-		int32 DesiredIndex = 0; // idle
-		float ReferenceSpeed = 1.0f;
-		if (HorizontalSpeed > 3.0f)
-		{
-			const float WalkJogBoundary = (WalkSpeed + JogSpeed) * 0.5f;
-			const float JogRunBoundary = (JogSpeed + RunSpeed) * 0.5f;
-			if (HorizontalSpeed < WalkJogBoundary)
+			// LastNetworkUpdateTime > 0 means this is a network-driven actor
+			// (see its own comment) — the server just stops sending updates
+			// when it stops moving rather than sending an explicit zero-speed
+			// one, so a stale update means "stopped," not "still going at the
+			// last derived speed." Actors that have never taken a network
+			// update (the locally-controlled player) skip this entirely and
+			// keep using their real CharacterMovementComponent velocity.
+			if (Movement->LastNetworkUpdateTime > 0.0f && MeshComponent->GetWorld())
 			{
-				DesiredIndex = 1;
-				ReferenceSpeed = WalkSpeed;
-			}
-			else if (HorizontalSpeed < JogRunBoundary)
-			{
-				DesiredIndex = 2;
-				ReferenceSpeed = JogSpeed;
-			}
-			else
-			{
-				DesiredIndex = 3;
-				ReferenceSpeed = RunSpeed;
+				const float TimeSinceUpdate = MeshComponent->GetWorld()->GetTimeSeconds() - Movement->LastNetworkUpdateTime;
+				if (TimeSinceUpdate > 0.5f)
+				{
+					HorizontalSpeed = 0.0f;
+				}
 			}
 		}
-
-		if (DesiredIndex != Playing.ActiveLocomotionIndex)
-		{
-			Playing.ActiveLocomotionIndex = DesiredIndex;
-			Playing.PlaybackTimeSeconds = 0.0f;
-		}
-
-		const float PlaybackRate = DesiredIndex == 0
-			? 1.0f
-			: FMath::Clamp(HorizontalSpeed / ReferenceSpeed, 0.25f, 1.5f);
-		Playing.PlaybackTimeSeconds += DeltaTime * PlaybackRate;
-		FSWGRuntimeAnimationPlayer::ApplyPose(
-			*PoseableMesh,
-			Playing.Skeleton,
-			Playing.LocomotionAnimations[Playing.ActiveLocomotionIndex],
-			Playing.PlaybackTimeSeconds);
+		AnimInstance->SetBlendSpacePosition(FVector(HorizontalSpeed, 0.0f, 0.0f));
 	}
 }
 
@@ -2143,45 +2072,6 @@ namespace
 		}
 		return FString();
 	}
-
-	void SerializeSkeletonForCache(FArchive& Ar, FSWGSkeletonData& Skeleton)
-	{
-		int32 JointCount = Skeleton.Joints.Num();
-		Ar << JointCount;
-		if (Ar.IsLoading())
-		{
-			Skeleton.Joints.SetNum(JointCount);
-		}
-		for (FSWGSkeletonJoint& Joint : Skeleton.Joints)
-		{
-			Ar << Joint.Name;
-			Ar << Joint.ParentIndex;
-			Ar << Joint.BindPoseTranslation;
-			Ar << Joint.BindPoseRotation;
-			Ar << Joint.PreRotation;
-			Ar << Joint.PostRotation;
-		}
-	}
-
-	void SerializeRuntimeAnimationForCache(FArchive& Ar, FSWGRuntimeAnimation& Animation)
-	{
-		Ar << Animation.FrameRate;
-		Ar << Animation.FrameCount;
-
-		int32 BoneTrackCount = Animation.BoneTracks.Num();
-		Ar << BoneTrackCount;
-		if (Ar.IsLoading())
-		{
-			Animation.BoneTracks.SetNum(BoneTrackCount);
-		}
-		for (FSWGRuntimeBoneTrack& Track : Animation.BoneTracks)
-		{
-			Ar << Track.DenseRotations;
-		}
-
-		Ar << Animation.DenseRootTranslations;
-		Ar << Animation.RestMidRotations;
-	}
 }
 
 USkeletalMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedSkeletalMesh(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton)
@@ -2261,91 +2151,115 @@ USkeletalMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedSkeletalMesh(const
 #endif
 }
 
-bool USWGMeshGeneratorSubsystem::GetOrBuildLocomotionAnimations(const FString& SkeletonPath, const TArray<FString>& LocomotionPaths, const FSWGSkeletonData& Skeleton, TArray<FSWGRuntimeAnimation>& OutAnimations)
+UAnimSequence* USWGMeshGeneratorSubsystem::GetOrBuildLocomotionAnimSequence(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FString& ClipPath, const FSWGSkeletonData& Skeleton, USkeleton* TargetSkeleton)
 {
-	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(LocomotionPaths);
-	const FString AnimCacheDir = FPaths::ProjectSavedDir() / TEXT("AnimCache");
-	const FString AnimCachePath = FString::Printf(TEXT("%s/%u.danim"), *AnimCacheDir, PathsHash);
+	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GetTypeHash(ClipPath);
+	const FString AssetName = FString::Printf(TEXT("AS_%u"), PathsHash);
+	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
 
-	if (FArchive* FileReader = IFileManager::Get().CreateFileReader(*AnimCachePath))
+	if (UAnimSequence* Existing = LoadObject<UAnimSequence>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
 	{
-		FSWGSkeletonData CachedSkeleton;
-		SerializeSkeletonForCache(*FileReader, CachedSkeleton);
-
-		int32 AnimCount = 0;
-		*FileReader << AnimCount;
-		OutAnimations.SetNum(AnimCount);
-		for (FSWGRuntimeAnimation& Animation : OutAnimations)
-		{
-			SerializeRuntimeAnimationForCache(*FileReader, Animation);
-		}
-
-		// A joint-count mismatch means the .skt on disk changed shape since
-		// this entry was cached (or the hash collided) — treat exactly like
-		// MeshCache's corrupt-cache handling: drop it and rebuild fresh.
-		const bool bReadOk = !FileReader->IsError() && CachedSkeleton.Joints.Num() == Skeleton.Joints.Num();
-		FileReader->Close();
-		delete FileReader;
-
-		if (bReadOk && OutAnimations.Num() == LocomotionPaths.Num())
-		{
-			UE_LOG(LogTemp, Log, TEXT("USWGMeshGeneratorSubsystem: loaded cached animations for skeleton '%s' from %s"), *SkeletonPath, *AnimCachePath);
-			return true;
-		}
-
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: corrupt/stale anim cache %s — deleting and rebuilding"), *AnimCachePath);
-		IFileManager::Get().Delete(*AnimCachePath);
-		OutAnimations.Reset();
+		return Existing;
 	}
 
-	bool bLoadedIdle = false;
-	for (const FString& ClipPath : LocomotionPaths)
+#if WITH_EDITOR
+	FSWGAnimationData ClipAnimation;
+	if (!FSWGAnimationReader::ReadAnimation(TreSubsystem->CreateIffReader(ClipPath), ClipAnimation))
 	{
-		FSWGAnimationData ClipAnimation;
-		if (!FSWGAnimationReader::ReadAnimation(TreSubsystem->CreateIffReader(ClipPath), ClipAnimation))
-		{
-			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to decode locomotion clip '%s'"), *ClipPath);
-
-			// Idle must always exist because it is the safe alternative to
-			// exposing the reference skeleton's T-pose. A missing movement
-			// clip falls back to idle while preserving the four state slots.
-			if (!bLoadedIdle)
-			{
-				break;
-			}
-			OutAnimations.Add(OutAnimations[0]);
-			continue;
-		}
-		OutAnimations.Add(FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(ClipAnimation, Skeleton));
-		bLoadedIdle = true;
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to decode locomotion clip '%s' while building '%s'"), *ClipPath, *PackagePath);
+		return nullptr;
 	}
 
-	if (!bLoadedIdle || OutAnimations.Num() != LocomotionPaths.Num())
+	UAnimSequence* Result = FSWGAnimationImporter::BuildAnimSequence(ClipAnimation, Skeleton, TargetSkeleton, PackagePath);
+	if (!Result)
 	{
-		return false;
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to build generated anim sequence '%s' from '%s'"), *PackagePath, *ClipPath);
+	}
+	return Result;
+#else
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated anim sequence '%s' isn't built yet and can't be built in a packaged build"), *PackagePath);
+	return nullptr;
+#endif
+}
+
+UBlendSpace* USWGMeshGeneratorSubsystem::GetOrBuildLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const TArray<FString>& LocomotionPaths, UAnimSequence* IdleSequence, UAnimSequence* WalkSequence, UAnimSequence* RunSequence, float WalkSpeed, float RunSpeed, USkeleton* TargetSkeleton)
+{
+	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GetTypeHash(LocomotionPaths);
+	const FString AssetName = FString::Printf(TEXT("BS_%u"), PathsHash);
+	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
+
+	if (UBlendSpace* Existing = LoadObject<UBlendSpace>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
+	{
+		return Existing;
 	}
 
-	IFileManager::Get().MakeDirectory(*AnimCacheDir, true);
-	if (FArchive* FileWriter = IFileManager::Get().CreateFileWriter(*AnimCachePath))
+#if WITH_EDITOR
+	if (!IdleSequence || !WalkSequence || !RunSequence)
 	{
-		FSWGSkeletonData SkeletonCopy = Skeleton;
-		SerializeSkeletonForCache(*FileWriter, SkeletonCopy);
-
-		int32 AnimCount = OutAnimations.Num();
-		*FileWriter << AnimCount;
-		for (FSWGRuntimeAnimation& Animation : OutAnimations)
-		{
-			SerializeRuntimeAnimationForCache(*FileWriter, Animation);
-		}
-		FileWriter->Close();
-		delete FileWriter;
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to open %s for writing — animations not cached this time"), *AnimCachePath);
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: missing a locomotion clip — can't build blend space '%s'"), *PackagePath);
+		return nullptr;
 	}
 
-	return true;
+	UPackage* Package = CreatePackage(*PackagePath);
+	Package->FullyLoad();
+	// UBlendSpace1D rather than the generic 3-axis UBlendSpace: all our
+	// samples vary only along X (speed), and this subclass exposes that
+	// intent directly — a plain bScaleAnimation bool instead of the base
+	// class's protected AxisToScaleAnimation enum.
+	UBlendSpace1D* Result = NewObject<UBlendSpace1D>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+	Result->SetSkeleton(TargetSkeleton);
+
+	// Scale each sample's playback rate by how far the live blend input is
+	// from that sample's own speed — same role the old ReferenceSpeed rate
+	// clamp played, now owned by the engine instead of Tick().
+	Result->bScaleAnimation = true;
+
+	// BlendParameters is EditAnywhere but C++-protected (editor tooling
+	// normally sets it through the Details panel, which goes through
+	// FProperty reflection rather than direct member access) —
+	// ContainerPtrToValuePtr is the same mechanism, just called from code.
+	if (FStructProperty* BlendParametersProp = FindFProperty<FStructProperty>(UBlendSpace::StaticClass(), TEXT("BlendParameters")))
+	{
+		FBlendParameter* BlendParameters = BlendParametersProp->ContainerPtrToValuePtr<FBlendParameter>(Result);
+		BlendParameters[0].DisplayName = TEXT("Speed");
+		BlendParameters[0].Min = 0.0f;
+		BlendParameters[0].Max = RunSpeed;
+		BlendParameters[0].GridNum = 4;
+	}
+
+	Result->AddSample(IdleSequence, FVector(0.0f, 0.0f, 0.0f));
+	Result->AddSample(WalkSequence, FVector(WalkSpeed, 0.0f, 0.0f));
+	Result->AddSample(RunSequence, FVector(RunSpeed, 0.0f, 0.0f));
+
+	// ResampleData(), not just ValidateSampleData(): adding samples only fills
+	// SampleData (the authored sample list). The *runtime* structure the
+	// evaluator actually reads — BlendSpaceData, the line segments derived
+	// from those samples — is built solely by ResampleData (which validates
+	// internally, then derives DimensionIndices from the sample AABB and runs
+	// the 1D segmentation). Without it BlendSpaceData stays empty, so
+	// GetSamplesFromBlendInput returns nothing at runtime and the evaluated
+	// pose falls through as identity local rotations — which renders as a
+	// T-pose for this skeleton, whose arms only come down once the composed
+	// bind rotation is applied. Nothing warns: the asset itself still has
+	// valid samples, a valid skeleton, and reports IsPlaying.
+	Result->ResampleData();
+
+	Result->MarkPackageDirty();
+	Result->PostEditChange();
+	FAssetRegistryModule::AssetCreated(Result);
+
+	const FString FileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	UPackage::SavePackage(Package, Result, *FileName, SaveArgs);
+
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated blend space '%s' for skeleton '%s'"), *PackagePath, *SkeletonPath);
+	return Result;
+#else
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated blend space '%s' isn't built yet and can't be built in a packaged build"), *PackagePath);
+	return nullptr;
+#endif
 }
 
 bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* DynamicMeshComponent)
@@ -2397,20 +2311,34 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		return false;
 	}
 
-	// CharacterMesh (ACharacter's default USkeletalMeshComponent) stays
-	// hidden — a UPoseableMeshComponent renders and is posed instead, since
-	// that's the class that actually supports direct per-bone control
-	// (SetBoneTransformByName) without an AnimSequence/AnimBlueprint. See
-	// this function's header comment for why.
-	CharacterMesh->SetVisibility(false);
-	CharacterMesh->SetHiddenInGame(true);
+	// TargetSkeleton is the actual asset skeleton GeneratedMesh was built
+	// against (may include merged face bones — see GetOrBuildGeneratedSkeletalMesh),
+	// which is what a UAnimSequence/UBlendSpace played on this component must
+	// be compatible with; Skeleton (the plain joint list) is what the
+	// animated tracks themselves get built from.
+	USkeleton* TargetSkeleton = GeneratedMesh->GetSkeleton();
+	UAnimSequence* IdleSequence = GetOrBuildLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, LocomotionPaths[0], Skeleton, TargetSkeleton);
+	UAnimSequence* WalkSequence = GetOrBuildLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, LocomotionPaths[1], Skeleton, TargetSkeleton);
+	UAnimSequence* RunSequence = GetOrBuildLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, LocomotionPaths[3], Skeleton, TargetSkeleton);
 
-	UPoseableMeshComponent* PoseableMesh = NewObject<UPoseableMeshComponent>(&Actor, NAME_None, RF_Transactional);
-	PoseableMesh->SetSkinnedAssetAndUpdate(GeneratedMesh);
-	PoseableMesh->RegisterComponent();
-	PoseableMesh->AttachToComponent(Character->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
-	PoseableMesh->SetVisibility(true);
-	PoseableMesh->SetHiddenInGame(false);
+	const USWGMovementComponent* Movement = Cast<USWGMovementComponent>(Character->GetCharacterMovement());
+	const float WalkSpeed = Movement && Movement->WalkSpeed > KINDA_SMALL_NUMBER
+		? Movement->WalkSpeed * 100.0f
+		: 155.0f;
+	const float RunSpeed = Movement && Movement->RunSpeed > Movement->WalkSpeed
+		? Movement->RunSpeed * 100.0f
+		: FMath::Max(WalkSpeed * 2.0f, Movement ? Movement->MaxWalkSpeed : 310.0f);
+
+	UBlendSpace* LocomotionBlendSpace = GetOrBuildLocomotionBlendSpace(SkeletonPath, MeshVirtualPaths, LocomotionPaths, IdleSequence, WalkSequence, RunSequence, WalkSpeed, RunSpeed, TargetSkeleton);
+	if (!LocomotionBlendSpace)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s has no usable locomotion blend space; leaving the procedural mesh visible instead of showing a T-pose"), *Actor.GetName());
+		return false;
+	}
+
+	CharacterMesh->SetSkeletalMesh(GeneratedMesh);
+	CharacterMesh->SetVisibility(true);
+	CharacterMesh->SetHiddenInGame(false);
 
 	// SWG geometry (both the procedural DynamicMeshComponent path and this
 	// skeletal mesh, which shares the same .mgn source data/authoring
@@ -2420,15 +2348,13 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 	// precise center-based offset.
 	if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
 	{
-		PoseableMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -Capsule->GetScaledCapsuleHalfHeight()));
+		CharacterMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -Capsule->GetScaledCapsuleHalfHeight()));
 	}
 
 	// SWG's forward axis is 90 degrees off from Unreal's — the same quirk
 	// ASWGPlayer's camera/control rotation already corrects for. That fix
-	// doesn't touch the mesh itself, so rotate the whole mesh rigidly here
-	// rather than baking a correction into individual ApplyPose joint
-	// rotations, which would fight the reference skeleton's inverse-bind matrices.
-	PoseableMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
+	// doesn't touch the mesh itself, so rotate the whole mesh rigidly here.
+	CharacterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
 
 	// The importer creates material slots named after each submesh's shader
 	// path (see FSWGSkeletalMeshImporter::BuildSkeletalMesh) but leaves the
@@ -2439,21 +2365,17 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		const FString ShaderPath = GeneratedMesh->GetMaterials()[SlotIndex].MaterialSlotName.ToString();
 		if (UMaterialInterface* Material = GetOrBuildObjectMaterial(ShaderPath))
 		{
-			PoseableMesh->SetMaterial(SlotIndex, Material);
+			CharacterMesh->SetMaterial(SlotIndex, Material);
 		}
 	}
 
-	// Cache-aware (see GetOrBuildLocomotionAnimations) resample of the
-	// locomotion clips into dense per-frame data, driving PoseableMesh's
-	// bones directly every tick instead of playing a built UAnimSequence,
-	// since IAnimationDataController silently discards every keyframe in
-	// this engine build.
-	TArray<FSWGRuntimeAnimation> LocomotionAnimations;
-	if (!GetOrBuildLocomotionAnimations(SkeletonPath, LocomotionPaths, Skeleton, LocomotionAnimations) || LocomotionAnimations.Num() != 4)
+	CharacterMesh->PlayAnimation(LocomotionBlendSpace, true);
+	UAnimSingleNodeInstance* AnimInstance = Cast<UAnimSingleNodeInstance>(CharacterMesh->GetAnimInstance());
+	if (!AnimInstance)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s could not decode its idle clip; leaving the procedural mesh visible instead of showing a T-pose"), *Actor.GetName());
-		PoseableMesh->SetVisibility(false);
-		PoseableMesh->SetHiddenInGame(true);
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s failed to start blend space playback; leaving the procedural mesh visible instead of showing a T-pose"), *Actor.GetName());
+		CharacterMesh->SetVisibility(false);
+		CharacterMesh->SetHiddenInGame(true);
 		if (DynamicMeshComponent)
 		{
 			DynamicMeshComponent->SetVisibility(true);
@@ -2463,35 +2385,8 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 	}
 
 	FSWGPlayingAnimation Playing;
-	Playing.PoseableMesh = PoseableMesh;
-	Playing.Skeleton = Skeleton;
-	Playing.LocomotionAnimations = MoveTemp(LocomotionAnimations);
-
-	// ApplyPose's arm damping needs the idle pose as its rest target.
-	const FSWGRuntimeAnimation& Idle = Playing.LocomotionAnimations[0];
-	TArray<FQuat> RestMidRotations;
-	RestMidRotations.SetNum(Playing.Skeleton.Joints.Num());
-	for (int32 JointIndex = 0; JointIndex < Playing.Skeleton.Joints.Num(); ++JointIndex)
-	{
-		RestMidRotations[JointIndex] = Idle.BoneTracks.IsValidIndex(JointIndex) && Idle.BoneTracks[JointIndex].DenseRotations.Num() > 0
-			? Idle.BoneTracks[JointIndex].DenseRotations[0]
-			: FQuat::Identity;
-	}
-
-	for (FSWGRuntimeAnimation& RuntimeAnimation : Playing.LocomotionAnimations)
-	{
-		RuntimeAnimation.RestMidRotations = RestMidRotations;
-	}
-
-	// Do not expose the imported skeleton's bind/T-pose for even one frame.
-	// The component becomes visible above, so establish the zero-speed idle
-	// pose synchronously before returning.
-	FSWGRuntimeAnimationPlayer::ApplyPose(
-		*PoseableMesh,
-		Playing.Skeleton,
-		Playing.LocomotionAnimations[0],
-		0.0f);
-
+	Playing.MeshComponent = CharacterMesh;
+	Playing.AnimInstance = AnimInstance;
 	PlayingAnimations.Add(MoveTemp(Playing));
 
 	// A player can receive more than one asynchronous mesh request (and a
