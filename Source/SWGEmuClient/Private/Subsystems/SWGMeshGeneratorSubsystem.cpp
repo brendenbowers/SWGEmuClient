@@ -152,48 +152,38 @@ namespace
 			}
 
 			FSWGIFFChunkReader ChunkReader(Child, Reader);
-			if (!ChunkReader.SkipString())
+
+			FString ChunkKey;
+			if (!ChunkReader.ReadTerminiatedString(ChunkKey))
 			{
-				return false;
+				continue;
 			}
 
-			//FString Key = ChunkReader.ReadTerminiatedString();
-			//if (ChunkReader.AtEnd())
-			//{
-			//	return false;
-			//}
+			// Each XXXX chunk carries a different named property (e.g.
+			// "wearableTypeMask", "species", "appearanceFilename") — only
+			// the one matching Key is a candidate; every other chunk must
+			// be skipped, not just the first one encountered (returning the
+			// first XXXX unconditionally here made every caller of this
+			// function pick up whatever property happened to come first in
+			// the template, not the one it actually asked for).
+			if (!ChunkKey.Equals(Key))
+			{
+				continue;
+			}
 
-			const uint32 Flag = ChunkReader.ReadValueLE<uint32>();
+			// One byte, not four — this is a bool "value present" flag
+			// immediately following the key's null terminator, same as the
+			// original manual byte-offset parsing this chunk reader
+			// replaced (FlagOffset/ValueOffset were exactly one byte apart).
+			// Reading it as a uint32 here consumed 3 bytes that actually
+			// belong to the value string, misaligning every value read.
+			const uint8 Flag = ChunkReader.ReadValueLE<uint8>();
 			if (Flag == 0)
 			{
 				return false;
 			}
 
 			return ChunkReader.ReadTerminiatedString(OutValue) && !OutValue.IsEmpty();
-			
-			//const uint8* Data = Reader.GetChunkData(Child);
-			//const int32 Size = Reader.GetChunkSize(Child);
-
-			//int32 KeyEnd = 0;
-			//while (KeyEnd < Size && Data[KeyEnd] != 0) { ++KeyEnd; }
-
-			//if (FString::ConstructFromPtrSize((const ANSICHAR*)Data, KeyEnd) != Key)
-			//{
-			//	continue;
-			//}
-
-			//const int32 FlagOffset = KeyEnd + 1;
-			//if (FlagOffset >= Size || Data[FlagOffset] == 0)
-			//{
-			//	return false; // no value set
-			//}
-
-			//const int32 ValueOffset = FlagOffset + 1;
-			//int32 ValueEnd = ValueOffset;
-			//while (ValueEnd < Size && Data[ValueEnd] != 0) { ++ValueEnd; }
-
-			//OutValue = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + ValueOffset), ValueEnd - ValueOffset);
-			//return !OutValue.IsEmpty();
 		}
 
 		return false;
@@ -2142,13 +2132,234 @@ void USWGMeshGeneratorSubsystem::FinalizeMeshComponent(AActor& Actor, UDynamicMe
 	OnMeshReady.Broadcast(&Actor, &MeshComponent);
 }
 
+namespace
+{
+	// "appearance/mesh/wke_m_head_l0.mgn" -> "appearance/skeleton/wke_m_face.skt"
+	// — same species-prefix convention swg.BuildWookieeSkeletalMesh used
+	// (hardcoded there to the Wookiee only); probed generically here and
+	// simply skipped if the file doesn't exist for a given species.
+	FString DeriveFaceSkeletonPath(const TArray<FString>& MeshVirtualPaths)
+	{
+		for (const FString& MeshPath : MeshVirtualPaths)
+		{
+			const FString BaseName = FPaths::GetBaseFilename(MeshPath);
+			const int32 HeadIndex = BaseName.Find(TEXT("_head"), ESearchCase::IgnoreCase);
+			if (HeadIndex == INDEX_NONE)
+			{
+				continue;
+			}
+			return FString::Printf(TEXT("appearance/skeleton/%s_face.skt"), *BaseName.Left(HeadIndex));
+		}
+		return FString();
+	}
+
+	void SerializeSkeletonForCache(FArchive& Ar, FSWGSkeletonData& Skeleton)
+	{
+		int32 JointCount = Skeleton.Joints.Num();
+		Ar << JointCount;
+		if (Ar.IsLoading())
+		{
+			Skeleton.Joints.SetNum(JointCount);
+		}
+		for (FSWGSkeletonJoint& Joint : Skeleton.Joints)
+		{
+			Ar << Joint.Name;
+			Ar << Joint.ParentIndex;
+			Ar << Joint.BindPoseTranslation;
+			Ar << Joint.BindPoseRotation;
+			Ar << Joint.PreRotation;
+			Ar << Joint.PostRotation;
+		}
+	}
+
+	void SerializeRuntimeAnimationForCache(FArchive& Ar, FSWGRuntimeAnimation& Animation)
+	{
+		Ar << Animation.FrameRate;
+		Ar << Animation.FrameCount;
+
+		int32 BoneTrackCount = Animation.BoneTracks.Num();
+		Ar << BoneTrackCount;
+		if (Ar.IsLoading())
+		{
+			Animation.BoneTracks.SetNum(BoneTrackCount);
+		}
+		for (FSWGRuntimeBoneTrack& Track : Animation.BoneTracks)
+		{
+			Ar << Track.DenseRotations;
+		}
+
+		Ar << Animation.DenseRootTranslations;
+		Ar << Animation.RestMidRotations;
+	}
+}
+
+USkeletalMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedSkeletalMesh(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton)
+{
+	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths);
+	const FString AssetName = FString::Printf(TEXT("SK_%u"), PathsHash);
+	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
+
+	// The saved .uasset on disk is the cache — a hit here skips rebuilding
+	// entirely, same role MeshCache's .dmesh existence check plays below.
+	if (USkeletalMesh* Existing = LoadObject<USkeletalMesh>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
+	{
+		return Existing;
+	}
+
+#if WITH_EDITOR
+	FSWGSkeletonData MeshBuildSkeleton = Skeleton;
+	const FString FaceSkeletonPath = DeriveFaceSkeletonPath(MeshVirtualPaths);
+	if (!FaceSkeletonPath.IsEmpty())
+	{
+		FSWGSkeletonData FaceSkeleton;
+		if (FSWGSkeletonReader::ReadSkeleton(TreSubsystem->CreateIffReader(FaceSkeletonPath), FaceSkeleton))
+		{
+			const int32 HeadJointIndex = MeshBuildSkeleton.Joints.IndexOfByPredicate([](const FSWGSkeletonJoint& Joint) { return Joint.Name.Equals(TEXT("head"), ESearchCase::IgnoreCase); });
+			if (HeadJointIndex != INDEX_NONE)
+			{
+				const int32 FaceBaseIndex = MeshBuildSkeleton.Joints.Num();
+				for (FSWGSkeletonJoint Joint : FaceSkeleton.Joints)
+				{
+					Joint.ParentIndex = Joint.ParentIndex == INDEX_NONE ? HeadJointIndex : FaceBaseIndex + Joint.ParentIndex;
+					MeshBuildSkeleton.Joints.Add(MoveTemp(Joint));
+				}
+			}
+		}
+	}
+
+	TArray<FSWGMeshData> MeshParts;
+	MeshParts.Reserve(MeshVirtualPaths.Num());
+	for (const FString& MeshPath : MeshVirtualPaths)
+	{
+		FSWGMeshData PartData;
+		if (FSWGMeshReader::ReadSkeletalMeshBindPose(TreSubsystem->CreateIffReader(MeshPath), PartData))
+		{
+			MeshParts.Add(MoveTemp(PartData));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to parse skeletal mesh part '%s' while building generated mesh for skeleton '%s'"), *MeshPath, *SkeletonPath);
+		}
+	}
+	if (MeshParts.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no usable mesh parts to build a generated skeletal mesh for skeleton '%s'"), *SkeletonPath);
+		return nullptr;
+	}
+
+	TArray<const FSWGMeshData*> MeshPartPtrs;
+	MeshPartPtrs.Reserve(MeshParts.Num());
+	for (const FSWGMeshData& Part : MeshParts)
+	{
+		MeshPartPtrs.Add(&Part);
+	}
+
+	USkeletalMesh* Result = FSWGSkeletalMeshImporter::BuildSkeletalMesh(MeshBuildSkeleton, MeshPartPtrs, PackagePath);
+	if (!Result)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to build generated skeletal mesh '%s' for skeleton '%s'"), *PackagePath, *SkeletonPath);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated skeletal mesh '%s' for skeleton '%s'"), *PackagePath, *SkeletonPath);
+	}
+	return Result;
+#else
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated skeletal mesh '%s' isn't built yet and can't be built in a packaged build — leaving skeleton '%s' on its procedural bind-pose mesh"), *PackagePath, *SkeletonPath);
+	return nullptr;
+#endif
+}
+
+bool USWGMeshGeneratorSubsystem::GetOrBuildLocomotionAnimations(const FString& SkeletonPath, const TArray<FString>& LocomotionPaths, const FSWGSkeletonData& Skeleton, TArray<FSWGRuntimeAnimation>& OutAnimations)
+{
+	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(LocomotionPaths);
+	const FString AnimCacheDir = FPaths::ProjectSavedDir() / TEXT("AnimCache");
+	const FString AnimCachePath = FString::Printf(TEXT("%s/%u.danim"), *AnimCacheDir, PathsHash);
+
+	if (FArchive* FileReader = IFileManager::Get().CreateFileReader(*AnimCachePath))
+	{
+		FSWGSkeletonData CachedSkeleton;
+		SerializeSkeletonForCache(*FileReader, CachedSkeleton);
+
+		int32 AnimCount = 0;
+		*FileReader << AnimCount;
+		OutAnimations.SetNum(AnimCount);
+		for (FSWGRuntimeAnimation& Animation : OutAnimations)
+		{
+			SerializeRuntimeAnimationForCache(*FileReader, Animation);
+		}
+
+		// A joint-count mismatch means the .skt on disk changed shape since
+		// this entry was cached (or the hash collided) — treat exactly like
+		// MeshCache's corrupt-cache handling: drop it and rebuild fresh.
+		const bool bReadOk = !FileReader->IsError() && CachedSkeleton.Joints.Num() == Skeleton.Joints.Num();
+		FileReader->Close();
+		delete FileReader;
+
+		if (bReadOk && OutAnimations.Num() == LocomotionPaths.Num())
+		{
+			UE_LOG(LogTemp, Log, TEXT("USWGMeshGeneratorSubsystem: loaded cached animations for skeleton '%s' from %s"), *SkeletonPath, *AnimCachePath);
+			return true;
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: corrupt/stale anim cache %s — deleting and rebuilding"), *AnimCachePath);
+		IFileManager::Get().Delete(*AnimCachePath);
+		OutAnimations.Reset();
+	}
+
+	bool bLoadedIdle = false;
+	for (const FString& ClipPath : LocomotionPaths)
+	{
+		FSWGAnimationData ClipAnimation;
+		if (!FSWGAnimationReader::ReadAnimation(TreSubsystem->CreateIffReader(ClipPath), ClipAnimation))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to decode locomotion clip '%s'"), *ClipPath);
+
+			// Idle must always exist because it is the safe alternative to
+			// exposing the reference skeleton's T-pose. A missing movement
+			// clip falls back to idle while preserving the four state slots.
+			if (!bLoadedIdle)
+			{
+				break;
+			}
+			OutAnimations.Add(OutAnimations[0]);
+			continue;
+		}
+		OutAnimations.Add(FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(ClipAnimation, Skeleton));
+		bLoadedIdle = true;
+	}
+
+	if (!bLoadedIdle || OutAnimations.Num() != LocomotionPaths.Num())
+	{
+		return false;
+	}
+
+	IFileManager::Get().MakeDirectory(*AnimCacheDir, true);
+	if (FArchive* FileWriter = IFileManager::Get().CreateFileWriter(*AnimCachePath))
+	{
+		FSWGSkeletonData SkeletonCopy = Skeleton;
+		SerializeSkeletonForCache(*FileWriter, SkeletonCopy);
+
+		int32 AnimCount = OutAnimations.Num();
+		*FileWriter << AnimCount;
+		for (FSWGRuntimeAnimation& Animation : OutAnimations)
+		{
+			SerializeRuntimeAnimationForCache(*FileWriter, Animation);
+		}
+		FileWriter->Close();
+		delete FileWriter;
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to open %s for writing — animations not cached this time"), *AnimCachePath);
+	}
+
+	return true;
+}
+
 bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* DynamicMeshComponent)
 {
-	const bool bIsWookiee = MeshVirtualPaths.ContainsByPredicate([](const FString& Path)
-		{
-			return Path.Contains(TEXT("wke_m_body"), ESearchCase::IgnoreCase);
-		});
-	if (!bIsWookiee)
+	if (!TreSubsystem)
 	{
 		return false;
 	}
@@ -2160,11 +2371,38 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		return false;
 	}
 
-	USkeletalMesh* GeneratedMesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed.SK_Wookiee_MaterialTableFixed"));
+	FString SkeletonPath;
+	for (const FString& MeshPath : MeshVirtualPaths)
+	{
+		SkeletonPath = FSWGMeshReader::ReadSkeletalMeshSkeletonPath(TreSubsystem->CreateIffReader(MeshPath));
+		if (!SkeletonPath.IsEmpty()) break;
+	}
+	if (SkeletonPath.IsEmpty())
+	{
+		// No SKTM skeleton reference — this object has no animation data at
+		// all (most world objects), not an error; leave the procedural
+		// bind-pose mesh in place.
+		return false;
+	}
+
+	const FString* LatPath = AnimationLatPaths.Find(SkeletonPath);
+	TArray<FString> LocomotionPaths;
+	if (!LatPath || !ReadDefaultLocomotionPaths(TreSubsystem->CreateIffReader(*LatPath), LocomotionPaths))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no usable LATX locomotion LAT for skeleton '%s'"), *SkeletonPath);
+		return false;
+	}
+
+	FSWGSkeletonData Skeleton;
+	if (!FSWGSkeletonReader::ReadSkeleton(TreSubsystem->CreateIffReader(SkeletonPath), Skeleton))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to parse SKTM skeleton '%s'"), *SkeletonPath);
+		return false;
+	}
+
+	USkeletalMesh* GeneratedMesh = GetOrBuildGeneratedSkeletalMesh(SkeletonPath, MeshVirtualPaths, Skeleton);
 	if (!GeneratedMesh)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s resolved to the Wookiee's meshes, but /Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed isn't built yet (run swg.BuildWookieeSkeletalMesh) — falling back to the procedural bind-pose mesh"),
-			*Actor.GetName());
 		return false;
 	}
 
@@ -2214,118 +2452,56 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		}
 	}
 
-	// Parses the skeleton + locomotion clips fresh from the TRE and drives
-	// PoseableMesh's bones directly every tick instead of playing a built
-	// UAnimSequence, since IAnimationDataController silently discards every
-	// keyframe in this engine build.
-	if (TreSubsystem)
+	// Cache-aware (see GetOrBuildLocomotionAnimations) resample of the
+	// locomotion clips into dense per-frame data, driving PoseableMesh's
+	// bones directly every tick instead of playing a built UAnimSequence,
+	// since IAnimationDataController silently discards every keyframe in
+	// this engine build.
+	TArray<FSWGRuntimeAnimation> LocomotionAnimations;
+	if (!GetOrBuildLocomotionAnimations(SkeletonPath, LocomotionPaths, Skeleton, LocomotionAnimations) || LocomotionAnimations.Num() != 4)
 	{
-		FString SkeletonPath;
-		for (const FString& MeshPath : MeshVirtualPaths)
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s could not decode its idle clip; leaving the procedural mesh visible instead of showing a T-pose"), *Actor.GetName());
+		PoseableMesh->SetVisibility(false);
+		PoseableMesh->SetHiddenInGame(true);
+		if (DynamicMeshComponent)
 		{
-			SkeletonPath = FSWGMeshReader::ReadSkeletalMeshSkeletonPath(TreSubsystem->CreateIffReader(MeshPath));
-			if (!SkeletonPath.IsEmpty()) break;
+			DynamicMeshComponent->SetVisibility(true);
+			DynamicMeshComponent->SetHiddenInGame(false);
 		}
-		if (SkeletonPath.IsEmpty())
-		{
-			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s has no SKTM skeleton reference; leaving its procedural mesh visible"), *Actor.GetName());
-			PoseableMesh->SetVisibility(false);
-			PoseableMesh->SetHiddenInGame(true);
-			return false;
-		}
-
-		const FString* LatPath = AnimationLatPaths.Find(SkeletonPath);
-		TArray<FString> LocomotionPaths;
-		if (!LatPath || !ReadDefaultLocomotionPaths(TreSubsystem->CreateIffReader(*LatPath), LocomotionPaths))
-		{
-			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no usable LATX locomotion LAT for skeleton '%s'"), *SkeletonPath);
-			PoseableMesh->SetVisibility(false);
-			PoseableMesh->SetHiddenInGame(true);
-			if (DynamicMeshComponent)
-			{
-				DynamicMeshComponent->SetVisibility(true);
-				DynamicMeshComponent->SetHiddenInGame(false);
-			}
-			return false;
-		}
-
-		FSWGIffReader SkeletonIffReader = TreSubsystem->CreateIffReader(SkeletonPath);
-		FSWGSkeletonData Skeleton;
-		if (FSWGSkeletonReader::ReadSkeleton(SkeletonIffReader, Skeleton))
-		{
-			FSWGPlayingAnimation Playing;
-			Playing.PoseableMesh = PoseableMesh;
-			Playing.Skeleton = MoveTemp(Skeleton);
-
-			bool bLoadedIdle = false;
-			for (const FString& ClipPath : LocomotionPaths)
-			{
-				FSWGAnimationData ClipAnimation;
-				if (!FSWGAnimationReader::ReadAnimation(TreSubsystem->CreateIffReader(ClipPath), ClipAnimation))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to decode locomotion clip '%s'"), *ClipPath);
-
-					// Idle must always exist because it is the safe alternative to
-					// exposing the reference skeleton's T-pose. A missing movement
-					// clip falls back to idle while preserving the four state slots.
-					if (!bLoadedIdle)
-					{
-						break;
-					}
-					Playing.LocomotionAnimations.Add(Playing.LocomotionAnimations[0]);
-					continue;
-				}
-				Playing.LocomotionAnimations.Add(FSWGRuntimeAnimationPlayer::BuildRuntimeAnimation(ClipAnimation, Playing.Skeleton));
-				bLoadedIdle = true;
-			}
-
-			if (bLoadedIdle && Playing.LocomotionAnimations.Num() == 4)
-			{
-				// ApplyPose's arm damping needs the idle pose as its rest target.
-				const FSWGRuntimeAnimation& Idle = Playing.LocomotionAnimations[0];
-				TArray<FQuat> RestMidRotations;
-				RestMidRotations.SetNum(Playing.Skeleton.Joints.Num());
-				for (int32 JointIndex = 0; JointIndex < Playing.Skeleton.Joints.Num(); ++JointIndex)
-				{
-					RestMidRotations[JointIndex] = Idle.BoneTracks.IsValidIndex(JointIndex) && Idle.BoneTracks[JointIndex].DenseRotations.Num() > 0
-						? Idle.BoneTracks[JointIndex].DenseRotations[0]
-						: FQuat::Identity;
-				}
-
-				for (FSWGRuntimeAnimation& RuntimeAnimation : Playing.LocomotionAnimations)
-				{
-					RuntimeAnimation.RestMidRotations = RestMidRotations;
-				}
-
-				// Do not expose the imported skeleton's bind/T-pose for even one
-				// frame. The component becomes visible above, so establish the
-				// zero-speed idle pose synchronously before returning.
-				FSWGRuntimeAnimationPlayer::ApplyPose(
-					*PoseableMesh,
-					Playing.Skeleton,
-					Playing.LocomotionAnimations[0],
-					0.0f);
-
-				PlayingAnimations.Add(MoveTemp(Playing));
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s could not decode the Wookiee idle clip; leaving the procedural mesh visible instead of showing a T-pose"), *Actor.GetName());
-				PoseableMesh->SetVisibility(false);
-				PoseableMesh->SetHiddenInGame(true);
-				if (DynamicMeshComponent)
-				{
-					DynamicMeshComponent->SetVisibility(true);
-					DynamicMeshComponent->SetHiddenInGame(false);
-				}
-			}
-		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s failed to parse SKTM skeleton '%s' for runtime playback — mesh will show in bind pose"),
-				*Actor.GetName(), *SkeletonPath);
-		}
+		return false;
 	}
+
+	FSWGPlayingAnimation Playing;
+	Playing.PoseableMesh = PoseableMesh;
+	Playing.Skeleton = Skeleton;
+	Playing.LocomotionAnimations = MoveTemp(LocomotionAnimations);
+
+	// ApplyPose's arm damping needs the idle pose as its rest target.
+	const FSWGRuntimeAnimation& Idle = Playing.LocomotionAnimations[0];
+	TArray<FQuat> RestMidRotations;
+	RestMidRotations.SetNum(Playing.Skeleton.Joints.Num());
+	for (int32 JointIndex = 0; JointIndex < Playing.Skeleton.Joints.Num(); ++JointIndex)
+	{
+		RestMidRotations[JointIndex] = Idle.BoneTracks.IsValidIndex(JointIndex) && Idle.BoneTracks[JointIndex].DenseRotations.Num() > 0
+			? Idle.BoneTracks[JointIndex].DenseRotations[0]
+			: FQuat::Identity;
+	}
+
+	for (FSWGRuntimeAnimation& RuntimeAnimation : Playing.LocomotionAnimations)
+	{
+		RuntimeAnimation.RestMidRotations = RestMidRotations;
+	}
+
+	// Do not expose the imported skeleton's bind/T-pose for even one frame.
+	// The component becomes visible above, so establish the zero-speed idle
+	// pose synchronously before returning.
+	FSWGRuntimeAnimationPlayer::ApplyPose(
+		*PoseableMesh,
+		Playing.Skeleton,
+		Playing.LocomotionAnimations[0],
+		0.0f);
+
+	PlayingAnimations.Add(MoveTemp(Playing));
 
 	// A player can receive more than one asynchronous mesh request (and a
 	// previous PIE run can leave an actor-owned procedural component around).
@@ -2342,6 +2518,6 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		}
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s resolved to the generated SK_Wookiee skeletal mesh"), *Actor.GetName());
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s resolved to the generated skeletal mesh for skeleton '%s'"), *Actor.GetName(), *SkeletonPath);
 	return true;
 }
