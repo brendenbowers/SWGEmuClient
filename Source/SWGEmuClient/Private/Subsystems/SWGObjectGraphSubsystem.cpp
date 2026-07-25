@@ -459,12 +459,12 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 
 	
 	const FVector Location = SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ));
-	// Unlike Position (confirmed 1:1, no swap — see FSWGZoneLoadingState::Enter's
-	// comment), a direct X,Y,Z,W copy here produced wildly wrong pitch (~-89 deg
-	// for standing NPCs, confirmed via a live actor's transform) — the rotation
-	// wire data isn't in the same basis as position. Swapping Y/Z is the standard
-	// Y-up-to-Z-up quaternion conversion; testing empirically against a live actor.
-	const FQuat Rotation(Msg.DirX, Msg.DirZ, Msg.DirY, Msg.DirW);
+	// SceneCreateObjectMessage's DirX/DirY/DirZ/DirW are the same left-handed
+	// SWG quaternion FSWGWorldSnapshotReader::ReadNode decodes for static
+	// placed objects (see its FQuat(QX, QZ, -QY, QW)): a plain Y/Z swap is a
+	// reflection, not a proper rotation, so the surviving Y component must be
+	// negated to preserve rotation sense instead of mirroring yaw.
+	const FQuat Rotation(Msg.DirX, Msg.DirZ, -Msg.DirY, Msg.DirW);
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -642,8 +642,12 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	// DirectionAngle is a single byte (0-255) mapping to a full 0-360 degree
 	// yaw — cheap per-tick facing without transmitting a full quaternion like
 	// the initial spawn does. Pitch/Roll aren't part of this message (walking
-	// creatures don't need them), so only Yaw changes here.
-	const float YawDegrees = (Msg.DirectionAngle / 256.0f) * 360.0f;
+	// creatures don't need them), so only Yaw changes here. Same left-handed
+	// to right-handed conversion as the initial spawn quaternion (see
+	// SceneCreateObjectByCrc's FQuat(Msg.DirX, Msg.DirZ, -Msg.DirY, Msg.DirW))
+	// — for a pure yaw rotation that swap-with-negation reduces to simple
+	// negation of the angle, not an additive offset.
+	const float YawDegrees = -((Msg.DirectionAngle / 256.0f) * 360.0f);
 	FRotator NewRotation = Actor->GetActorRotation();
 	NewRotation.Yaw = YawDegrees;
 	Actor->SetActorRotation(NewRotation);

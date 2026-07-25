@@ -162,21 +162,14 @@ namespace
 			// Each XXXX chunk carries a different named property (e.g.
 			// "wearableTypeMask", "species", "appearanceFilename") — only
 			// the one matching Key is a candidate; every other chunk must
-			// be skipped, not just the first one encountered (returning the
-			// first XXXX unconditionally here made every caller of this
-			// function pick up whatever property happened to come first in
-			// the template, not the one it actually asked for).
+			// be skipped.
 			if (!ChunkKey.Equals(Key))
 			{
 				continue;
 			}
 
-			// One byte, not four — this is a bool "value present" flag
-			// immediately following the key's null terminator, same as the
-			// original manual byte-offset parsing this chunk reader
-			// replaced (FlagOffset/ValueOffset were exactly one byte apart).
-			// Reading it as a uint32 here consumed 3 bytes that actually
-			// belong to the value string, misaligning every value read.
+			// One byte, not four: a bool "value present" flag immediately
+			// following the key's null terminator.
 			const uint8 Flag = ChunkReader.ReadValueLE<uint8>();
 			if (Flag == 0)
 			{
@@ -2134,10 +2127,8 @@ void USWGMeshGeneratorSubsystem::FinalizeMeshComponent(AActor& Actor, UDynamicMe
 
 namespace
 {
-	// "appearance/mesh/wke_m_head_l0.mgn" -> "appearance/skeleton/wke_m_face.skt"
-	// — same species-prefix convention swg.BuildWookieeSkeletalMesh used
-	// (hardcoded there to the Wookiee only); probed generically here and
-	// simply skipped if the file doesn't exist for a given species.
+	// "appearance/mesh/wke_m_head_l0.mgn" -> "appearance/skeleton/wke_m_face.skt".
+	// Simply skipped if the file doesn't exist for a given species.
 	FString DeriveFaceSkeletonPath(const TArray<FString>& MeshVirtualPaths)
 	{
 		for (const FString& MeshPath : MeshVirtualPaths)

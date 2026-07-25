@@ -98,16 +98,16 @@ void ASWGPlayer::PossessedBy(AController* NewController)
 	// otherwise defaults to (0,0,0) regardless of whatever heading the
 	// network's spawn quaternion actually gave this actor (see
 	// HandleSceneCreateObject) — without this the boom would start facing
-	// world yaw-zero instead of behind the character. A +90 yaw used to be
-	// needed here because the mesh's visual forward was component +Y; now
-	// that USWGMeshGeneratorSubsystem rotates the PoseableMesh -90 so it
-	// faces actor +X (the standard UE convention bOrientRotationToMovement
-	// assumes), the boom seeds straight off the actor's own yaw. -15 pitch
-	// gives the camera its default slight downward tilt; from here on,
-	// mouse-look (LookMouseX/LookMouseY) freely orbits away from this point.
+	// world yaw-zero instead of behind the character. Only Yaw is taken from
+	// the actor's rotation: Pitch/Roll on a spawned actor come from the
+	// network quaternion's own decomposition and aren't meaningful camera
+	// tilt, so carrying them into ControlRotation rolls/pitches the whole
+	// view. -15 pitch gives the camera its default slight downward tilt;
+	// from here on, mouse-look (LookMouseX/LookMouseY) freely orbits away
+	// from this point.
 	if (NewController)
 	{
-		NewController->SetControlRotation(GetActorRotation() + FRotator(-15.0f, 0.0f, 0.0f));
+		NewController->SetControlRotation(FRotator(-15.0f, GetActorRotation().Yaw, 0.0f));
 	}
 
 	// This player is spawned and possessed at runtime. Install its mapping

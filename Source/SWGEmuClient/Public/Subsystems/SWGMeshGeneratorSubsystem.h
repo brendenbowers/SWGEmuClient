@@ -150,15 +150,15 @@ private:
 	/**
 	 * Generic per-species resolution: works for any ACharacter whose resolved
 	 * mesh/skeleton data yields a SKTM skeleton reference and a usable LATX
-	 * locomotion LAT — not just the Wookiee. Swaps in the generated skeletal
-	 * mesh (see GetOrBuildGeneratedSkeletalMesh) on a new
-	 * UPoseableMeshComponent (not ACharacter::GetMesh()), hiding
-	 * DynamicMeshComponent instead. Animation is driven directly at runtime
-	 * (bones sampled from FSWGRuntimeAnimation every tick) rather than via a
-	 * built UAnimSequence, since IAnimationDataController silently discards
-	 * every keyframe in this engine build — see FSWGRuntimeAnimationPlayer's
-	 * header comment. Returns false (no-op) for anything without a skeleton
-	 * (non-animated actors) or whose generated assets aren't available.
+	 * locomotion LAT. Swaps in the generated skeletal mesh (see
+	 * GetOrBuildGeneratedSkeletalMesh) on a new UPoseableMeshComponent (not
+	 * ACharacter::GetMesh()), hiding DynamicMeshComponent instead. Animation
+	 * is driven directly at runtime (bones sampled from FSWGRuntimeAnimation
+	 * every tick) rather than via a built UAnimSequence, since
+	 * IAnimationDataController silently discards every keyframe in this
+	 * engine build — see FSWGRuntimeAnimationPlayer's header comment. Returns
+	 * false (no-op) for anything without a skeleton (non-animated actors) or
+	 * whose generated assets aren't available.
 	 */
 	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* DynamicMeshComponent);
 
@@ -172,10 +172,10 @@ private:
 	 * .uasset on disk *is* the cache — a later LoadObject call is the
 	 * cache-hit path, same role MeshCache's .dmesh files play for procedural
 	 * meshes. If MeshVirtualPaths includes a "*_head*" part, also looks for a
-	 * matching "<prefix>_face.skt" skeleton (same convention the Wookiee's
-	 * face bones use) and merges it under the "head" joint for the mesh build
-	 * only — the caller's own Skeleton (used for runtime animation) is left
-	 * untouched since locomotion clips never animate face bones anyway.
+	 * matching "<prefix>_face.skt" skeleton and merges it under the "head"
+	 * joint for the mesh build only — the caller's own Skeleton (used for
+	 * runtime animation) is left untouched since locomotion clips never
+	 * animate face bones.
 	 */
 	USkeletalMesh* GetOrBuildGeneratedSkeletalMesh(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton);
 
@@ -184,9 +184,9 @@ private:
 	 * animations: reads/writes Saved/AnimCache/<hash>.danim (keyed by
 	 * SkeletonPath + LocomotionPaths, mirroring MeshCache's .dmesh naming) so
 	 * repeat requests for the same species skip re-parsing .ans clips and
-	 * rebuilding FSWGRuntimeAnimation from scratch. Runs entirely on the game
-	 * thread (TryApplyGeneratedAnimatedMesh is only ever called there), so
-	 * unlike MeshCache's write path this needs no in-flight-write guard.
+	 * rebuilding FSWGRuntimeAnimation. Runs entirely on the game thread
+	 * (TryApplyGeneratedAnimatedMesh is only ever called there), so unlike
+	 * MeshCache's write path this needs no in-flight-write guard.
 	 */
 	bool GetOrBuildLocomotionAnimations(const FString& SkeletonPath, const TArray<FString>& LocomotionPaths, const FSWGSkeletonData& Skeleton, TArray<FSWGRuntimeAnimation>& OutAnimations);
 
