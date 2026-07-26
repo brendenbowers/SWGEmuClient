@@ -43,6 +43,7 @@ private:
 	static bool PopulateImportData(
 		const FSWGSkeletonData& Skeleton,
 		const TArray<const FSWGMeshData*>& MeshParts,
+		const FString& PackagePath,
 		class FSkeletalMeshImportData& OutImportData,
 		TArray<FString>& OutMaterialSlotNames);
 };

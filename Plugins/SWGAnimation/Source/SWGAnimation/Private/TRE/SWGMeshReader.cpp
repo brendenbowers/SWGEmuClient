@@ -237,14 +237,24 @@ bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s missing PRIM"), *PsdtForm.FormType.ToString());
 		return false;
 	}
-	// Unlike FORM MESH's static submeshes (which use a plain "ITL " tag with
-	// 12-byte/no-flag records — see ReadMshSubmesh), a .mgn PSDT's PRIM form
-	// genuinely uses "OITL" — confirmed via a live PRIM child dump (only
-	// children were INFO and OITL, no "ITL " at all). These are two distinct
-	// on-disk conventions, not the same bug in two places.
-	if (!Reader.FindChildChunk(PrimForm, SWG_IFF_TAG('O','I','T','L'), OitlChunk))
+	// Most .mgn PSDT PRIM forms use "OITL" ([uint16 flag] + 3×uint32 corner
+	// indices per triangle), but some real submeshes (e.g. the sullustan_m
+	// base mesh's head submesh, and others sharing this simpler shape) use
+	// the plain "ITL " tag instead — the same one FORM MESH's static
+	// submeshes use elsewhere, just under PRIM instead of directly under the
+	// wrapper form. Both are handled below; a PRIM with neither is a genuine
+	// parse failure.
+	bool bHasOitl = Reader.FindChildChunk(PrimForm, SWG_IFF_TAG('O','I','T','L'), OitlChunk);
+	FSWGIffChunk ItlChunk;
+	bool bHasItl = !bHasOitl && Reader.FindChildChunk(PrimForm, SWG_IFF_TAG('I','T','L',' '), ItlChunk);
+	if (!bHasOitl && !bHasItl)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s PRIM missing OITL"), *PsdtForm.FormType.ToString());
+		FString ChildTags;
+		for (const FSWGIffChunk& PrimChild : Reader.ReadChildren(PrimForm))
+		{
+			ChildTags += (PrimChild.IsForm() ? FString::Printf(TEXT("FORM %s "), *PrimChild.FormType.ToString()) : FString::Printf(TEXT("%s "), *PrimChild.Tag.ToString()));
+		}
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s PRIM has neither OITL nor ITL (children: %s)"), *PsdtForm.FormType.ToString(), *ChildTags);
 		return false;
 	}
 
@@ -263,15 +273,24 @@ bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 	FSWGIFFChunkReader TcsdReader(TcsdChunk, Reader);
 
 	OutSubmesh.Vertices.Reserve((int32)CornerCount);
+	int32 OutOfRangeCornerCount = 0;
 	for (uint32 c = 0; c < CornerCount; ++c)
 	{
-		const uint32 PosIndex = PidxReader.ReadValueLE<uint32>();
-		const uint32 NormIndex = NidxReader.ReadValueLE<uint32>();
+		uint32 PosIndex = PidxReader.ReadValueLE<uint32>();
+		uint32 NormIndex = NidxReader.ReadValueLE<uint32>();
+		// A handful of real .mgn files (e.g. hum_f_arms_l0.mgn, hum_f_body_l0.mgn)
+		// carry a stray corner whose index is exactly Positions/Normals.Num() —
+		// one past the last valid entry, not a randomly corrupt value. Previously
+		// this aborted the whole submesh (return false), which is why entire
+		// body parts went missing from merged skeletal meshes even though only
+		// one corner out of hundreds was bad. Clamp instead of aborting: corner
+		// indices must stay dense (OITL triangles reference them by position in
+		// OutSubmesh.Vertices), so the corner can't just be skipped either.
 		if ((int32)PosIndex >= Positions.Num() || (int32)NormIndex >= Normals.Num())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s corner %d out of range (PosIndex=%d/%d, NormIndex=%d/%d)"),
-				*PsdtForm.FormType.ToString(), c, PosIndex, Positions.Num(), NormIndex, Normals.Num());
-			return false;
+			++OutOfRangeCornerCount;
+			PosIndex = FMath::Clamp(PosIndex, 0u, (uint32)FMath::Max(0, Positions.Num() - 1));
+			NormIndex = FMath::Clamp(NormIndex, 0u, (uint32)FMath::Max(0, Normals.Num() - 1));
 		}
 
 		FSWGMeshVertex Vertex;
@@ -288,21 +307,51 @@ bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 		}
 		OutSubmesh.Vertices.Add(MoveTemp(Vertex));
 	}
-
-	// OITL record = [uint16 flag][uint32 corner0][uint32 corner1][uint32 corner2]
-	// = 14 bytes — confirmed against a real chunk (DataSize=2160: (2160-4)/14
-	// = 154 exactly, whereas /12 isn't an integer). This is the format the
-	// static-mesh "ITL " fix moved away from — that fix was specific to FORM
-	// MESH's plain "ITL " tag, not this one.
-	FSWGIFFChunkReader OitlReader(OitlChunk, Reader);
-	const uint32 TriCount = OitlReader.ReadValueLE<uint32>();
-	OutSubmesh.Triangles.Reserve((int32)TriCount * 3);
-	for (uint32 t = 0; t < TriCount; ++t)
+	if (OutOfRangeCornerCount > 0)
 	{
-		OitlReader.Skip<uint16>(); // leading flag, unused
-		OutSubmesh.Triangles.Add((int32)OitlReader.ReadValueLE<uint32>());
-		OutSubmesh.Triangles.Add((int32)OitlReader.ReadValueLE<uint32>());
-		OutSubmesh.Triangles.Add((int32)OitlReader.ReadValueLE<uint32>());
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: PSDT %s had %d/%d corner(s) with out-of-range Pos/NormIndex — clamped instead of dropping the submesh"),
+			*PsdtForm.FormType.ToString(), OutOfRangeCornerCount, CornerCount);
+	}
+
+	if (bHasOitl)
+	{
+		// OITL record = [uint16 flag][uint32 corner0][uint32 corner1][uint32 corner2]
+		// = 14 bytes — confirmed against a real chunk (DataSize=2160: (2160-4)/14
+		// = 154 exactly, whereas /12 isn't an integer).
+		FSWGIFFChunkReader OitlReader(OitlChunk, Reader);
+		const uint32 TriCount = OitlReader.ReadValueLE<uint32>();
+		OutSubmesh.Triangles.Reserve((int32)TriCount * 3);
+		for (uint32 t = 0; t < TriCount; ++t)
+		{
+			OitlReader.Skip<uint16>(); // leading flag, unused
+			OutSubmesh.Triangles.Add((int32)OitlReader.ReadValueLE<uint32>());
+			OutSubmesh.Triangles.Add((int32)OitlReader.ReadValueLE<uint32>());
+			OutSubmesh.Triangles.Add((int32)OitlReader.ReadValueLE<uint32>());
+		}
+	}
+	else
+	{
+		// Plain ITL record = 3×uint32 corner indices, no leading flag. Some
+		// real files carry a leading uint32 TriCount prefix (like OITL does)
+		// and some don't (DataSize alone is an exact multiple of 12) — detect
+		// which by whether DataSize divides evenly by 12.
+		FSWGIFFChunkReader ItlReader(ItlChunk, Reader);
+		uint32 TriCount;
+		if (ItlChunk.DataSize % 12 == 0)
+		{
+			TriCount = (uint32)ItlChunk.DataSize / 12;
+		}
+		else
+		{
+			TriCount = ItlReader.ReadValueLE<uint32>();
+		}
+		OutSubmesh.Triangles.Reserve((int32)TriCount * 3);
+		for (uint32 t = 0; t < TriCount; ++t)
+		{
+			OutSubmesh.Triangles.Add((int32)ItlReader.ReadValueLE<uint32>());
+			OutSubmesh.Triangles.Add((int32)ItlReader.ReadValueLE<uint32>());
+			OutSubmesh.Triangles.Add((int32)ItlReader.ReadValueLE<uint32>());
+		}
 	}
 
 	return true;
@@ -310,11 +359,21 @@ bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 
 bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGMeshData& OutMesh)
 {
-	if (!Reader.IsValid()) return false;
+	if (!Reader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: ReadSkeletalMeshBindPose - reader is invalid"));
+		return false;
+	}
 
 	const TArray<FSWGIffChunk> TopLevel = Reader.ReadChunks();
 	if (TopLevel.Num() == 0 || !TopLevel[0].IsForm() || TopLevel[0].FormType != SWG_IFF_TAG('S','K','M','G'))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: ReadSkeletalMeshBindPose - top level is not FORM SKMG (TopLevel.Num()=%d, first=%s%s)"),
+			TopLevel.Num(),
+			TopLevel.Num() > 0 && TopLevel[0].IsForm() ? *TopLevel[0].FormType.ToString() : (TopLevel.Num() > 0 ? *TopLevel[0].Tag.ToString() : TEXT("<none>")),
+			TopLevel.Num() > 0 && TopLevel[0].IsForm() ? TEXT(" (form)") : TEXT(" (chunk)"));
 		return false;
+	}
 
 	const FSWGIffChunk& SkmgForm = TopLevel[0];
 
@@ -322,26 +381,50 @@ bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGM
 	// hardcoded "0004" doesn't match every real .mgn; take whichever single
 	// version-tagged form is actually present.
 	const TArray<FSWGIffChunk> SkmgVersionForms = Reader.FindChildForms(SkmgForm);
-	if (SkmgVersionForms.Num() == 0) return false;
+	if (SkmgVersionForms.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: ReadSkeletalMeshBindPose - FORM SKMG has no version child forms"));
+		return false;
+	}
 	const FSWGIffChunk& Form0004 = SkmgVersionForms[0];
 
 	FSWGIffChunk PosnChunk, NormChunk;
-	if (!Reader.FindChildChunk(Form0004, SWG_IFF_TAG('P','O','S','N'), PosnChunk)) return false;
-	if (!Reader.FindChildChunk(Form0004, SWG_IFF_TAG('N','O','R','M'), NormChunk)) return false;
+	if (!Reader.FindChildChunk(Form0004, SWG_IFF_TAG('P','O','S','N'), PosnChunk))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: ReadSkeletalMeshBindPose - version form %s missing POSN chunk"), *Form0004.FormType.ToString());
+		return false;
+	}
+	if (!Reader.FindChildChunk(Form0004, SWG_IFF_TAG('N','O','R','M'), NormChunk))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: ReadSkeletalMeshBindPose - version form %s missing NORM chunk"), *Form0004.FormType.ToString());
+		return false;
+	}
 
 	FSWGIFFChunkReader PosnReader(PosnChunk, Reader);
 	FSWGIFFChunkReader NormReader(NormChunk, Reader);
 	const int32 VertexCount = PosnChunk.DataSize / 12;
+	// NORM isn't guaranteed to carry one entry per POSN vertex — some real
+	// .mgn files (hum_f_arms_l0.mgn, hum_f_body_l0.mgn, and similar arm/body
+	// parts across many species) have more normal entries than position
+	// entries. Reusing VertexCount to bound both reads truncated the Normals
+	// array to the (smaller) position count, so legitimate NIDX values from
+	// PSDT corners further down read as "out of range" and the whole submesh
+	// was dropped — this is what caused entire body parts to silently vanish
+	// from merged skeletal meshes.
+	const int32 NormalCount = NormChunk.DataSize / 12;
 
 	// .mgn position data is in meters, same as .msh, and needs the same
 	// scale-up to match the rest of the codebase's world-unit convention;
 	// normals stay unscaled (unit-length).
 	TArray<FVector> Positions, Normals;
 	Positions.Reserve(VertexCount);
-	Normals.Reserve(VertexCount);
+	Normals.Reserve(NormalCount);
 	for (int32 i = 0; i < VertexCount; ++i)
 	{
 		Positions.Add(PosnReader.ReadVectorLE<FVector, float>(SWGWorldScale));
+	}
+	for (int32 i = 0; i < NormalCount; ++i)
+	{
 		Normals.Add(NormReader.ReadVectorLE<FVector, float>(1.0f));
 	}
 

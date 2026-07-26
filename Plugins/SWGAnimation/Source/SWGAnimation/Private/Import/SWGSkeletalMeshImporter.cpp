@@ -18,6 +18,7 @@
 bool FSWGSkeletalMeshImporter::PopulateImportData(
 	const FSWGSkeletonData& Skeleton,
 	const TArray<const FSWGMeshData*>& MeshParts,
+	const FString& PackagePath,
 	FSkeletalMeshImportData& OutImportData,
 	TArray<FString>& OutMaterialSlotNames)
 {
@@ -74,9 +75,22 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 	const int32* HeadJointIndex = JointNameToIndex.Find(TEXT("head"));
 
 	int32 GlobalMaterialIndex = 0;
+	int32 PartIndex = INDEX_NONE;
 	for (const FSWGMeshData* MeshPart : MeshParts)
 	{
+		++PartIndex;
 		if (!MeshPart) continue;
+
+		// A part whose weights can't be resolved contributes no influences at
+		// all, and the mesh builder culls influence-less vertices — so the
+		// part silently disappears from the merged mesh (bodies with no head,
+		// characters that are only hands, etc.). The per-name warning below
+		// only covers names that exist but don't match; an absent XFNM chunk
+		// leaves BoneNames empty and never reaches it, so call that out here.
+		if (MeshPart->BoneNames.Num() == 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: mesh part %d of '%s' has no XFNM bone names — its vertices fall back to rigid root binding"), PartIndex, *PackagePath);
+		}
 
 		// Resolve this mesh part's own XFNM-local bone indices to skeleton
 		// joint indices once, rather than re-searching per vertex.
@@ -100,6 +114,9 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 				LocalToSkeletonBoneIndex.Add(INDEX_NONE);
 			}
 		}
+
+		int32 PartVertexCount = 0;
+		int32 PartFallbackVertexCount = 0;
 
 		for (const FSWGMeshSubmesh& Submesh : MeshPart->Submeshes)
 		{
@@ -134,6 +151,7 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 				Wedge.MatIndex = (uint8)MatIndex;
 				OutImportData.Wedges.Add(Wedge);
 
+				int32 VertexInfluenceCount = 0;
 				for (const FSWGBoneWeight& BoneWeight : Vertex.BoneWeights)
 				{
 					if (!LocalToSkeletonBoneIndex.IsValidIndex(BoneWeight.BoneIndex)) continue;
@@ -145,7 +163,24 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 					Influence.BoneIndex = SkeletonBoneIndex;
 					Influence.Weight = BoneWeight.Weight;
 					OutImportData.Influences.Add(Influence);
+					++VertexInfluenceCount;
 				}
+
+				// The mesh builder culls vertices that carry no influence at
+				// all, which silently deletes whole body parts rather than
+				// failing — bind those rigidly to the root instead. The
+				// geometry is already in bind pose, so it lands in the right
+				// place and follows the character; it just won't deform.
+				if (VertexInfluenceCount == 0)
+				{
+					SkeletalMeshImportData::FRawBoneInfluence Influence;
+					Influence.VertexIndex = Wedge.VertexIndex;
+					Influence.BoneIndex = 0;
+					Influence.Weight = 1.0f;
+					OutImportData.Influences.Add(Influence);
+					++PartFallbackVertexCount;
+				}
+				++PartVertexCount;
 			}
 
 			const int32 TriCount = Submesh.Triangles.Num() / 3;
@@ -168,6 +203,12 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 				OutImportData.Faces.Add(Triangle);
 			}
 		}
+
+		if (PartFallbackVertexCount > 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: mesh part %d of '%s' — %d of %d vertices had no resolvable bone weights and were rigidly bound to the root; this part won't deform with the skeleton"),
+				PartIndex, *PackagePath, PartFallbackVertexCount, PartVertexCount);
+		}
 	}
 
 	OutImportData.bHasNormals = true;
@@ -186,7 +227,7 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 {
 	FSkeletalMeshImportData ImportData;
 	TArray<FString> MaterialSlotNames;
-	if (!PopulateImportData(Skeleton, MeshParts, ImportData, MaterialSlotNames))
+	if (!PopulateImportData(Skeleton, MeshParts, PackagePath, ImportData, MaterialSlotNames))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: no geometry/skeleton to build from for '%s'"), *PackagePath);
 		return nullptr;
