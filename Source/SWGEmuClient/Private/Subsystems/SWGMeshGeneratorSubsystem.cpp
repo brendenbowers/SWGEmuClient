@@ -4,6 +4,9 @@
 #include "Components/DynamicMeshComponent.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
+#include "Engine/StaticMesh.h"
+#include "Components/StaticMeshComponent.h"
+#include "GeometryScript/MeshAssetFunctions.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "TRE/SWGIffReader.h"
@@ -366,6 +369,66 @@ namespace
 		if (Actor.IsA<ASWGStaticProp>())     return FVector3f(0.2f, 0.8f, 0.3f);   // green
 		if (Actor.IsA<ASWGItem>())           return FVector3f(1.0f, 0.5f, 0.1f);   // orange
 		return FVector3f(0.7f, 0.7f, 0.7f); // unknown — neutral gray
+	}
+
+	// Shared mesh-population core for BuildDynamicMesh and
+	// GetOrBuildGeneratedStaticMesh — appends every submesh's own
+	// self-contained vertex buffer into EditMesh, one material ID per
+	// submesh so a real per-shader material can be assigned later without
+	// restructuring the mesh (see BuildDynamicMesh for the full reasoning).
+	void PopulateDynamicMeshFromMeshData(FDynamicMesh3& EditMesh, const FSWGMeshData& MeshData, const FVector3f& PlaceholderColor)
+	{
+		EditMesh.EnableAttributes();
+		EditMesh.Attributes()->EnableMaterialID();
+		EditMesh.EnableVertexColors(PlaceholderColor);
+
+		FDynamicMeshNormalOverlay* Normals = EditMesh.Attributes()->PrimaryNormals();
+		FDynamicMeshUVOverlay* UVs = EditMesh.Attributes()->PrimaryUV();
+		FDynamicMeshMaterialAttribute* MaterialIDs = EditMesh.Attributes()->GetMaterialID();
+
+		for (int32 SubmeshIndex = 0; SubmeshIndex < MeshData.Submeshes.Num(); ++SubmeshIndex)
+		{
+			const FSWGMeshSubmesh& Submesh = MeshData.Submeshes[SubmeshIndex];
+
+			TArray<int32> VertexIds, NormalIds, UVIds;
+			VertexIds.SetNumUninitialized(Submesh.Vertices.Num());
+			NormalIds.SetNumUninitialized(Submesh.Vertices.Num());
+			UVIds.SetNumUninitialized(Submesh.Vertices.Num());
+
+			for (int32 i = 0; i < Submesh.Vertices.Num(); ++i)
+			{
+				const FSWGMeshVertex& V = Submesh.Vertices[i];
+				VertexIds[i] = EditMesh.AppendVertex((FVector3d)V.Position);
+				NormalIds[i] = Normals->AppendElement((FVector3f)V.Normal);
+				UVIds[i] = UVs->AppendElement(V.UVs.Num() > 0 ? FVector2f(V.UVs[0]) : FVector2f::Zero());
+				EditMesh.SetVertexColor(VertexIds[i], PlaceholderColor);
+			}
+
+			for (int32 t = 0; t + 2 < Submesh.Triangles.Num(); t += 3)
+			{
+				const int32 IA = Submesh.Triangles[t];
+				const int32 IB = Submesh.Triangles[t + 1];
+				const int32 IC = Submesh.Triangles[t + 2];
+
+				// A malformed/mis-parsed submesh (bad chunk offsets, corrupt
+				// data) shouldn't be able to crash the engine — skip out-of-
+				// range triangles instead of indexing straight into VertexIds.
+				if (!Submesh.Vertices.IsValidIndex(IA) || !Submesh.Vertices.IsValidIndex(IB) || !Submesh.Vertices.IsValidIndex(IC))
+				{
+					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: skipping out-of-range triangle (%d,%d,%d) into %d vertices"),
+						IA, IB, IC, Submesh.Vertices.Num());
+					continue;
+				}
+
+				const int32 TriId = EditMesh.AppendTriangle(VertexIds[IA], VertexIds[IB], VertexIds[IC]);
+				if (TriId >= 0)
+				{
+					Normals->SetTriangle(TriId, FIndex3i(NormalIds[IA], NormalIds[IB], NormalIds[IC]));
+					UVs->SetTriangle(TriId, FIndex3i(UVIds[IA], UVIds[IB], UVIds[IC]));
+					MaterialIDs->SetValue(TriId, SubmeshIndex);
+				}
+			}
+		}
 	}
 
 	// The swg.* console commands below are registered once per process (static
@@ -794,6 +857,9 @@ void USWGMeshGeneratorSubsystem::RequestMeshForTemplatePath(AActor* Actor, const
 	FSWGPendingMeshRequest Request;
 	Request.Actor = Actor;
 	Request.TemplatePath = TemplatePath;
+	// Only world-snapshot objects (buildings, static props, terrain
+	// decoration) go through this entry point — see FSWGPendingMeshRequest::bStatic.
+	Request.bStatic = true;
 	PendingRequests.Add(MoveTemp(Request));
 }
 
@@ -849,6 +915,41 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 
 				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: resolved %d mesh path(s) for actor %s (crc %08X): %s"),
 					Request.MeshVirtualPaths.Num(), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
+
+				if (Request.bStatic)
+				{
+					// World-snapshot (static) objects have their own persistent
+					// cache — a real UStaticMesh under /Game/SWGEmu/Generated/
+					// SM_<hash>, keyed by TemplatePath (see
+					// GetOrBuildGeneratedStaticMesh) — which supersedes the
+					// ephemeral Saved/MeshCache/*.dmesh mechanism below entirely.
+					// Routing them through that mechanism too meant building a
+					// full disposable UDynamicMeshComponent (parse, register,
+					// attach, assign materials) just to immediately throw it
+					// away once the static mesh cache made the geometry
+					// redundant — skip straight to the static path instead.
+					FSWGMeshData MeshData;
+					const bool bParsed = ParseMesh(Request, MeshData);
+					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ParseMesh returned %s for static actor %s (template %s), %d submesh(es)"),
+						bParsed ? TEXT("true") : TEXT("false"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), *Request.TemplatePath, MeshData.Submeshes.Num());
+					if (!bParsed)
+					{
+						return;
+					}
+
+					const float YawCorrectionDegrees = GetStaticMeshYawCorrection(Request.MeshVirtualPaths);
+					AsyncTask(ENamedThreads::GameThread, [this, Request, MeshData, YawCorrectionDegrees]()
+						{
+							if (!Request.Actor.IsValid())
+							{
+								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before static mesh build completed for %s — skipping"), *Request.TemplatePath);
+								return;
+							}
+							UMeshComponent* MeshComponent = BuildStaticMeshComponent(*Request.Actor, MeshData, Request.TemplatePath, YawCorrectionDegrees);
+							TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent);
+						});
+					return;
+				}
 
 				// Cache key includes the actor's class alongside the resolved mesh
 				// paths: PlaceholderColor (baked directly into the cached mesh's
@@ -1826,57 +1927,7 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildDynamicMesh(AActor& Actor, cons
 
 	MeshComponent->EditMesh([&MeshData, PlaceholderColor](FDynamicMesh3& EditMesh)
 	{
-		EditMesh.EnableAttributes();
-		EditMesh.Attributes()->EnableMaterialID();
-		EditMesh.EnableVertexColors(PlaceholderColor);
-
-		FDynamicMeshNormalOverlay* Normals = EditMesh.Attributes()->PrimaryNormals();
-		FDynamicMeshUVOverlay* UVs = EditMesh.Attributes()->PrimaryUV();
-		FDynamicMeshMaterialAttribute* MaterialIDs = EditMesh.Attributes()->GetMaterialID();
-
-		for (int32 SubmeshIndex = 0; SubmeshIndex < MeshData.Submeshes.Num(); ++SubmeshIndex)
-		{
-			const FSWGMeshSubmesh& Submesh = MeshData.Submeshes[SubmeshIndex];
-
-			TArray<int32> VertexIds, NormalIds, UVIds;
-			VertexIds.SetNumUninitialized(Submesh.Vertices.Num());
-			NormalIds.SetNumUninitialized(Submesh.Vertices.Num());
-			UVIds.SetNumUninitialized(Submesh.Vertices.Num());
-
-			for (int32 i = 0; i < Submesh.Vertices.Num(); ++i)
-			{
-				const FSWGMeshVertex& V = Submesh.Vertices[i];
-				VertexIds[i] = EditMesh.AppendVertex((FVector3d)V.Position);
-				NormalIds[i] = Normals->AppendElement((FVector3f)V.Normal);
-				UVIds[i] = UVs->AppendElement(V.UVs.Num() > 0 ? FVector2f(V.UVs[0]) : FVector2f::Zero());
-				EditMesh.SetVertexColor(VertexIds[i], PlaceholderColor);
-			}
-
-			for (int32 t = 0; t + 2 < Submesh.Triangles.Num(); t += 3)
-			{
-				const int32 IA = Submesh.Triangles[t];
-				const int32 IB = Submesh.Triangles[t + 1];
-				const int32 IC = Submesh.Triangles[t + 2];
-
-				// A malformed/mis-parsed submesh (bad chunk offsets, corrupt
-				// data) shouldn't be able to crash the engine — skip out-of-
-				// range triangles instead of indexing straight into VertexIds.
-				if (!Submesh.Vertices.IsValidIndex(IA) || !Submesh.Vertices.IsValidIndex(IB) || !Submesh.Vertices.IsValidIndex(IC))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: skipping out-of-range triangle (%d,%d,%d) into %d vertices"),
-						IA, IB, IC, Submesh.Vertices.Num());
-					continue;
-				}
-
-				const int32 TriId = EditMesh.AppendTriangle(VertexIds[IA], VertexIds[IB], VertexIds[IC]);
-				if (TriId >= 0)
-				{
-					Normals->SetTriangle(TriId, FIndex3i(NormalIds[IA], NormalIds[IB], NormalIds[IC]));
-					UVs->SetTriangle(TriId, FIndex3i(UVIds[IA], UVIds[IB], UVIds[IC]));
-					MaterialIDs->SetValue(TriId, SubmeshIndex);
-				}
-			}
-		}
+		PopulateDynamicMeshFromMeshData(EditMesh, MeshData, PlaceholderColor);
 	});
 
 	TArray<UMaterialInterface*> SubmeshMaterials;
@@ -1922,6 +1973,7 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildDynamicMesh(AActor& Actor, UDyn
 
 void USWGMeshGeneratorSubsystem::FinalizeMeshComponent(AActor& Actor, UDynamicMeshComponent& MeshComponent, const FVector3f& PlaceholderColor, const TArray<UMaterialInterface*>& SubmeshMaterials)
 {
+
 	// Fallback for any submesh whose shader is empty/unresolved/texture-load
 	// failed (SubmeshMaterials[i] == nullptr) — the engine's vertex-color-only
 	// debug material instead of the flat default surface material, so
@@ -2052,6 +2104,131 @@ void USWGMeshGeneratorSubsystem::FinalizeMeshComponent(AActor& Actor, UDynamicMe
 	}
 
 	OnMeshReady.Broadcast(&Actor, &MeshComponent);
+}
+
+UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(const FString& TemplatePath, const FSWGMeshData& MeshData)
+{
+	const uint32 Hash = GetTypeHash(TemplatePath);
+	const FString AssetName = FString::Printf(TEXT("SM_%u"), Hash);
+	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
+
+	// The saved .uasset on disk is the cache, same role it plays for
+	// GetOrBuildGeneratedSkeletalMesh — one static mesh asset shared by every
+	// placed instance of this template, keyed by template path since a
+	// world-snapshot template's geometry never varies per-instance (unlike
+	// creatures/players/items, which vary by customization/equipment). A hit
+	// here needs no MeshData at all — pure geometry, no parse/build work.
+	if (UStaticMesh* Existing = LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
+	{
+		return Existing;
+	}
+
+#if WITH_EDITOR
+	if (MeshData.Submeshes.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no submeshes to build a generated static mesh for template '%s'"), *TemplatePath);
+		return nullptr;
+	}
+
+	// A bare, unregistered, never-rendered UDynamicMesh — just a scratch
+	// buffer to hand to CopyMeshToStaticMesh, not a component. Building a
+	// full UDynamicMeshComponent (register, attach, material-assign, later
+	// destroy) here would be pure waste: this path only runs on a cache
+	// miss, and the component would never be shown.
+	UDynamicMesh* ScratchMesh = NewObject<UDynamicMesh>(GetTransientPackage());
+	const FVector3f PlaceholderColor = FVector3f(0.7f, 0.7f, 0.7f);
+	ScratchMesh->EditMesh([&MeshData, PlaceholderColor](FDynamicMesh3& EditMesh)
+	{
+		PopulateDynamicMeshFromMeshData(EditMesh, MeshData, PlaceholderColor);
+	});
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	Package->FullyLoad();
+	UStaticMesh* StaticMesh = NewObject<UStaticMesh>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+
+	// Deliberately NOT baking real per-shader materials into the asset here
+	// (no Options.bReplaceMaterials/NewMaterials): those are
+	// UMaterialInstanceDynamic instances outered to this subsystem, not
+	// assets in this package — saving that reference into a persistent
+	// .uasset doesn't survive a reload (the MID isn't itself
+	// package-resident), which is what left every cached static mesh
+	// untextured after the first session. Real materials are assigned at
+	// runtime on the component instead (see BuildStaticMeshComponent) — same
+	// pattern GetOrBuildGeneratedSkeletalMesh already uses
+	// (TryApplyGeneratedAnimatedMesh's per-slot CharacterMesh->SetMaterial
+	// calls, never baked into the saved USkeletalMesh either).
+	// CommitMeshDescription (inside CopyMeshToStaticMesh) still auto-creates
+	// one material slot per submesh from the mesh description's polygon
+	// groups, which is all that runtime SetMaterial call needs to succeed.
+	FGeometryScriptCopyMeshToAssetOptions Options;
+	Options.bEmitTransaction = false;
+
+	FGeometryScriptMeshWriteLOD TargetLOD;
+	EGeometryScriptOutcomePins Outcome;
+	UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(ScratchMesh, StaticMesh, Options, TargetLOD, Outcome);
+
+	if (Outcome != EGeometryScriptOutcomePins::Success)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: CopyMeshToStaticMesh failed for template '%s'"), *TemplatePath);
+		return nullptr;
+	}
+
+	StaticMesh->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(StaticMesh);
+
+	const FString FileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	UPackage::SavePackage(Package, StaticMesh, *FileName, SaveArgs);
+
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated static mesh '%s' for template '%s'"), *PackagePath, *TemplatePath);
+	return StaticMesh;
+#else
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated static mesh '%s' isn't built yet and can't be built in a packaged build"), *PackagePath);
+	return nullptr;
+#endif
+}
+
+UMeshComponent* USWGMeshGeneratorSubsystem::BuildStaticMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, const FString& TemplatePath, float YawCorrectionDegrees)
+{
+	UStaticMesh* StaticMesh = GetOrBuildGeneratedStaticMesh(TemplatePath, MeshData);
+	if (!StaticMesh)
+	{
+		return nullptr;
+	}
+
+	UStaticMeshComponent* StaticMeshComponent = NewObject<UStaticMeshComponent>(&Actor, NAME_None, RF_Transactional);
+	StaticMeshComponent->SetStaticMesh(StaticMesh);
+
+	// Real per-shader materials, assigned live on the component every time
+	// (cheap — GetOrBuildObjectMaterial's own cache means this is just a
+	// lookup, not a rebuild) rather than baked into the cached asset — see
+	// GetOrBuildGeneratedStaticMesh for why.
+	for (int32 i = 0; i < MeshData.Submeshes.Num(); ++i)
+	{
+		StaticMeshComponent->SetMaterial(i, GetOrBuildObjectMaterial(MeshData.Submeshes[i].ShaderName));
+	}
+
+	StaticMeshComponent->SetMobility(EComponentMobility::Static);
+
+	// A Static component can't attach under Actor's existing (Movable)
+	// default root, and its transform can't be changed via SetWorldTransform
+	// once registered ("has to be Movable if you'd like to move"). Replace
+	// that root outright instead — a static world object has no other use
+	// for a separate movable root — composing the yaw correction (see
+	// GetStaticMeshYawCorrection) on top of the old root's world transform
+	// (the actor's already-correct network spawn placement), since nothing
+	// else carries that placement once the old root is gone.
+	const FTransform BaseTransform = Actor.GetRootComponent() ? Actor.GetRootComponent()->GetComponentTransform() : Actor.GetActorTransform();
+	const FTransform YawCorrectionTransform(FRotator(0.0f, YawCorrectionDegrees, 0.0f));
+	StaticMeshComponent->SetRelativeTransform(YawCorrectionTransform * BaseTransform);
+	Actor.SetRootComponent(StaticMeshComponent);
+	StaticMeshComponent->RegisterComponent();
+
+	OnMeshReady.Broadcast(&Actor, StaticMeshComponent);
+
+	return StaticMeshComponent;
 }
 
 namespace

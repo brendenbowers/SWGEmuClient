@@ -26,6 +26,7 @@ public class SWGEmuClient : ModuleRules
 			"Landscape",
 			"GeometryFramework",
 			"GeometryCore",
+			"GeometryScriptingCore",
 			"SWGEmu",
 			"SWGTre",
 			"SWGAnimation"
