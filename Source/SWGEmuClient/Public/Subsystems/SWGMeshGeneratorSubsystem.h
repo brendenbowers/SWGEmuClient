@@ -65,9 +65,10 @@ struct FSWGPendingMeshRequest
 	 *  decoration — placed once from the .ws file and never touched by a
 	 *  network transform update), false for anything spawned through the live
 	 *  object graph (creatures, players, items — can move). Drives the built
-	 *  mesh component's Mobility (see FinalizeMeshComponent) so static-only
-	 *  content gets the engine's static-mobility rendering/lighting path
-	 *  instead of paying Movable's per-frame transform-update overhead. */
+	 *  mesh component's Mobility (see BuildGeneratedMeshComponent) so
+	 *  static-only content gets the engine's static-mobility
+	 *  rendering/lighting path instead of paying Movable's per-frame
+	 *  transform-update overhead. */
 	bool bStatic = false;
 };
 
@@ -76,13 +77,10 @@ struct FSWGPendingMeshRequest
  * attached — see world-object-plan.html "Mesh rendering": CRC -> template ->
  * appearance (.apt->.lod, or .sat->.lmg/.mgn) -> mesh file -> parse
  * (FSWGMeshReader, already implemented and engine-agnostic) -> decode -> build
- * UDynamicMeshComponent (runtime-safe, no editor-only mesh-build dependency;
- * .mgn is bind-pose only for now, no skinning/animation — see the design doc's
- * "Decision: bind-pose-only creatures/players for now").
- *
- * Empty skeleton for now — every step below is a stub, mirroring
- * USWGTerrainSubsystem's phased build-out. Filling these in is separate
- * follow-up work.
+ * a real, cached UStaticMesh (see GetOrBuildGeneratedStaticMesh /
+ * BuildGeneratedMeshComponent; .mgn is bind-pose only for now, no
+ * skinning/animation — see the design doc's "Decision: bind-pose-only
+ * creatures/players for now").
  */
 UCLASS()
 class SWGEMUCLIENT_API USWGMeshGeneratorSubsystem : public UGameInstanceSubsystem, public FTickableGameObject
@@ -135,71 +133,55 @@ private:
 	/** mg4: FSWGMeshReader::ReadStaticMesh/ReadSkeletalMeshBindPose — intended to run off the game thread, like USWGTerrainSubsystem::BakeHeightmap. */
 	bool ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData);
 
-	/** mg5: builds/registers a UDynamicMeshComponent on Actor from the decoded FSWGMeshData (game thread) and broadcasts OnMeshReady. Movable, procedural — the path for creatures/players/items. bStatic requests (see FSWGPendingMeshRequest::bStatic) never reach this; ProcessNextRequest routes them straight to BuildStaticMeshComponent instead. */
-	UMeshComponent* BuildDynamicMesh(AActor& Actor, const FSWGMeshData& MeshData);
-
-	/** Cache-hit equivalent of the above — same finalize path (material, capsule resize, OnMeshReady), just from an already-populated UDynamicMesh (loaded from USWGMeshGeneratorSubsystem's on-disk mesh cache) instead of freshly-decoded FSWGMeshData. ShaderNames is the per-submesh shader list persisted alongside the cached mesh (see ProcessNextRequest) — cache files predating this no longer parse (harmless, on-disk dev cache only; delete Saved/MeshCache to regenerate). */
-	UMeshComponent* BuildDynamicMesh(AActor& Actor, UDynamicMesh* DynamicMesh, const TArray<FString>& ShaderNames);
+	/**
+	 * Loads the once-built UStaticMesh for CacheHash (package name hashed
+	 * under /Game/SWGEmu/Generated/SM_<hash> — see ProcessNextRequest for how
+	 * static vs. dynamic requests compute this hash differently), or builds
+	 * and saves it via GeometryScript's CopyMeshToStaticMesh from a scratch
+	 * (unregistered, never-rendered) UDynamicMesh populated straight from
+	 * MeshData if it doesn't exist yet and this is an editor/PIE build — same
+	 * cache-or-build shape as GetOrBuildGeneratedSkeletalMesh. DebugName is
+	 * just for logging. No materials are baked in (see
+	 * BuildGeneratedMeshComponent for why); this only produces the geometry,
+	 * with PlaceholderColor baked into its vertex colors as the fallback tint
+	 * for any submesh whose real material can't be resolved later.
+	 */
+	UStaticMesh* GetOrBuildGeneratedStaticMesh(uint32 CacheHash, const FString& DebugName, const FSWGMeshData& MeshData, const FVector3f& PlaceholderColor);
 
 	/**
-	 * Shared tail of both BuildDynamicMesh overloads: material/color-mode
-	 * setup, registration, attach-and-resize-capsule-to-mesh-bounds, hiding
-	 * the default USkeletalMeshComponent, and broadcasting OnMeshReady.
-	 * MeshBounds is always read back from MeshComponent's own DynamicMesh
-	 * (not from FSWGMeshData) so both the fresh-parse and cache-hit paths
-	 * compute it identically — one source of truth instead of two
-	 * independent (and previously subtly different) implementations.
-	 * SubmeshMaterials is one entry per submesh (real per-shader texture
-	 * material from GetOrBuildObjectMaterial, or PlaceholderMaterial for any
-	 * submesh whose shader failed to resolve/load a texture) — always sized
-	 * to at least 1 by the caller.
+	 * Gets/builds the cached UStaticMesh (see GetOrBuildGeneratedStaticMesh —
+	 * a cache hit does no geometry work at all) and creates a
+	 * UStaticMeshComponent for it with the given Mobility. Real per-shader
+	 * materials (from GetOrBuildObjectMaterial) are assigned live on the
+	 * component every time, never baked into the cached asset — those are
+	 * UMaterialInstanceDynamic instances outered to this subsystem, not
+	 * assets in the package, so a baked reference doesn't survive a reload.
+	 * For an ACharacter (creatures/players), attaches under the existing
+	 * capsule and resizes it to the mesh's real bounds (replacing the old
+	 * flat 88/34 default), matching every capsule-derived offset (camera eye
+	 * height, nameplate clearance) to it. For anything else (items, static
+	 * world objects), replaces whatever default root Actor already has
+	 * outright — a Static component can't attach under a Movable default
+	 * root, and neither mobility has a capsule-derived reason to keep a
+	 * separate root around — composing YawCorrectionDegrees
+	 * (GetStaticMeshYawCorrection's per-file correction) on top of the old
+	 * root's world transform (the actor's already-correct network spawn
+	 * placement), since nothing else carries that placement once it's gone.
 	 */
-	void FinalizeMeshComponent(AActor& Actor, UDynamicMeshComponent& MeshComponent, const FVector3f& PlaceholderColor, const TArray<UMaterialInterface*>& SubmeshMaterials);
-
-	/**
-	 * For world-snapshot (bStatic) objects only. Loads the once-built
-	 * UStaticMesh for this template (package name hashed from TemplatePath,
-	 * under /Game/SWGEmu/Generated/SM_<hash> — one asset shared by every
-	 * placed instance, since a world-snapshot template's geometry never
-	 * varies per-instance), or builds and saves it via GeometryScript's
-	 * CopyMeshToStaticMesh from a scratch (unregistered, never-rendered)
-	 * UDynamicMesh populated straight from MeshData if it doesn't exist yet
-	 * and this is an editor/PIE build — same cache-or-build shape as
-	 * GetOrBuildGeneratedSkeletalMesh. No materials are baked in (see
-	 * BuildStaticMeshComponent for why); this only produces the geometry.
-	 */
-	UStaticMesh* GetOrBuildGeneratedStaticMesh(const FString& TemplatePath, const FSWGMeshData& MeshData);
-
-	/**
-	 * For world-snapshot (bStatic) objects only: gets/builds the cached
-	 * UStaticMesh (see GetOrBuildGeneratedStaticMesh — a cache hit does no
-	 * geometry work at all, unlike routing through BuildDynamicMesh first)
-	 * and creates a UStaticMeshComponent (Mobility::Static) for it, replacing
-	 * whatever default root Actor already has (a Static component can't
-	 * attach under a Movable one, and static world objects have no other use
-	 * for a separate movable root). Real per-shader materials (from
-	 * GetOrBuildObjectMaterial) are assigned live on the component, never
-	 * baked into the cached asset — those are UMaterialInstanceDynamic
-	 * instances outered to this subsystem, not assets in the package, so a
-	 * baked reference doesn't survive a reload. YawCorrectionDegrees is
-	 * GetStaticMeshYawCorrection's per-file correction, composed on top of
-	 * Actor's existing root transform (its correct network spawn placement)
-	 * since this replaces that root outright rather than attaching under it.
-	 */
-	UMeshComponent* BuildStaticMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, const FString& TemplatePath, float YawCorrectionDegrees);
+	UMeshComponent* BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility);
 
 	/**
 	 * Generic per-species resolution: works for any ACharacter whose resolved
 	 * mesh/skeleton data yields a SKTM skeleton reference and a usable LATX
 	 * locomotion LAT. Swaps in the generated skeletal mesh (see
 	 * GetOrBuildGeneratedSkeletalMesh) directly on Character->GetMesh() (no
-	 * longer kept hidden), hiding DynamicMeshComponent instead, and plays a
+	 * longer kept hidden), hiding ProceduralMeshComponent instead, and plays a
 	 * generated UBlendSpace (see GetOrBuildLocomotionBlendSpace) via
 	 * UAnimSingleNodeInstance. Returns false (no-op) for anything without a
 	 * skeleton (non-animated actors) or whose generated assets aren't
 	 * available.
 	 */
-	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* DynamicMeshComponent);
+	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent);
 
 	/**
 	 * Loads the once-built USkeletalMesh for this skeleton+mesh-parts
@@ -209,8 +191,9 @@ private:
 	 * editor/PIE build (see that class's WITH_EDITOR comment — there's no
 	 * packaged-build-safe way to construct a real skinned mesh). The saved
 	 * .uasset on disk *is* the cache — a later LoadObject call is the
-	 * cache-hit path, same role MeshCache's .dmesh files play for procedural
-	 * meshes. If MeshVirtualPaths includes a "*_head*" part, also looks for a
+	 * cache-hit path, same role GetOrBuildGeneratedStaticMesh's own cache
+	 * plays for procedural meshes. If MeshVirtualPaths includes a "*_head*"
+	 * part, also looks for a
 	 * matching "<prefix>_face.skt" skeleton and merges it under the "head"
 	 * joint for the mesh build only — the caller's own Skeleton (used to
 	 * build locomotion animations) is left untouched since locomotion clips
@@ -304,15 +287,6 @@ private:
 	TObjectPtr<USWGTreSubsystem> TreSubsystem;
 
 	TArray<FSWGPendingMeshRequest> PendingRequests;
-
-	/**
-	 * Cache paths currently being written by an in-flight fresh-parse request —
-	 * guards against two actors sharing a template CRC racing the same on-disk
-	 * cache file. Any request whose target path is already in this set falls
-	 * back to a plain parse-and-build without touching the cache.
-	 */
-	FCriticalSection CacheWriteLock;
-	TSet<FString> InFlightCacheWrites;
 
 	/** Parent material for GetOrBuildObjectMaterial's per-shader MIDs — a single Texture2D parameter ("Diffuse") plugged straight into BaseColor. Authored as a plugin content asset, not generated at runtime. */
 	UPROPERTY()

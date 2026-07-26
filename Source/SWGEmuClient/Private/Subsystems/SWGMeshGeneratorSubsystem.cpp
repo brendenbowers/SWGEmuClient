@@ -513,7 +513,7 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 	// Wookiee (body + head merged) via FSWGSkeletalMeshImporter, as a
 	// standalone proof of the .skt/.mgn -> real skinned mesh pipeline before
 	// it's wired into the main mesh-generation flow (which still renders
-	// every creature bind-pose-only via UDynamicMeshComponent). Remove or
+	// every creature bind-pose-only via the procedural generated-mesh path). Remove or
 	// fold into that flow once this is validated.
 	static FAutoConsoleCommand BuildWookieeSkeletalMeshCmd(
 		TEXT("swg.BuildWookieeSkeletalMesh"),
@@ -916,231 +916,53 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: resolved %d mesh path(s) for actor %s (crc %08X): %s"),
 					Request.MeshVirtualPaths.Num(), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
 
-				if (Request.bStatic)
+				FSWGMeshData MeshData;
+				const bool bParsed = ParseMesh(Request, MeshData);
+				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ParseMesh returned %s for actor %s (crc %08X), %d submesh(es)"),
+					bParsed ? TEXT("true") : TEXT("false"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, MeshData.Submeshes.Num());
+				if (!bParsed)
 				{
-					// World-snapshot (static) objects have their own persistent
-					// cache — a real UStaticMesh under /Game/SWGEmu/Generated/
-					// SM_<hash>, keyed by TemplatePath (see
-					// GetOrBuildGeneratedStaticMesh) — which supersedes the
-					// ephemeral Saved/MeshCache/*.dmesh mechanism below entirely.
-					// Routing them through that mechanism too meant building a
-					// full disposable UDynamicMeshComponent (parse, register,
-					// attach, assign materials) just to immediately throw it
-					// away once the static mesh cache made the geometry
-					// redundant — skip straight to the static path instead.
-					FSWGMeshData MeshData;
-					const bool bParsed = ParseMesh(Request, MeshData);
-					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ParseMesh returned %s for static actor %s (template %s), %d submesh(es)"),
-						bParsed ? TEXT("true") : TEXT("false"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), *Request.TemplatePath, MeshData.Submeshes.Num());
-					if (!bParsed)
-					{
-						return;
-					}
-
-					const float YawCorrectionDegrees = GetStaticMeshYawCorrection(Request.MeshVirtualPaths);
-					AsyncTask(ENamedThreads::GameThread, [this, Request, MeshData, YawCorrectionDegrees]()
-						{
-							if (!Request.Actor.IsValid())
-							{
-								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before static mesh build completed for %s — skipping"), *Request.TemplatePath);
-								return;
-							}
-							UMeshComponent* MeshComponent = BuildStaticMeshComponent(*Request.Actor, MeshData, Request.TemplatePath, YawCorrectionDegrees);
-							TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent);
-						});
 					return;
 				}
 
-				// Cache key includes the actor's class alongside the resolved mesh
-				// paths: PlaceholderColor (baked directly into the cached mesh's
-				// vertex colors — see BuildDynamicMesh) is a pure function of
-				// actor class, so two different classes sharing the same
-				// underlying mesh file(s) must not share one cache entry, or
-				// whichever built it first "poisons" the tint for the other.
+				// Every generated mesh (world-snapshot static objects and
+				// creature/player/item procedural ones alike) is a real
+				// UStaticMesh cached under /Game/SWGEmu/Generated/SM_<hash> —
+				// see GetOrBuildGeneratedStaticMesh — instead of the old
+				// ephemeral Saved/MeshCache/*.dmesh raw-serialization cache.
+				// Static objects key on TemplatePath alone (one asset shared
+				// by every placed instance of that template — its geometry
+				// never varies per-instance). Everything else keys on the
+				// resolved mesh file(s) + actor class, matching the old
+				// .dmesh key: PlaceholderColor (baked into the mesh's vertex
+				// colors) is a pure function of actor class, so two classes
+				// sharing the same underlying mesh file(s) must not share
+				// one cache entry, or whichever built it first "poisons" the
+				// tint for the other.
 				const FString ActorClassName = Request.Actor.IsValid() ? Request.Actor->GetClass()->GetName() : TEXT("Unknown");
-				const uint32 PathsHash = GetTypeHash(Request.MeshVirtualPaths);
-				const FString MeshCacheDir = FPaths::ProjectSavedDir() / TEXT("MeshCache");
-				const FString MeshCachePath = FString::Printf(TEXT("%s/%u_%s.dmesh"), *MeshCacheDir, PathsHash, *ActorClassName);
+				const uint32 CacheHash = Request.bStatic
+					? GetTypeHash(Request.TemplatePath)
+					: (GetTypeHash(Request.MeshVirtualPaths) ^ GetTypeHash(ActorClassName));
+				const FString DebugName = Request.bStatic
+					? Request.TemplatePath
+					: FString::Printf(TEXT("%s (%s)"), *FString::Join(Request.MeshVirtualPaths, TEXT(", ")), *ActorClassName);
+				const float YawCorrectionDegrees = GetStaticMeshYawCorrection(Request.MeshVirtualPaths);
+				const EComponentMobility::Type Mobility = Request.bStatic ? EComponentMobility::Static : EComponentMobility::Movable;
 
-				// Two actors sharing the same template can request this exact cache
-				// path at nearly the same moment; read-vs-write-vs-skip must be
-				// decided atomically under one lock or two requests can both see
-				// "file doesn't exist yet" and race on writing/reading it.
-				bool bTryCacheRead = false;
-				bool bShouldWriteCache = false;
-				{
-					FScopeLock Lock(&CacheWriteLock);
-					if (InFlightCacheWrites.Contains(MeshCachePath))
+				// Back on the game thread to build/attach the mesh component.
+				// The actor can be destroyed/GC'd during this background parse
+				// (streaming out, zone change, etc.) — Request.Actor is a
+				// TWeakObjectPtr specifically for that reason.
+				AsyncTask(ENamedThreads::GameThread, [this, Request, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility]()
 					{
-						// Someone else is already building+writing this exact
-						// entry — don't race them. Just parse and build fresh for
-						// this request, without reading or writing the cache.
-					}
-					else if (IFileManager::Get().FileExists(*MeshCachePath))
-					{
-						bTryCacheRead = true;
-					}
-					else
-					{
-						InFlightCacheWrites.Add(MeshCachePath);
-						bShouldWriteCache = true;
-					}
-				}
-
-				if (bTryCacheRead)
-				{
-					// UObject creation (NewObject) and anything touching the actor
-					// itself has to happen on the game thread — only the
-					// existence check above is safe to do here. See the
-					// fresh-parse branch below for the same actor-gone-mid-async
-					// guard this mirrors.
-					AsyncTask(ENamedThreads::GameThread, [this, Request, MeshCachePath]() mutable
+						if (!Request.Actor.IsValid())
 						{
-							if (!Request.Actor.IsValid())
-							{
-								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before cached mesh could be loaded for %s — skipping"), *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
-								return;
-							}
-
-							FArchive* FileReader = IFileManager::Get().CreateFileReader(*MeshCachePath);
-							if (!FileReader)
-							{
-								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: cache file %s vanished before it could be read — skipping this mesh"), *MeshCachePath);
-								return;
-							}
-
-							// UDynamicMesh::Serialize also runs Super::Serialize (UObject's
-							// tagged-property path), which needs a real linker/package
-							// archive context — round-tripping through a bare IFileManager
-							// archive breaks it. FDynamicMesh3::Serialize (GetMeshRef()) is
-							// a plain data serializer with no UObject involvement, safe here.
-							UDynamicMesh* DynamicMesh = NewObject<UDynamicMesh>(this);
-							DynamicMesh->GetMeshRef().Serialize(*FileReader);
-
-							// Per-submesh shader names, persisted right after the mesh
-							// data itself (see the write side below) — needed to build
-							// real per-shader textured materials on a cache hit, not
-							// just the geometry. Cache files from before this was added
-							// simply fail here (harmless: dev-only on-disk cache,
-							// delete Saved/MeshCache to regenerate in the new format).
-							TArray<FString> ShaderNames;
-							*FileReader << ShaderNames;
-
-							const bool bReadOk = !FileReader->IsError();
-							FileReader->Close();
-							delete FileReader;
-
-							if (!bReadOk)
-							{
-								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: corrupt mesh cache %s — deleting and skipping this mesh"), *MeshCachePath);
-								IFileManager::Get().Delete(*MeshCachePath);
-								return;
-							}
-
-							UE_LOG(LogTemp, Log, TEXT("USWGMeshGeneratorSubsystem: loaded cached mesh for %s from %s"), *Request.Actor->GetName(), *MeshCachePath);
-							UMeshComponent* MeshComponent = BuildDynamicMesh(*Request.Actor, DynamicMesh, ShaderNames);
-							if (MeshComponent)
-							{
-								MeshComponent->SetRelativeRotation(FRotator(0.0f, GetStaticMeshYawCorrection(Request.MeshVirtualPaths), 0.0f));
-							}
-							TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent);
-						});
-				}
-				else
-				{
-					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: parsing fresh for actor %s (crc %08X)"),
-						Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc);
-
-					FSWGMeshData MeshData;
-					const bool bParsed = ParseMesh(Request, MeshData);
-
-					UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ParseMesh returned %s for actor %s (crc %08X), %d submesh(es)"),
-						bParsed ? TEXT("true") : TEXT("false"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, MeshData.Submeshes.Num());
-
-					// Temporary diagnostic: investigating real object texturing —
-					// need to see what ShaderName actually looks like on disk
-					// (bare name vs. full virtual path, .sht extension or not)
-					// before a shader->texture resolver can be written.
-					for (const FSWGMeshSubmesh& Submesh : MeshData.Submeshes)
-					{
-						UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: submesh ShaderName='%s'"), *Submesh.ShaderName);
-					}
-
-					if (bParsed)
-					{
-						// Back on the game thread to build the mesh component and attach it to the actor.
-						// The actor can be destroyed/GC'd during this background parse (streaming out,
-						// zone change, etc.) — Request.Actor is a TWeakObjectPtr specifically for that
-						// reason, but nothing here checked it before dereferencing, which crashed
-						// NewObject (null Outer) once an actor happened to go away mid-parse.
-						AsyncTask(ENamedThreads::GameThread, [this, Request, MeshData, MeshCacheDir, MeshCachePath, bShouldWriteCache]()
-							{
-								// Whichever branch this lambda exits through, the
-								// in-flight marker (if we set one) must come off,
-								// or every later request for this same mesh would
-								// be permanently treated as "someone else is
-								// writing it" and never actually cache/build.
-								ON_SCOPE_EXIT
-								{
-									if (bShouldWriteCache)
-									{
-										FScopeLock Lock(&CacheWriteLock);
-										InFlightCacheWrites.Remove(MeshCachePath);
-									}
-								};
-
-								if (!Request.Actor.IsValid())
-								{
-									UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before mesh build completed for %s — skipping"), *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
-									return;
-								}
-
-								UMeshComponent* MeshComponent = BuildDynamicMesh(*Request.Actor, MeshData);
-								if (MeshComponent)
-								{
-									MeshComponent->SetRelativeRotation(FRotator(0.0f, GetStaticMeshYawCorrection(Request.MeshVirtualPaths), 0.0f));
-								}
-								TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent);
-
-								UDynamicMeshComponent* DynamicMeshComponent = Cast<UDynamicMeshComponent>(MeshComponent);
-								if (!DynamicMeshComponent || !bShouldWriteCache)
-								{
-									return;
-								}
-
-								IFileManager::Get().MakeDirectory(*MeshCacheDir, true);
-								if (FArchive* FileWriter = IFileManager::Get().CreateFileWriter(*MeshCachePath))
-								{
-									// See the cache-read branch's comment — plain
-									// FDynamicMesh3::Serialize, not UDynamicMesh::Serialize.
-									DynamicMeshComponent->GetDynamicMesh()->GetMeshRef().Serialize(*FileWriter);
-
-									TArray<FString> ShaderNames;
-									ShaderNames.Reserve(MeshData.Submeshes.Num());
-									for (const FSWGMeshSubmesh& Submesh : MeshData.Submeshes)
-									{
-										ShaderNames.Add(Submesh.ShaderName);
-									}
-									*FileWriter << ShaderNames;
-
-									FileWriter->Close();
-									delete FileWriter;
-								}
-								else
-								{
-									UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to open %s for writing — mesh not cached this time"), *MeshCachePath);
-								}
-							});
-					}
-					else if (bShouldWriteCache)
-					{
-						// ParseMesh itself failed — still have to release the
-						// marker so a later attempt for this same mesh isn't
-						// permanently blocked from ever using the cache.
-						FScopeLock Lock(&CacheWriteLock);
-						InFlightCacheWrites.Remove(MeshCachePath);
-					}
-				}
+							UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before mesh build completed for %s — skipping"), *DebugName);
+							return;
+						}
+						UMeshComponent* MeshComponent = BuildGeneratedMeshComponent(*Request.Actor, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility);
+						TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent);
+					});
 			});
 	}
 }
@@ -1907,217 +1729,18 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 	return Result;
 }
 
-UMeshComponent* USWGMeshGeneratorSubsystem::BuildDynamicMesh(AActor& Actor, const FSWGMeshData& MeshData)
+UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 CacheHash, const FString& DebugName, const FSWGMeshData& MeshData, const FVector3f& PlaceholderColor)
 {
-	check(IsInGameThread());
-
-	if (MeshData.Submeshes.Num() == 0)
-	{
-		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: mesh data has no submeshes — refusing to build"));
-		return nullptr;
-	}
-
-	UDynamicMeshComponent* MeshComponent = NewObject<UDynamicMeshComponent>(&Actor, NAME_None, RF_Transactional);
-
-	// Each FSWGMeshSubmesh has its own self-contained vertex buffer (Triangles
-	// indexes into it, not a shared global one) — appended into one combined
-	// FDynamicMesh3 here, one material ID per submesh so a real per-shader
-	// material can be assigned later without restructuring the mesh.
-	const FVector3f PlaceholderColor = GetPlaceholderColorForActor(Actor);
-
-	MeshComponent->EditMesh([&MeshData, PlaceholderColor](FDynamicMesh3& EditMesh)
-	{
-		PopulateDynamicMeshFromMeshData(EditMesh, MeshData, PlaceholderColor);
-	});
-
-	TArray<UMaterialInterface*> SubmeshMaterials;
-	SubmeshMaterials.Reserve(MeshData.Submeshes.Num());
-	for (const FSWGMeshSubmesh& Submesh : MeshData.Submeshes)
-	{
-		SubmeshMaterials.Add(GetOrBuildObjectMaterial(Submesh.ShaderName));
-	}
-
-	FinalizeMeshComponent(Actor, *MeshComponent, PlaceholderColor, SubmeshMaterials);
-	return MeshComponent;
-}
-
-UMeshComponent* USWGMeshGeneratorSubsystem::BuildDynamicMesh(AActor& Actor, UDynamicMesh* DynamicMesh, const TArray<FString>& ShaderNames)
-{
-	check(IsInGameThread());
-
-	if (!DynamicMesh)
-	{
-		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: No Dynamic Mesh"));
-		return nullptr;
-	}
-
-	// Cache-hit path (see ProcessNextRequest) — geometry/attributes come from
-	// the serialized UDynamicMesh, but ShaderNames (persisted alongside it in
-	// the same cache file) lets this build real per-submesh materials exactly
-	// like the fresh-parse path, instead of falling back to a single tint.
-	const FVector3f PlaceholderColor = GetPlaceholderColorForActor(Actor);
-
-	UDynamicMeshComponent* MeshComponent = NewObject<UDynamicMeshComponent>(&Actor, NAME_None, RF_Transactional);
-	MeshComponent->SetDynamicMesh(DynamicMesh);
-
-	TArray<UMaterialInterface*> SubmeshMaterials;
-	SubmeshMaterials.Reserve(ShaderNames.Num());
-	for (const FString& ShaderName : ShaderNames)
-	{
-		SubmeshMaterials.Add(GetOrBuildObjectMaterial(ShaderName));
-	}
-
-	FinalizeMeshComponent(Actor, *MeshComponent, PlaceholderColor, SubmeshMaterials);
-	return MeshComponent;
-}
-
-void USWGMeshGeneratorSubsystem::FinalizeMeshComponent(AActor& Actor, UDynamicMeshComponent& MeshComponent, const FVector3f& PlaceholderColor, const TArray<UMaterialInterface*>& SubmeshMaterials)
-{
-
-	// Fallback for any submesh whose shader is empty/unresolved/texture-load
-	// failed (SubmeshMaterials[i] == nullptr) — the engine's vertex-color-only
-	// debug material instead of the flat default surface material, so
-	// GetPlaceholderColorForActor's per-type tint (set via EnableVertexColors/
-	// SetVertexColor) is still visible for anything that couldn't get a real
-	// texture. The plain default material ignores vertex color entirely.
-	UMaterialInterface* PlaceholderMaterial = LoadObject<UMaterialInterface>(nullptr,
-		TEXT("/Engine/EngineDebugMaterials/VertexColorViewMode_ColorOnly.VertexColorViewMode_ColorOnly"));
-	if (!PlaceholderMaterial)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to load VertexColorViewMode_ColorOnly, falling back to plain default material (no vertex color tint will show)"));
-		PlaceholderMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
-	}
-
-	const int32 NumSlots = FMath::Max(SubmeshMaterials.Num(), 1);
-	TArray<UMaterialInterface*> Materials;
-	Materials.Reserve(NumSlots);
-	int32 NumTextured = 0;
-	for (int32 i = 0; i < NumSlots; ++i)
-	{
-		UMaterialInterface* Mat = SubmeshMaterials.IsValidIndex(i) ? SubmeshMaterials[i] : nullptr;
-		if (Mat)
-		{
-			++NumTextured;
-		}
-		Materials.Add(Mat ? Mat : PlaceholderMaterial);
-	}
-	MeshComponent.ConfigureMaterialSet(Materials);
-
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s (class %s) assigned %d/%d real textured material(s), tint=(%.2f,%.2f,%.2f)"),
-		*Actor.GetName(), *Actor.GetClass()->GetName(), NumTextured, NumSlots,
-		PlaceholderColor.X, PlaceholderColor.Y, PlaceholderColor.Z);
-
-	// ColorOverrideMode other than None (VertexColors/Polygroups/Constant) makes
-	// the scene proxy ignore whatever material is assigned and force-substitute
-	// the engine's built-in vertex-color debug material — leave it at None.
-	// Vertex color data still uploads to the GPU regardless (only Constant mode
-	// ignores it), so materials that read it via their own graph still work.
-
-	MeshComponent.RegisterComponent();
-
-	if (!Actor.GetRootComponent())
-	{
-		Actor.SetRootComponent(&MeshComponent);
-	}
-	else
-	{
-		MeshComponent.AttachToComponent(Actor.GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
-
-		// ACharacter's root is the capsule, centered above the feet, but SWG
-		// geometry is authored with its origin at ground level — this offset
-		// keeps the mesh from floating at capsule-center height. The capsule is
-		// also resized here to the real mesh bounds (not UE's flat 88/34
-		// default), since every capsule-derived offset (this one, camera eye
-		// height, nameplate clearance) is wrong otherwise. Bounds are read from
-		// the component's own DynamicMesh (not FSWGMeshData) so the fresh-parse
-		// and cache-hit paths compute this identically.
-		if (ACharacter* Character = Cast<ACharacter>(&Actor))
-		{
-			if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
-			{
-				FBox MeshBounds(ForceInit);
-				MeshComponent.GetDynamicMesh()->ProcessMesh([&MeshBounds](const FDynamicMesh3& Mesh)
-					{
-						for (const int32 VertexID : Mesh.VertexIndicesItr())
-						{
-							MeshBounds += (FVector)Mesh.GetVertex(VertexID);
-						}
-					});
-
-				if (MeshBounds.IsValid)
-				{
-					// Read the server's real feet-level Z from ASWGCreature::LastNetworkZ
-					// rather than back-calculating "CurrentLocation.Z - OldHalfHeight" —
-					// the async mesh queue can take seconds, during which an
-					// unconstrained freefall (before terrain collision exists) can
-					// move the actor and corrupt that back-calculation.
-					const ASWGCreature* Creature = Cast<ASWGCreature>(&Actor);
-					const float NetworkZ = Creature ? Creature->LastNetworkZ : (Actor.GetActorLocation().Z - Capsule->GetScaledCapsuleHalfHeight());
-
-					const FVector Extent = MeshBounds.GetExtent();
-					const float NewHalfHeight = FMath::Max(Extent.Z, 1.0f);
-					const float NewRadius = FMath::Max(FMath::Max(Extent.X, Extent.Y), 1.0f);
-					Capsule->SetCapsuleSize(NewRadius, NewHalfHeight);
-
-					FVector CorrectedLocation = Actor.GetActorLocation();
-					CorrectedLocation.Z = NetworkZ + NewHalfHeight;
-					Actor.SetActorLocation(CorrectedLocation);
-
-					MeshComponent.SetRelativeLocation(FVector(0.0f, 0.0f, -MeshBounds.GetCenter().Z));
-
-					// The player's first-person eye height is derived from the
-					// capsule at construction time (before this resize), so it
-					// needs recomputing now against the real size.
-					if (ASWGPlayer* Player = Cast<ASWGPlayer>(&Actor))
-					{
-						Player->UpdateCameraHeight();
-					}
-
-					// Same problem for the nameplate — UpdateNameLabel may have
-					// already run (e.g. from an earlier baseline packet) and
-					// positioned it against the capsule's pre-resize default.
-					if (USWGTangibleComponent* Tangible = Actor.FindComponentByClass<USWGTangibleComponent>())
-					{
-						Tangible->RepositionNameLabel();
-					}
-				}
-				else
-				{
-					MeshComponent.SetRelativeLocation(FVector(0.0f, 0.0f, -Capsule->GetScaledCapsuleHalfHeight()));
-				}
-			}
-		}
-	}
-
-	// ACharacter always carries its own default USkeletalMeshComponent with no
-	// SkeletalMesh assigned; we never feed decoded geometry into it (that needs
-	// the same editor-only import pipeline UDynamicMeshComponent avoids), so
-	// just hide it. The capsule-half-height offset (not this component's
-	// transform) is what fixes NPCs floating — see USWGObjectGraphSubsystem.
-	if (ACharacter* Character = Cast<ACharacter>(&Actor))
-	{
-		if (USkeletalMeshComponent* CharacterMesh = Character->GetMesh())
-		{
-			CharacterMesh->SetVisibility(false);
-			CharacterMesh->SetHiddenInGame(true);
-		}
-	}
-
-	OnMeshReady.Broadcast(&Actor, &MeshComponent);
-}
-
-UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(const FString& TemplatePath, const FSWGMeshData& MeshData)
-{
-	const uint32 Hash = GetTypeHash(TemplatePath);
-	const FString AssetName = FString::Printf(TEXT("SM_%u"), Hash);
+	const FString AssetName = FString::Printf(TEXT("SM_%u"), CacheHash);
 	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
 
 	// The saved .uasset on disk is the cache, same role it plays for
 	// GetOrBuildGeneratedSkeletalMesh — one static mesh asset shared by every
-	// placed instance of this template, keyed by template path since a
-	// world-snapshot template's geometry never varies per-instance (unlike
-	// creatures/players/items, which vary by customization/equipment). A hit
-	// here needs no MeshData at all — pure geometry, no parse/build work.
+	// actor whose CacheHash matches (world-snapshot objects: every placed
+	// instance of one template, since its geometry never varies per-instance;
+	// creatures/players/items: every instance sharing the same resolved mesh
+	// file(s) + actor class). A hit here needs no MeshData at all — pure
+	// geometry, no parse/build work.
 	if (UStaticMesh* Existing = LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
 	{
 		return Existing;
@@ -2126,7 +1749,7 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(const FSt
 #if WITH_EDITOR
 	if (MeshData.Submeshes.Num() == 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no submeshes to build a generated static mesh for template '%s'"), *TemplatePath);
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no submeshes to build a generated static mesh for '%s'"), *DebugName);
 		return nullptr;
 	}
 
@@ -2136,7 +1759,6 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(const FSt
 	// destroy) here would be pure waste: this path only runs on a cache
 	// miss, and the component would never be shown.
 	UDynamicMesh* ScratchMesh = NewObject<UDynamicMesh>(GetTransientPackage());
-	const FVector3f PlaceholderColor = FVector3f(0.7f, 0.7f, 0.7f);
 	ScratchMesh->EditMesh([&MeshData, PlaceholderColor](FDynamicMesh3& EditMesh)
 	{
 		PopulateDynamicMeshFromMeshData(EditMesh, MeshData, PlaceholderColor);
@@ -2153,8 +1775,8 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(const FSt
 	// .uasset doesn't survive a reload (the MID isn't itself
 	// package-resident), which is what left every cached static mesh
 	// untextured after the first session. Real materials are assigned at
-	// runtime on the component instead (see BuildStaticMeshComponent) — same
-	// pattern GetOrBuildGeneratedSkeletalMesh already uses
+	// runtime on the component instead (see BuildGeneratedMeshComponent) —
+	// same pattern GetOrBuildGeneratedSkeletalMesh already uses
 	// (TryApplyGeneratedAnimatedMesh's per-slot CharacterMesh->SetMaterial
 	// calls, never baked into the saved USkeletalMesh either).
 	// CommitMeshDescription (inside CopyMeshToStaticMesh) still auto-creates
@@ -2169,7 +1791,7 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(const FSt
 
 	if (Outcome != EGeometryScriptOutcomePins::Success)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: CopyMeshToStaticMesh failed for template '%s'"), *TemplatePath);
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: CopyMeshToStaticMesh failed for '%s'"), *DebugName);
 		return nullptr;
 	}
 
@@ -2182,7 +1804,7 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(const FSt
 	SaveArgs.SaveFlags = SAVE_NoError;
 	UPackage::SavePackage(Package, StaticMesh, *FileName, SaveArgs);
 
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated static mesh '%s' for template '%s'"), *PackagePath, *TemplatePath);
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated static mesh '%s' for '%s'"), *PackagePath, *DebugName);
 	return StaticMesh;
 #else
 	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated static mesh '%s' isn't built yet and can't be built in a packaged build"), *PackagePath);
@@ -2190,45 +1812,138 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(const FSt
 #endif
 }
 
-UMeshComponent* USWGMeshGeneratorSubsystem::BuildStaticMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, const FString& TemplatePath, float YawCorrectionDegrees)
+UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility)
 {
-	UStaticMesh* StaticMesh = GetOrBuildGeneratedStaticMesh(TemplatePath, MeshData);
+	const FVector3f PlaceholderColor = GetPlaceholderColorForActor(Actor);
+	UStaticMesh* StaticMesh = GetOrBuildGeneratedStaticMesh(CacheHash, DebugName, MeshData, PlaceholderColor);
 	if (!StaticMesh)
 	{
 		return nullptr;
 	}
 
-	UStaticMeshComponent* StaticMeshComponent = NewObject<UStaticMeshComponent>(&Actor, NAME_None, RF_Transactional);
-	StaticMeshComponent->SetStaticMesh(StaticMesh);
+	UStaticMeshComponent* MeshComponent = NewObject<UStaticMeshComponent>(&Actor, NAME_None, RF_Transactional);
+	MeshComponent->SetStaticMesh(StaticMesh);
 
 	// Real per-shader materials, assigned live on the component every time
 	// (cheap — GetOrBuildObjectMaterial's own cache means this is just a
 	// lookup, not a rebuild) rather than baked into the cached asset — see
-	// GetOrBuildGeneratedStaticMesh for why.
+	// GetOrBuildGeneratedStaticMesh for why. Falls back to the engine's
+	// vertex-color debug material for any submesh whose shader
+	// failed/unresolved, so PlaceholderColor (baked into the mesh's vertex
+	// colors) is still visible for it instead of the flat default material.
+	UMaterialInterface* PlaceholderMaterial = LoadObject<UMaterialInterface>(nullptr,
+		TEXT("/Engine/EngineDebugMaterials/VertexColorViewMode_ColorOnly.VertexColorViewMode_ColorOnly"));
+	if (!PlaceholderMaterial)
+	{
+		PlaceholderMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
+	}
+	int32 NumTextured = 0;
 	for (int32 i = 0; i < MeshData.Submeshes.Num(); ++i)
 	{
-		StaticMeshComponent->SetMaterial(i, GetOrBuildObjectMaterial(MeshData.Submeshes[i].ShaderName));
+		UMaterialInterface* Mat = GetOrBuildObjectMaterial(MeshData.Submeshes[i].ShaderName);
+		if (Mat)
+		{
+			++NumTextured;
+		}
+		MeshComponent->SetMaterial(i, Mat ? Mat : PlaceholderMaterial);
+	}
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s (class %s) assigned %d/%d real textured material(s), tint=(%.2f,%.2f,%.2f)"),
+		*Actor.GetName(), *Actor.GetClass()->GetName(), NumTextured, MeshData.Submeshes.Num(),
+		PlaceholderColor.X, PlaceholderColor.Y, PlaceholderColor.Z);
+
+	MeshComponent->SetMobility(Mobility);
+
+	if (ACharacter* Character = Cast<ACharacter>(&Actor))
+	{
+		// SWG geometry is authored with its origin at ground level, but
+		// ACharacter's root is the capsule, centered above the feet — this
+		// offset keeps the mesh from floating at capsule-center height. The
+		// capsule is also resized here to the real mesh bounds (not UE's
+		// flat 88/34 default), since every capsule-derived offset (this one,
+		// camera eye height, nameplate clearance) is wrong otherwise.
+		if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+		{
+			const FBox MeshBounds = StaticMesh->GetBoundingBox();
+			MeshComponent->RegisterComponent();
+			MeshComponent->AttachToComponent(Capsule, FAttachmentTransformRules::KeepRelativeTransform);
+			MeshComponent->SetRelativeRotation(FRotator(0.0f, YawCorrectionDegrees, 0.0f));
+
+			if (MeshBounds.IsValid)
+			{
+				// Read the server's real feet-level Z from ASWGCreature::LastNetworkZ
+				// rather than back-calculating "CurrentLocation.Z - OldHalfHeight" —
+				// the async mesh queue can take seconds, during which an
+				// unconstrained freefall (before terrain collision exists) can
+				// move the actor and corrupt that back-calculation.
+				const ASWGCreature* Creature = Cast<ASWGCreature>(&Actor);
+				const float NetworkZ = Creature ? Creature->LastNetworkZ : (Actor.GetActorLocation().Z - Capsule->GetScaledCapsuleHalfHeight());
+
+				const FVector Extent = MeshBounds.GetExtent();
+				const float NewHalfHeight = FMath::Max(Extent.Z, 1.0f);
+				const float NewRadius = FMath::Max(FMath::Max(Extent.X, Extent.Y), 1.0f);
+				Capsule->SetCapsuleSize(NewRadius, NewHalfHeight);
+
+				FVector CorrectedLocation = Actor.GetActorLocation();
+				CorrectedLocation.Z = NetworkZ + NewHalfHeight;
+				Actor.SetActorLocation(CorrectedLocation);
+
+				MeshComponent->SetRelativeLocation(FVector(0.0f, 0.0f, -MeshBounds.GetCenter().Z));
+
+				// The player's first-person eye height is derived from the
+				// capsule at construction time (before this resize), so it
+				// needs recomputing now against the real size.
+				if (ASWGPlayer* Player = Cast<ASWGPlayer>(&Actor))
+				{
+					Player->UpdateCameraHeight();
+				}
+
+				// Same problem for the nameplate — UpdateNameLabel may have
+				// already run (e.g. from an earlier baseline packet) and
+				// positioned it against the capsule's pre-resize default.
+				if (USWGTangibleComponent* Tangible = Actor.FindComponentByClass<USWGTangibleComponent>())
+				{
+					Tangible->RepositionNameLabel();
+				}
+			}
+			else
+			{
+				MeshComponent->SetRelativeLocation(FVector(0.0f, 0.0f, -Capsule->GetScaledCapsuleHalfHeight()));
+			}
+		}
+
+		// ACharacter always carries its own default USkeletalMeshComponent with no
+		// SkeletalMesh assigned; we never feed decoded geometry into it (that needs
+		// the same editor-only import pipeline this generator avoids for the
+		// procedural path), so just hide it. The capsule-half-height offset
+		// (not this component's transform) is what fixes NPCs floating.
+		if (USkeletalMeshComponent* CharacterMesh = Character->GetMesh())
+		{
+			CharacterMesh->SetVisibility(false);
+			CharacterMesh->SetHiddenInGame(true);
+		}
+	}
+	else
+	{
+		// Non-Character (items, world-snapshot static objects): replace
+		// whatever default root Actor has outright, rather than attaching
+		// under it. A Static component in particular can't attach under a
+		// Movable default root, and its transform can't be changed via
+		// SetWorldTransform once registered ("has to be Movable if you'd
+		// like to move") — and there's no capsule-derived reason to keep a
+		// separate root around for either mobility. Compose the yaw
+		// correction on top of the old root's world transform (the actor's
+		// already-correct network spawn placement), since nothing else
+		// carries that placement once the old root is gone.
+		const FTransform BaseTransform = Actor.GetRootComponent() ? Actor.GetRootComponent()->GetComponentTransform() : Actor.GetActorTransform();
+		const FTransform YawCorrectionTransform(FRotator(0.0f, YawCorrectionDegrees, 0.0f));
+		MeshComponent->SetRelativeTransform(YawCorrectionTransform * BaseTransform);
+		Actor.SetRootComponent(MeshComponent);
+		MeshComponent->RegisterComponent();
 	}
 
-	StaticMeshComponent->SetMobility(EComponentMobility::Static);
+	OnMeshReady.Broadcast(&Actor, MeshComponent);
 
-	// A Static component can't attach under Actor's existing (Movable)
-	// default root, and its transform can't be changed via SetWorldTransform
-	// once registered ("has to be Movable if you'd like to move"). Replace
-	// that root outright instead — a static world object has no other use
-	// for a separate movable root — composing the yaw correction (see
-	// GetStaticMeshYawCorrection) on top of the old root's world transform
-	// (the actor's already-correct network spawn placement), since nothing
-	// else carries that placement once the old root is gone.
-	const FTransform BaseTransform = Actor.GetRootComponent() ? Actor.GetRootComponent()->GetComponentTransform() : Actor.GetActorTransform();
-	const FTransform YawCorrectionTransform(FRotator(0.0f, YawCorrectionDegrees, 0.0f));
-	StaticMeshComponent->SetRelativeTransform(YawCorrectionTransform * BaseTransform);
-	Actor.SetRootComponent(StaticMeshComponent);
-	StaticMeshComponent->RegisterComponent();
-
-	OnMeshReady.Broadcast(&Actor, StaticMeshComponent);
-
-	return StaticMeshComponent;
+	return MeshComponent;
 }
 
 namespace
@@ -2258,7 +1973,7 @@ USkeletalMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedSkeletalMesh(const
 	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
 
 	// The saved .uasset on disk is the cache — a hit here skips rebuilding
-	// entirely, same role MeshCache's .dmesh existence check plays below.
+	// entirely, same role GetOrBuildGeneratedStaticMesh's own cache plays.
 	if (USkeletalMesh* Existing = LoadObject<USkeletalMesh>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
 	{
 		return Existing;
@@ -2439,7 +2154,7 @@ UBlendSpace* USWGMeshGeneratorSubsystem::GetOrBuildLocomotionBlendSpace(const FS
 #endif
 }
 
-bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* DynamicMeshComponent)
+bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent)
 {
 	if (!TreSubsystem)
 	{
@@ -2517,12 +2232,12 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 	CharacterMesh->SetVisibility(true);
 	CharacterMesh->SetHiddenInGame(false);
 
-	// SWG geometry (both the procedural DynamicMeshComponent path and this
-	// skeletal mesh, which shares the same .mgn source data/authoring
-	// convention) is authored feet-at-origin, but ACharacter's capsule is
-	// centered on the actor — same fix FinalizeMeshComponent's own fallback
-	// line applies to the procedural mesh when it has no bounds to compute a
-	// precise center-based offset.
+	// SWG geometry (both the procedural generated-mesh path and this skeletal
+	// mesh, which shares the same .mgn source data/authoring convention) is
+	// authored feet-at-origin, but ACharacter's capsule is centered on the
+	// actor — same fallback BuildGeneratedMeshComponent applies to the
+	// procedural mesh when it has no bounds to compute a precise
+	// center-based offset.
 	if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
 	{
 		CharacterMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -Capsule->GetScaledCapsuleHalfHeight()));
@@ -2536,7 +2251,7 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 	// The importer creates material slots named after each submesh's shader
 	// path (see FSWGSkeletalMeshImporter::BuildSkeletalMesh) but leaves the
 	// actual material null — build/assign the same real per-shader textured
-	// materials the procedural DynamicMeshComponent path already uses.
+	// materials the procedural generated-mesh path already uses.
 	for (int32 SlotIndex = 0; SlotIndex < GeneratedMesh->GetMaterials().Num(); ++SlotIndex)
 	{
 		const FString ShaderPath = GeneratedMesh->GetMaterials()[SlotIndex].MaterialSlotName.ToString();
@@ -2553,10 +2268,10 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s failed to start blend space playback; leaving the procedural mesh visible instead of showing a T-pose"), *Actor.GetName());
 		CharacterMesh->SetVisibility(false);
 		CharacterMesh->SetHiddenInGame(true);
-		if (DynamicMeshComponent)
+		if (ProceduralMeshComponent)
 		{
-			DynamicMeshComponent->SetVisibility(true);
-			DynamicMeshComponent->SetHiddenInGame(false);
+			ProceduralMeshComponent->SetVisibility(true);
+			ProceduralMeshComponent->SetHiddenInGame(false);
 		}
 		return false;
 	}
@@ -2570,9 +2285,11 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 	// previous PIE run can leave an actor-owned procedural component around).
 	// Hiding only the component from *this* request left an older bind-pose
 	// mesh rendering through the generated skeletal mesh, which looked like a
-	// second, incorrectly UV-mapped face at the Wookiee's waist.
-	TInlineComponentArray<UDynamicMeshComponent*> ProceduralMeshComponents(&Actor);
-	for (UDynamicMeshComponent* ProceduralMesh : ProceduralMeshComponents)
+	// second, incorrectly UV-mapped face at the Wookiee's waist. The
+	// procedural fallback is a UStaticMeshComponent now (see
+	// BuildGeneratedMeshComponent), not a UDynamicMeshComponent.
+	TInlineComponentArray<UStaticMeshComponent*> ProceduralMeshComponents(&Actor);
+	for (UStaticMeshComponent* ProceduralMesh : ProceduralMeshComponents)
 	{
 		if (ProceduralMesh)
 		{
