@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
+#include "Customization/SWGCustomizationVariables.h"
 #include "SWGTangibleComponent.generated.h"
 
 struct FSWGPacket;
@@ -27,7 +28,16 @@ public:
 	FSWGStringId   ObjectName;
 	FString        CustomName;
 	int32          Volume = 0;
-	FString        CustomizationString;
+
+	// Raw wire payload for the "customization" baseline field (skin/hair/eye
+	// color indices, etc.) — read via ReadAsciiBytes, not ReadAsciiString,
+	// since it's binary data dressed as a string (see
+	// FSWGCustomizationVariables for why that distinction matters).
+	// DecodedCustomization is the parsed (TypeId -> Value) form; see its own
+	// comment for what's still missing (a TypeId -> name/effect mapping).
+	TArray<uint8>  CustomizationBytes;
+	FSWGCustomizationVariables DecodedCustomization;
+
 	TSWGBaselineList<int32> VisibleComponents;
 	int32          OptionsBitmask = 0;
 	uint8          ObjectVisible = 0;

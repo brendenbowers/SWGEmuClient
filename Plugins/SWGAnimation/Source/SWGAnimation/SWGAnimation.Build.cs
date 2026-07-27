@@ -15,6 +15,8 @@ public class SWGAnimation : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"SWGTre",
+				"RHI",
+				"RenderCore",
 			}
 		);
 

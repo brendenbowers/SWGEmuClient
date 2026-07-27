@@ -54,8 +54,29 @@ bool FSWGShaderReader::ReadShader(const FSWGIffReader& Reader, FSWGShaderData& O
 		return false;
 	}
 
+	// SSHT's version-tagged wrapper form isn't always "0000" (same
+	// version-drift pattern ResolveShaderDiffuseTexturePath already works
+	// around) — take whichever single FORM child is actually present. TXMS
+	// and the effect-name NAME chunk are both direct children of this
+	// wrapper, so scoping to it (rather than a global FindForm/FindChildChunk
+	// from the SSHT root) avoids picking up the unrelated NAME chunks nested
+	// inside each individual TXM entry (those hold texture paths, not the
+	// effect name).
+	const TArray<FSWGIffChunk> SshtChildForms = Reader.FindChildForms(SshtForm);
+	if (SshtChildForms.Num() == 0)
+	{
+		return false;
+	}
+	const FSWGIffChunk& Form0000 = SshtChildForms[0];
+
+	FSWGIffChunk EffectNameChunk;
+	if (Reader.FindChildChunk(Form0000, SWGIffTags::Name, EffectNameChunk))
+	{
+		OutShader.EffectName = ReadCString(Reader.GetChunkData(EffectNameChunk), Reader.GetChunkSize(EffectNameChunk));
+	}
+
 	FSWGIffChunk TxmsForm;
-	if (!Reader.FindForm(SWG_IFF_TAG('T','X','M','S'), TxmsForm))
+	if (!Reader.FindChildForm(Form0000, SWG_IFF_TAG('T','X','M','S'), TxmsForm))
 	{
 		return false;
 	}

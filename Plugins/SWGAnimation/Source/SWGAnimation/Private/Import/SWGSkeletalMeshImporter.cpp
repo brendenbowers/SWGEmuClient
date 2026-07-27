@@ -7,6 +7,14 @@
 #include "ReferenceSkeleton.h"
 #include "Rendering/SkeletalMeshLODImporterData.h"
 #include "Rendering/SkeletalMeshModel.h"
+#include "Rendering/SkeletalMeshLODModel.h"
+#include "Rendering/SkeletalMeshRenderData.h"
+#include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Rendering/MorphTargetVertexInfoBuffers.h"
+#include "RenderResource.h"
+#include "RHIGlobals.h"
+#include "Animation/MorphTarget.h"
+#include "SkinnedAssetCompiler.h"
 #include "ImportUtils/SkeletalMeshImportUtils.h"
 #include "IMeshBuilderModule.h"
 #include "Interfaces/ITargetPlatform.h"
@@ -20,7 +28,8 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 	const TArray<const FSWGMeshData*>& MeshParts,
 	const FString& PackagePath,
 	FSkeletalMeshImportData& OutImportData,
-	TArray<FString>& OutMaterialSlotNames)
+	TArray<FString>& OutMaterialSlotNames,
+	TMap<FString, TMap<int32, FVector>>& OutMergedMorphDeltas)
 {
 	if (Skeleton.Joints.Num() == 0)
 	{
@@ -73,6 +82,16 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 	// rigidly with the head, which is a reasonable stand-in until a real
 	// facial rig exists.
 	const int32* HeadJointIndex = JointNameToIndex.Find(TEXT("head"));
+
+	// Blend/morph target name -> (final Points index -> position delta),
+	// accumulated across every part/submesh as OutImportData.Points is built
+	// below (each part's own MorphTargets are keyed by that part's local
+	// POSN index — FSWGMeshVertex::SourcePositionIndex — not the final
+	// merged Points index, so this has to be built alongside the main loop,
+	// not looked up independently afterward). BuildMorphTargets (called
+	// after the actual mesh build — see its header comment) turns this into
+	// real UMorphTarget assets; OutImportData itself carries no morph data.
+	TMap<FString, TMap<int32, FVector>>& MergedMorphDeltas = OutMergedMorphDeltas;
 
 	int32 GlobalMaterialIndex = 0;
 	int32 PartIndex = INDEX_NONE;
@@ -140,9 +159,21 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 			for (const FSWGMeshVertex& Vertex : Submesh.Vertices)
 			{
 				OutImportData.Points.Add(FVector3f(Vertex.Position));
+				const int32 PointIndex = OutImportData.Points.Num() - 1;
+
+				if (Vertex.SourcePositionIndex != INDEX_NONE)
+				{
+					for (const FSWGMeshMorphTarget& MorphTarget : MeshPart->MorphTargets)
+					{
+						if (const FVector* Delta = MorphTarget.PositionDeltas.Find(Vertex.SourcePositionIndex))
+						{
+							MergedMorphDeltas.FindOrAdd(MorphTarget.Name).Add(PointIndex, *Delta);
+						}
+					}
+				}
 
 				SkeletalMeshImportData::FVertex Wedge;
-				Wedge.VertexIndex = OutImportData.Points.Num() - 1;
+				Wedge.VertexIndex = PointIndex;
 				if (Vertex.UVs.Num() > 0)
 				{
 					Wedge.UVs[0] = FVector2f(Vertex.UVs[0]);
@@ -213,7 +244,15 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 
 	OutImportData.bHasNormals = true;
 	OutImportData.bHasTangents = false;
-	OutImportData.bHasVertexColors = false;
+	// SWG's two-tone creature coloring (e.g. a Wookiee's light/dark fur mix,
+	// or an alien's body-vs-limb color split) is driven by per-vertex color
+	// blending between two customization-palette tints (index_color_1 and
+	// index_color_3) — the .mgn's own vertex color IS that per-vertex blend
+	// mask (see Wedge.Color above, already correctly decoded from
+	// FSWGMeshVertex::Color/bHasColor). This used to be thrown away here
+	// before that mechanism was understood; M_SWGObjectTextured/Masked now
+	// consume it via a VertexColor-driven Lerp between TintColor/TintColor2.
+	OutImportData.bHasVertexColors = true;
 	OutImportData.NumTexCoords = 1;
 	OutImportData.MaxMaterialIndex = FMath::Max(0, GlobalMaterialIndex - 1);
 
@@ -227,7 +266,8 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 {
 	FSkeletalMeshImportData ImportData;
 	TArray<FString> MaterialSlotNames;
-	if (!PopulateImportData(Skeleton, MeshParts, PackagePath, ImportData, MaterialSlotNames))
+	TMap<FString, TMap<int32, FVector>> MergedMorphDeltas;
+	if (!PopulateImportData(Skeleton, MeshParts, PackagePath, ImportData, MaterialSlotNames, MergedMorphDeltas))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: no geometry/skeleton to build from for '%s'"), *PackagePath);
 		return nullptr;
@@ -295,6 +335,12 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 	LODInfo.BuildSettings.ThresholdUV = 0.001f;
 
 	SkeletalMesh->SaveLODImportedData(0, ImportData);
+	// ImportData.bHasVertexColors alone controls whether the builder writes a
+	// ColorVertexBuffer; this asset-level flag is a separate switch the
+	// render/component side checks (GetHasVertexColors()) — without it the
+	// buffer can get built but never actually bound/sampled.
+	SkeletalMesh->SetHasVertexColors(true);
+	SkeletalMesh->SetVertexColorGuid(FGuid::NewGuid());
 
 	FBox Bounds(ForceInit);
 	for (const FVector3f& Point : ImportData.Points)
@@ -335,6 +381,26 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 	SkeletalMesh->PostEditChange();
 	NewSkeleton->MarkPackageDirty();
 
+	// After PostEditChange, not before: PostEditChange on a freshly-built
+	// mesh can trigger an internal rebuild from the raw import data saved
+	// via SaveLODImportedData above — which carries no morph data (this
+	// importer never populates FSkeletalMeshImportData::MorphTargets; see
+	// BuildMorphTargets' own header comment for why) — and that rebuild was
+	// silently wiping out any morph targets registered before it ran. That
+	// rebuild also runs asynchronously (FSkinnedAssetCompilingManager), so
+	// even running after PostEditChange returns isn't enough on its own —
+	// force it to finish first, or it can still race BuildMorphTargets and
+	// win, wiping the morph targets out from under it.
+	FSkinnedAssetCompilingManager::Get().FinishCompilation({ SkeletalMesh });
+	BuildMorphTargets(*SkeletalMesh, MergedMorphDeltas);
+	// BuildMorphTargets' own InitMorphTargetsAndRebuildRenderData can kick off
+	// further async work too — flush again before saving, or SavePackage can
+	// race it the same way.
+	FSkinnedAssetCompilingManager::Get().FinishCompilation({ SkeletalMesh });
+
+	UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: '%s' GetMorphTargets().Num()=%d right before SavePackage"),
+		*PackagePath, SkeletalMesh->GetMorphTargets().Num());
+
 	FAssetRegistryModule::AssetCreated(SkeletalMesh);
 	FAssetRegistryModule::AssetCreated(NewSkeleton);
 
@@ -353,6 +419,152 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 		*PackagePath, RefSkeleton.GetNum(), MaterialSlotNames.Num(), ImportData.Points.Num(), ImportData.Faces.Num());
 
 	return SkeletalMesh;
+}
+
+void FSWGSkeletalMeshImporter::BuildMorphTargets(USkeletalMesh& SkeletalMesh, const TMap<FString, TMap<int32, FVector>>& MergedMorphDeltas)
+{
+	if (MergedMorphDeltas.Num() == 0)
+	{
+		return;
+	}
+
+	const FSkeletalMeshLODModel& LODModel = SkeletalMesh.GetImportedModel()->LODModels[0];
+
+	// Invert MeshToImportVertexMap once (render vertex index -> import point
+	// index) into (import point index -> render vertex indices) — a single
+	// import point can correspond to more than one render vertex (UV/normal
+	// seams split it during build), and every one of them needs the same
+	// delta for the shape to look right, not just the first.
+	TMap<int32, TArray<int32>> ImportPointToRenderVertices;
+	ImportPointToRenderVertices.Reserve(LODModel.MeshToImportVertexMap.Num());
+	for (int32 RenderVertexIndex = 0; RenderVertexIndex < LODModel.MeshToImportVertexMap.Num(); ++RenderVertexIndex)
+	{
+		ImportPointToRenderVertices.FindOrAdd(LODModel.MeshToImportVertexMap[RenderVertexIndex]).Add(RenderVertexIndex);
+	}
+
+	int32 NumBuilt = 0;
+	for (const TPair<FString, TMap<int32, FVector>>& MorphEntry : MergedMorphDeltas)
+	{
+		TArray<FMorphTargetDelta> Deltas;
+		Deltas.Reserve(MorphEntry.Value.Num());
+		for (const TPair<int32, FVector>& DeltaEntry : MorphEntry.Value)
+		{
+			const TArray<int32>* RenderVertices = ImportPointToRenderVertices.Find(DeltaEntry.Key);
+			if (!RenderVertices)
+			{
+				continue; // This point didn't survive the build (e.g. an unreferenced/culled vertex) — nothing to apply the delta to.
+			}
+			for (int32 RenderVertexIndex : *RenderVertices)
+			{
+				FMorphTargetDelta& Delta = Deltas.AddDefaulted_GetRef();
+				Delta.SourceIdx = (uint32)RenderVertexIndex;
+				Delta.PositionDelta = FVector3f(DeltaEntry.Value);
+				// TangentZDelta left zero — normal deltas aren't decoded (see
+				// FSWGMeshReader::ReadBlendTargets); the renderer still
+				// shades morphed geometry reasonably using the base normals.
+			}
+		}
+
+		if (Deltas.Num() == 0)
+		{
+			continue;
+		}
+
+		UMorphTarget* MorphTarget = NewObject<UMorphTarget>(&SkeletalMesh, FName(*MorphEntry.Key));
+		MorphTarget->BaseSkelMesh = &SkeletalMesh;
+
+		FMorphTargetLODModel MorphLODModel;
+		MorphLODModel.Vertices = MoveTemp(Deltas);
+		MorphLODModel.NumVertices = MorphLODModel.Vertices.Num();
+		MorphLODModel.NumBaseMeshVerts = LODModel.NumVertices;
+		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); ++SectionIndex)
+		{
+			MorphLODModel.SectionIndices.Add(SectionIndex);
+		}
+		MorphTarget->GetMorphLODModels().Add(MoveTemp(MorphLODModel));
+
+		SkeletalMesh.RegisterMorphTarget(MorphTarget, /*bInvalidateRenderData=*/false);
+		++NumBuilt;
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: registered %d/%d morph target(s) for '%s', GetMorphTargets().Num()=%d before InitMorphTargets"),
+		NumBuilt, MergedMorphDeltas.Num(), *SkeletalMesh.GetPathName(), SkeletalMesh.GetMorphTargets().Num());
+
+	// InitMorphTargets() (not the *AndRebuildRenderData variant): confirmed via
+	// logging that InitMorphTargetsAndRebuildRenderData's FScopedSkeletalMeshPostEditChange
+	// deterministically wipes every morph target just registered above — its
+	// destructor calls SkeletalMesh->PostEditChange(), which re-triggers a full
+	// rebuild from raw import data (which never carries morph info; this
+	// importer only ever populates morph data via RegisterMorphTarget, not
+	// FSkeletalMeshImportData::MorphTargets — see the class header comment).
+	// InitMorphTargets() alone just rebuilds the ShapeName->index map and
+	// prunes empty targets, no PostEditChange involved.
+	if (NumBuilt > 0)
+	{
+		SkeletalMesh.InitMorphTargets();
+	}
+
+	// InitMorphTargets() doesn't touch render data, though, and the actual
+	// GPU-side compressed morph buffer (LODRenderData[0].MorphTargetVertexInfoBuffers)
+	// was already marked "initialized" (just empty — bResourcesInitialized=true,
+	// GetNumMorphs()=0) by the earlier IMeshBuilderModule::BuildSkeletalMesh
+	// call, back when no morph targets existed yet. USkeletalMesh::InitResources()
+	// silently no-ops against an already-"initialized" buffer, so calling it
+	// again here does nothing (confirmed via logging: GetNumMorphs() stayed 0).
+	// Left empty, this is harmless right up until a material on the mesh
+	// declares bUsedWithMorphTargets, at which point USkinnedMeshComponent's
+	// GPU skin cache path hits `ensureAlways(DynamicData->MorphTargetWeights.Num()
+	// == LODData.MorphTargetVertexInfoBuffers.GetNumMorphs())` every frame
+	// (SkeletalRenderGPUSkin.cpp) since the buffer still reports 0 morphs.
+	// InitMorphResources() (the "first build" API) hard-crashes via
+	// check(!IsMorphResourcesInitialized()) since the buffer's already marked
+	// initialized (empty) from the original build. InitMorphResourcesStreaming()
+	// is the sibling API for exactly this situation — a previously-initialized
+	// buffer that needs rebuilding (its usual caller is LOD streaming) — and
+	// calls the protected ResetCPUData() internally first, so no check() trip.
+	if (NumBuilt > 0)
+	{
+		if (FSkeletalMeshRenderData* RenderData = SkeletalMesh.GetResourceForRendering())
+		{
+			if (RenderData->LODRenderData.IsValidIndex(0))
+			{
+				FSkeletalMeshLODRenderData& LODData = RenderData->LODRenderData[0];
+				const FSkeletalMeshLODInfo* LODInfo = SkeletalMesh.GetLODInfo(0);
+
+				TArray<const FMorphTargetLODModel*> MorphTargetLODModels;
+				MorphTargetLODModels.Reserve(SkeletalMesh.GetMorphTargets().Num());
+				for (const TObjectPtr<UMorphTarget>& MorphTarget : SkeletalMesh.GetMorphTargets())
+				{
+					const TArray<FMorphTargetLODModel>& LODModels = MorphTarget->GetMorphLODModels();
+					if (LODModels.IsValidIndex(0))
+					{
+						MorphTargetLODModels.Add(&LODModels[0]);
+					}
+				}
+
+				LODData.MorphTargetVertexInfoBuffers.InitMorphResourcesStreaming(
+					GMaxRHIShaderPlatform,
+					LODData.RenderSections,
+					MorphTargetLODModels,
+					LODData.StaticVertexBuffers.StaticMeshVertexBuffer.GetNumVertices(),
+					LODInfo ? LODInfo->MorphTargetPositionErrorTolerance : 0.0f);
+
+				BeginInitResource(&LODData.MorphTargetVertexInfoBuffers);
+			}
+		}
+	}
+
+	if (FSkeletalMeshRenderData* RenderData = SkeletalMesh.GetResourceForRendering())
+	{
+		if (RenderData->LODRenderData.IsValidIndex(0))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: '%s' MorphTargetVertexInfoBuffers.GetNumMorphs()=%d after direct rebuild"),
+				*SkeletalMesh.GetPathName(), RenderData->LODRenderData[0].MorphTargetVertexInfoBuffers.GetNumMorphs());
+		}
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: built %d/%d morph target(s) for '%s', GetMorphTargets().Num()=%d after InitMorphTargets"),
+		NumBuilt, MergedMorphDeltas.Num(), *SkeletalMesh.GetPathName(), SkeletalMesh.GetMorphTargets().Num());
 }
 
 #endif // WITH_EDITOR

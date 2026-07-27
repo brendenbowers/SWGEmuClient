@@ -73,6 +73,18 @@ struct SWGEMU_API FSWGPacket : public FArchive
 	float   ReadFloat();
 	FString ReadAsciiString();
 	FString ReadUnicodeString();
+
+	/**
+	 * Same wire shape as ReadAsciiString (big-endian uint16 length prefix +
+	 * raw bytes) but returns the untouched bytes instead of routing them
+	 * through ANSI_TO_TCHAR. Use this for fields that carry binary data
+	 * dressed up as a "string" (e.g. CustomizationVariables::getData's
+	 * escaped binary payload) rather than genuine text — ANSI_TO_TCHAR
+	 * converts via the current system codepage (MultiByteToWideChar(CP_ACP)
+	 * on Windows), which is not a reversible 1:1 byte mapping for values
+	 * 0x80-0x9F, silently corrupting any byte in that range.
+	 */
+	TArray<uint8> ReadAsciiBytes();
 	void    Skip(int32 NumBytes);
 
 	// ── Typed write helpers (big-endian) ─────────────────────────

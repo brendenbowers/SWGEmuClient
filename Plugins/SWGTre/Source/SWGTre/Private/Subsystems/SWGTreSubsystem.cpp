@@ -10,6 +10,25 @@ namespace
 	{
 		return (uint32)Bytes[0] | ((uint32)Bytes[1] << 8) | ((uint32)Bytes[2] << 16) | ((uint32)Bytes[3] << 24);
 	}
+
+	// Real SOE TreFile load order is NOT alphabetical — it's base data, then
+	// patches (in numeric order), then hotfixes applied last as the final
+	// override layer. Plain lexicographic sort gets this badly wrong for at
+	// least one real archive set: "hotfix_13_1_00.tre" sorts before
+	// "patch_00.tre" ('h' < 'p'), so a naive Sort() gives every hotfix LOWER
+	// priority than every patch — the opposite of how the real client applies
+	// them — silently letting stale patch-era data shadow hotfixed shaders/
+	// meshes/templates. Rank by category tier first, falling back to
+	// lexicographic (which is correct *within* a tier, e.g. patch_00 ..
+	// patch_14) as the tiebreaker.
+	int32 GetArchivePriorityTier(const FString& FileName)
+	{
+		if (FileName.StartsWith(TEXT("hotfix"))) return 4;
+		if (FileName.StartsWith(TEXT("patch_sku")) || FileName.StartsWith(TEXT("patch_"))) return 3;
+		if (FileName.StartsWith(TEXT("default_patch"))) return 2;
+		if (FileName.StartsWith(TEXT("bottom"))) return 0;
+		return 1; // data_*.tre and anything else unrecognized
+	}
 }
 
 void USWGTreSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -49,7 +68,15 @@ bool USWGTreSubsystem::LoadArchives(const FString& Directory)
 
 	TArray<FString> FoundFiles;
 	IFileManager::Get().FindFiles(FoundFiles, *(Directory / TEXT("*.tre")), true, false);
-	FoundFiles.Sort(); // filenames are zero-padded (patch_00 .. patch_14), so lexicographic == load/override order
+	// Sort by (category tier, filename) — see GetArchivePriorityTier. Within a
+	// tier, filenames are zero-padded (patch_00 .. patch_14), so lexicographic
+	// still gives the correct load/override order there.
+	FoundFiles.Sort([](const FString& A, const FString& B)
+		{
+			const int32 TierA = GetArchivePriorityTier(A);
+			const int32 TierB = GetArchivePriorityTier(B);
+			return TierA != TierB ? TierA < TierB : A < B;
+		});
 
 	if (FoundFiles.Num() == 0)
 	{
@@ -114,6 +141,19 @@ TArray<FString> USWGTreSubsystem::FindVirtualPaths(const FString& Substring) con
 		if (Entry.Key.Contains(Substring))
 		{
 			Result.Add(Entry.Key);
+		}
+	}
+	return Result;
+}
+
+TArray<FString> USWGTreSubsystem::FindArchivesContaining(const FString& VirtualPath) const
+{
+	TArray<FString> Result;
+	for (const TUniquePtr<FSWGTreArchive>& Archive : Archives)
+	{
+		if (Archive->FindRecord(VirtualPath))
+		{
+			Result.Add(FPaths::GetCleanFilename(Archive->GetFilePath()));
 		}
 	}
 	return Result;

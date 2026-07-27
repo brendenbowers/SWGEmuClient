@@ -29,6 +29,20 @@ struct SWGTRE_API FSWGShaderData
 {
 	TArray<FSWGShaderTexture> Textures;
 
+	/**
+	 * The .eft render-effect name referenced by this shader (e.g.
+	 * "effect\h_alpha_color2_specmap_cbmp.eft"). SWG's "alpha" effects (the
+	 * naming convention actually used by the shipped shader set — no other
+	 * distinguishing flag was found in the SSHT chunks we parse) render as
+	 * alpha-masked/blended rather than opaque; anything without "alpha" in
+	 * the effect name is a normal opaque surface. Used to pick between
+	 * M_SWGObjectTextured and M_SWGObjectTexturedMasked in
+	 * GetOrBuildObjectMaterial.
+	 */
+	FString EffectName;
+
+	bool NeedsAlphaBlend() const { return EffectName.Contains(TEXT("alpha"), ESearchCase::IgnoreCase); }
+
 	const FSWGShaderTexture* FindTexture(ESWGShaderTextureUsage Usage) const;
 };
 

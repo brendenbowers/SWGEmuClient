@@ -296,6 +296,7 @@ bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 		FSWGMeshVertex Vertex;
 		Vertex.Position = Positions[PosIndex];
 		Vertex.Normal = Normals[NormIndex];
+		Vertex.SourcePositionIndex = (int32)PosIndex;
 		const float U = TcsdReader.ReadValueLE<float>();
 		const float V = TcsdReader.ReadValueLE<float>();
 		Vertex.UVs.Add(FVector2D(U, V));
@@ -439,6 +440,8 @@ bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGM
 
 	const TArray<TArray<FSWGBoneWeight>> VertexWeights = ReadVertexWeights(Reader, Form0004, VertexCount);
 
+	ReadBlendTargets(Reader, Form0004, OutMesh);
+
 	int32 PsdtCount = 0;
 	for (const FSWGIffChunk& Child : Reader.FindChildForms(Form0004))
 	{
@@ -458,6 +461,61 @@ bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGM
 	}
 
 	return OutMesh.Submeshes.Num() > 0;
+}
+
+void FSWGMeshReader::ReadBlendTargets(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh)
+{
+	FSWGIffChunk BltsForm;
+	if (!Reader.FindChildForm(Form0004, SWG_IFF_TAG('B','L','T','S'), BltsForm))
+	{
+		return; // Most parts (arms, hands, ...) carry no blend shapes at all — not an error.
+	}
+
+	for (const FSWGIffChunk& BltForm : Reader.FindChildForms(BltsForm))
+	{
+		if (BltForm.FormType != SWG_IFF_TAG('B','L','T',' ')) continue;
+
+		FSWGIffChunk InfoChunk, PosnChunk;
+		if (!Reader.FindChildChunk(BltForm, SWGIffTags::Info, InfoChunk))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: FORM BLT missing INFO — skipping this blend target"));
+			continue;
+		}
+
+		FSWGIFFChunkReader InfoReader(InfoChunk, Reader);
+		const int32 PosnDeltaCount = InfoReader.ReadValueLE<int32>();
+		InfoReader.Skip<int32>(); // NormDeltaCount — normal deltas aren't consumed (see header comment)
+		FString Name;
+		InfoReader.ReadTerminiatedString(Name);
+
+		if (Name.IsEmpty())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: FORM BLT has no name in its INFO chunk — skipping"));
+			continue;
+		}
+		if (!Reader.FindChildChunk(BltForm, SWG_IFF_TAG('P','O','S','N'), PosnChunk))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: blend target '%s' missing POSN — skipping"), *Name);
+			continue;
+		}
+
+		FSWGMeshMorphTarget MorphTarget;
+		MorphTarget.Name = Name;
+
+		FSWGIFFChunkReader PosnReader(PosnChunk, Reader);
+		// PosnDeltaCount (from INFO) is authoritative; PosnChunk.DataSize/16
+		// should agree but isn't assumed to (defends against a corrupt/
+		// mismatched INFO count reading past the chunk).
+		for (int32 i = 0; i < PosnDeltaCount && PosnReader.CanRead<uint32>() && PosnReader.CanRead<float>(); ++i)
+		{
+			const uint32 Index = PosnReader.ReadValueLE<uint32>();
+			const FVector Delta = PosnReader.ReadVectorLE<FVector, float>(SWGWorldScale);
+			MorphTarget.PositionDeltas.Add((int32)Index, Delta);
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: blend target '%s' — %d delta(s) (INFO said %d)"), *MorphTarget.Name, MorphTarget.PositionDeltas.Num(), PosnDeltaCount);
+		OutMesh.MorphTargets.Add(MoveTemp(MorphTarget));
+	}
 }
 
 FString FSWGMeshReader::ReadSkeletalMeshSkeletonPath(const FSWGIffReader& Reader)

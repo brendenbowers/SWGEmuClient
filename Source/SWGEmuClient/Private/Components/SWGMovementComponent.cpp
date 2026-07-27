@@ -66,6 +66,12 @@ void USWGMovementComponent::ApplyBase4Part3(FSWGPacket& Packet)
 		MaxAcceleration = BaselineAcceleration;
 	}
 	RotationRate = FRotator(0.0f, TurnScale, 0.0f);
-	SetWalkableFloorAngle(SlopeModAngle);
+	// Core3 stores/sends this pre-converted to radians (CreatureObjectImplementation.cpp:
+	// "slopeModAngle = (creoData->getSlopeModAngle() * M_PI) / 180.f"), but
+	// UCharacterMovementComponent::SetWalkableFloorAngle expects degrees. Passing the
+	// raw radians value straight through (e.g. ~0.87 for a 50-degree template default)
+	// collapses the walkable threshold to under 1 degree, so almost any surface reads
+	// as too steep and the character slides continuously — convert back to degrees.
+	SetWalkableFloorAngle(FMath::RadiansToDegrees(SlopeModAngle));
 	MaxSwimSpeed = WaterModPercent * MetersToUnrealUnits;
 }

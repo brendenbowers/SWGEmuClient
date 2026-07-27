@@ -43,6 +43,9 @@ public:
 	/** Debug helper: every indexed virtual path containing Substring (case-insensitive). */
 	TArray<FString> FindVirtualPaths(const FString& Substring) const;
 
+	/** Debug helper: every archive (by filename, in load order) that contains VirtualPath — the last one is the one that actually wins. */
+	TArray<FString> FindArchivesContaining(const FString& VirtualPath) const;
+
 	/** Reads and decompresses one file's bytes by its virtual path (e.g. "object/mobile/shared_bantha.iff"). */
 	TArray<uint8> ExtractFile(const FString& VirtualPath) const;
 

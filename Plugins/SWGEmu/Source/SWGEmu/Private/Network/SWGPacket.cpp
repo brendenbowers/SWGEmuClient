@@ -145,6 +145,23 @@ FString FSWGPacket::ReadAsciiString()
 	return FString(ANSI_TO_TCHAR(Buf.GetData()));
 }
 
+TArray<uint8> FSWGPacket::ReadAsciiBytes()
+{
+	uint16 Len = 0;
+	*this << Len; // big-endian length prefix
+
+	TArray<uint8> Bytes;
+	if (IsError() || Pos + Len > (int64)Data.Num())
+	{
+		SetError();
+		return Bytes;
+	}
+
+	Bytes.SetNum(Len);
+	Serialize(Bytes.GetData(), Len);
+	return Bytes;
+}
+
 FString FSWGPacket::ReadUnicodeString()
 {
 	// SWG unicode strings: int32 character count (4 bytes LE) + count*2 bytes UCS-2 LE

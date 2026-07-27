@@ -21,6 +21,13 @@ struct FSWGMeshVertex
 
 	// Only populated for .mgn (skeletal) meshes read via ReadSkeletalMeshBindPose — empty for .msh.
 	TArray<FSWGBoneWeight> BoneWeights;
+
+	// This vertex's index into the owning FSWGMeshData's own POSN array (the
+	// same space FSWGMeshData::MorphTargets' deltas are keyed by) — needed to
+	// look up a morph delta for this specific corner, since a submesh's
+	// Vertices don't preserve POSN order (see ReadMgnSubmesh). Only populated
+	// for .mgn meshes; INDEX_NONE for .msh (which has no morph data at all).
+	int32 SourcePositionIndex = INDEX_NONE;
 };
 
 /** One shader-bound submesh: a self-contained vertex buffer + flat triangle index list. */
@@ -31,9 +38,27 @@ struct FSWGMeshSubmesh
 	TArray<int32> Triangles; // flat, groups of 3
 };
 
+/**
+ * One named blend/morph shape from a .mgn's FORM BLTS (e.g. "blend_fat",
+ * "blend_cheeks_0") — sparse position deltas, keyed by POSN index (the same
+ * space FSWGMeshVertex::SourcePositionIndex uses), matching this part's own
+ * unmorphed Positions array. Only the subset of vertices this shape actually
+ * moves has an entry; everything else is implicitly zero delta.
+ */
+struct FSWGMeshMorphTarget
+{
+	FString Name;
+	TMap<int32, FVector> PositionDeltas;
+};
+
 struct FSWGMeshData
 {
 	TArray<FSWGMeshSubmesh> Submeshes;
+
+	/** Named blend shapes for this mesh part (see FSWGMeshMorphTarget) — only
+	 *  .mgn parts with a FORM BLTS have any; most don't (e.g. hands/arms
+	 *  rarely carry face/body blends, those live on the head/body parts). */
+	TArray<FSWGMeshMorphTarget> MorphTargets;
 
 	/** From the file's own EXBX/BOX chunk, if present. Unset (no extent) otherwise — not required for rendering. */
 	FBox BoundingBox = FBox(ForceInit);
@@ -101,4 +126,18 @@ private:
 	 * bind-pose rendering doesn't depend on skin weights being present.
 	 */
 	static TArray<TArray<FSWGBoneWeight>> ReadVertexWeights(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, int32 VertexCount);
+
+	/**
+	 * Decodes FORM BLTS > FORM BLT (repeated) into OutMesh.MorphTargets, if
+	 * present under Form0004 (most parts have none — not an error). Each BLT
+	 * is CHUNK INFO {int32 PosnDeltaCount; int32 NormDeltaCount; char Name[]}
+	 * followed by CHUNK POSN (PosnDeltaCount * {uint32 PosnIndex; float DX,
+	 * DY, DZ}, sparse and not index-sorted) and CHUNK NORM (same shape, for
+	 * normal deltas — not currently used; the mesh builder derives normals
+	 * for morphed positions on its own). Confirmed via swg.DumpIffTree
+	 * against appearance/mesh/hum_m_body_l0.mgn: three BLT children named
+	 * "blend_muscle"/"blend_fat"/"blend_skinny", each INFO's first two ints
+	 * exactly matching its POSN/NORM chunk sizes / 16.
+	 */
+	static void ReadBlendTargets(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh);
 };

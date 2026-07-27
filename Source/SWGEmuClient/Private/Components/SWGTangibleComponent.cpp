@@ -16,7 +16,22 @@ void USWGTangibleComponent::ApplyBase3Part1(FSWGPacket& Packet)
 	ObjectName = FSWGStringId::Read(Packet);
 	CustomName = Packet.ReadUnicodeString();
 	Volume = Packet.ReadInt32();
-	CustomizationString = Packet.ReadAsciiString();
+
+	CustomizationBytes = Packet.ReadAsciiBytes();
+	if (!FSWGCustomizationVariables::Parse(CustomizationBytes, DecodedCustomization))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTangibleComponent: %s failed to decode customization data (%d byte(s))"),
+			*GetOwner()->GetName(), CustomizationBytes.Num());
+	}
+	else if (DecodedCustomization.Values.Num() > 0)
+	{
+		FString Dump;
+		for (const TPair<uint8, int16>& Pair : DecodedCustomization.Values)
+		{
+			Dump += FString::Printf(TEXT("%d=%d "), Pair.Key, Pair.Value);
+		}
+		UE_LOG(LogTemp, Warning, TEXT("USWGTangibleComponent: %s customization: %s"), *GetOwner()->GetName(), *Dump);
+	}
 
 	VisibleComponents = ReadBaselineVector<int32>(Packet, [](FSWGPacket& P) { return P.ReadInt32(); });
 

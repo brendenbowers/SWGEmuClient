@@ -45,7 +45,26 @@ private:
 		const TArray<const FSWGMeshData*>& MeshParts,
 		const FString& PackagePath,
 		class FSkeletalMeshImportData& OutImportData,
-		TArray<FString>& OutMaterialSlotNames);
+		TArray<FString>& OutMaterialSlotNames,
+		TMap<FString, TMap<int32, FVector>>& OutMergedMorphDeltas);
+
+	/**
+	 * Builds real UMorphTarget assets (blend/body-shape sliders — see
+	 * FSWGMeshReader::ReadBlendTargets) and registers them on SkeletalMesh.
+	 * Must run after IMeshBuilderModule::BuildSkeletalMesh, not before: UE
+	 * 5.8's skeletal mesh builder doesn't consume
+	 * FSkeletalMeshImportData::MorphTargets (that's the legacy FBX-import
+	 * path — the builder now expects morph data via
+	 * FSkeletalMeshAttributes/FMeshDescription instead, which this importer
+	 * doesn't produce), so morph targets are constructed directly from the
+	 * already-built LOD's real render-vertex data instead, via
+	 * FSkeletalMeshLODModel::MeshToImportVertexMap (render vertex index ->
+	 * the same "point" index MergedMorphDeltas is keyed by).
+	 * MergedMorphDeltas is PopulateImportData's own output — see its comment.
+	 */
+	static void BuildMorphTargets(
+		class USkeletalMesh& SkeletalMesh,
+		const TMap<FString, TMap<int32, FVector>>& MergedMorphDeltas);
 };
 
 #endif // WITH_EDITOR

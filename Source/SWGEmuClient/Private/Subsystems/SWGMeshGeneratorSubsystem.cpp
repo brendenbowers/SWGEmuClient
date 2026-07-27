@@ -12,6 +12,9 @@
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGDDSTextureLoader.h"
 #include "TRE/SWGShaderReader.h"
+#include "TRE/SWGCustomizationIdManager.h"
+#include "TRE/SWGAssetCustomizationManager.h"
+#include "TRE/SWGCrc32.h"
 #include "TRE/SWGSkeletonReader.h"
 #include "TRE/SWGAnimationReader.h"
 #include "TRE/SWGIFFChunkReader.h"
@@ -41,6 +44,11 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "ImageUtils.h"
+#include "TextureResource.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Kismet/KismetRenderingLibrary.h"
+#include "Engine/Canvas.h"
 
 using namespace UE::Geometry;
 
@@ -892,7 +900,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 
 				if (Request.TemplateCrc != 0 && Request.MeshVirtualPaths.IsEmpty())
 				{
-					if (!ResolveMeshPath(Request.TemplateCrc, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal))
+					if (!ResolveMeshPath(Request.TemplateCrc, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath))
 					{
 						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template CRC %08X"), Request.TemplateCrc);
 						return;
@@ -900,7 +908,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				}
 				else if (!Request.TemplatePath.IsEmpty() && Request.MeshVirtualPaths.IsEmpty())
 				{
-					if (!ResolveMeshPathForTemplate(Request.TemplatePath, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal))
+					if (!ResolveMeshPathForTemplate(Request.TemplatePath, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath))
 					{
 						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template %s"), *Request.TemplatePath);
 						return;
@@ -960,8 +968,33 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before mesh build completed for %s — skipping"), *DebugName);
 							return;
 						}
-						UMeshComponent* MeshComponent = BuildGeneratedMeshComponent(*Request.Actor, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility);
-						TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent);
+
+						// Real per-character skin/hair/eye (etc.) palette
+						// colors and face/body morph weights, if the actor's
+						// TANO baseline carried any customization data and we
+						// know its appearance file (see
+						// ResolveCustomizationPaletteTints/
+						// ResolveCustomizationMorphWeights) — falls through to
+						// GetOrBuildObjectMaterial's usual shader-average tint
+						// (and no morph deformation at all) otherwise.
+						TMap<FString, FLinearColor> PaletteTints;
+						TMap<FString, float> MorphWeights;
+						TMap<FString, int32> TextureIndices;
+						if (USWGTangibleComponent* Tangible = Request.Actor->FindComponentByClass<USWGTangibleComponent>())
+						{
+							if (Tangible->DecodedCustomization.Values.Num() > 0 && !Request.AppearancePath.IsEmpty())
+							{
+								PaletteTints = ResolveCustomizationPaletteTints(Tangible->DecodedCustomization, Request.AppearancePath);
+								MorphWeights = ResolveCustomizationMorphWeights(Tangible->DecodedCustomization, Request.AppearancePath);
+								TextureIndices = ResolveCustomizationTextureIndices(Tangible->DecodedCustomization, Request.AppearancePath);
+							}
+						}
+
+						const TMap<FString, FLinearColor>* PaletteTintsPtr = PaletteTints.Num() > 0 ? &PaletteTints : nullptr;
+						const TMap<FString, float>* MorphWeightsPtr = MorphWeights.Num() > 0 ? &MorphWeights : nullptr;
+						const TMap<FString, int32>* TextureIndicesPtr = TextureIndices.Num() > 0 ? &TextureIndices : nullptr;
+						UMeshComponent* MeshComponent = BuildGeneratedMeshComponent(*Request.Actor, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility, PaletteTintsPtr, TextureIndicesPtr);
+						TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent, PaletteTintsPtr, MorphWeightsPtr, TextureIndicesPtr);
 					});
 			});
 	}
@@ -996,7 +1029,7 @@ namespace
 	}
 }
 
-bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal)
+bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath)
 {
 	const FString TemplatePath = TreSubsystem->ResolveTemplatePath(TemplateCrc);
 	if (TemplatePath.IsEmpty())
@@ -1005,10 +1038,10 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FStr
 		return false;
 	}
 
-	return ResolveMeshPathForTemplate(TemplatePath, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal);
+	return ResolveMeshPathForTemplate(TemplatePath, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal, OutAppearancePath);
 }
 
-bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal)
+bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath)
 {
 	// Resolution chain:
 	//   template .iff (SCOT/STOT > FORM SHOT > versioned data form > XXXX
@@ -1115,6 +1148,12 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 		DumpAllXxxxKeys(TemplateReader, ShotDataForm, TemplatePath);
 		return false;
 	}
+
+	// Set as soon as it's confirmed non-empty (not just on the final success
+	// return) since it's also the ACST lookup key — worth exposing even if a
+	// later step in this same resolution fails (e.g. no usable mesh
+	// candidates), so a caller could still resolve customization separately.
+	OutAppearancePath = AppearancePath;
 
 	const bool bIsSat = AppearancePath.EndsWith(TEXT(".sat"));
 	const bool bIsApt = AppearancePath.EndsWith(TEXT(".apt"));
@@ -1540,9 +1579,26 @@ FString USWGMeshGeneratorSubsystem::ResolveShaderTintPalettePath(const FString& 
 
 		// [key CString][null terminator][1 extra flag byte, unexplored]
 		// [4-byte reversed tag][palette path CString][trailing bytes] — note
-		// two null bytes separate the key from the tag, not one.
-		int32 Offset = 0;
+		// two null bytes separate the key from the tag, not one. The key is
+		// the customization variable's own bare name (e.g. "index_color_1"),
+		// matching FSWGCustomizationVariableDef::Name's tail — confirmed via
+		// live IFF dump of shader/wke_m_body.sht, which has two PAL entries,
+		// "index_color_1" and "index_color_3", BOTH pointing at the same
+		// palette/pc_skin_wke.pal and NEITHER tagged "MAIN" (that tag/Tag
+		// pairing turned out to be for a different shader family — every
+		// creature skin shader checked has it empty/non-MAIN on both
+		// entries). Falling back to "MAIN", as this function used to
+		// exclusively do, left the choice between the two effectively
+		// TMap-iteration-order-dependent (via ResolveCustomizationPaletteTints,
+		// which keys its result by palette *path* — a second variable sharing
+		// that same path silently overwrites the first). Explicitly preferring
+		// the entry keyed "index_color_1" — the conventional primary skin/fur
+		// tone variable across every creature template checked — makes this
+		// deterministic instead.
+		const int32 KeyStart = 0;
+		int32 Offset = KeyStart;
 		while (Offset < Size && Data[Offset] != 0) ++Offset;
+		const FString Key(Offset - KeyStart, (const ANSICHAR*)(Data + KeyStart));
 		if (Offset >= Size) continue;
 		Offset += 2;
 
@@ -1561,15 +1617,157 @@ FString USWGMeshGeneratorSubsystem::ResolveShaderTintPalettePath(const FString& 
 		{
 			FirstPalettePath = PalettePath;
 		}
-		if (Tag == TEXT("MAIN"))
+		if (Tag == TEXT("MAIN") && MainPalettePath.IsEmpty())
 		{
 			MainPalettePath = PalettePath;
+		}
+		if (Key == TEXT("index_color_1"))
+		{
+			MainPalettePath = PalettePath; // Highest priority — always wins if present.
 		}
 	}
 
 	FString Result = !MainPalettePath.IsEmpty() ? MainPalettePath : FirstPalettePath;
 	Result.ReplaceInline(TEXT("\\"), TEXT("/"));
 	return Result;
+}
+
+USWGMeshGeneratorSubsystem::FSWGShaderCustomization USWGMeshGeneratorSubsystem::ResolveShaderCustomization(const FString& ShaderVirtualPath)
+{
+	FSWGShaderCustomization Result;
+	if (ShaderVirtualPath.IsEmpty() || !TreSubsystem)
+	{
+		return Result;
+	}
+
+	FSWGIffReader Reader = TreSubsystem->CreateIffReader(ShaderVirtualPath);
+	if (!Reader.IsValid())
+	{
+		return Result;
+	}
+
+	const TArray<FSWGIffChunk> TopLevel = Reader.ReadChunks();
+	if (TopLevel.Num() == 0)
+	{
+		return Result;
+	}
+
+	// FORM TFAC > CHUNK PAL (repeated): [varName\0][\0][4-byte reversed
+	// color-factor tag][palette path\0]. Same byte layout
+	// ResolveShaderTintPalettePath parses — see its comment — but here the
+	// factor tag is the point rather than the palette path.
+	FSWGIffChunk TfacForm;
+	if (FindFormRecursive(Reader, TopLevel[0], SWG_IFF_TAG('T','F','A','C'), TfacForm, 4))
+	{
+		for (const FSWGIffChunk& PalChunk : Reader.ReadChildren(TfacForm))
+		{
+			if (PalChunk.IsForm() || PalChunk.Tag != SWG_IFF_TAG('P','A','L',' '))
+			{
+				continue;
+			}
+
+			const uint8* Data = Reader.GetChunkData(PalChunk);
+			const int32 Size = Reader.GetChunkSize(PalChunk);
+
+			int32 Offset = 0;
+			while (Offset < Size && Data[Offset] != 0) ++Offset;
+			const FString Key(Offset, (const ANSICHAR*)Data);
+			Offset += 2; // the key's own null, plus one flag byte
+			if (Key.IsEmpty() || Offset + 4 > Size)
+			{
+				continue;
+			}
+
+			const FString FactorTag = FString::Printf(TEXT("%c%c%c%c"),
+				(TCHAR)Data[Offset + 3], (TCHAR)Data[Offset + 2], (TCHAR)Data[Offset + 1], (TCHAR)Data[Offset]);
+			Result.ColorFactorTags.Add(Key, FactorTag);
+		}
+	}
+
+	// FORM TXTR > CHUNK DATA: [uint16 count][count * texture path\0] — the
+	// explicit ordered variant list an index_texture* variable selects from.
+	// FORM TXTR > FORM CUST > CHUNK TX1D: [4-byte reversed slot tag]
+	// [uint16][uint16 count][varName\0] names that variable.
+	FSWGIffChunk TxtrForm;
+	if (FindFormRecursive(Reader, TopLevel[0], SWG_IFF_TAG('T','X','T','R'), TxtrForm, 4))
+	{
+		FSWGIffChunk DataChunk;
+		if (Reader.FindChildChunk(TxtrForm, SWGIffTags::Data, DataChunk))
+		{
+			const uint8* Data = Reader.GetChunkData(DataChunk);
+			const int32 Size = Reader.GetChunkSize(DataChunk);
+			const int32 Count = Size >= 2 ? ((int32)Data[0] | ((int32)Data[1] << 8)) : 0;
+			int32 Offset = 2;
+			for (int32 i = 0; i < Count && Offset < Size; ++i)
+			{
+				const int32 Start = Offset;
+				while (Offset < Size && Data[Offset] != 0) ++Offset;
+				FString Path = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + Start), Offset - Start);
+				Path.ReplaceInline(TEXT("\\"), TEXT("/"));
+				Result.TextureVariants.Add(MoveTemp(Path));
+				++Offset; // past the terminator
+			}
+		}
+
+		FSWGIffChunk CustForm;
+		if (Reader.FindChildForm(TxtrForm, SWG_IFF_TAG('C','U','S','T'), CustForm))
+		{
+			for (const FSWGIffChunk& Child : Reader.ReadChildren(CustForm))
+			{
+				if (Child.IsForm()) continue;
+				const uint8* Data = Reader.GetChunkData(Child);
+				const int32 Size = Reader.GetChunkSize(Child);
+				if (Size < 9) continue;
+				int32 Offset = 8;
+				const int32 Start = Offset;
+				while (Offset < Size && Data[Offset] != 0) ++Offset;
+				const FString Var = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + Start), Offset - Start);
+				if (!Var.IsEmpty())
+				{
+					Result.TextureVariantVariable = Var;
+					break; // Every creature shader checked binds exactly one.
+				}
+			}
+		}
+	}
+
+	return Result;
+}
+
+namespace
+{
+	// Shared header parse for both LoadPaletteAverageTint and
+	// LoadPaletteColorAtIndex — standard little-endian RIFF "PAL " palette
+	// file, distinct from every other SWG format read in this codebase (all
+	// big-endian IFF). Layout: "RIFF"(4) + size(4) + "PAL "(4) + "data"(4) +
+	// chunkSize(4) + PALETTEHEADER{u16 Version; u16 NumEntries;} +
+	// NumEntries*{R,G,B,Flags}. Returns the byte offset of the first entry
+	// and the entry count, or false if the file doesn't parse as this format.
+	bool ParsePaletteHeader(const TArray<uint8>& Bytes, int32& OutFirstEntryOffset, uint16& OutNumEntries)
+	{
+		if (Bytes.Num() < 20 || Bytes[0] != 'R' || Bytes[1] != 'I' || Bytes[2] != 'F' || Bytes[3] != 'F')
+		{
+			return false;
+		}
+
+		int32 Offset = 12; // past "RIFF" + size + "PAL "
+		Offset += 8; // past "data" + chunk size
+		if (Offset + 4 > Bytes.Num())
+		{
+			return false;
+		}
+
+		OutNumEntries = Bytes[Offset + 2] | (Bytes[Offset + 3] << 8);
+		Offset += 4;
+
+		if (OutNumEntries == 0 || Offset + (int32)OutNumEntries * 4 > Bytes.Num())
+		{
+			return false;
+		}
+
+		OutFirstEntryOffset = Offset;
+		return true;
+	}
 }
 
 FLinearColor USWGMeshGeneratorSubsystem::LoadPaletteAverageTint(const FString& PaletteVirtualPath)
@@ -1581,26 +1779,9 @@ FLinearColor USWGMeshGeneratorSubsystem::LoadPaletteAverageTint(const FString& P
 
 	const TArray<uint8> Bytes = TreSubsystem->ExtractFile(PaletteVirtualPath);
 
-	// Standard little-endian RIFF "PAL " palette file — distinct from every
-	// other SWG format read in this codebase (all big-endian IFF). Layout:
-	// "RIFF"(4) + size(4) + "PAL "(4) + "data"(4) + chunkSize(4) +
-	// PALETTEHEADER{u16 Version; u16 NumEntries;} + NumEntries*{R,G,B,Flags}.
-	if (Bytes.Num() < 20 || Bytes[0] != 'R' || Bytes[1] != 'I' || Bytes[2] != 'F' || Bytes[3] != 'F')
-	{
-		return FLinearColor::White;
-	}
-
-	int32 Offset = 12; // past "RIFF" + size + "PAL "
-	Offset += 8; // past "data" + chunk size
-	if (Offset + 4 > Bytes.Num())
-	{
-		return FLinearColor::White;
-	}
-
-	const uint16 NumEntries = Bytes[Offset + 2] | (Bytes[Offset + 3] << 8);
-	Offset += 4;
-
-	if (NumEntries == 0 || Offset + (int32)NumEntries * 4 > Bytes.Num())
+	int32 Offset = 0;
+	uint16 NumEntries = 0;
+	if (!ParsePaletteHeader(Bytes, Offset, NumEntries))
 	{
 		return FLinearColor::White;
 	}
@@ -1614,6 +1795,194 @@ FLinearColor USWGMeshGeneratorSubsystem::LoadPaletteAverageTint(const FString& P
 
 	const FVector Average = (Sum / (double)NumEntries) / 255.0;
 	return FLinearColor(Average.X, Average.Y, Average.Z);
+}
+
+FLinearColor USWGMeshGeneratorSubsystem::LoadPaletteColorAtIndex(const FString& PaletteVirtualPath, int32 Index)
+{
+	if (PaletteVirtualPath.IsEmpty() || !TreSubsystem || !TreSubsystem->FileExists(PaletteVirtualPath))
+	{
+		return FLinearColor::White;
+	}
+
+	const TArray<uint8> Bytes = TreSubsystem->ExtractFile(PaletteVirtualPath);
+
+	int32 Offset = 0;
+	uint16 NumEntries = 0;
+	if (!ParsePaletteHeader(Bytes, Offset, NumEntries))
+	{
+		return FLinearColor::White;
+	}
+
+	const int32 ClampedIndex = FMath::Clamp(Index, 0, (int32)NumEntries - 1);
+	const int32 EntryOffset = Offset + ClampedIndex * 4;
+	return FLinearColor(FColor(Bytes[EntryOffset], Bytes[EntryOffset + 1], Bytes[EntryOffset + 2], 255));
+}
+
+void USWGMeshGeneratorSubsystem::EnsureCustomizationManagersLoaded()
+{
+	if (bCustomizationManagersLoaded)
+	{
+		return;
+	}
+	bCustomizationManagersLoaded = true; // Only try once per session either way — a missing/corrupt table isn't going to fix itself mid-session.
+	if (!FSWGCustomizationIdManager::Read(TreSubsystem->CreateIffReader(TEXT("customization/customization_id_manager.iff")), CustomizationIdManager))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to read customization_id_manager.iff — customization won't apply this session"));
+	}
+	if (!AssetCustomizationManager.Read(TreSubsystem->CreateIffReader(TEXT("customization/asset_customization_manager.iff"))))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to read asset_customization_manager.iff — customization won't apply this session"));
+	}
+}
+
+TMap<FString, FLinearColor> USWGMeshGeneratorSubsystem::ResolveCustomizationPaletteTints(const FSWGCustomizationVariables& Customization, const FString& AppearancePath)
+{
+	TMap<FString, FLinearColor> Result;
+	EnsureCustomizationManagersLoaded();
+
+	TMap<FString, FSWGCustomizationVariableDef> Variables;
+	AssetCustomizationManager.GetCustomizationVariables(AppearancePath, false, Variables);
+
+	for (const TPair<FString, FSWGCustomizationVariableDef>& Pair : Variables)
+	{
+		const FSWGCustomizationVariableDef& Def = Pair.Value;
+		if (!Def.bIsPalette || Def.PaletteFileName.IsEmpty())
+		{
+			continue;
+		}
+
+		const uint8* TypeId = CustomizationIdManager.NameToId.Find(Def.Name);
+		if (!TypeId)
+		{
+			continue;
+		}
+
+		const int16* Value = Customization.Values.Find(*TypeId);
+		if (!Value)
+		{
+			continue; // This object never customized this particular variable — leave it at whatever the shader's own default/average gives.
+		}
+
+		// Keyed by the variable's own bare name (e.g. "index_color_1"), not
+		// its palette file — SWG's two-tone creature coloring (a Wookiee's
+		// light/dark fur mix, an alien's body-vs-limb split) comes from TWO
+		// simultaneously-active palette variables, index_color_1 (primary)
+		// and index_color_3 (secondary), that both reference the SAME
+		// palette file on every creature template checked. Keying by file
+		// path (as this used to) meant one silently overwrote the other;
+		// GetOrBuildObjectMaterial now looks both up by name directly and
+		// blends them via the mesh's own per-vertex color (see
+		// FSWGSkeletalMeshImporter::PopulateImportData's bHasVertexColors
+		// comment).
+		FString BareName = Def.Name;
+		int32 SlashIndex = INDEX_NONE;
+		if (BareName.FindLastChar(TEXT('/'), SlashIndex))
+		{
+			BareName = BareName.Mid(SlashIndex + 1);
+		}
+		Result.Add(BareName, LoadPaletteColorAtIndex(Def.PaletteFileName, *Value));
+	}
+
+	return Result;
+}
+
+TMap<FString, float> USWGMeshGeneratorSubsystem::ResolveCustomizationMorphWeights(const FSWGCustomizationVariables& Customization, const FString& AppearancePath)
+{
+	TMap<FString, float> Result;
+	EnsureCustomizationManagersLoaded();
+
+	TMap<FString, FSWGCustomizationVariableDef> Variables;
+	AssetCustomizationManager.GetCustomizationVariables(AppearancePath, false, Variables);
+
+	for (const TPair<FString, FSWGCustomizationVariableDef>& Pair : Variables)
+	{
+		const FSWGCustomizationVariableDef& Def = Pair.Value;
+		// Only "blend_*" RANGE variables are mesh deformations (they name a
+		// .mgn FORM BLTS morph target directly — see
+		// FSWGMeshReader::ReadBlendTargets). Other RANGE variables select
+		// texture variants or styles and are handled elsewhere; matching on
+		// the blend_ prefix rather than excluding known non-morph prefixes
+		// means a new style/index variable can't silently be misread as a
+		// morph target.
+		if (Def.bIsPalette || Def.MaxValue <= Def.MinValue || !Def.Name.Contains(TEXT("blend_")))
+		{
+			continue;
+		}
+
+		const uint8* TypeId = CustomizationIdManager.NameToId.Find(Def.Name);
+		if (!TypeId)
+		{
+			continue;
+		}
+
+		const int16* Value = Customization.Values.Find(*TypeId);
+		if (!Value)
+		{
+			continue; // Never customized — leave this shape at the mesh's built-in default (zero weight).
+		}
+
+		const float Normalized = FMath::Clamp((float)(*Value - Def.MinValue) / (float)(Def.MaxValue - Def.MinValue), 0.0f, 1.0f);
+
+		// Def.Name is the full customization-variable path (e.g.
+		// "/shared_owner/blend_fat"); the .mgn's own FORM BLTS morph target
+		// name (see FSWGMeshReader::ReadBlendTargets) is just the bare
+		// "blend_fat" tail — strip everything up to and including the last '/'.
+		FString MorphTargetName = Def.Name;
+		int32 SlashIndex = INDEX_NONE;
+		if (MorphTargetName.FindLastChar(TEXT('/'), SlashIndex))
+		{
+			MorphTargetName = MorphTargetName.Mid(SlashIndex + 1);
+		}
+
+		Result.Add(MorphTargetName, Normalized);
+	}
+
+	return Result;
+}
+
+TMap<FString, int32> USWGMeshGeneratorSubsystem::ResolveCustomizationTextureIndices(const FSWGCustomizationVariables& Customization, const FString& AppearancePath)
+{
+	TMap<FString, int32> Result;
+	EnsureCustomizationManagersLoaded();
+
+	TMap<FString, FSWGCustomizationVariableDef> Variables;
+	AssetCustomizationManager.GetCustomizationVariables(AppearancePath, false, Variables);
+
+	for (const TPair<FString, FSWGCustomizationVariableDef>& Pair : Variables)
+	{
+		const FSWGCustomizationVariableDef& Def = Pair.Value;
+		if (Def.bIsPalette)
+		{
+			continue;
+		}
+
+		// No name filtering — which variable actually selects a texture is
+		// declared by the shader's own FORM CUST > TX1D binding (see
+		// ResolveShaderCustomization), so just surface every non-palette
+		// variable by bare name and let GetOrBuildObjectMaterial pick.
+		FString BareName = Def.Name;
+		int32 SlashIndex = INDEX_NONE;
+		if (BareName.FindLastChar(TEXT('/'), SlashIndex))
+		{
+			BareName = BareName.Mid(SlashIndex + 1);
+		}
+
+		const uint8* TypeId = CustomizationIdManager.NameToId.Find(Def.Name);
+		if (!TypeId)
+		{
+			continue;
+		}
+
+		const int16* Value = Customization.Values.Find(*TypeId);
+		if (!Value)
+		{
+			continue; // Never customized — leave the shader's baked-in default variant.
+		}
+
+		Result.Add(BareName, *Value);
+	}
+
+	return Result;
 }
 
 UTexture2D* USWGMeshGeneratorSubsystem::GetOrLoadObjectTexture(const FString& TextureVirtualPath, bool bSRGB,
@@ -1647,16 +2016,62 @@ UTexture2D* USWGMeshGeneratorSubsystem::GetOrLoadObjectTexture(const FString& Te
 	return Result;
 }
 
-UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const FString& ShaderVirtualPath)
+UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides)
 {
 	if (ShaderVirtualPath.IsEmpty())
 	{
 		return nullptr;
 	}
 
-	if (TObjectPtr<UMaterialInterface>* Existing = ObjectMaterialCache.Find(ShaderVirtualPath))
+	// Everything about how this shader consumes customization comes from the
+	// shader itself (see ResolveShaderCustomization): which variable feeds
+	// the MAIN color factor, which feeds HUEB, and which variable indexes
+	// its explicit texture-variant list. No per-species naming assumptions.
+	// The two colors are blended by the material (the Diffuse texture's own
+	// alpha channel drives a Lerp between TintColor/TintColor2 — see
+	// M_SWGObjectTextured's graph).
+	const bool bHasAnyOverrides =
+		(PaletteTintOverrides && PaletteTintOverrides->Num() > 0) ||
+		(TextureIndexOverrides && TextureIndexOverrides->Num() > 0);
+
+	FString PalettePath;
+	const FLinearColor* TintOverride = nullptr;
+	const FLinearColor* TintOverride2 = nullptr;
+	const int32* TextureIndexOverride = nullptr;
+	FSWGShaderCustomization ShaderCustomization;
+	if (bHasAnyOverrides)
 	{
-		return *Existing;
+		ShaderCustomization = ResolveShaderCustomization(ShaderVirtualPath);
+
+		if (PaletteTintOverrides && PaletteTintOverrides->Num() > 0)
+		{
+			const FString MainVariable = ShaderCustomization.FindVariableForFactor(TEXT("MAIN"));
+			const FString HueVariable = ShaderCustomization.FindVariableForFactor(TEXT("HUEB"));
+			if (!MainVariable.IsEmpty())
+			{
+				TintOverride = PaletteTintOverrides->Find(MainVariable);
+			}
+			if (!HueVariable.IsEmpty())
+			{
+				TintOverride2 = PaletteTintOverrides->Find(HueVariable);
+			}
+		}
+
+		if (TextureIndexOverrides && TextureIndexOverrides->Num() > 0 && !ShaderCustomization.TextureVariantVariable.IsEmpty())
+		{
+			TextureIndexOverride = TextureIndexOverrides->Find(ShaderCustomization.TextureVariantVariable);
+		}
+	}
+
+	// A tinted/variant-overridden material is specific to this one actor's
+	// customization, not reusable shader-wide — bypass the shared cache
+	// entirely for it (both read and, further below, write).
+	if (!TintOverride && !TintOverride2 && !TextureIndexOverride)
+	{
+		if (TObjectPtr<UMaterialInterface>* Existing = ObjectMaterialCache.Find(ShaderVirtualPath))
+		{
+			return *Existing;
+		}
 	}
 
 	UMaterialInterface* Result = nullptr;
@@ -1669,7 +2084,15 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 
 	// SWTS animated shaders and unusual legacy templates still use the older
 	// diffuse resolver as a fallback.
-	const FString TexturePath = DiffuseDef ? DiffuseDef->VirtualPath : ResolveShaderDiffuseTexturePath(ShaderVirtualPath);
+	FString TexturePath = DiffuseDef ? DiffuseDef->VirtualPath : ResolveShaderDiffuseTexturePath(ShaderVirtualPath);
+	// The selected variant is a plain 0-based index into the shader's own
+	// ordered TXTR list — NOT a "_sNN" suffix rewrite of the default path,
+	// which an earlier version did and got wrong by one (index 16 of the
+	// Wookiee's 25-entry list is wke_pattern_s17.dds, not _s16).
+	if (TextureIndexOverride && ShaderCustomization.TextureVariants.IsValidIndex(*TextureIndexOverride))
+	{
+		TexturePath = ShaderCustomization.TextureVariants[*TextureIndexOverride];
+	}
 	UTexture2D* Texture = GetOrLoadObjectTexture(TexturePath, /*bSRGB=*/true);
 	UTexture2D* NormalTexture = NormalDef ? GetOrLoadObjectTexture(NormalDef->VirtualPath, /*bSRGB=*/false,
 		/*bLegacyDXT5Normal=*/NormalDef->Tag.Equals(TEXT("CNRM"), ESearchCase::IgnoreCase)) : nullptr;
@@ -1690,10 +2113,24 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 			ObjectMaterialParent = LoadObject<UMaterialInterface>(nullptr,
 				TEXT("/Game/SWGEmu/Materials/M_SWGObjectTextured.M_SWGObjectTextured"));
 		}
-
-		if (ObjectMaterialParent)
+		if (!ObjectMaterialParentMasked)
 		{
-			if (UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(ObjectMaterialParent, this))
+			ObjectMaterialParentMasked = LoadObject<UMaterialInterface>(nullptr,
+				TEXT("/Game/SWGEmu/Materials/M_SWGObjectTexturedMasked.M_SWGObjectTexturedMasked"));
+		}
+
+		// SWG's "alpha" shaders (fur/hair overlay cards, foliage, etc. — see
+		// FSWGShaderData::NeedsAlphaBlend) render as alpha-masked, not opaque;
+		// using the opaque parent for these leaves their cutout geometry
+		// fully solid, showing as a hard-edged silhouette instead of blending
+		// into the surface underneath.
+		UMaterialInterface* Parent = (ShaderData.NeedsAlphaBlend() && ObjectMaterialParentMasked)
+			? ObjectMaterialParentMasked.Get()
+			: ObjectMaterialParent.Get();
+
+		if (Parent)
+		{
+			if (UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Parent, this))
 			{
 				MID->SetTextureParameterValue(TEXT("Diffuse"), Texture);
 				if (NormalTexture)
@@ -1707,13 +2144,30 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 
 				// Creature/player skins are a pattern texture meant to be
 				// tinted by a customization palette, not a ready-to-use
-				// diffuse on its own (see ResolveShaderTintPalettePath) —
-				// approximate with the palette's average color rather than
-				// a real per-character index pick.
-				const FString PalettePath = ResolveShaderTintPalettePath(ShaderVirtualPath);
-				if (!PalettePath.IsEmpty())
+				// diffuse on its own (see ResolveShaderTintPalettePath).
+				// TintOverride/TintOverride2 (see above) are the real
+				// per-character index_color_1/index_color_3 picks when
+				// available; otherwise fall back to the palette's flat
+				// average color for both, as before this two-tone mechanism
+				// was understood (no per-vertex variation without a real
+				// per-character customization to drive it anyway).
+				if (TintOverride)
 				{
-					MID->SetVectorParameterValue(TEXT("TintColor"), LoadPaletteAverageTint(PalettePath));
+					MID->SetVectorParameterValue(TEXT("TintColor"), *TintOverride);
+					MID->SetVectorParameterValue(TEXT("TintColor2"), TintOverride2 ? *TintOverride2 : *TintOverride);
+				}
+				else
+				{
+					if (PalettePath.IsEmpty())
+					{
+						PalettePath = ResolveShaderTintPalettePath(ShaderVirtualPath);
+					}
+					if (!PalettePath.IsEmpty())
+					{
+						const FLinearColor AverageTint = LoadPaletteAverageTint(PalettePath);
+						MID->SetVectorParameterValue(TEXT("TintColor"), AverageTint);
+						MID->SetVectorParameterValue(TEXT("TintColor2"), AverageTint);
+					}
 				}
 
 				Result = MID;
@@ -1725,7 +2179,10 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 		}
 	}
 
-	ObjectMaterialCache.Add(ShaderVirtualPath, Result);
+	if (!TintOverride && !TintOverride2 && !TextureIndexOverride)
+	{
+		ObjectMaterialCache.Add(ShaderVirtualPath, Result);
+	}
 	return Result;
 }
 
@@ -1812,7 +2269,7 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 Ca
 #endif
 }
 
-UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility)
+UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides)
 {
 	const FVector3f PlaceholderColor = GetPlaceholderColorForActor(Actor);
 	UStaticMesh* StaticMesh = GetOrBuildGeneratedStaticMesh(CacheHash, DebugName, MeshData, PlaceholderColor);
@@ -1840,7 +2297,7 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 	int32 NumTextured = 0;
 	for (int32 i = 0; i < MeshData.Submeshes.Num(); ++i)
 	{
-		UMaterialInterface* Mat = GetOrBuildObjectMaterial(MeshData.Submeshes[i].ShaderName);
+		UMaterialInterface* Mat = GetOrBuildObjectMaterial(MeshData.Submeshes[i].ShaderName, PaletteTintOverrides, TextureIndexOverrides);
 		if (Mat)
 		{
 			++NumTextured;
@@ -2154,7 +2611,7 @@ UBlendSpace* USWGMeshGeneratorSubsystem::GetOrBuildLocomotionBlendSpace(const FS
 #endif
 }
 
-bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent)
+bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, float>* MorphWeights, const TMap<FString, int32>* TextureIndexOverrides)
 {
 	if (!TreSubsystem)
 	{
@@ -2252,13 +2709,35 @@ bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, co
 	// path (see FSWGSkeletalMeshImporter::BuildSkeletalMesh) but leaves the
 	// actual material null — build/assign the same real per-shader textured
 	// materials the procedural generated-mesh path already uses.
+	int32 NumSkeletalTextured = 0;
 	for (int32 SlotIndex = 0; SlotIndex < GeneratedMesh->GetMaterials().Num(); ++SlotIndex)
 	{
 		const FString ShaderPath = GeneratedMesh->GetMaterials()[SlotIndex].MaterialSlotName.ToString();
-		if (UMaterialInterface* Material = GetOrBuildObjectMaterial(ShaderPath))
+		if (UMaterialInterface* Material = GetOrBuildObjectMaterial(ShaderPath, PaletteTintOverrides, TextureIndexOverrides))
 		{
 			CharacterMesh->SetMaterial(SlotIndex, Material);
+			++NumSkeletalTextured;
 		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s skeletal mesh slot %d ('%s') has no real material — leaving the mesh's default"),
+				*Actor.GetName(), SlotIndex, *ShaderPath);
+		}
+	}
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s skeletal mesh assigned %d/%d real textured material(s)"),
+		*Actor.GetName(), NumSkeletalTextured, GeneratedMesh->GetMaterials().Num());
+
+	// Real per-character face/body shape (see ResolveCustomizationMorphWeights)
+	// — a no-op for any name GeneratedMesh doesn't actually have a matching
+	// morph target for (SetMorphTarget just logs nothing and does nothing).
+	if (MorphWeights)
+	{
+		for (const TPair<FString, float>& Pair : *MorphWeights)
+		{
+			CharacterMesh->SetMorphTarget(FName(*Pair.Key), Pair.Value);
+		}
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: applied %d morph weight(s) to '%s' on mesh '%s'"),
+			MorphWeights->Num(), *Actor.GetName(), *GetNameSafe(CharacterMesh->GetSkeletalMeshAsset()));
 	}
 
 	CharacterMesh->PlayAnimation(LocomotionBlendSpace, true);

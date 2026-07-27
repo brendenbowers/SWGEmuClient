@@ -5,6 +5,9 @@
 #include "Tickable.h"
 #include "TRE/SWGMeshReader.h"
 #include "TRE/SWGSkeletonReader.h"
+#include "TRE/SWGCustomizationIdManager.h"
+#include "TRE/SWGAssetCustomizationManager.h"
+#include "Customization/SWGCustomizationVariables.h"
 #include "SWGMeshGeneratorSubsystem.generated.h"
 
 class USWGTreSubsystem;
@@ -70,6 +73,13 @@ struct FSWGPendingMeshRequest
 	 *  rendering/lighting path instead of paying Movable's per-frame
 	 *  transform-update overhead. */
 	bool bStatic = false;
+
+	/** The .sat/.apt path resolved along the way to MeshVirtualPaths (see
+	 *  ResolveMeshPathForTemplate) — also the exact string Core3 hashes as
+	 *  the ACST lookup key for this object's customization variables (see
+	 *  FSWGAssetCustomizationManager). Empty for requests that arrive with
+	 *  MeshVirtualPaths already resolved by the caller. */
+	FString AppearancePath;
 };
 
 /**
@@ -125,10 +135,10 @@ private:
 	 * resolved MeshVirtualPath, but callers that only have a CRC/template will
 	 * need this once it's implemented.
 	 */
-	bool ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal);
+	bool ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath);
 
 	/** The path-based half of ResolveMeshPath, factored out so RequestMeshForTemplatePath can skip the CRC->path lookup. */
-	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal);
+	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath);
 
 	/** mg4: FSWGMeshReader::ReadStaticMesh/ReadSkeletalMeshBindPose — intended to run off the game thread, like USWGTerrainSubsystem::BakeHeightmap. */
 	bool ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData);
@@ -168,7 +178,7 @@ private:
 	 * root's world transform (the actor's already-correct network spawn
 	 * placement), since nothing else carries that placement once it's gone.
 	 */
-	UMeshComponent* BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility);
+	UMeshComponent* BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr);
 
 	/**
 	 * Generic per-species resolution: works for any ACharacter whose resolved
@@ -181,7 +191,7 @@ private:
 	 * skeleton (non-animated actors) or whose generated assets aren't
 	 * available.
 	 */
-	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent);
+	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, float>* MorphWeights = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr);
 
 	/**
 	 * Loads the once-built USkeletalMesh for this skeleton+mesh-parts
@@ -257,17 +267,124 @@ private:
 	 */
 	FString ResolveShaderTintPalettePath(const FString& ShaderVirtualPath);
 
+	/** One shader's fully-parsed customization bindings — see ResolveShaderCustomization. */
+	struct FSWGShaderCustomization
+	{
+		/**
+		 * Customization variable bare name (e.g. "index_color_1",
+		 * "index_color_skin") -> the shader color-factor tag it feeds
+		 * ("MAIN" = the base color the diffuse is modulated by, "HUEB" = the
+		 * hue-blend color). This tag, NOT the variable name, is the real
+		 * binding: the names are per-species (Wookiee uses index_color_1/
+		 * index_color_3, Ithorian uses index_color_pattern/index_color_skin)
+		 * but the tags are identical across every creature shader checked.
+		 */
+		TMap<FString, FString> ColorFactorTags;
+
+		/** Ordered, 0-based list of selectable diffuse variants (FORM TXTR > CHUNK DATA). */
+		TArray<FString> TextureVariants;
+
+		/** Customization variable whose value indexes TextureVariants (FORM CUST > CHUNK TX1D). */
+		FString TextureVariantVariable;
+
+		/** Bare variable name bound to the given color-factor tag, or empty. */
+		FString FindVariableForFactor(const FString& FactorTag) const
+		{
+			for (const TPair<FString, FString>& Pair : ColorFactorTags)
+			{
+				if (Pair.Value == FactorTag)
+				{
+					return Pair.Key;
+				}
+			}
+			return FString();
+		}
+	};
+
+	/**
+	 * Parses a .sht's customization plumbing in one pass: FORM TFAC's PAL
+	 * entries (variable -> color-factor tag) and FORM TXTR's explicit
+	 * texture-variant list plus the FORM CUST > TX1D binding that says which
+	 * variable indexes it. This replaces two earlier heuristics that both
+	 * turned out wrong against real data — guessing primary/secondary tint
+	 * from variable-name substrings (backwards for the Ithorian, whose
+	 * "index_color_pattern" is MAIN, not the secondary), and deriving the
+	 * selected texture by rewriting a "_sNN" suffix on the shader's default
+	 * path (off by one: index 16 into the Wookiee's 25-entry list is
+	 * wke_pattern_s17.dds, not _s16). Everything here is read from the
+	 * shader itself, so it works for any species without special-casing.
+	 */
+	FSWGShaderCustomization ResolveShaderCustomization(const FString& ShaderVirtualPath);
+
 	/**
 	 * Loads/decodes a .pal customization palette (standard little-endian RIFF
 	 * "PAL data" format — PALETTEHEADER{u16 Version; u16 NumEntries;} +
 	 * NumEntries*{R,G,B,Flags} bytes — distinct from every other SWG asset
 	 * format read elsewhere in this codebase, which are all big-endian IFF)
 	 * and returns the average of all its entries as a flat tint approximation
-	 * — a real per-character customization index pick is a follow-up, not
-	 * implemented yet. Returns opaque white (no tint change) if the palette
-	 * can't be loaded/parsed.
+	 * — used when no real per-character index is available (see
+	 * ResolveCustomizationPaletteTints for the real pick). Returns opaque
+	 * white (no tint change) if the palette can't be loaded/parsed.
 	 */
 	FLinearColor LoadPaletteAverageTint(const FString& PaletteVirtualPath);
+
+	/** Same file format as LoadPaletteAverageTint, but returns the single
+	 *  entry at Index (clamped to the palette's actual entry count) instead
+	 *  of averaging all of them — the real per-character customization
+	 *  color. Returns opaque white if the palette can't be loaded/parsed. */
+	FLinearColor LoadPaletteColorAtIndex(const FString& PaletteVirtualPath, int32 Index);
+
+	/**
+	 * Loads (once, cached — see CustomizationIdManager/AssetCustomizationManager)
+	 * the two customization IFF tables and resolves Customization's decoded
+	 * (TypeId -> value) pairs into a PaletteFileName -> real indexed
+	 * FLinearColor map for every PALETTE-type variable ACST associates with
+	 * AppearancePath (skin/hair/eye color, etc. — see
+	 * FSWGAssetCustomizationManager's header comment for the full
+	 * TypeId->name->effect resolution chain). Only palette variables produce
+	 * an entry here; RANGE variables (face/body morph sliders) aren't
+	 * texture/material changes and aren't handled by this — see
+	 * GetOrBuildObjectMaterial for how the result plugs into material
+	 * building. Empty if AppearancePath has no ACST entry, or Customization
+	 * has no palette-variable values set.
+	 */
+	TMap<FString, FLinearColor> ResolveCustomizationPaletteTints(const FSWGCustomizationVariables& Customization, const FString& AppearancePath);
+
+	/**
+	 * Same resolution chain as ResolveCustomizationPaletteTints, but for
+	 * RANGE (non-palette) variables — the face/body morph sliders
+	 * (blend_fat, blend_cheeks_0, etc.) — normalized from Customization's
+	 * decoded raw value to [0,1] against the variable's ACST-defined
+	 * [Min,Max], and keyed by the bare morph target name (the customization
+	 * variable's path stripped down to its last path segment) matching
+	 * FSWGMeshReader::ReadBlendTargets'/FSkeletalMeshImportData's naming —
+	 * see TryApplyGeneratedAnimatedMesh for where this gets applied via
+	 * USkeletalMeshComponent::SetMorphTarget. Empty for any variable this
+	 * object never customized (left at the mesh's built-in zero-weight
+	 * default) or whose ACST range is degenerate (Max <= Min).
+	 */
+	TMap<FString, float> ResolveCustomizationMorphWeights(const FSWGCustomizationVariables& Customization, const FString& AppearancePath);
+
+	/**
+	 * Same resolution chain again, but for RANGE variables whose bare name
+	 * starts with "index_texture" — these don't blend a mesh shape at all,
+	 * they pick which numbered variant texture a shader uses (SWG's
+	 * "wke_pattern_s01.dds".."wke_pattern_s25.dds" fur-pattern family is the
+	 * motivating case: the .sht bakes in one fixed default like "_s25", and
+	 * the customization variable is what actually chooses the real per-
+	 * character variant at runtime — see the shader's own FORM TXTR/FORM CUST
+	 * chunks, which we don't parse; this reproduces the same result via the
+	 * "_sNN" naming convention instead, see GetOrBuildObjectMaterial). Value
+	 * is the raw decoded integer (not normalized — it's a literal index, 1-25
+	 * for the pattern family), keyed by bare variable name (e.g.
+	 * "index_texture_1"). Empty for any variable never customized.
+	 */
+	TMap<FString, int32> ResolveCustomizationTextureIndices(const FSWGCustomizationVariables& Customization, const FString& AppearancePath);
+
+	/** Lazy-loads CustomizationIdManager/AssetCustomizationManager once per
+	 *  session (shared by ResolveCustomizationPaletteTints and
+	 *  ResolveCustomizationMorphWeights) — a no-op after the first call. */
+	void EnsureCustomizationManagersLoaded();
 
 	/** Loads/decodes texture/<name>.dds once and caches the result (see LoadedObjectTextures) — same pattern as USWGTerrainSubsystem::GetOrLoadShaderTexture. */
 	UTexture2D* GetOrLoadObjectTexture(const FString& TextureVirtualPath, bool bSRGB = true,
@@ -280,8 +397,15 @@ private:
 	 * instance of one weapon or one wall type). Returns nullptr if the shader
 	 * string is empty or its texture fails to resolve/load — caller falls
 	 * back to the plain tint material for that submesh.
+	 *
+	 * PaletteTintOverrides (see ResolveCustomizationPaletteTints) is checked
+	 * against the shader's own TFAC palette path (ResolveShaderTintPalettePath)
+	 * — if it names an override, that real per-character color is used
+	 * instead of LoadPaletteAverageTint's flat approximation, and the result
+	 * is NOT added to ObjectMaterialCache (it's specific to this one actor's
+	 * customization, not reusable shader-wide like the cached/average case).
 	 */
-	UMaterialInterface* GetOrBuildObjectMaterial(const FString& ShaderVirtualPath);
+	UMaterialInterface* GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr);
 
 	UPROPERTY()
 	TObjectPtr<USWGTreSubsystem> TreSubsystem;
@@ -292,6 +416,10 @@ private:
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> ObjectMaterialParent;
 
+	/** Same as ObjectMaterialParent but BLEND_Masked, with OpacityMask wired from Diffuse's alpha channel — used instead of ObjectMaterialParent for shaders where FSWGShaderData::NeedsAlphaBlend() is true (see GetOrBuildObjectMaterial). */
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> ObjectMaterialParentMasked;
+
 	/** TRE virtual texture path -> decoded transient UTexture2D. See GetOrLoadObjectTexture. */
 	UPROPERTY()
 	TMap<FString, TObjectPtr<UTexture2D>> LoadedObjectTextures;
@@ -299,6 +427,14 @@ private:
 	/** Shader virtual path (e.g. "shader/dl44_main_as9.sht") -> built MaterialInstanceDynamic. See GetOrBuildObjectMaterial. */
 	UPROPERTY()
 	TMap<FString, TObjectPtr<UMaterialInterface>> ObjectMaterialCache;
+
+	/** Loaded once on first use (see ResolveCustomizationPaletteTints) from
+	 *  customization/customization_id_manager.iff and
+	 *  customization/asset_customization_manager.iff — both are small,
+	 *  session-global reference tables, not per-object data. */
+	bool bCustomizationManagersLoaded = false;
+	FSWGCustomizationIdManager CustomizationIdManager;
+	FSWGAssetCustomizationManager AssetCustomizationManager;
 
 	/** Actors whose blend space's speed input needs updating every tick — see TryApplyGeneratedAnimatedMesh and Tick. */
 	TArray<FSWGPlayingAnimation> PlayingAnimations;
