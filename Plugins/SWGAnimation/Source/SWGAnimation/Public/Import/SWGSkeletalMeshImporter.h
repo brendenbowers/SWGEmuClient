@@ -37,7 +37,8 @@ public:
 	static USkeletalMesh* BuildSkeletalMesh(
 		const FSWGSkeletonData& Skeleton,
 		const TArray<const FSWGMeshData*>& MeshParts,
-		const FString& PackagePath);
+		const FString& PackagePath,
+		const TMap<FString, FString>& SlotHardpoints = {});
 
 private:
 	static bool PopulateImportData(

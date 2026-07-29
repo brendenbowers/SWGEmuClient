@@ -51,9 +51,19 @@ struct FSWGMeshMorphTarget
 	TMap<int32, FVector> PositionDeltas;
 };
 
+/** One named .mgn hardpoint, stored relative to ParentName. */
+struct FSWGMeshHardpoint
+{
+	FString Name;
+	FString ParentName;
+	FQuat Rotation = FQuat::Identity;
+	FVector Translation = FVector::ZeroVector;
+};
+
 struct FSWGMeshData
 {
 	TArray<FSWGMeshSubmesh> Submeshes;
+	TArray<FSWGMeshHardpoint> Hardpoints;
 
 	/** Named blend shapes for this mesh part (see FSWGMeshMorphTarget) — only
 	 *  .mgn parts with a FORM BLTS have any; most don't (e.g. hands/arms
@@ -126,6 +136,9 @@ private:
 	 * bind-pose rendering doesn't depend on skin weights being present.
 	 */
 	static TArray<TArray<FSWGBoneWeight>> ReadVertexWeights(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, int32 VertexCount);
+
+	/** Decodes FORM HPTS > STAT/DYN records into named, joint-relative hardpoints. */
+	static void ReadHardpoints(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh);
 
 	/**
 	 * Decodes FORM BLTS > FORM BLT (repeated) into OutMesh.MorphTargets, if

@@ -3,6 +3,7 @@
 #if WITH_EDITOR
 
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkeletalMeshSocket.h"
 #include "Animation/Skeleton.h"
 #include "ReferenceSkeleton.h"
 #include "Rendering/SkeletalMeshLODImporterData.h"
@@ -262,7 +263,8 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 	const FSWGSkeletonData& Skeleton,
 	const TArray<const FSWGMeshData*>& MeshParts,
-	const FString& PackagePath)
+	const FString& PackagePath,
+	const TMap<FString, FString>& SlotHardpoints)
 {
 	FSkeletalMeshImportData ImportData;
 	TArray<FString> MaterialSlotNames;
@@ -294,6 +296,44 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 			const FMeshBoneInfo BoneInfo(FName(*Joint.Name), Joint.Name, Joint.ParentIndex);
 			const FTransform BoneTransform(Joint.ComposeLocalRotation(Joint.BindPoseRotation), Joint.BindPoseTranslation);
 			RefSkeletonModifier.Add(BoneInfo, BoneTransform);
+		}
+	}
+
+	TSet<FName> AddedSocketNames;
+	for (const TPair<FString, FString>& Slot : SlotHardpoints)
+	{
+		const int32 BoneIndex = RefSkeleton.FindBoneIndex(FName(*Slot.Value));
+		if (BoneIndex == INDEX_NONE)
+		{
+			continue;
+		}
+
+		USkeletalMeshSocket* Socket = NewObject<USkeletalMeshSocket>(SkeletalMesh);
+		Socket->SocketName = FName(*Slot.Key);
+		Socket->BoneName = RefSkeleton.GetBoneName(BoneIndex);
+		SkeletalMesh->GetMeshOnlySocketList().Add(Socket);
+		AddedSocketNames.Add(Socket->SocketName);
+	}
+
+	for (const FSWGMeshData* MeshPart : MeshParts)
+	{
+		if (!MeshPart) continue;
+		for (const FSWGMeshHardpoint& Hardpoint : MeshPart->Hardpoints)
+		{
+			const int32 ParentIndex = RefSkeleton.FindBoneIndex(FName(*Hardpoint.ParentName));
+			const FName SocketName(*Hardpoint.Name);
+			if (ParentIndex == INDEX_NONE || AddedSocketNames.Contains(SocketName))
+			{
+				continue;
+			}
+
+			USkeletalMeshSocket* Socket = NewObject<USkeletalMeshSocket>(SkeletalMesh);
+			Socket->SocketName = SocketName;
+			Socket->BoneName = RefSkeleton.GetBoneName(ParentIndex);
+			Socket->RelativeLocation = Hardpoint.Translation;
+			Socket->RelativeRotation = Hardpoint.Rotation.Rotator();
+			SkeletalMesh->GetMeshOnlySocketList().Add(Socket);
+			AddedSocketNames.Add(SocketName);
 		}
 	}
 

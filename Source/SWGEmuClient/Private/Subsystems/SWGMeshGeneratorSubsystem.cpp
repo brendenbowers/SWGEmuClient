@@ -16,6 +16,7 @@
 #include "TRE/SWGAssetCustomizationManager.h"
 #include "TRE/SWGCrc32.h"
 #include "TRE/SWGSkeletonReader.h"
+#include "TRE/SWGSlotDefinitionReader.h"
 #include "TRE/SWGAnimationReader.h"
 #include "TRE/SWGIFFChunkReader.h"
 #include "Import/SWGSkeletalMeshImporter.h"
@@ -576,7 +577,11 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 				}
 
 				const TArray<const FSWGMeshData*> MeshParts = { &BodyMesh, &HeadMesh };
-				USkeletalMesh* Result = FSWGSkeletalMeshImporter::BuildSkeletalMesh(Skeleton, MeshParts, TEXT("/Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed"));
+				USkeletalMesh* Result = FSWGSkeletalMeshImporter::BuildSkeletalMesh(
+					Skeleton,
+					MeshParts,
+					TEXT("/Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed"),
+					Self->GetSlotHardpoints());
 				if (!Result)
 				{
 					UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeSkeletalMesh: build failed — see preceding warnings"));
@@ -2423,6 +2428,33 @@ namespace
 	}
 }
 
+const TMap<FString, FString>& USWGMeshGeneratorSubsystem::GetSlotHardpoints()
+{
+	if (bSlotHardpointsLoaded)
+	{
+		return SlotHardpoints;
+	}
+	bSlotHardpointsLoaded = true;
+
+	TArray<FSWGSlotDefinition> Definitions;
+	if (!FSWGSlotDefinitionReader::Read(
+		TreSubsystem->CreateIffReader(TEXT("abstract/slot/slot_definition/slot_definitions.iff")),
+		Definitions))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to read slot definitions"));
+		return SlotHardpoints;
+	}
+
+	for (const FSWGSlotDefinition& Definition : Definitions)
+	{
+		if (!Definition.HardpointName.IsEmpty())
+		{
+			SlotHardpoints.Add(Definition.Name, Definition.HardpointName);
+		}
+	}
+	return SlotHardpoints;
+}
+
 USkeletalMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedSkeletalMesh(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton)
 {
 	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths);
@@ -2484,7 +2516,11 @@ USkeletalMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedSkeletalMesh(const
 		MeshPartPtrs.Add(&Part);
 	}
 
-	USkeletalMesh* Result = FSWGSkeletalMeshImporter::BuildSkeletalMesh(MeshBuildSkeleton, MeshPartPtrs, PackagePath);
+	USkeletalMesh* Result = FSWGSkeletalMeshImporter::BuildSkeletalMesh(
+		MeshBuildSkeleton,
+		MeshPartPtrs,
+		PackagePath,
+		GetSlotHardpoints());
 	if (!Result)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to build generated skeletal mesh '%s' for skeleton '%s'"), *PackagePath, *SkeletonPath);

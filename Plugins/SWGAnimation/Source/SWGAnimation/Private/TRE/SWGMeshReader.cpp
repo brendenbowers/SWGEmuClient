@@ -440,6 +440,7 @@ bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGM
 
 	const TArray<TArray<FSWGBoneWeight>> VertexWeights = ReadVertexWeights(Reader, Form0004, VertexCount);
 
+	ReadHardpoints(Reader, Form0004, OutMesh);
 	ReadBlendTargets(Reader, Form0004, OutMesh);
 
 	int32 PsdtCount = 0;
@@ -461,6 +462,49 @@ bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGM
 	}
 
 	return OutMesh.Submeshes.Num() > 0;
+}
+
+void FSWGMeshReader::ReadHardpoints(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh)
+{
+	FSWGIffChunk HptsForm;
+	if (!Reader.FindChildForm(Form0004, SWG_IFF_TAG('H','P','T','S'), HptsForm))
+	{
+		return;
+	}
+
+	for (const FSWGIffChunk& Child : Reader.ReadChildren(HptsForm))
+	{
+		if (Child.Tag != SWG_IFF_TAG('S','T','A','T') && Child.Tag != SWG_IFF_TAG('D','Y','N',' '))
+		{
+			continue;
+		}
+
+		FSWGIFFChunkReader HardpointReader(Child, Reader);
+		const int32 Count = HardpointReader.ReadValueLE<int16>();
+		if (Count < 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: invalid %s hardpoint count %d"), *Child.Tag.ToString(), Count);
+			continue;
+		}
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			FSWGMeshHardpoint Hardpoint;
+			if (!HardpointReader.ReadTerminiatedString(Hardpoint.Name)
+				|| !HardpointReader.ReadTerminiatedString(Hardpoint.ParentName)
+				|| !HardpointReader.ReadQuatLE<FQuat, float>(Hardpoint.Rotation)
+				|| !HardpointReader.ReadVectorLE<FVector, float>(Hardpoint.Translation, SWGWorldScale))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: malformed %s hardpoint %d of %d"),
+					*Child.Tag.ToString(), Index + 1, Count);
+				break;
+			}
+
+			if (!Hardpoint.Name.IsEmpty() && !Hardpoint.ParentName.IsEmpty())
+			{
+				OutMesh.Hardpoints.Add(MoveTemp(Hardpoint));
+			}
+		}
+	}
 }
 
 void FSWGMeshReader::ReadBlendTargets(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh)

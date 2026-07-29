@@ -436,6 +436,16 @@ private:
 	FSWGCustomizationIdManager CustomizationIdManager;
 	FSWGAssetCustomizationManager AssetCustomizationManager;
 
+	/** Slot name -> hardpoint socket name, parsed once on first use from
+	 *  abstract/slot/slot_definition/slot_definitions.iff (see
+	 *  GetSlotHardpoints) — a small, session-global reference table shared by
+	 *  every generated skeletal mesh, not per-mesh data. */
+	bool bSlotHardpointsLoaded = false;
+	TMap<FString, FString> SlotHardpoints;
+
+	/** Returns SlotHardpoints, parsing it from slot_definitions.iff on the first call. */
+	const TMap<FString, FString>& GetSlotHardpoints();
+
 	/** Actors whose blend space's speed input needs updating every tick — see TryApplyGeneratedAnimatedMesh and Tick. */
 	TArray<FSWGPlayingAnimation> PlayingAnimations;
 };
