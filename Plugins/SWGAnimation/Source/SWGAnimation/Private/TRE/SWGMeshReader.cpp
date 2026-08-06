@@ -59,9 +59,9 @@ TArray<TArray<FSWGBoneWeight>> FSWGMeshReader::ReadVertexWeights(const FSWGIffRe
 	return VertexWeights;
 }
 
-void FSWGMeshReader::TryReadBoundingBox(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh)
+void FSWGMeshReader::TryReadAppearance(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh)
 {
-	FSWGIffChunk Appr, F0003, Exbx, Exbx0001, BoxChunk;
+	FSWGIffChunk Appr, F0003, Exbx, Exbx0001, BoxChunk, Hardpoints;
 	if (!Reader.FindChildForm(Form0004, SWG_IFF_TAG('A','P','P','R'), Appr)) return;
 	if (!Reader.FindChildForm(Appr, SWG_IFF_TAG('0','0','0','3'), F0003)) return;
 	if (!Reader.FindChildForm(F0003, SWG_IFF_TAG('E','X','B','X'), Exbx)) return;
@@ -78,6 +78,57 @@ void FSWGMeshReader::TryReadBoundingBox(const FSWGIffReader& Reader, const FSWGI
 	Box += B;
 	OutMesh.BoundingBox = Box;
 	OutMesh.bHasBoundingBox = true;
+
+	if (Reader.FindChildForm(F0003, SWG_IFF_TAG('H', 'P', 'T', 'S'), Hardpoints))
+	{
+		for (const FSWGIffChunk& HardpointChunk : Reader.FindAllChildChunks(Hardpoints, SWG_IFF_TAG('H', 'P', 'N', 'T')))
+		{
+			FSWGIFFChunkReader HardpointReader(HardpointChunk, Reader);
+
+			// Static-mesh HPNT: a row-major 3x4 affine transform — three rows
+			// of [basis.x, basis.y, basis.z, that row's translation component]
+			// in SWG axis order — followed by a null-terminated name.
+			float T[3] = {};
+			bool bReadOk = true;
+			for (int32 Row = 0; Row < 3 && bReadOk; ++Row)
+			{
+				bReadOk = HardpointReader.ReadValueLE(R[Row][0])
+					&& HardpointReader.ReadValueLE(R[Row][1])
+					&& HardpointReader.ReadValueLE(R[Row][2])
+					&& HardpointReader.ReadValueLE(T[Row]);
+			}
+
+			FSWGMeshHardpoint Hardpoint;
+			if (!bReadOk
+				|| !HardpointReader.ReadTerminiatedString(Hardpoint.Name)
+				|| Hardpoint.Name.IsEmpty())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: malformed static-mesh HPNT record"));
+				continue;
+			}
+
+			// Conjugate the basis by the same Y/Z swap ReadVectorLE applies,
+			// which reduces to swapping both rows and columns 1 and 2:
+			// R_ue[i][j] = R_swg[SwgAxis[i]][SwgAxis[j]]. Conjugating a matrix
+			// this way already accounts for the reflection, so unlike
+			// ReadQuatLE it needs no extra sign. Translation follows the same
+			// axis map.
+			static constexpr int32 SwgAxis[3] = { 0, 2, 1 };
+
+			FMatrix RotationMatrix = FMatrix::Identity;
+			for (int32 i = 0; i < 3; ++i)
+			{
+				for (int32 j = 0; j < 3; ++j)
+				{
+					RotationMatrix.M[i][j] = R[SwgAxis[i]][SwgAxis[j]];
+				}
+			}
+			Hardpoint.Rotation = RotationMatrix.ToQuat();
+			Hardpoint.Translation = FVector(T[SwgAxis[0]], T[SwgAxis[1]], T[SwgAxis[2]]) * SWGWorldScale;
+
+			OutMesh.Hardpoints.Add(MoveTemp(Hardpoint));
+		}
+	}
 }
 
 bool FSWGMeshReader::ReadMshSubmesh(const FSWGIffReader& Reader, const FSWGIffChunk& SubmeshForm, FSWGMeshSubmesh& OutSubmesh)
@@ -174,12 +225,12 @@ bool FSWGMeshReader::ReadStaticMesh(const FSWGIffReader& Reader, FSWGMeshData& O
 	// since nothing below this depends on which.
 	const TArray<FSWGIffChunk> MeshVersionForms = Reader.FindChildForms(MeshForm);
 	if (MeshVersionForms.Num() == 0) return false;
-	const FSWGIffChunk& Form0004 = MeshVersionForms[0];
+	const FSWGIffChunk& FormVersion = MeshVersionForms[0];
 
-	TryReadBoundingBox(Reader, Form0004, OutMesh);
+	TryReadAppearance(Reader, FormVersion, OutMesh);
 
 	FSWGIffChunk SpsForm, Sps0001;
-	if (!Reader.FindChildForm(Form0004, SWG_IFF_TAG('S','P','S',' '), SpsForm)) return false;
+	if (!Reader.FindChildForm(FormVersion, SWG_IFF_TAG('S','P','S',' '), SpsForm)) return false;
 	if (!Reader.FindChildForm(SpsForm, SWG_IFF_TAG('0','0','0','1'), Sps0001)) return false;
 
 	for (const FSWGIffChunk& SubmeshForm : Reader.FindChildForms(Sps0001))
@@ -198,6 +249,8 @@ bool FSWGMeshReader::ReadStaticMesh(const FSWGIffReader& Reader, FSWGMeshData& O
 			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: failed to parse submesh FORM %s — skipping"), *SubmeshForm.FormType.ToString());
 		}
 	}
+
+
 
 	return OutMesh.Submeshes.Num() > 0;
 }

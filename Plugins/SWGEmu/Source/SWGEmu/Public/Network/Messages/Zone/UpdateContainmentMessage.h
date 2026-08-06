@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Network/Messages/SWGNetMessage.h"
+#include "Network/Objects/Zone/Object/SWGContainmentType.h"
 
 /**
  * UpdateContainmentMessage (opcode 0x56CBDE9E, opcount 0x04)
@@ -14,8 +15,10 @@
  *
  * "Type" is Core3's "containmentType"/"arrangement type" (SceneObject.idl) —
  * which slot/arrangement within the container, e.g. PlayerArrangement enum
- * values for equip slots vs vehicle seats. Not needed for basic show/hide;
- * kept for whenever real per-slot placement is added.
+ * values for equip slots vs vehicle seats. See ESWGContainmentType /
+ * SWGIsSlottedArrangement / SWGGetArrangementGroupIndex for interpreting it.
+ * Not needed for basic show/hide; kept for whenever real per-slot placement
+ * is added.
  */
 struct SWGEMU_API FUpdateContainmentMessage : public FSWGNetMessage
 {

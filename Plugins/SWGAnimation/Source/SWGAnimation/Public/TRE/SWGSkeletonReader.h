@@ -33,10 +33,12 @@ struct FSWGSkeletonJoint
 	/**
 	 * The joint's actual parent-relative rotation for a given mid rotation
 	 * (bind: BindPoseRotation; animated: the sampled .ans rotation).
-	 * Post * mid * Pre — confirmed order: the Y/Z-swap quaternion conversion
-	 * (SkeletonReadRotationLE and the .ans decoders) reverses quaternion
-	 * multiplication order, so the original client's RPRE * mid * RPST maps
-	 * to this reversed order in UE space.
+	 *
+	 * Post * mid * Pre, matching the original client's
+	 * preMultiplyRotation * animationRotation * postMultiplyRotation.
+	 *
+	 * For an animated frame the mid is (sample * BindPoseRotation), not the
+	 * sample alone — see FSWGAnimationImporter::BuildAnimSequence.
 	 */
 	FQuat ComposeLocalRotation(const FQuat& Mid) const
 	{

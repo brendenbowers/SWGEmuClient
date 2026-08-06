@@ -19,13 +19,13 @@ bool FSWGSlotDefinitionReader::Read(const FSWGIffReader& Reader, TArray<FSWGSlot
 	{
 		FSWGSlotDefinition Definition;
 		if (!Data.ReadTerminiatedString(Definition.Name)
-			|| !Data.ReadValueLE(Definition.UnrestrictedFlag)
-			|| !Data.ReadValueLE(Definition.PlayerModifiableFlag)
-			|| !Data.ReadValueLE(Definition.AppearanceRelatedFlag)
-			|| !Data.ReadTerminiatedString(Definition.HardpointName)
-			|| !Data.ReadValueLE(Definition.AnatomicalRegionMask)
-			|| !Data.ReadValueLE(Definition.SpecialContainmentFlag)
-			|| !Data.ReadValueLE(Definition.RiderFlag))
+			|| !Data.ReadValueLE(Definition.bCanAcceptAnyItem)
+			|| !Data.ReadValueLE(Definition.bIsPlayerModifiable)
+			|| !Data.ReadValueLE(Definition.bIsAppearanceRelated)
+			|| !Data.ReadTerminiatedString(Definition.Hardpoint)
+			|| !Data.ReadValueLE(Definition.CombatBone)
+			|| !Data.ReadValueLE(Definition.bObserveWithParent)
+			|| !Data.ReadValueLE(Definition.bExposeWithParent))
 		{
 			OutDefinitions.Reset();
 			return false;

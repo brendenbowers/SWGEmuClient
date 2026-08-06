@@ -186,6 +186,13 @@ public:
 		return Value;
 	}
 	
+	/**
+	 * SWG (Y-up) -> UE (Z-up) for model-local geometry: swg(x,y,z) -> ue(x, z, y).
+	 *
+	 * The Y/Z swap has determinant -1 (a reflection), SWG is right-handed and 
+	 * UE is left-handed, so expressing the same geometry in UE needs an odd mapping. 
+	 * It also converts triangle winding between the two conventions for free
+	 */
 	template<typename TVectorType, typename TComponentType>
 	bool ReadVectorLE(TVectorType& Value, TComponentType WorldScale)
 	{
@@ -213,15 +220,23 @@ public:
 
 	// Quaternions are stored (W,X,Y,Z) — confirmed against the root joint's
 	// BPRO/RPRE, which is (1,0,0,0) on disk; that's only the identity
-	// quaternion if the first float is W, not X. Applies the same Y/Z swap
-	// on the vector (X,Y,Z) part only.
+	// quaternion if the first float is W, not X.
+	//
+	// Applies the same Y/Z swap as ReadVectorLE, plus a conjugate (negated
+	// vector part). Positions and rotations do not transform alike under this
+	// conversion: because the swap is a reflection, a position maps v -> Mv,
+	// but a rotation axis is a pseudovector and picks up an extra sign,
+	// q -> (w, -Mv). Without the negation the conversion becomes an
+	// anti-homomorphism (conv(A)*conv(B) == conv(B*A)) and composes
+	// incorrectly against FSWGAnimationReader::DecodeCompressedQuaternion,
+	// which decodes .ans samples the same conjugated way.
 	template<typename TQuatType, typename TComponentType>
 	bool ReadQuatLE(TQuatType& Value)
 	{
 		Value.W = ReadValueLE<TComponentType>();
-		Value.X = ReadValueLE<TComponentType>();
-		Value.Z = ReadValueLE<TComponentType>();
-		Value.Y = ReadValueLE<TComponentType>();
+		Value.X = -ReadValueLE<TComponentType>();
+		Value.Z = -ReadValueLE<TComponentType>();
+		Value.Y = -ReadValueLE<TComponentType>();
 		return true;
 	}
 

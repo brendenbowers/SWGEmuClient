@@ -37,7 +37,7 @@ void USWGTangibleComponent::ApplyBase3Part1(FSWGPacket& Packet)
 
 	OptionsBitmask = Packet.ReadInt32();
 
-	//UpdateNameLabel();
+	UpdateNameLabel();
 }
 
 namespace

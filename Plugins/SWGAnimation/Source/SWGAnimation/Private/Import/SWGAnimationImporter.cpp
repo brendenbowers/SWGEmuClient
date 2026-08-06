@@ -92,11 +92,12 @@ UAnimSequence* FSWGAnimationImporter::BuildAnimSequence(
 			PosKeys.Init(Joint.BindPoseTranslation, Animation.FrameCount);
 		}
 
-		// Each decoded sample is the joint's *mid* rotation only — the actual
-		// local rotation is Pre * mid * Post (FSWGSkeletonJoint::ComposeLocalRotation),
-		// same as FSWGSkeletalMeshImporter composes for the bind pose. Skipping
-		// this here left every animated bone in its raw pre/post-rotated frame
-		// instead of the skeleton's frame — see WOOKIEE_ANIMATION_POSE_BUG.md.
+		// Each decoded sample is only part of the joint's mid rotation — the
+		// actual local rotation is the full Pre/Post composition (see
+		// FSWGSkeletonJoint::ComposeLocalRotation), same as
+		// FSWGSkeletalMeshImporter composes for the bind pose. Skipping it
+		// left every animated bone in its raw pre/post-rotated frame instead
+		// of the skeleton's frame — see WOOKIEE_ANIMATION_POSE_BUG.md.
 		TArray<FQuat> RotKeys;
 		const FSWGAnimationBoneTrack* const* FoundTrack = BoneNameToTrack.Find(Joint.Name.ToLower());
 		if (FoundTrack)
@@ -104,7 +105,9 @@ UAnimSequence* FSWGAnimationImporter::BuildAnimSequence(
 			RotKeys = SWGBuildDenseRotationTrack((*FoundTrack)->Keyframes, Animation.FrameCount, Joint.BindPoseRotation);
 			for (FQuat& Rot : RotKeys)
 			{
-				Rot = Joint.ComposeLocalRotation(Rot);
+				// An animated frame's mid is the sample combined with the
+				// joint's bind rotation, not the sample alone.
+				Rot = Joint.ComposeLocalRotation(Rot * Joint.BindPoseRotation);
 			}
 		}
 		else

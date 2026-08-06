@@ -380,6 +380,14 @@ namespace
 		return FVector3f(0.7f, 0.7f, 0.7f); // unknown — neutral gray
 	}
 
+	// Same tint GetPlaceholderColorForActor(...) uses for ASWGItem — actor-less
+	// item-mesh requests (RequestItemStaticMesh) have no actor instance to key
+	// off, but an equipped item is conceptually the same "kind" as ASWGItem.
+	FVector3f GetPlaceholderColorForItem()
+	{
+		return FVector3f(1.0f, 0.5f, 0.1f); // orange
+	}
+
 	// Shared mesh-population core for BuildDynamicMesh and
 	// GetOrBuildGeneratedStaticMesh — appends every submesh's own
 	// self-contained vertex buffer into EditMesh, one material ID per
@@ -876,6 +884,23 @@ void USWGMeshGeneratorSubsystem::RequestMeshForTemplatePath(AActor* Actor, const
 	PendingRequests.Add(MoveTemp(Request));
 }
 
+void USWGMeshGeneratorSubsystem::RequestItemStaticMesh(uint32 TemplateCrc, TFunction<void(UStaticMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnComplete)
+{
+	if (!OnComplete)
+	{
+		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestItemStaticMesh called with no OnComplete callback"));
+		return;
+	}
+
+	FSWGPendingMeshRequest Request;
+	// Request.Actor deliberately left unset (invalid TWeakObjectPtr) — this
+	// is the actor-less path; ProcessNextRequest checks OnItemMeshReady
+	// before its usual Actor-validity branch.
+	Request.TemplateCrc = TemplateCrc;
+	Request.OnItemMeshReady = MoveTemp(OnComplete);
+	PendingRequests.Add(MoveTemp(Request));
+}
+
 void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 {
 	// TODO: pop PendingRequests[0], call ResolveMeshPath (if the request only
@@ -951,8 +976,16 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				// colors) is a pure function of actor class, so two classes
 				// sharing the same underlying mesh file(s) must not share
 				// one cache entry, or whichever built it first "poisons" the
-				// tint for the other.
-				const FString ActorClassName = Request.Actor.IsValid() ? Request.Actor->GetClass()->GetName() : TEXT("Unknown");
+				// tint for the other. Actor-less item-mesh requests
+				// (RequestItemStaticMesh, e.g. USWGEquipmentComponent) have no
+				// Actor at all, but GetPlaceholderColorForItem() already gives
+				// them the same tint an ASWGItem would get — so they must hash
+				// under the SAME class name too, or the same physical weapon
+				// mesh (once as its own SWGItem, once as an equipped item)
+				// ends up built and cached twice under different names.
+				const FString ActorClassName = Request.Actor.IsValid()
+					? Request.Actor->GetClass()->GetName()
+					: (Request.OnItemMeshReady ? ASWGItem::StaticClass()->GetName() : TEXT("Unknown"));
 				const uint32 CacheHash = Request.bStatic
 					? GetTypeHash(Request.TemplatePath)
 					: (GetTypeHash(Request.MeshVirtualPaths) ^ GetTypeHash(ActorClassName));
@@ -968,6 +1001,16 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				// TWeakObjectPtr specifically for that reason.
 				AsyncTask(ENamedThreads::GameThread, [this, Request, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility]()
 					{
+						if (Request.OnItemMeshReady)
+						{
+							// Actor-less item-mesh request (RequestItemStaticMesh) —
+							// build the asset half only, no actor/component to attach.
+							TArray<UMaterialInterface*> Materials;
+							UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForItem(), nullptr, nullptr, Materials);
+							Request.OnItemMeshReady(StaticMesh, MeshData, Materials);
+							return;
+						}
+
 						if (!Request.Actor.IsValid())
 						{
 							UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: actor gone before mesh build completed for %s — skipping"), *DebugName);
@@ -1349,6 +1392,12 @@ bool USWGMeshGeneratorSubsystem::ParseMesh(const FSWGPendingMeshRequest& Request
 		}
 
 		OutMeshData.Submeshes.Append(MoveTemp(PartData.Submeshes));
+		OutMeshData.Hardpoints.Append(MoveTemp(PartData.Hardpoints));
+		if (PartData.bHasBoundingBox && !OutMeshData.bHasBoundingBox)
+		{
+			OutMeshData.BoundingBox = PartData.BoundingBox;
+			OutMeshData.bHasBoundingBox = true;
+		}
 	}
 
 	return OutMeshData.Submeshes.Num() > 0;
@@ -2257,6 +2306,10 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 Ca
 		return nullptr;
 	}
 
+	USWGMeshSourceUserData* SourceData = NewObject<USWGMeshSourceUserData>(StaticMesh);
+	SourceData->DebugName = DebugName;
+	StaticMesh->AddAssetUserData(SourceData);
+
 	StaticMesh->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(StaticMesh);
 
@@ -2274,21 +2327,19 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 Ca
 #endif
 }
 
-UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides)
+UStaticMesh* USWGMeshGeneratorSubsystem::BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials)
 {
-	const FVector3f PlaceholderColor = GetPlaceholderColorForActor(Actor);
+	OutMaterials.Reset();
+
 	UStaticMesh* StaticMesh = GetOrBuildGeneratedStaticMesh(CacheHash, DebugName, MeshData, PlaceholderColor);
 	if (!StaticMesh)
 	{
 		return nullptr;
 	}
 
-	UStaticMeshComponent* MeshComponent = NewObject<UStaticMeshComponent>(&Actor, NAME_None, RF_Transactional);
-	MeshComponent->SetStaticMesh(StaticMesh);
-
-	// Real per-shader materials, assigned live on the component every time
-	// (cheap — GetOrBuildObjectMaterial's own cache means this is just a
-	// lookup, not a rebuild) rather than baked into the cached asset — see
+	// Real per-shader materials, resolved live every call (cheap —
+	// GetOrBuildObjectMaterial's own cache means this is just a lookup, not
+	// a rebuild) rather than baked into the cached asset — see
 	// GetOrBuildGeneratedStaticMesh for why. Falls back to the engine's
 	// vertex-color debug material for any submesh whose shader
 	// failed/unresolved, so PlaceholderColor (baked into the mesh's vertex
@@ -2307,13 +2358,41 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 		{
 			++NumTextured;
 		}
-		MeshComponent->SetMaterial(i, Mat ? Mat : PlaceholderMaterial);
+		OutMaterials.Add(Mat ? Mat : PlaceholderMaterial);
 	}
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s (class %s) assigned %d/%d real textured material(s), tint=(%.2f,%.2f,%.2f)"),
-		*Actor.GetName(), *Actor.GetClass()->GetName(), NumTextured, MeshData.Submeshes.Num(),
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s assigned %d/%d real textured material(s), tint=(%.2f,%.2f,%.2f)"),
+		*DebugName, NumTextured, MeshData.Submeshes.Num(),
 		PlaceholderColor.X, PlaceholderColor.Y, PlaceholderColor.Z);
 
+	return StaticMesh;
+}
+
+UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides)
+{
+	TArray<UMaterialInterface*> Materials;
+	UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForActor(Actor), PaletteTintOverrides, TextureIndexOverrides, Materials);
+	if (!StaticMesh)
+	{
+		return nullptr;
+	}
+
+	UStaticMeshComponent* MeshComponent = NewObject<UStaticMeshComponent>(&Actor, NAME_None, RF_Transactional);
+	MeshComponent->SetStaticMesh(StaticMesh);
+
+	for (int32 i = 0; i < Materials.Num(); ++i)
+	{
+		MeshComponent->SetMaterial(i, Materials[i]);
+	}
+
 	MeshComponent->SetMobility(Mobility);
+
+	// SetActorHiddenInGame(true) (see ApplyContainment) only updates the
+	// components an actor already owns at the moment it's called — since mesh
+	// building is async and can finish long after containment is applied, a
+	// component created here would otherwise default to visible even though
+	// the owning actor's own bHidden already says it should be hidden (e.g. an
+	// equipped item's own SWGItem actor, which stays hidden once contained).
+	MeshComponent->SetHiddenInGame(Actor.IsHidden());
 
 	if (ACharacter* Character = Cast<ACharacter>(&Actor))
 	{
@@ -2447,9 +2526,9 @@ const TMap<FString, FString>& USWGMeshGeneratorSubsystem::GetSlotHardpoints()
 
 	for (const FSWGSlotDefinition& Definition : Definitions)
 	{
-		if (!Definition.HardpointName.IsEmpty())
+		if (!Definition.Hardpoint.IsEmpty())
 		{
-			SlotHardpoints.Add(Definition.Name, Definition.HardpointName);
+			SlotHardpoints.Add(Definition.Name, Definition.Hardpoint);
 		}
 	}
 	return SlotHardpoints;
@@ -2528,6 +2607,24 @@ USkeletalMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedSkeletalMesh(const
 	else
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated skeletal mesh '%s' for skeleton '%s'"), *PackagePath, *SkeletonPath);
+
+		// FSWGSkeletalMeshImporter::BuildSkeletalMesh already saved its package
+		// before returning, so the user data has to be added and the package
+		// re-saved here — otherwise it'd only live in memory for this session
+		// and be missing again on the next cold LoadObject cache-hit.
+		USWGMeshSourceUserData* SourceData = NewObject<USWGMeshSourceUserData>(Result);
+		SourceData->DebugName = FString::Printf(TEXT("%s (skeleton %s)"), *FString::Join(MeshVirtualPaths, TEXT(", ")), *SkeletonPath);
+		Result->AddAssetUserData(SourceData);
+
+		if (UPackage* ResultPackage = Result->GetPackage())
+		{
+			ResultPackage->MarkPackageDirty();
+			const FString FileName = FPackageName::LongPackageNameToFilename(ResultPackage->GetName(), FPackageName::GetAssetPackageExtension());
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			SaveArgs.SaveFlags = SAVE_NoError;
+			UPackage::SavePackage(ResultPackage, Result, *FileName, SaveArgs);
+		}
 	}
 	return Result;
 #else

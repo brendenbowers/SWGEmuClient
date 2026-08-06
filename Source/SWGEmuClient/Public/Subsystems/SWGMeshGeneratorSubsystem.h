@@ -8,6 +8,7 @@
 #include "TRE/SWGCustomizationIdManager.h"
 #include "TRE/SWGAssetCustomizationManager.h"
 #include "Customization/SWGCustomizationVariables.h"
+#include "Engine/AssetUserData.h"
 #include "SWGMeshGeneratorSubsystem.generated.h"
 
 class USWGTreSubsystem;
@@ -34,6 +35,25 @@ struct FSWGPlayingAnimation
 {
 	TWeakObjectPtr<USkeletalMeshComponent> MeshComponent;
 	TWeakObjectPtr<UAnimSingleNodeInstance> AnimInstance;
+};
+
+/**
+ * Attached to every generated UStaticMesh/USkeletalMesh (see
+ * GetOrBuildGeneratedStaticMesh / GetOrBuildGeneratedSkeletalMesh) so a human
+ * or debug tool inspecting the asset later — content browser, a console dump,
+ * GetAssetUserData<>() — can tell which TRE source file(s) it was built from.
+ * Generated asset names are just a hash (SM_<hash>/SK_<hash>), which alone
+ * gives no way to identify the mesh.
+ */
+UCLASS()
+class SWGEMUCLIENT_API USWGMeshSourceUserData : public UAssetUserData
+{
+	GENERATED_BODY()
+
+public:
+	/** Same DebugName string already logged at build time — usually the resolved TRE mesh virtual path(s), sometimes with an owning actor class appended. */
+	UPROPERTY(VisibleAnywhere, Category = "SWGEmu")
+	FString DebugName;
 };
 
 /** One entity waiting for its mesh to be resolved, parsed, and built. */
@@ -80,6 +100,18 @@ struct FSWGPendingMeshRequest
 	 *  FSWGAssetCustomizationManager). Empty for requests that arrive with
 	 *  MeshVirtualPaths already resolved by the caller. */
 	FString AppearancePath;
+
+	/**
+	 * Set instead of Actor for actor-less item-mesh requests (see
+	 * RequestItemStaticMesh) — a request carrying this has no Actor at all
+	 * (TWeakObjectPtr stays unset). ProcessNextRequest checks this before its
+	 * usual Actor-validity check: if bound, it builds the static mesh +
+	 * materials (BuildItemStaticMeshAssets — the same actor-agnostic asset
+	 * half BuildGeneratedMeshComponent uses internally) and invokes this
+	 * directly with the result instead of building/attaching any component.
+	 * Mesh is nullptr on any resolve/parse/build failure.
+	 */
+	TFunction<void(UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnItemMeshReady;
 };
 
 /**
@@ -117,6 +149,19 @@ public:
 	/** Like RequestMesh(Actor, CrcClass), but for callers that already have the
 	 *  template's virtual path (world-snapshot objects) instead of a CRC. */
 	void RequestMeshForTemplatePath(AActor* Actor, const FString& TemplatePath);
+
+	/**
+	 * Actor-less counterpart to RequestMesh(Actor, CrcClass) — resolves
+	 * TemplateCrc, parses its mesh, and builds/caches a UStaticMesh plus its
+	 * live per-shader materials, without creating any component or requiring
+	 * any AActor. OnComplete fires on the game thread once resolved (Mesh is
+	 * nullptr on any resolve/parse/build failure — Materials is empty in
+	 * that case too). For callers like USWGEquipmentComponent that need a
+	 * built mesh to attach themselves (e.g. to a specific character socket)
+	 * rather than have this subsystem attach it to an actor that doesn't
+	 * exist for an individual equipped item.
+	 */
+	void RequestItemStaticMesh(uint32 TemplateCrc, TFunction<void(UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnComplete);
 
 	/** Broadcast once RequestMesh's actor has a built, attached mesh component. */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMeshReady, AActor* /*Actor*/, UMeshComponent* /*MeshComponent*/);
@@ -179,6 +224,19 @@ private:
 	 * placement), since nothing else carries that placement once it's gone.
 	 */
 	UMeshComponent* BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr);
+
+	/**
+	 * The actor-agnostic asset-producing half of BuildGeneratedMeshComponent,
+	 * factored out so RequestItemStaticMesh can use it without an AActor.
+	 * Gets/builds the cached UStaticMesh (GetOrBuildGeneratedStaticMesh — a
+	 * cache hit does no geometry work at all) and resolves its live
+	 * per-shader materials, one entry per MeshData.Submeshes in order,
+	 * falling back to the same placeholder vertex-color material
+	 * BuildGeneratedMeshComponent uses for any submesh whose shader
+	 * failed/unresolved. Returns nullptr (OutMaterials left empty) if the
+	 * static mesh itself couldn't be built.
+	 */
+	UStaticMesh* BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials);
 
 	/**
 	 * Generic per-species resolution: works for any ACharacter whose resolved

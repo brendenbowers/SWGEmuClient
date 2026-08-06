@@ -89,6 +89,36 @@ namespace
 		}
 	}
 
+	void ApplyTangibleDeltas(ASWGItem& Item, uint8 Slot, FSWGPacket& Packet)
+	{
+		switch (Slot)
+		{
+		case 3:
+			if (Item.TangibleComponent)
+			{
+				//Item.TangibleComponent->ApplyBase3Part1(Packet);
+			}
+			if (Item.ConditionComponent)
+			{
+				//Item.ConditionComponent->ApplyBase3(Packet);
+			}
+			if (Item.TangibleComponent)
+			{
+				//Item.TangibleComponent->ApplyBase3Part2(Packet);
+			}
+			break;
+		case 6:
+			if (Item.DefenderComponent)
+			{
+				//Item.DefenderComponent->ApplyBase6(Packet);
+			}
+			break;
+		default:
+			UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no TANO delta dispatch for slot %d"), Slot);
+			break;
+		}
+	}
+
 	// CREO base1/3/4/6: SWGCreatureBaselineParser::ParseBase1/3/4/6. "Loose"
 	// fields (BankCredits/CashCredits/CreatureLinkId/Height/Level/GuildId) live
 	// directly on ASWGCreature — see world-object-plan.html "Component
@@ -110,7 +140,7 @@ namespace
 				}
 				break;
 			case 3:
-				// TangibleObjectMessage3 fields come first on the wire.
+				 //TangibleObjectMessage3 fields come first on the wire.
 				if (Creature.TangibleComponent)
 				{
 					Creature.TangibleComponent->ApplyBase3Part1(Packet);
@@ -176,7 +206,7 @@ namespace
 				break;
 			}
 			case 6:
-				// TangibleObjectMessage6 fields (Unknown076 + DefenderList) come first.
+				//TangibleObjectMessage6 fields (Unknown076 + DefenderList) come first.
 				if (Creature.DefenderComponent)
 				{
 					Creature.DefenderComponent->ApplyBase6(Packet);
@@ -221,6 +251,8 @@ namespace
 				break;
 		}
 	}
+
+
 }
 
 void USWGObjectGraphSubsystem::Initialize(FSubsystemCollectionBase& Collection)

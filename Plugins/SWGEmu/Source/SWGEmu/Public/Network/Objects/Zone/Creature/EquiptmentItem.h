@@ -2,10 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
+#include "Network/Objects/Zone/Object/SWGContainmentType.h"
 
 struct SWGEMU_API FEquiptmentItem
 {
 	FString CustomizationString;
+
+	/** Raw wire value. See ESWGContainmentType / SWGIsSlottedArrangement / SWGGetArrangementGroupIndex. */
 	int32 ContainmentType = 0;
 	uint64 ObjectId = 0;
 	uint32 TemplateCRC = 0;
