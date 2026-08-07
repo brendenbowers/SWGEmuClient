@@ -89,6 +89,7 @@ void FSWGMeshReader::TryReadAppearance(const FSWGIffReader& Reader, const FSWGIf
 			// of [basis.x, basis.y, basis.z, that row's translation component]
 			// in SWG axis order — followed by a null-terminated name.
 			float T[3] = {};
+			float R[3][3] = {};
 			bool bReadOk = true;
 			for (int32 Row = 0; Row < 3 && bReadOk; ++Row)
 			{

@@ -39,7 +39,10 @@ public class SWGEmuClient : ModuleRules
 			// USWGMeshGeneratorSubsystem::GetOrBuildLocomotionBlendSpace registers
 			// its generated UBlendSpace assets via FAssetRegistryModule (WITH_EDITOR
 			// only) — same reasoning as SWGAnimation's own editor-only asset building.
-			PrivateDependencyModuleNames.AddRange(new string[] { "AssetRegistry" });
+			// MeshUtilities is needed directly for IMeshUtilities (used to call
+			// FSWGSkeletalMeshImporter::BuildSkeletalMeshData's worker-thread build
+			// off the game thread — see USWGMeshGeneratorSubsystem::Initialize).
+			PrivateDependencyModuleNames.AddRange(new string[] { "AssetRegistry", "MeshUtilities" });
 		}
 
 		PublicIncludePaths.AddRange(new string[] {

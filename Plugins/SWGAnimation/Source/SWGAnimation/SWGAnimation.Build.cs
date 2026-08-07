@@ -37,6 +37,7 @@ public class SWGAnimation : ModuleRules
 				{
 					"UnrealEd",
 					"MeshBuilder",
+					"MeshUtilities",
 					"MeshUtilitiesCommon",
 					"SkeletalMeshUtilitiesCommon",
 					"SkeletalMeshDescription",

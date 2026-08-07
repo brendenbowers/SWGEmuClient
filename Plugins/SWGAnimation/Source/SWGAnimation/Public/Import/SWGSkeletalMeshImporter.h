@@ -6,7 +6,44 @@
 
 #if WITH_EDITOR
 
+#include "ReferenceSkeleton.h"
+#include "Engine/SkinnedAssetCommon.h"
+#include "Rendering/SkeletalMeshLODModel.h"
+#include "Rendering/SkeletalMeshLODImporterData.h"
+
 class USkeletalMesh;
+class IMeshUtilities;
+
+/** Plain description of one socket to create later — deferred so socket
+ *  resolution (which only needs a standalone FReferenceSkeleton and
+ *  hardpoint data) can happen on a worker thread, with the actual
+ *  NewObject<USkeletalMeshSocket> done on the game thread in
+ *  FSWGSkeletalMeshImporter::FinalizeSkeletalMesh. */
+struct FSWGSocketDesc
+{
+	FName SocketName;
+	FName BoneName;
+	FVector RelativeLocation = FVector::ZeroVector;
+	FRotator RelativeRotation = FRotator::ZeroRotator;
+};
+
+/** Everything FSWGSkeletalMeshImporter::BuildSkeletalMeshData produces —
+ *  plain data only, safe to build on a worker thread and hand over to
+ *  FSWGSkeletalMeshImporter::FinalizeSkeletalMesh on the game thread. A
+ *  complete type (not just forward-declared) since callers outside this
+ *  module (USWGMeshGeneratorSubsystem) need to construct/hold one directly,
+ *  not just pass it through by pointer. */
+struct FSWGSkeletalMeshBuildData
+{
+	FSkeletalMeshImportData ImportData;
+	FReferenceSkeleton RefSkeleton;
+	TArray<FSkeletalMaterial> Materials;
+	TArray<FSWGSocketDesc> Sockets;
+	TUniquePtr<FSkeletalMeshLODModel> LODModel;
+	FSkeletalMeshLODInfo LODInfo;
+	FBoxSphereBounds Bounds;
+	TMap<FString, TMap<int32, FVector>> MorphDeltas;
+};
 
 /**
  * Builds a real, riggable USkeletalMesh + USkeleton pair from already-parsed
@@ -32,14 +69,25 @@ public:
 	 * PackagePath is a full package path (e.g. "/Game/SWGEmu/Generated/SK_Wookiee");
 	 * the new USkeletalMesh and a new USkeleton are both saved there.
 	 *
-	 * Returns nullptr and logs the reason on failure.
-	 */
-	static USkeletalMesh* BuildSkeletalMesh(
+	 * Worker-thread-safe half of the split: parses/builds everything that
+	 *  doesn't touch a UObject (import data, standalone FReferenceSkeleton,
+	 *  socket descriptors, the actual FMeshUtilities::BuildSkeletalMesh
+	 *  geometry pass). PackagePath is only used for logging/build-name
+	 *  purposes here — no package or asset is touched by this half. */
+	static bool BuildSkeletalMeshData(
+		IMeshUtilities& MeshUtilities,
 		const FSWGSkeletonData& Skeleton,
 		const TArray<const FSWGMeshData*>& MeshParts,
+		const TMap<FString, FString>& SlotHardpoints,
 		const FString& PackagePath,
-		const TMap<FString, FString>& SlotHardpoints = {});
+		FSWGSkeletalMeshBuildData& OutData);
 
+	/** Game-thread-only half of the split: takes the plain-data result of
+	 *  BuildSkeletalMeshData and does all NewObject/package/asset-registry
+	 *  work — must run on the game thread. */
+	static USkeletalMesh* FinalizeSkeletalMesh(
+		FSWGSkeletalMeshBuildData&& Data,
+		const FString& PackagePath);
 private:
 	static bool PopulateImportData(
 		const FSWGSkeletonData& Skeleton,

@@ -21,6 +21,8 @@
 #include "TRE/SWGIFFChunkReader.h"
 #include "Import/SWGSkeletalMeshImporter.h"
 #include "Import/SWGAnimationImporter.h"
+#include "Subsystems/SWGSkeletalAnimationPipeline.h"
+#include "MeshUtilities.h"
 #include "Animation/Skeleton.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/BlendSpace.h"
@@ -72,42 +74,6 @@ namespace
 	float GetStaticMeshYawCorrection(const TArray<FString>& MeshVirtualPaths)
 	{
 		return 0.0f;
-	}
-
-	bool ReadDefaultLocomotionPaths(const FSWGIffReader& Reader, TArray<FString>& OutPaths)
-	{
-		TArray<FString> Clips;
-		auto Visit = [&Reader, &Clips](auto&& Self, const FSWGIffChunk& Node) -> void
-		{
-			if (Node.IsForm())
-			{
-				for (const FSWGIffChunk& Child : Reader.ReadChildren(Node)) Self(Self, Child);
-				return;
-			}
-
-			FSWGIFFChunkReader ChunkReader(Node, Reader);
-			const FString Value = ChunkReader.ReadTerminiatedString();
-		
-			if (Value.EndsWith(TEXT(".ans"), ESearchCase::IgnoreCase))
-			{
-				Clips.AddUnique(Value);
-			}
-		};
-
-		for (const FSWGIffChunk& Root : Reader.ReadChunks()) Visit(Visit, Root);
-		auto FindClip = [&Clips](const TCHAR* Needle) -> FString
-		{
-			const FString* Found = Clips.FindByPredicate([Needle](const FString& Path) { return Path.Contains(Needle, ESearchCase::IgnoreCase); });
-			return Found ? *Found : FString();
-		};
-
-		const FString Idle = FindClip(TEXT("_idl_breathe_normally."));
-		const FString Walk = FindClip(TEXT("_loc_walk"));
-		const FString Run = FindClip(TEXT("_loc_run."));
-		if (Idle.IsEmpty() || Walk.IsEmpty() || Run.IsEmpty()) return false;
-
-		OutPaths = { Idle, Walk, Walk, Run }; // LAT provides a parametric walk/run pair, not a distinct jog clip.
-		return true;
 	}
 
 	bool ReadSatLatPaths(const FSWGIffReader& Reader, const FSWGIffChunk& LatxChunk, TMap<FString, FString>& OutPaths)
@@ -468,9 +434,23 @@ namespace
 	}
 }
 
+USWGMeshGeneratorSubsystem::~USWGMeshGeneratorSubsystem()
+{
+	delete SkeletalAnimationPipeline;
+}
+
 void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	TreSubsystem = Cast<USWGTreSubsystem>(Collection.InitializeDependency(USWGTreSubsystem::StaticClass()));
+
+	 MeshUtilities = FModuleManager::LoadModulePtr<IMeshUtilities>("MeshUtilities");
+	 check(MeshUtilities);
+
+	 // Constructed here, not at member-declaration time, since it needs
+	 // TreSubsystem/MeshUtilities already set (both are used lazily by the
+	 // pipeline itself, not at construction, but keeping this after them
+	 // documents the dependency).
+	 SkeletalAnimationPipeline = new FSWGSkeletalAnimationPipeline(*this);
 
 	// Temporary diagnostic for the Wookiee UV-mapping investigation ("face
 	// appears near the hip") — dumps Position.Z alongside UV for vertices
@@ -526,132 +506,6 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 			}));
 
 #if WITH_EDITOR
-	// Temporary diagnostic: builds a real USkeletalMesh + USkeleton for the
-	// Wookiee (body + head merged) via FSWGSkeletalMeshImporter, as a
-	// standalone proof of the .skt/.mgn -> real skinned mesh pipeline before
-	// it's wired into the main mesh-generation flow (which still renders
-	// every creature bind-pose-only via the procedural generated-mesh path). Remove or
-	// fold into that flow once this is validated.
-	static FAutoConsoleCommand BuildWookieeSkeletalMeshCmd(
-		TEXT("swg.BuildWookieeSkeletalMesh"),
-		TEXT("swg.BuildWookieeSkeletalMesh — builds /Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed from appearance/skeleton/all_b.skt + the Wookiee body/head .mgn meshes."),
-		FConsoleCommandDelegate::CreateLambda([]()
-			{
-				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				USWGTreSubsystem* TreSubsystem = Self ? Self->TreSubsystem.Get() : nullptr;
-				if (!TreSubsystem)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeSkeletalMesh: no TreSubsystem"));
-					return;
-				}
-
-				FSWGIffReader SkeletonReaderIff = TreSubsystem->CreateIffReader(TEXT("appearance/skeleton/all_b.skt"));
-				FSWGSkeletonData Skeleton;
-				if (!FSWGSkeletonReader::ReadSkeleton(SkeletonReaderIff, Skeleton))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeSkeletalMesh: failed to parse skeleton"));
-					return;
-				}
-
-				FSWGIffReader BodyReaderIff = TreSubsystem->CreateIffReader(TEXT("appearance/mesh/wke_m_body_l0.mgn"));
-				FSWGMeshData BodyMesh;
-				if (!FSWGMeshReader::ReadSkeletalMeshBindPose(BodyReaderIff, BodyMesh))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeSkeletalMesh: failed to parse body mesh"));
-					return;
-				}
-
-				FSWGIffReader HeadReaderIff = TreSubsystem->CreateIffReader(TEXT("appearance/mesh/wke_m_head_l0.mgn"));
-				FSWGMeshData HeadMesh;
-				if (!FSWGMeshReader::ReadSkeletalMeshBindPose(HeadReaderIff, HeadMesh))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeSkeletalMesh: failed to parse head mesh"));
-					return;
-				}
-
-				FSWGSkeletonData FaceSkeleton;
-				if (FSWGSkeletonReader::ReadSkeleton(TreSubsystem->CreateIffReader(TEXT("appearance/skeleton/wke_m_face.skt")), FaceSkeleton))
-				{
-					const int32 HeadJointIndex = Skeleton.Joints.IndexOfByPredicate([](const FSWGSkeletonJoint& Joint) { return Joint.Name.Equals(TEXT("head"), ESearchCase::IgnoreCase); });
-					if (HeadJointIndex != INDEX_NONE)
-					{
-						const int32 FaceBaseIndex = Skeleton.Joints.Num();
-						for (FSWGSkeletonJoint Joint : FaceSkeleton.Joints)
-						{
-							Joint.ParentIndex = Joint.ParentIndex == INDEX_NONE ? HeadJointIndex : FaceBaseIndex + Joint.ParentIndex;
-							Skeleton.Joints.Add(MoveTemp(Joint));
-						}
-					}
-				}
-
-				const TArray<const FSWGMeshData*> MeshParts = { &BodyMesh, &HeadMesh };
-				USkeletalMesh* Result = FSWGSkeletalMeshImporter::BuildSkeletalMesh(
-					Skeleton,
-					MeshParts,
-					TEXT("/Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed"),
-					Self->GetSlotHardpoints());
-				if (!Result)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeSkeletalMesh: build failed — see preceding warnings"));
-					return;
-				}
-
-				UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeSkeletalMesh: success — /Game/SWGEmu/Generated/SK_Wookiee_MaterialTableFixed"));
-			}));
-
-	// Live material-slot isolation for the generated Wookiee. The body and
-	// head source meshes each contribute their own sections, so this pinpoints
-	// a stray texture patch without rebuilding the skeletal asset. For example:
-	//   swg.WookieeShowMaterial 0 0
-	// hides slot 0; pass 1 to show it again. Slot -1 restores every slot.
-	static FAutoConsoleCommand WookieeShowMaterialCmd(
-		TEXT("swg.WookieeShowMaterial"),
-		TEXT("swg.WookieeShowMaterial <slot|-1> <0|1> — hides/shows a generated Wookiee material slot; -1 restores all slots."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 2)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.WookieeShowMaterial <slot|-1> <0|1>"));
-					return;
-				}
-
-				const int32 SlotIndex = FCString::Atoi(*Args[0]);
-				const bool bShow = FCString::Atoi(*Args[1]) != 0;
-				int32 AffectedComponents = 0;
-				for (TObjectIterator<USkeletalMeshComponent> It; It; ++It)
-				{
-					USkeletalMeshComponent* Component = *It;
-					if (!IsValid(Component) || !Component->GetWorld() || !Component->GetWorld()->IsGameWorld())
-					{
-						continue;
-					}
-					const USkeletalMesh* Mesh = Cast<USkeletalMesh>(Component->GetSkinnedAsset());
-					if (!Mesh || !Mesh->GetPathName().Contains(TEXT("SK_Wookiee_MaterialTableFixed")))
-					{
-						continue;
-					}
-
-					if (SlotIndex < 0)
-					{
-						Component->ShowAllMaterialSections(0);
-					}
-					else if (Mesh->GetMaterials().IsValidIndex(SlotIndex))
-					{
-						// INDEX_NONE deliberately bypasses any LOD section remap: this
-						// command addresses the generated asset's material slot directly.
-						Component->ShowMaterialSection(SlotIndex, INDEX_NONE, bShow, 0);
-					}
-					else
-					{
-						UE_LOG(LogTemp, Warning, TEXT("swg.WookieeShowMaterial: slot %d is invalid (mesh has %d slots)"), SlotIndex, Mesh->GetMaterials().Num());
-						continue;
-					}
-					++AffectedComponents;
-				}
-
-				UE_LOG(LogTemp, Warning, TEXT("swg.WookieeShowMaterial: %s slot %d on %d Wookiee component(s)"), bShow ? TEXT("showed") : TEXT("hid"), SlotIndex, AffectedComponents);
-			}));
-
 	// Temporary diagnostic for the Wookiee flat-white/palette-tint
 	// investigation — logs exactly what ResolveShaderTintPalettePath and
 	// LoadPaletteAverageTint resolve for a given shader, without needing a
@@ -683,57 +537,348 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 				}
 			}));
 
-	// Builds real UAnimSequence assets for the Wookiee's idle and walk
-	// cycles from parsed .ans data, bound to the SK_Wookiee_Skeleton built by
-	// swg.BuildWookieeSkeletalMesh (run that first). Rotation-only for now —
-	// see FSWGAnimationImporter's header comment.
-	static FAutoConsoleCommand BuildWookieeAnimationsCmd(
-		TEXT("swg.BuildWookieeAnimations"),
-		TEXT("swg.BuildWookieeAnimations — builds Anim_Wookiee_Idle and Anim_Wookiee_Walk from all_b_idl_standing_idle1.ans and all_b_loc_walk_male.ans, bound to /Game/SWGEmu/Generated/SK_Wookiee_Skeleton."),
-		FConsoleCommandDelegate::CreateLambda([]()
+	static FAutoConsoleCommand FindArchivesContainingCmd(
+		TEXT("swg.FindArchivesContaining"),
+		TEXT("swg.FindArchivesContaining <virtualPath> — lists every loaded .tre archive containing this exact path, in load order (last wins)."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 			{
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.FindArchivesContaining <virtualPath>"));
+					return;
+				}
+				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
+				if (!Self || !Self->TreSubsystem)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.FindArchivesContaining: no live TreSubsystem"));
+					return;
+				}
+				const TArray<FString> Archives = Self->TreSubsystem->FindArchivesContaining(Args[0]);
+				UE_LOG(LogTemp, Warning, TEXT("swg.FindArchivesContaining: %d archive(s) contain '%s' (load order, last wins)"), Archives.Num(), *Args[0]);
+				for (const FString& ArchiveName : Archives)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("  %s"), *ArchiveName);
+				}
+			}));
+
+	static FAutoConsoleCommand FindVirtualPathsCmd(
+		TEXT("swg.FindVirtualPaths"),
+		TEXT("swg.FindVirtualPaths <substring> — lists TRE virtual paths containing the substring."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.FindVirtualPaths <substring>"));
+					return;
+				}
+				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
+				if (!Self || !Self->TreSubsystem)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.FindVirtualPaths: no live TreSubsystem"));
+					return;
+				}
+				const TArray<FString> Paths = Self->TreSubsystem->FindVirtualPaths(Args[0]);
+				UE_LOG(LogTemp, Warning, TEXT("swg.FindVirtualPaths: %d match(es) for '%s'"), Paths.Num(), *Args[0]);
+				for (const FString& Path : Paths)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("  %s"), *Path);
+				}
+			}));
+
+	// Temporary diagnostic for the Wookiee checkerboard-body investigation —
+	// resolves a shader's diffuse texture the exact same way
+	// GetOrBuildObjectMaterial does, then renders it into a render target and
+	// exports a PNG to Saved/ so it can be inspected directly, bypassing any
+	// question of whether the *material assignment* (vs the decoded texture
+	// content itself) is at fault.
+	// Root-cause diagnostic for the creature customization pipeline: dumps the
+	// two data structures that actually drive it, rather than the heuristics
+	// GetOrBuildObjectMaterial currently approximates them with.
+	//   FORM TFAC > CHUNK PAL (repeated): [varName\0][\0][4-byte reversed
+	//     factor tag][palette path\0] — the factor tag ("MAIN", "HUEB", ...,
+	//     declared in FORM TFNS) is the real binding between a customization
+	//     color variable and the shader constant it feeds; the variable NAMES
+	//     differ per species (index_color_1/index_color_3 vs
+	//     index_color_skin/index_color_pattern) but the tags do not.
+	//   FORM TXTR > CHUNK DATA: [uint16 count][count * texture path\0] — an
+	//     explicit ordered list of selectable texture variants, and
+	//     FORM CUST > CHUNK TX1D: [4-byte reversed slot tag][uint16][uint16
+	//     count][varName\0] binds a customization variable to index into it.
+	static FAutoConsoleCommand DumpShaderCustomizationCmd(
+		TEXT("swg.DumpShaderCustomization"),
+		TEXT("swg.DumpShaderCustomization <shaderVirtualPath> — dumps TFAC color-factor bindings and the TXTR texture-variant list + CUST binding."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpShaderCustomization <shaderVirtualPath>"));
+					return;
+				}
+				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
+				if (!Self || !Self->TreSubsystem)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderCustomization: no live TreSubsystem"));
+					return;
+				}
+				FSWGIffReader Reader = Self->TreSubsystem->CreateIffReader(Args[0]);
+				if (!Reader.IsValid())
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderCustomization: failed to open '%s'"), *Args[0]);
+					return;
+				}
+
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderCustomization: '%s'"), *Args[0]);
+
+				FSWGIffChunk TfacForm;
+				if (Reader.FindForm(SWG_IFF_TAG('T','F','A','C'), TfacForm))
+				{
+					for (const FSWGIffChunk& PalChunk : Reader.ReadChildren(TfacForm))
+					{
+						if (PalChunk.IsForm() || PalChunk.Tag != SWG_IFF_TAG('P','A','L',' ')) continue;
+						const uint8* D = Reader.GetChunkData(PalChunk);
+						const int32 Size = Reader.GetChunkSize(PalChunk);
+						int32 O = 0;
+						while (O < Size && D[O] != 0) ++O;
+						const FString Key(O, (const ANSICHAR*)D);
+						O += 2;
+						FString FactorTag, PalettePath;
+						if (O + 4 <= Size)
+						{
+							FactorTag = FString::Printf(TEXT("%c%c%c%c"), (TCHAR)D[O+3], (TCHAR)D[O+2], (TCHAR)D[O+1], (TCHAR)D[O]);
+							O += 4;
+							const int32 PathStart = O;
+							while (O < Size && D[O] != 0) ++O;
+							PalettePath = FString::ConstructFromPtrSize((const ANSICHAR*)(D + PathStart), O - PathStart);
+						}
+						FString Hex;
+						for (int32 i = 0; i < Size; ++i)
+						{
+							Hex += FString::Printf(TEXT("%02X "), D[i]);
+						}
+						UE_LOG(LogTemp, Warning, TEXT("  TFAC PAL: var='%s' factorTag='%s' palette='%s'"), *Key, *FactorTag, *PalettePath);
+						UE_LOG(LogTemp, Warning, TEXT("    raw(%d): %s"), Size, *Hex);
+					}
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("  (no FORM TFAC)"));
+				}
+
+				FSWGIffChunk TxtrForm;
+				if (Reader.FindForm(SWG_IFF_TAG('T','X','T','R'), TxtrForm))
+				{
+					FSWGIffChunk DataChunk;
+					if (Reader.FindChildChunk(TxtrForm, SWGIffTags::Data, DataChunk))
+					{
+						const uint8* D = Reader.GetChunkData(DataChunk);
+						const int32 Size = Reader.GetChunkSize(DataChunk);
+						const int32 Count = Size >= 2 ? ((int32)D[0] | ((int32)D[1] << 8)) : 0;
+						UE_LOG(LogTemp, Warning, TEXT("  TXTR variant list: %d entr(ies)"), Count);
+						int32 O = 2;
+						for (int32 i = 0; i < Count && O < Size; ++i)
+						{
+							const int32 S = O;
+							while (O < Size && D[O] != 0) ++O;
+							const FString Path = FString::ConstructFromPtrSize((const ANSICHAR*)(D + S), O - S);
+							UE_LOG(LogTemp, Warning, TEXT("    [%d] %s"), i, *Path);
+							++O;
+						}
+					}
+
+					FSWGIffChunk CustForm;
+					if (Reader.FindChildForm(TxtrForm, SWG_IFF_TAG('C','U','S','T'), CustForm))
+					{
+						for (const FSWGIffChunk& Child : Reader.ReadChildren(CustForm))
+						{
+							if (Child.IsForm()) continue;
+							const uint8* D = Reader.GetChunkData(Child);
+							const int32 Size = Reader.GetChunkSize(Child);
+							if (Size < 8) continue;
+							const FString SlotTag = FString::Printf(TEXT("%c%c%c%c"), (TCHAR)D[3], (TCHAR)D[2], (TCHAR)D[1], (TCHAR)D[0]);
+							const int32 Count = (int32)D[6] | ((int32)D[7] << 8);
+							int32 O = 8;
+							const int32 S = O;
+							while (O < Size && D[O] != 0) ++O;
+							const FString Var = FString::ConstructFromPtrSize((const ANSICHAR*)(D + S), O - S);
+							UE_LOG(LogTemp, Warning, TEXT("  CUST %s: slotTag='%s' count=%d var='%s'"),
+								*Child.Tag.ToString(), *SlotTag, Count, *Var);
+						}
+					}
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("  (no FORM TXTR)"));
+				}
+			}));
+
+	static FAutoConsoleCommand DumpTextureCmd(
+		TEXT("swg.DumpTexture"),
+		TEXT("swg.DumpTexture <textureVirtualPath> — decodes an arbitrary texture (not resolved via a shader) and saves it to Saved/DumpedTexture.png."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpTexture <textureVirtualPath>"));
+					return;
+				}
+				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
+				if (!Self || !Self->TreSubsystem)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpTexture: no live USWGMeshGeneratorSubsystem"));
+					return;
+				}
+
+				UTexture2D* Texture = Self->GetOrLoadObjectTexture(Args[0], /*bSRGB=*/true);
+				if (!Texture)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpTexture: failed to load texture"));
+					return;
+				}
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpTexture: loaded %dx%d, format=%d"),
+					Texture->GetSizeX(), Texture->GetSizeY(), (int32)Texture->GetPixelFormat());
+
+				UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>();
+				RT->InitAutoFormat(Texture->GetSizeX(), Texture->GetSizeY());
+				RT->UpdateResourceImmediate(true);
+
+				UWorld* World = Self->GetGameInstance() ? Self->GetGameInstance()->GetWorld() : nullptr;
+				UCanvas* Canvas = nullptr;
+				FVector2D CanvasSize;
+				FDrawToRenderTargetContext DrawContext;
+				UKismetRenderingLibrary::BeginDrawCanvasToRenderTarget(World, RT, Canvas, CanvasSize, DrawContext);
+				if (Canvas)
+				{
+					Canvas->K2_DrawTexture(Texture, FVector2D::ZeroVector, CanvasSize, FVector2D::ZeroVector);
+				}
+				UKismetRenderingLibrary::EndDrawCanvasToRenderTarget(World, DrawContext);
+
+				const FString OutPath = FPaths::ProjectSavedDir() / TEXT("DumpedTexture.png");
+				TUniquePtr<FArchive> Archive(IFileManager::Get().CreateFileWriter(*OutPath));
+				if (Archive)
+				{
+					FImageUtils::ExportRenderTarget2DAsPNG(RT, *Archive);
+					Archive->Close();
+				}
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpTexture: saved to '%s'"), *OutPath);
+			}));
+
+	static FAutoConsoleCommand DumpShaderTextureCmd(
+		TEXT("swg.DumpShaderTexture"),
+		TEXT("swg.DumpShaderTexture <shaderVirtualPath> — decodes the shader's diffuse texture and saves it to Saved/DumpedTexture.png."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpShaderTexture <shaderVirtualPath>"));
+					return;
+				}
+				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
+				if (!Self || !Self->TreSubsystem)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTexture: no live USWGMeshGeneratorSubsystem"));
+					return;
+				}
+
+				FSWGShaderData ShaderData;
+				FSWGShaderReader::ReadShader(Self->TreSubsystem->CreateIffReader(Args[0]), ShaderData);
+				const FSWGShaderTexture* DiffuseDef = ShaderData.FindTexture(ESWGShaderTextureUsage::Diffuse);
+				const FString TexturePath = DiffuseDef ? DiffuseDef->VirtualPath : Self->ResolveShaderDiffuseTexturePath(Args[0]);
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTexture: shader='%s' texturePath='%s'"), *Args[0], *TexturePath);
+
+				UTexture2D* Texture = Self->GetOrLoadObjectTexture(TexturePath, /*bSRGB=*/true);
+				if (!Texture)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTexture: failed to load texture"));
+					return;
+				}
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTexture: loaded %dx%d, format=%d"),
+					Texture->GetSizeX(), Texture->GetSizeY(), (int32)Texture->GetPixelFormat());
+
+				UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>();
+				RT->InitAutoFormat(Texture->GetSizeX(), Texture->GetSizeY());
+				RT->UpdateResourceImmediate(true);
+
+				UWorld* World = Self->GetGameInstance() ? Self->GetGameInstance()->GetWorld() : nullptr;
+				UCanvas* Canvas = nullptr;
+				FVector2D CanvasSize;
+				FDrawToRenderTargetContext DrawContext;
+				UKismetRenderingLibrary::BeginDrawCanvasToRenderTarget(World, RT, Canvas, CanvasSize, DrawContext);
+				if (Canvas)
+				{
+					Canvas->K2_DrawTexture(Texture, FVector2D::ZeroVector, CanvasSize, FVector2D::ZeroVector);
+				}
+				UKismetRenderingLibrary::EndDrawCanvasToRenderTarget(World, DrawContext);
+
+				const FString OutPath = FPaths::ProjectSavedDir() / TEXT("DumpedTexture.png");
+				TUniquePtr<FArchive> Archive(IFileManager::Get().CreateFileWriter(*OutPath));
+				if (Archive)
+				{
+					FImageUtils::ExportRenderTarget2DAsPNG(RT, *Archive);
+					Archive->Close();
+				}
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTexture: saved to '%s'"), *OutPath);
+			}));
+
+	// Temporary diagnostic for the customization-variable investigation —
+	// loads both customization IFF tables fresh each call (not cached; this
+	// is a manual dev command, not the runtime path) and dumps what
+	// AppearancePath resolves to, to confirm the ACST reader against real
+	// TRE data and find the actual string convention "appearanceFilename"
+	// uses before wiring this into the runtime mesh pipeline.
+	static FAutoConsoleCommand DumpCustomizationCmd(
+		TEXT("swg.DumpCustomization"),
+		TEXT("swg.DumpCustomization <appearancePath> — resolves customization variables for the given appearance file path."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpCustomization <appearancePath>"));
+					return;
+				}
 				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
 				USWGTreSubsystem* TreSubsystem = Self ? Self->TreSubsystem.Get() : nullptr;
 				if (!TreSubsystem)
 				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeAnimations: no TreSubsystem"));
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: no live TreSubsystem"));
 					return;
 				}
 
-				USkeleton* WookieeSkeleton = LoadObject<USkeleton>(nullptr, TEXT("/Game/SWGEmu/Generated/SK_Wookiee_Skeleton.SK_Wookiee_Skeleton"));
-				if (!WookieeSkeleton)
+				FSWGCustomizationIdManager IdManager;
+				if (!FSWGCustomizationIdManager::Read(TreSubsystem->CreateIffReader(TEXT("customization/customization_id_manager.iff")), IdManager))
 				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeAnimations: /Game/SWGEmu/Generated/SK_Wookiee_Skeleton not found — run swg.BuildWookieeSkeletalMesh first"));
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: failed to read customization_id_manager.iff"));
+					return;
+				}
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: loaded %d id<->name mapping(s)"), IdManager.IdToName.Num());
+
+				FSWGAssetCustomizationManager AssetManager;
+				if (!AssetManager.Read(TreSubsystem->CreateIffReader(TEXT("customization/asset_customization_manager.iff"))))
+				{
+					UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: failed to read asset_customization_manager.iff"));
 					return;
 				}
 
-				FSWGIffReader SkeletonReaderIff = TreSubsystem->CreateIffReader(TEXT("appearance/skeleton/all_b.skt"));
-				FSWGSkeletonData Skeleton;
-				if (!FSWGSkeletonReader::ReadSkeleton(SkeletonReaderIff, Skeleton))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeAnimations: failed to parse skeleton"));
-					return;
-				}
+				const uint32 Crc = FSWGCrc32::HashString(Args[0]);
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: '%s' -> crc=0x%08X"), *Args[0], Crc);
 
-				auto BuildOne = [&Skeleton, WookieeSkeleton, TreSubsystem](const FString& AnsPath, const FString& AssetPath)
+				TMap<FString, FSWGCustomizationVariableDef> Variables;
+				AssetManager.GetCustomizationVariables(Args[0], false, Variables);
+				UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: resolved %d variable(s)"), Variables.Num());
+				for (const TPair<FString, FSWGCustomizationVariableDef>& Pair : Variables)
 				{
-					FSWGIffReader AnimReaderIff = TreSubsystem->CreateIffReader(AnsPath);
-					FSWGAnimationData Animation;
-					if (!FSWGAnimationReader::ReadAnimation(AnimReaderIff, Animation))
+					const FSWGCustomizationVariableDef& Def = Pair.Value;
+					const uint8* TypeId = IdManager.NameToId.Find(Def.Name);
+					if (Def.bIsPalette)
 					{
-						UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeAnimations: failed to parse '%s'"), *AnsPath);
-						return;
+						UE_LOG(LogTemp, Warning, TEXT("  [%s] %s = PALETTE default=%d file='%s'"),
+							TypeId ? *FString::Printf(TEXT("%d"), *TypeId) : TEXT("?"), *Def.Name, Def.DefaultValue, *Def.PaletteFileName);
 					}
-					if (!FSWGAnimationImporter::BuildAnimSequence(Animation, Skeleton, WookieeSkeleton, AssetPath))
+					else
 					{
-						UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeAnimations: failed to build '%s'"), *AssetPath);
+						UE_LOG(LogTemp, Warning, TEXT("  [%s] %s = RANGE default=%d min=%d max=%d"),
+							TypeId ? *FString::Printf(TEXT("%d"), *TypeId) : TEXT("?"), *Def.Name, Def.DefaultValue, Def.MinValue, Def.MaxValue);
 					}
-				};
-
-				BuildOne(TEXT("appearance/animation/all_b_idl_standing_idle1.ans"), TEXT("/Game/SWGEmu/Generated/Anim_Wookiee_Idle"));
-				BuildOne(TEXT("appearance/animation/all_b_loc_walk_male.ans"), TEXT("/Game/SWGEmu/Generated/Anim_Wookiee_Walk"));
-
-				UE_LOG(LogTemp, Warning, TEXT("swg.BuildWookieeAnimations: done"));
+				}
 			}));
 
 	// Diagnostic — see GSWGDebugAnsBoneFilter's comment (SWGAnimationReader.cpp)
@@ -790,41 +935,18 @@ void USWGMeshGeneratorSubsystem::Tick(float DeltaTime)
 	}
 
 	// Feeds each actor's live horizontal speed into its blend space every
-	// tick — the blend space itself owns sample selection, blending, and
-	// (via AxisToScaleAnimation, set in GetOrBuildLocomotionBlendSpace)
-	// playback-rate scaling; see TryApplyGeneratedAnimatedMesh.
-	for (int32 i = PlayingAnimations.Num() - 1; i >= 0; --i)
+	// tick — see FSWGSkeletalAnimationPipeline::Tick. SkeletalAnimationPipeline
+	// is null until Initialize() runs; IsTickable() doesn't gate on that, and
+	// something (the CDO, or a brief window at PIE startup) ticks this
+	// object before Initialize() fires — confirmed via a real crash
+	// (EXCEPTION_ACCESS_VIOLATION reading a near-null address inside
+	// FSWGSkeletalAnimationPipeline::Tick). PlayingAnimations used to live
+	// directly on this class as a plain TArray, always safely
+	// default-constructed regardless of Initialize() — the raw-pointer pImpl
+	// split introduced this null window, so guard for it explicitly.
+	if (SkeletalAnimationPipeline)
 	{
-		FSWGPlayingAnimation& Playing = PlayingAnimations[i];
-		USkeletalMeshComponent* MeshComponent = Playing.MeshComponent.Get();
-		UAnimSingleNodeInstance* AnimInstance = Playing.AnimInstance.Get();
-		if (!MeshComponent || !AnimInstance)
-		{
-			PlayingAnimations.RemoveAtSwap(i);
-			continue;
-		}
-
-		const ACharacter* Character = Cast<ACharacter>(MeshComponent->GetOwner());
-		float HorizontalSpeed = Character ? Character->GetVelocity().Size2D() : 0.0f;
-		if (const USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr)
-		{
-			// LastNetworkUpdateTime > 0 means this is a network-driven actor
-			// (see its own comment) — the server just stops sending updates
-			// when it stops moving rather than sending an explicit zero-speed
-			// one, so a stale update means "stopped," not "still going at the
-			// last derived speed." Actors that have never taken a network
-			// update (the locally-controlled player) skip this entirely and
-			// keep using their real CharacterMovementComponent velocity.
-			if (Movement->LastNetworkUpdateTime > 0.0f && MeshComponent->GetWorld())
-			{
-				const float TimeSinceUpdate = MeshComponent->GetWorld()->GetTimeSeconds() - Movement->LastNetworkUpdateTime;
-				if (TimeSinceUpdate > 0.5f)
-				{
-					HorizontalSpeed = 0.0f;
-				}
-			}
-		}
-		AnimInstance->SetBlendSpacePosition(FVector(HorizontalSpeed, 0.0f, 0.0f));
+		SkeletalAnimationPipeline->Tick(DeltaTime);
 	}
 }
 
@@ -995,6 +1117,9 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				const float YawCorrectionDegrees = GetStaticMeshYawCorrection(Request.MeshVirtualPaths);
 				const EComponentMobility::Type Mobility = Request.bStatic ? EComponentMobility::Static : EComponentMobility::Movable;
 
+
+
+
 				// Back on the game thread to build/attach the mesh component.
 				// The actor can be destroyed/GC'd during this background parse
 				// (streaming out, zone change, etc.) — Request.Actor is a
@@ -1042,7 +1167,12 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 						const TMap<FString, float>* MorphWeightsPtr = MorphWeights.Num() > 0 ? &MorphWeights : nullptr;
 						const TMap<FString, int32>* TextureIndicesPtr = TextureIndices.Num() > 0 ? &TextureIndices : nullptr;
 						UMeshComponent* MeshComponent = BuildGeneratedMeshComponent(*Request.Actor, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility, PaletteTintsPtr, TextureIndicesPtr);
-						TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent, PaletteTintsPtr, MorphWeightsPtr, TextureIndicesPtr);
+						// SkeletalAnimationPipeline is null until Initialize() runs — see Tick()'s
+						// own comment for why this can't be assumed non-null unconditionally.
+						if (SkeletalAnimationPipeline)
+						{
+							SkeletalAnimationPipeline->TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent, PaletteTintsPtr, MorphWeightsPtr, TextureIndicesPtr);
+						}
 					});
 			});
 	}
@@ -1225,47 +1355,46 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 	}
 	else
 	{
-
-	FSWGIffReader AppearanceReader = TreSubsystem->CreateIffReader(AppearancePath);
-	if (!AppearanceReader.IsValid())
-	{
-		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: failed to open appearance file %s (from template %s)"), *AppearancePath, *TemplatePath);
-		return false;
-	}
-
-	if (bIsSat)
-	{
-		FSWGIffChunk SmatForm, F0003, MsgnChunk, LatxChunk;
-		if (!AppearanceReader.FindForm(SWG_IFF_TAG('S','M','A','T'), SmatForm)
-			|| !AppearanceReader.FindChildForm(SmatForm, SWG_IFF_TAG('0','0','0','3'), F0003)
-			|| !AppearanceReader.FindChildChunk(F0003, SWG_IFF_TAG('M','S','G','N'), MsgnChunk))
+		FSWGIffReader AppearanceReader = TreSubsystem->CreateIffReader(AppearancePath);
+		if (!AppearanceReader.IsValid())
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing SMAT/0003/MSGN structure"), *AppearancePath);
+			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: failed to open appearance file %s (from template %s)"), *AppearancePath, *TemplatePath);
 			return false;
 		}
 
-		// One or more null-terminated body-part .lmg references packed into
-		// this single chunk (see SplitNullTerminatedStrings comment).
-		MeshGroupPaths = SplitNullTerminatedStrings(AppearanceReader, MsgnChunk);
-		if (AppearanceReader.FindChildChunk(F0003, SWG_IFF_TAG('L','A','T','X'), LatxChunk))
+		if (bIsSat)
 		{
-			ReadSatLatPaths(AppearanceReader, LatxChunk, OutAnimationLatPaths);
+			FSWGIffChunk SmatForm, F0003, MsgnChunk, LatxChunk;
+			if (!AppearanceReader.FindForm(SWG_IFF_TAG('S','M','A','T'), SmatForm)
+				|| !AppearanceReader.FindChildForm(SmatForm, SWG_IFF_TAG('0','0','0','3'), F0003)
+				|| !AppearanceReader.FindChildChunk(F0003, SWG_IFF_TAG('M','S','G','N'), MsgnChunk))
+			{
+				UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing SMAT/0003/MSGN structure"), *AppearancePath);
+				return false;
+			}
+
+			// One or more null-terminated body-part .lmg references packed into
+			// this single chunk (see SplitNullTerminatedStrings comment).
+			MeshGroupPaths = SplitNullTerminatedStrings(AppearanceReader, MsgnChunk);
+			if (AppearanceReader.FindChildChunk(F0003, SWG_IFF_TAG('L','A','T','X'), LatxChunk))
+			{
+				ReadSatLatPaths(AppearanceReader, LatxChunk, OutAnimationLatPaths);
+			}
+			bOutSkeletal = true;
 		}
-		bOutSkeletal = true;
-	}
-	else
-	{
-		FSWGIffChunk AptForm, Form0000, NameChunk;
-		if (!AppearanceReader.FindForm(SWG_IFF_TAG('A','P','T',' '), AptForm)
-			|| !AppearanceReader.FindChildForm(AptForm, SWG_IFF_TAG('0','0','0','0'), Form0000)
-			|| !AppearanceReader.FindChildChunk(Form0000, SWGIffTags::Name, NameChunk))
+		else
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing APT/0000/NAME structure"), *AppearancePath);
-			return false;
+			FSWGIffChunk AptForm, Form0000, NameChunk;
+			if (!AppearanceReader.FindForm(SWG_IFF_TAG('A','P','T',' '), AptForm)
+				|| !AppearanceReader.FindChildForm(AptForm, SWG_IFF_TAG('0','0','0','0'), Form0000)
+				|| !AppearanceReader.FindChildChunk(Form0000, SWGIffTags::Name, NameChunk))
+			{
+				UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing APT/0000/NAME structure"), *AppearancePath);
+				return false;
+			}
+			MeshGroupPaths = { ReadFullChunkString(AppearanceReader, NameChunk) };
+			bOutSkeletal = false;
 		}
-		MeshGroupPaths = { ReadFullChunkString(AppearanceReader, NameChunk) };
-		bOutSkeletal = false;
-	}
 
 	} // !bIsLod
 
@@ -2487,429 +2616,3 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 	return MeshComponent;
 }
 
-namespace
-{
-	// "appearance/mesh/wke_m_head_l0.mgn" -> "appearance/skeleton/wke_m_face.skt".
-	// Simply skipped if the file doesn't exist for a given species.
-	FString DeriveFaceSkeletonPath(const TArray<FString>& MeshVirtualPaths)
-	{
-		for (const FString& MeshPath : MeshVirtualPaths)
-		{
-			const FString BaseName = FPaths::GetBaseFilename(MeshPath);
-			const int32 HeadIndex = BaseName.Find(TEXT("_head"), ESearchCase::IgnoreCase);
-			if (HeadIndex == INDEX_NONE)
-			{
-				continue;
-			}
-			return FString::Printf(TEXT("appearance/skeleton/%s_face.skt"), *BaseName.Left(HeadIndex));
-		}
-		return FString();
-	}
-}
-
-const TMap<FString, FString>& USWGMeshGeneratorSubsystem::GetSlotHardpoints()
-{
-	if (bSlotHardpointsLoaded)
-	{
-		return SlotHardpoints;
-	}
-	bSlotHardpointsLoaded = true;
-
-	TArray<FSWGSlotDefinition> Definitions;
-	if (!FSWGSlotDefinitionReader::Read(
-		TreSubsystem->CreateIffReader(TEXT("abstract/slot/slot_definition/slot_definitions.iff")),
-		Definitions))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to read slot definitions"));
-		return SlotHardpoints;
-	}
-
-	for (const FSWGSlotDefinition& Definition : Definitions)
-	{
-		if (!Definition.Hardpoint.IsEmpty())
-		{
-			SlotHardpoints.Add(Definition.Name, Definition.Hardpoint);
-		}
-	}
-	return SlotHardpoints;
-}
-
-USkeletalMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedSkeletalMesh(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton)
-{
-	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths);
-	const FString AssetName = FString::Printf(TEXT("SK_%u"), PathsHash);
-	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
-
-	// The saved .uasset on disk is the cache — a hit here skips rebuilding
-	// entirely, same role GetOrBuildGeneratedStaticMesh's own cache plays.
-	if (USkeletalMesh* Existing = LoadObject<USkeletalMesh>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
-	{
-		return Existing;
-	}
-
-#if WITH_EDITOR
-	FSWGSkeletonData MeshBuildSkeleton = Skeleton;
-	const FString FaceSkeletonPath = DeriveFaceSkeletonPath(MeshVirtualPaths);
-	if (!FaceSkeletonPath.IsEmpty())
-	{
-		FSWGSkeletonData FaceSkeleton;
-		if (FSWGSkeletonReader::ReadSkeleton(TreSubsystem->CreateIffReader(FaceSkeletonPath), FaceSkeleton))
-		{
-			const int32 HeadJointIndex = MeshBuildSkeleton.Joints.IndexOfByPredicate([](const FSWGSkeletonJoint& Joint) { return Joint.Name.Equals(TEXT("head"), ESearchCase::IgnoreCase); });
-			if (HeadJointIndex != INDEX_NONE)
-			{
-				const int32 FaceBaseIndex = MeshBuildSkeleton.Joints.Num();
-				for (FSWGSkeletonJoint Joint : FaceSkeleton.Joints)
-				{
-					Joint.ParentIndex = Joint.ParentIndex == INDEX_NONE ? HeadJointIndex : FaceBaseIndex + Joint.ParentIndex;
-					MeshBuildSkeleton.Joints.Add(MoveTemp(Joint));
-				}
-			}
-		}
-	}
-
-	TArray<FSWGMeshData> MeshParts;
-	MeshParts.Reserve(MeshVirtualPaths.Num());
-	for (const FString& MeshPath : MeshVirtualPaths)
-	{
-		FSWGMeshData PartData;
-		if (FSWGMeshReader::ReadSkeletalMeshBindPose(TreSubsystem->CreateIffReader(MeshPath), PartData))
-		{
-			MeshParts.Add(MoveTemp(PartData));
-		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to parse skeletal mesh part '%s' while building generated mesh for skeleton '%s'"), *MeshPath, *SkeletonPath);
-		}
-	}
-	if (MeshParts.IsEmpty())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no usable mesh parts to build a generated skeletal mesh for skeleton '%s'"), *SkeletonPath);
-		return nullptr;
-	}
-
-	TArray<const FSWGMeshData*> MeshPartPtrs;
-	MeshPartPtrs.Reserve(MeshParts.Num());
-	for (const FSWGMeshData& Part : MeshParts)
-	{
-		MeshPartPtrs.Add(&Part);
-	}
-
-	USkeletalMesh* Result = FSWGSkeletalMeshImporter::BuildSkeletalMesh(
-		MeshBuildSkeleton,
-		MeshPartPtrs,
-		PackagePath,
-		GetSlotHardpoints());
-	if (!Result)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to build generated skeletal mesh '%s' for skeleton '%s'"), *PackagePath, *SkeletonPath);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated skeletal mesh '%s' for skeleton '%s'"), *PackagePath, *SkeletonPath);
-
-		// FSWGSkeletalMeshImporter::BuildSkeletalMesh already saved its package
-		// before returning, so the user data has to be added and the package
-		// re-saved here — otherwise it'd only live in memory for this session
-		// and be missing again on the next cold LoadObject cache-hit.
-		USWGMeshSourceUserData* SourceData = NewObject<USWGMeshSourceUserData>(Result);
-		SourceData->DebugName = FString::Printf(TEXT("%s (skeleton %s)"), *FString::Join(MeshVirtualPaths, TEXT(", ")), *SkeletonPath);
-		Result->AddAssetUserData(SourceData);
-
-		if (UPackage* ResultPackage = Result->GetPackage())
-		{
-			ResultPackage->MarkPackageDirty();
-			const FString FileName = FPackageName::LongPackageNameToFilename(ResultPackage->GetName(), FPackageName::GetAssetPackageExtension());
-			FSavePackageArgs SaveArgs;
-			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-			SaveArgs.SaveFlags = SAVE_NoError;
-			UPackage::SavePackage(ResultPackage, Result, *FileName, SaveArgs);
-		}
-	}
-	return Result;
-#else
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated skeletal mesh '%s' isn't built yet and can't be built in a packaged build — leaving skeleton '%s' on its procedural bind-pose mesh"), *PackagePath, *SkeletonPath);
-	return nullptr;
-#endif
-}
-
-UAnimSequence* USWGMeshGeneratorSubsystem::GetOrBuildLocomotionAnimSequence(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FString& ClipPath, const FSWGSkeletonData& Skeleton, USkeleton* TargetSkeleton)
-{
-	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GetTypeHash(ClipPath);
-	const FString AssetName = FString::Printf(TEXT("AS_%u"), PathsHash);
-	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
-
-	if (UAnimSequence* Existing = LoadObject<UAnimSequence>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
-	{
-		return Existing;
-	}
-
-#if WITH_EDITOR
-	FSWGAnimationData ClipAnimation;
-	if (!FSWGAnimationReader::ReadAnimation(TreSubsystem->CreateIffReader(ClipPath), ClipAnimation))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to decode locomotion clip '%s' while building '%s'"), *ClipPath, *PackagePath);
-		return nullptr;
-	}
-
-	UAnimSequence* Result = FSWGAnimationImporter::BuildAnimSequence(ClipAnimation, Skeleton, TargetSkeleton, PackagePath);
-	if (!Result)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to build generated anim sequence '%s' from '%s'"), *PackagePath, *ClipPath);
-	}
-	return Result;
-#else
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated anim sequence '%s' isn't built yet and can't be built in a packaged build"), *PackagePath);
-	return nullptr;
-#endif
-}
-
-UBlendSpace* USWGMeshGeneratorSubsystem::GetOrBuildLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const TArray<FString>& LocomotionPaths, UAnimSequence* IdleSequence, UAnimSequence* WalkSequence, UAnimSequence* RunSequence, float WalkSpeed, float RunSpeed, USkeleton* TargetSkeleton)
-{
-	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GetTypeHash(LocomotionPaths);
-	const FString AssetName = FString::Printf(TEXT("BS_%u"), PathsHash);
-	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
-
-	if (UBlendSpace* Existing = LoadObject<UBlendSpace>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
-	{
-		return Existing;
-	}
-
-#if WITH_EDITOR
-	if (!IdleSequence || !WalkSequence || !RunSequence)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: missing a locomotion clip — can't build blend space '%s'"), *PackagePath);
-		return nullptr;
-	}
-
-	UPackage* Package = CreatePackage(*PackagePath);
-	Package->FullyLoad();
-	// UBlendSpace1D rather than the generic 3-axis UBlendSpace: all our
-	// samples vary only along X (speed), and this subclass exposes that
-	// intent directly — a plain bScaleAnimation bool instead of the base
-	// class's protected AxisToScaleAnimation enum.
-	UBlendSpace1D* Result = NewObject<UBlendSpace1D>(Package, FName(*AssetName), RF_Public | RF_Standalone);
-	Result->SetSkeleton(TargetSkeleton);
-
-	// Scale each sample's playback rate by how far the live blend input is
-	// from that sample's own speed — same role the old ReferenceSpeed rate
-	// clamp played, now owned by the engine instead of Tick().
-	Result->bScaleAnimation = true;
-
-	// BlendParameters is EditAnywhere but C++-protected (editor tooling
-	// normally sets it through the Details panel, which goes through
-	// FProperty reflection rather than direct member access) —
-	// ContainerPtrToValuePtr is the same mechanism, just called from code.
-	if (FStructProperty* BlendParametersProp = FindFProperty<FStructProperty>(UBlendSpace::StaticClass(), TEXT("BlendParameters")))
-	{
-		FBlendParameter* BlendParameters = BlendParametersProp->ContainerPtrToValuePtr<FBlendParameter>(Result);
-		BlendParameters[0].DisplayName = TEXT("Speed");
-		BlendParameters[0].Min = 0.0f;
-		BlendParameters[0].Max = RunSpeed;
-		BlendParameters[0].GridNum = 4;
-	}
-
-	Result->AddSample(IdleSequence, FVector(0.0f, 0.0f, 0.0f));
-	Result->AddSample(WalkSequence, FVector(WalkSpeed, 0.0f, 0.0f));
-	Result->AddSample(RunSequence, FVector(RunSpeed, 0.0f, 0.0f));
-
-	// ResampleData(), not just ValidateSampleData(): adding samples only fills
-	// SampleData (the authored sample list). The *runtime* structure the
-	// evaluator actually reads — BlendSpaceData, the line segments derived
-	// from those samples — is built solely by ResampleData (which validates
-	// internally, then derives DimensionIndices from the sample AABB and runs
-	// the 1D segmentation). Without it BlendSpaceData stays empty, so
-	// GetSamplesFromBlendInput returns nothing at runtime and the evaluated
-	// pose falls through as identity local rotations — which renders as a
-	// T-pose for this skeleton, whose arms only come down once the composed
-	// bind rotation is applied. Nothing warns: the asset itself still has
-	// valid samples, a valid skeleton, and reports IsPlaying.
-	Result->ResampleData();
-
-	Result->MarkPackageDirty();
-	Result->PostEditChange();
-	FAssetRegistryModule::AssetCreated(Result);
-
-	const FString FileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
-	FSavePackageArgs SaveArgs;
-	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-	SaveArgs.SaveFlags = SAVE_NoError;
-	UPackage::SavePackage(Package, Result, *FileName, SaveArgs);
-
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated blend space '%s' for skeleton '%s'"), *PackagePath, *SkeletonPath);
-	return Result;
-#else
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated blend space '%s' isn't built yet and can't be built in a packaged build"), *PackagePath);
-	return nullptr;
-#endif
-}
-
-bool USWGMeshGeneratorSubsystem::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, float>* MorphWeights, const TMap<FString, int32>* TextureIndexOverrides)
-{
-	if (!TreSubsystem)
-	{
-		return false;
-	}
-
-	ACharacter* Character = Cast<ACharacter>(&Actor);
-	USkeletalMeshComponent* CharacterMesh = Character ? Character->GetMesh() : nullptr;
-	if (!CharacterMesh)
-	{
-		return false;
-	}
-
-	FString SkeletonPath;
-	for (const FString& MeshPath : MeshVirtualPaths)
-	{
-		SkeletonPath = FSWGMeshReader::ReadSkeletalMeshSkeletonPath(TreSubsystem->CreateIffReader(MeshPath));
-		if (!SkeletonPath.IsEmpty()) break;
-	}
-	if (SkeletonPath.IsEmpty())
-	{
-		// No SKTM skeleton reference — this object has no animation data at
-		// all (most world objects), not an error; leave the procedural
-		// bind-pose mesh in place.
-		return false;
-	}
-
-	const FString* LatPath = AnimationLatPaths.Find(SkeletonPath);
-	TArray<FString> LocomotionPaths;
-	if (!LatPath || !ReadDefaultLocomotionPaths(TreSubsystem->CreateIffReader(*LatPath), LocomotionPaths))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no usable LATX locomotion LAT for skeleton '%s'"), *SkeletonPath);
-		return false;
-	}
-
-	FSWGSkeletonData Skeleton;
-	if (!FSWGSkeletonReader::ReadSkeleton(TreSubsystem->CreateIffReader(SkeletonPath), Skeleton))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to parse SKTM skeleton '%s'"), *SkeletonPath);
-		return false;
-	}
-
-	USkeletalMesh* GeneratedMesh = GetOrBuildGeneratedSkeletalMesh(SkeletonPath, MeshVirtualPaths, Skeleton);
-	if (!GeneratedMesh)
-	{
-		return false;
-	}
-
-	// TargetSkeleton is the actual asset skeleton GeneratedMesh was built
-	// against (may include merged face bones — see GetOrBuildGeneratedSkeletalMesh),
-	// which is what a UAnimSequence/UBlendSpace played on this component must
-	// be compatible with; Skeleton (the plain joint list) is what the
-	// animated tracks themselves get built from.
-	USkeleton* TargetSkeleton = GeneratedMesh->GetSkeleton();
-	UAnimSequence* IdleSequence = GetOrBuildLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, LocomotionPaths[0], Skeleton, TargetSkeleton);
-	UAnimSequence* WalkSequence = GetOrBuildLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, LocomotionPaths[1], Skeleton, TargetSkeleton);
-	UAnimSequence* RunSequence = GetOrBuildLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, LocomotionPaths[3], Skeleton, TargetSkeleton);
-
-	const USWGMovementComponent* Movement = Cast<USWGMovementComponent>(Character->GetCharacterMovement());
-	const float WalkSpeed = Movement && Movement->WalkSpeed > KINDA_SMALL_NUMBER
-		? Movement->WalkSpeed * 100.0f
-		: 155.0f;
-	const float RunSpeed = Movement && Movement->RunSpeed > Movement->WalkSpeed
-		? Movement->RunSpeed * 100.0f
-		: FMath::Max(WalkSpeed * 2.0f, Movement ? Movement->MaxWalkSpeed : 310.0f);
-
-	UBlendSpace* LocomotionBlendSpace = GetOrBuildLocomotionBlendSpace(SkeletonPath, MeshVirtualPaths, LocomotionPaths, IdleSequence, WalkSequence, RunSequence, WalkSpeed, RunSpeed, TargetSkeleton);
-	if (!LocomotionBlendSpace)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s has no usable locomotion blend space; leaving the procedural mesh visible instead of showing a T-pose"), *Actor.GetName());
-		return false;
-	}
-
-	CharacterMesh->SetSkeletalMesh(GeneratedMesh);
-	CharacterMesh->SetVisibility(true);
-	CharacterMesh->SetHiddenInGame(false);
-
-	// SWG geometry (both the procedural generated-mesh path and this skeletal
-	// mesh, which shares the same .mgn source data/authoring convention) is
-	// authored feet-at-origin, but ACharacter's capsule is centered on the
-	// actor — same fallback BuildGeneratedMeshComponent applies to the
-	// procedural mesh when it has no bounds to compute a precise
-	// center-based offset.
-	if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
-	{
-		CharacterMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -Capsule->GetScaledCapsuleHalfHeight()));
-	}
-
-	// SWG's forward axis is 90 degrees off from Unreal's — the same quirk
-	// ASWGPlayer's camera/control rotation already corrects for. That fix
-	// doesn't touch the mesh itself, so rotate the whole mesh rigidly here.
-	CharacterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
-
-	// The importer creates material slots named after each submesh's shader
-	// path (see FSWGSkeletalMeshImporter::BuildSkeletalMesh) but leaves the
-	// actual material null — build/assign the same real per-shader textured
-	// materials the procedural generated-mesh path already uses.
-	int32 NumSkeletalTextured = 0;
-	for (int32 SlotIndex = 0; SlotIndex < GeneratedMesh->GetMaterials().Num(); ++SlotIndex)
-	{
-		const FString ShaderPath = GeneratedMesh->GetMaterials()[SlotIndex].MaterialSlotName.ToString();
-		if (UMaterialInterface* Material = GetOrBuildObjectMaterial(ShaderPath, PaletteTintOverrides, TextureIndexOverrides))
-		{
-			CharacterMesh->SetMaterial(SlotIndex, Material);
-			++NumSkeletalTextured;
-		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s skeletal mesh slot %d ('%s') has no real material — leaving the mesh's default"),
-				*Actor.GetName(), SlotIndex, *ShaderPath);
-		}
-	}
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s skeletal mesh assigned %d/%d real textured material(s)"),
-		*Actor.GetName(), NumSkeletalTextured, GeneratedMesh->GetMaterials().Num());
-
-	// Real per-character face/body shape (see ResolveCustomizationMorphWeights)
-	// — a no-op for any name GeneratedMesh doesn't actually have a matching
-	// morph target for (SetMorphTarget just logs nothing and does nothing).
-	if (MorphWeights)
-	{
-		for (const TPair<FString, float>& Pair : *MorphWeights)
-		{
-			CharacterMesh->SetMorphTarget(FName(*Pair.Key), Pair.Value);
-		}
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: applied %d morph weight(s) to '%s' on mesh '%s'"),
-			MorphWeights->Num(), *Actor.GetName(), *GetNameSafe(CharacterMesh->GetSkeletalMeshAsset()));
-	}
-
-	CharacterMesh->PlayAnimation(LocomotionBlendSpace, true);
-	UAnimSingleNodeInstance* AnimInstance = Cast<UAnimSingleNodeInstance>(CharacterMesh->GetAnimInstance());
-	if (!AnimInstance)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s failed to start blend space playback; leaving the procedural mesh visible instead of showing a T-pose"), *Actor.GetName());
-		CharacterMesh->SetVisibility(false);
-		CharacterMesh->SetHiddenInGame(true);
-		if (ProceduralMeshComponent)
-		{
-			ProceduralMeshComponent->SetVisibility(true);
-			ProceduralMeshComponent->SetHiddenInGame(false);
-		}
-		return false;
-	}
-
-	FSWGPlayingAnimation Playing;
-	Playing.MeshComponent = CharacterMesh;
-	Playing.AnimInstance = AnimInstance;
-	PlayingAnimations.Add(MoveTemp(Playing));
-
-	// A player can receive more than one asynchronous mesh request (and a
-	// previous PIE run can leave an actor-owned procedural component around).
-	// Hiding only the component from *this* request left an older bind-pose
-	// mesh rendering through the generated skeletal mesh, which looked like a
-	// second, incorrectly UV-mapped face at the Wookiee's waist. The
-	// procedural fallback is a UStaticMeshComponent now (see
-	// BuildGeneratedMeshComponent), not a UDynamicMeshComponent.
-	TInlineComponentArray<UStaticMeshComponent*> ProceduralMeshComponents(&Actor);
-	for (UStaticMeshComponent* ProceduralMesh : ProceduralMeshComponents)
-	{
-		if (ProceduralMesh)
-		{
-			ProceduralMesh->SetVisibility(false);
-			ProceduralMesh->SetHiddenInGame(true);
-		}
-	}
-
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s resolved to the generated skeletal mesh for skeleton '%s'"), *Actor.GetName(), *SkeletonPath);
-	return true;
-}

@@ -17,12 +17,11 @@
 #include "Animation/MorphTarget.h"
 #include "SkinnedAssetCompiler.h"
 #include "ImportUtils/SkeletalMeshImportUtils.h"
-#include "IMeshBuilderModule.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "MeshUtilities.h"
+#include "LODUtilities.h"
 
 bool FSWGSkeletalMeshImporter::PopulateImportData(
 	const FSWGSkeletonData& Skeleton,
@@ -150,17 +149,40 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 			ImportMaterial.MaterialImportName = Submesh.ShaderName;
 			OutImportData.Materials.Add(MoveTemp(ImportMaterial));
 
-			// Points and Wedges grow 1:1 in this loop — every corner becomes
-			// its own Point rather than deduping shared positions across UV
-			// seams, trading some memory for a much simpler mapping (skin
-			// weights still resolve correctly per corner either way).
-			const int32 BaseIndex = OutImportData.Points.Num();
-			check(BaseIndex == OutImportData.Wedges.Num());
+			// Points, Influences, and morph deltas are indexed/deduplicated
+			// here — one entry per Submesh.Vertices entry, matching how
+			// Submesh.Triangles actually references them (a real indexed
+			// triangle list: FSWGMeshReader::ReadSkeletalMeshBindPose reads
+			// raw OITL/ITL indices, which repeat whenever a vertex is shared
+			// between adjacent triangles — the normal case for any
+			// continuous mesh surface).
+			//
+			// Wedges, though, must NOT be shared this way: IMeshUtilities::
+			// BuildSkeletalMesh requires Wedges.Num() >= 3 * Faces.Num()
+			// (Skeletal_FindOverlappingCorners' own
+			// "check(NumFaces * 3 <= NumWedges)") — every face owns its own
+			// 3 wedges even when it shares an underlying point with another
+			// face. Building one Wedge per Submesh.Vertices entry (as this
+			// used to) instead of one per triangle corner violates that
+			// whenever a mesh has any shared/indexed vertices at all, which
+			// is virtually always — hence Wedges are built in the triangle
+			// loop below instead, one per corner, referencing the shared
+			// Point via VertexIndex.
+			const int32 PointBaseIndex = OutImportData.Points.Num();
 
 			for (const FSWGMeshVertex& Vertex : Submesh.Vertices)
 			{
 				OutImportData.Points.Add(FVector3f(Vertex.Position));
 				const int32 PointIndex = OutImportData.Points.Num() - 1;
+				// PointToRawMap ("current point index -> original import point
+				// index") is never populated otherwise, which leaves it
+				// default-empty — CopyLODImportData copies that straight
+				// through as PointToOriginalMap, and FMeshUtilities::
+				// BuildSkeletalModelFromChunks indexes it unconditionally
+				// (MeshUtilities.cpp:945), crashing on any real mesh. No
+				// separate dedup/reorder pass happens here, so the mapping
+				// is simply identity.
+				OutImportData.PointToRawMap.Add(PointIndex);
 
 				if (Vertex.SourcePositionIndex != INDEX_NONE)
 				{
@@ -173,16 +195,6 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 					}
 				}
 
-				SkeletalMeshImportData::FVertex Wedge;
-				Wedge.VertexIndex = PointIndex;
-				if (Vertex.UVs.Num() > 0)
-				{
-					Wedge.UVs[0] = FVector2f(Vertex.UVs[0]);
-				}
-				Wedge.Color = Vertex.bHasColor ? Vertex.Color : FColor::White;
-				Wedge.MatIndex = (uint8)MatIndex;
-				OutImportData.Wedges.Add(Wedge);
-
 				int32 VertexInfluenceCount = 0;
 				for (const FSWGBoneWeight& BoneWeight : Vertex.BoneWeights)
 				{
@@ -191,7 +203,7 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 					if (SkeletonBoneIndex == INDEX_NONE) continue;
 
 					SkeletalMeshImportData::FRawBoneInfluence Influence;
-					Influence.VertexIndex = Wedge.VertexIndex;
+					Influence.VertexIndex = PointIndex;
 					Influence.BoneIndex = SkeletonBoneIndex;
 					Influence.Weight = BoneWeight.Weight;
 					OutImportData.Influences.Add(Influence);
@@ -206,7 +218,7 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 				if (VertexInfluenceCount == 0)
 				{
 					SkeletalMeshImportData::FRawBoneInfluence Influence;
-					Influence.VertexIndex = Wedge.VertexIndex;
+					Influence.VertexIndex = PointIndex;
 					Influence.BoneIndex = 0;
 					Influence.Weight = 1.0f;
 					OutImportData.Influences.Add(Influence);
@@ -223,14 +235,29 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 				for (int32 c = 0; c < 3; ++c)
 				{
 					const int32 CornerLocalIndex = Submesh.Triangles[t * 3 + c];
-					const int32 WedgeIndex = BaseIndex + CornerLocalIndex;
+					const FSWGMeshVertex& CornerVertex = Submesh.Vertices[CornerLocalIndex];
+					const int32 PointIndex = PointBaseIndex + CornerLocalIndex;
+
+					// A fresh Wedge per triangle corner, even when it shares
+					// an underlying Point with another face's corner — see
+					// the comment above OutImportData.Points.Num() for why.
+					SkeletalMeshImportData::FVertex Wedge;
+					Wedge.VertexIndex = PointIndex;
+					if (CornerVertex.UVs.Num() > 0)
+					{
+						Wedge.UVs[0] = FVector2f(CornerVertex.UVs[0]);
+					}
+					Wedge.Color = CornerVertex.bHasColor ? CornerVertex.Color : FColor::White;
+					Wedge.MatIndex = (uint8)MatIndex;
+					const int32 WedgeIndex = OutImportData.Wedges.Add(Wedge);
+
 					Triangle.WedgeIndex[c] = WedgeIndex;
 					// Only normals are decoded from the source file — leaving
 					// TangentX/Y zeroed and bHasTangents false below lets the
 					// mesh builder derive a tangent basis from these normals
 					// + the UVs already supplied, same as FBX imports that
 					// don't carry explicit tangents.
-					Triangle.TangentZ[c] = FVector3f(Submesh.Vertices[CornerLocalIndex].Normal);
+					Triangle.TangentZ[c] = FVector3f(CornerVertex.Normal);
 				}
 				OutImportData.Faces.Add(Triangle);
 			}
@@ -260,36 +287,26 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 	return OutImportData.Points.Num() > 0 && OutImportData.Faces.Num() > 0;
 }
 
-USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
-	const FSWGSkeletonData& Skeleton,
-	const TArray<const FSWGMeshData*>& MeshParts,
-	const FString& PackagePath,
-	const TMap<FString, FString>& SlotHardpoints)
+bool FSWGSkeletalMeshImporter::BuildSkeletalMeshData(IMeshUtilities& MeshUtilities, const FSWGSkeletonData& Skeleton, const TArray<const FSWGMeshData*>& MeshParts, const TMap<FString, FString>& SlotHardpoints, const FString& PackagePath, FSWGSkeletalMeshBuildData& OutData)
 {
-	FSkeletalMeshImportData ImportData;
+	OutData.LODModel = MakeUnique<FSkeletalMeshLODModel>();
 	TArray<FString> MaterialSlotNames;
 	TMap<FString, TMap<int32, FVector>> MergedMorphDeltas;
-	if (!PopulateImportData(Skeleton, MeshParts, PackagePath, ImportData, MaterialSlotNames, MergedMorphDeltas))
+	if (!PopulateImportData(Skeleton, MeshParts, PackagePath, OutData.ImportData, MaterialSlotNames, MergedMorphDeltas))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: no geometry/skeleton to build from for '%s'"), *PackagePath);
-		return nullptr;
+		return false;
 	}
 
-	const FString AssetName = FPackageName::GetShortName(PackagePath);
-	UPackage* Package = CreatePackage(*PackagePath);
-	Package->FullyLoad();
-
-	USkeletalMesh* SkeletalMesh = NewObject<USkeletalMesh>(Package, FName(*AssetName), RF_Public | RF_Standalone);
 
 	for (const FString& SlotName : MaterialSlotNames)
 	{
-		SkeletalMesh->GetMaterials().Add(FSkeletalMaterial(nullptr, true, false, FName(*SlotName), FName(*SlotName)));
+		OutData.Materials.Add(FSkeletalMaterial(nullptr, true, false, FName(*SlotName), FName(*SlotName)));
 	}
 
-	FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
-	RefSkeleton.Empty();
+	OutData.RefSkeleton.Empty();
 	{
-		FReferenceSkeletonModifier RefSkeletonModifier(RefSkeleton, nullptr);
+		FReferenceSkeletonModifier RefSkeletonModifier(OutData.RefSkeleton, nullptr);
 		for (int32 i = 0; i < Skeleton.Joints.Num(); ++i)
 		{
 			const FSWGSkeletonJoint& Joint = Skeleton.Joints[i];
@@ -302,62 +319,56 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 	TSet<FName> AddedSocketNames;
 	for (const TPair<FString, FString>& Slot : SlotHardpoints)
 	{
-		const int32 BoneIndex = RefSkeleton.FindBoneIndex(FName(*Slot.Value));
+		const int32 BoneIndex = OutData.RefSkeleton.FindBoneIndex(FName(*Slot.Value));
 		if (BoneIndex == INDEX_NONE)
 		{
 			continue;
 		}
 
-		USkeletalMeshSocket* Socket = NewObject<USkeletalMeshSocket>(SkeletalMesh);
-		Socket->SocketName = FName(*Slot.Key);
-		Socket->BoneName = RefSkeleton.GetBoneName(BoneIndex);
-		SkeletalMesh->GetMeshOnlySocketList().Add(Socket);
-		AddedSocketNames.Add(Socket->SocketName);
+		OutData.Sockets.Add({ 
+			FName(*Slot.Key), 
+			OutData.RefSkeleton.GetBoneName(BoneIndex), 
+			FVector::ZeroVector, 
+			FRotator::ZeroRotator 
+		});
+		AddedSocketNames.Add(FName(*Slot.Key));
 	}
 
 	for (const FSWGMeshData* MeshPart : MeshParts)
 	{
-		if (!MeshPart) continue;
+		if (!MeshPart)
+		{
+			continue;
+		}
 		for (const FSWGMeshHardpoint& Hardpoint : MeshPart->Hardpoints)
 		{
-			const int32 ParentIndex = RefSkeleton.FindBoneIndex(FName(*Hardpoint.ParentName));
+			const int32 ParentIndex = OutData.RefSkeleton.FindBoneIndex(FName(*Hardpoint.ParentName));
 			const FName SocketName(*Hardpoint.Name);
 			if (ParentIndex == INDEX_NONE || AddedSocketNames.Contains(SocketName))
 			{
 				continue;
 			}
 
-			USkeletalMeshSocket* Socket = NewObject<USkeletalMeshSocket>(SkeletalMesh);
-			Socket->SocketName = SocketName;
-			Socket->BoneName = RefSkeleton.GetBoneName(ParentIndex);
-			Socket->RelativeLocation = Hardpoint.Translation;
-			Socket->RelativeRotation = Hardpoint.Rotation.Rotator();
-			SkeletalMesh->GetMeshOnlySocketList().Add(Socket);
+			OutData.Sockets.Add({
+				SocketName,
+				OutData.RefSkeleton.GetBoneName(ParentIndex),
+				Hardpoint.Translation,
+				Hardpoint.Rotation.Rotator()
+			});
 			AddedSocketNames.Add(SocketName);
 		}
 	}
 
 	int32 SkeletalDepth = 0;
-	if (!SkeletalMeshImportUtils::ProcessImportMeshSkeleton(nullptr, RefSkeleton, SkeletalDepth, ImportData))
+	if (!SkeletalMeshImportUtils::ProcessImportMeshSkeleton(nullptr, OutData.RefSkeleton, SkeletalDepth, OutData.ImportData))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: ProcessImportMeshSkeleton failed for '%s'"), *PackagePath);
-		return nullptr;
+		return false;
 	}
-	SkeletalMeshImportUtils::ProcessImportMeshInfluences(ImportData, PackagePath);
+	SkeletalMeshImportUtils::ProcessImportMeshInfluences(OutData.ImportData, PackagePath);
 
-	// AddLODInfo() only adds the LOD *metadata* (FSkeletalMeshLODInfo) — the
-	// actual geometry slot the mesh builder writes into
-	// (FSkeletalMeshModel::LODModels) needs to be added separately, or
-	// BuildSkeletalMesh asserts with "LODModels.IsValidIndex(LODIndex)"
-	// (hit this on the first real run).
-	SkeletalMesh->GetImportedModel()->LODModels.Add(new FSkeletalMeshLODModel());
 
-	FSkeletalMeshLODInfo& LODInfo = SkeletalMesh->AddLODInfo();
-	// The raw import faces carry a distinct MatIndex for every SWG submesh.
-	// Explicitly preserve that section -> material-slot mapping: the default
-	// empty map makes UE render every generated section with slot 0, which is
-	// particularly visible on the Wookiee as mouth/alpha sections sampling the
-	// body pattern atlas (the erroneous face at the hip).
+	FSkeletalMeshLODInfo& LODInfo = OutData.LODInfo;
 	LODInfo.LODMaterialMap.SetNum(MaterialSlotNames.Num());
 	for (int32 MaterialIndex = 0; MaterialIndex < MaterialSlotNames.Num(); ++MaterialIndex)
 	{
@@ -374,32 +385,81 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 	LODInfo.BuildSettings.ThresholdTangentNormal = 0.02f;
 	LODInfo.BuildSettings.ThresholdUV = 0.001f;
 
-	SkeletalMesh->SaveLODImportedData(0, ImportData);
-	// ImportData.bHasVertexColors alone controls whether the builder writes a
-	// ColorVertexBuffer; this asset-level flag is a separate switch the
-	// render/component side checks (GetHasVertexColors()) — without it the
-	// buffer can get built but never actually bound/sampled.
-	SkeletalMesh->SetHasVertexColors(true);
-	SkeletalMesh->SetVertexColorGuid(FGuid::NewGuid());
 
 	FBox Bounds(ForceInit);
-	for (const FVector3f& Point : ImportData.Points)
+	for (const FVector3f& Point : OutData.ImportData.Points)
 	{
 		Bounds += FVector(Point);
 	}
-	SkeletalMesh->SetImportedBounds(FBoxSphereBounds(Bounds));
+	OutData.Bounds = FBoxSphereBounds(Bounds);
+
+
+	TArray<FVector3f> LODPoints;
+	TArray<SkeletalMeshImportData::FMeshWedge> LODWedges;
+	TArray<SkeletalMeshImportData::FMeshFace> LODFaces;
+	TArray<SkeletalMeshImportData::FVertInfluence> LODInfluences;
+	TArray<int32> LODPointToRawMap;
+	OutData.ImportData.CopyLODImportData(LODPoints, LODWedges, LODFaces, LODInfluences, LODPointToRawMap);
+
+	FLODUtilities::AdjustImportDataFaceMaterialIndex(OutData.Materials, OutData.ImportData.Materials, LODFaces, /*LODIndex*/ 0);
+	
+	IMeshUtilities::MeshBuildOptions Options;
+	Options.FillOptions(OutData.LODInfo.BuildSettings);   // BuildSettings already populated per the LODInfo answer above
+	Options.bComputeNormals |= !OutData.ImportData.bHasNormals;
+	Options.bComputeTangents |= !OutData.ImportData.bHasTangents;
+
+	if (!MeshUtilities.BuildSkeletalMesh(
+		*OutData.LODModel,
+		PackagePath,          // used only for logging inside
+		OutData.RefSkeleton,
+		LODInfluences,
+		LODWedges,
+		LODFaces,
+		LODPoints,
+		LODPointToRawMap,
+		Options))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: MeshUtilities.BuildSkeletalMesh failed for '%s'"), *PackagePath);
+		return false;
+	}
+	OutData.LODModel->NumTexCoords = FMath::Max<int32>(1, OutData.ImportData.NumTexCoords);
+
+
+	return true;
+}
+
+USkeletalMesh* FSWGSkeletalMeshImporter::FinalizeSkeletalMesh(FSWGSkeletalMeshBuildData&& Data, const FString& PackagePath)
+{
+	const FString AssetName = FPackageName::GetShortName(PackagePath);
+	UPackage* Package = CreatePackage(*PackagePath);
+	Package->FullyLoad();
+
+	USkeletalMesh* SkeletalMesh = NewObject<USkeletalMesh>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+
+
+	SkeletalMesh->GetRefSkeleton() = MoveTemp(Data.RefSkeleton);
+	SkeletalMesh->GetMaterials() = MoveTemp(Data.Materials);
+
+	for (const FSWGSocketDesc& SlotDesc : Data.Sockets)
+	{
+		USkeletalMeshSocket* Socket = NewObject<USkeletalMeshSocket>(SkeletalMesh);
+		Socket->SocketName = SlotDesc.SocketName;
+		Socket->BoneName = SlotDesc.BoneName;
+		Socket->RelativeLocation = SlotDesc.RelativeLocation;
+		Socket->RelativeRotation = SlotDesc.RelativeRotation;
+		SkeletalMesh->GetMeshOnlySocketList().Add(Socket);
+	}
+
+	SkeletalMesh->AddLODInfo() = MoveTemp(Data.LODInfo);
+	SkeletalMesh->GetImportedModel()->LODModels.Add(Data.LODModel.Release());
+	SkeletalMesh->SaveLODImportedData(0, Data.ImportData);
+	SkeletalMesh->SetHasVertexColors(true);
+	SkeletalMesh->SetVertexColorGuid(FGuid::NewGuid());
+
+	SkeletalMesh->SetImportedBounds(Data.Bounds);
 
 	SkeletalMesh->AllocateResourceForRendering();
 
-	IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForRunningPlatform();
-	const FSkeletalMeshBuildParameters BuildParams(SkeletalMesh, GetTargetPlatformManagerRef().GetRunningTargetPlatform(), 0, false);
-	if (!MeshBuilderModule.BuildSkeletalMesh(*SkeletalMesh->GetResourceForRendering(), BuildParams))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: IMeshBuilderModule::BuildSkeletalMesh failed for '%s'"), *PackagePath);
-		SkeletalMesh->ReleaseResources();
-		return nullptr;
-	}
-	SkeletalMesh->ReleaseResources();
 	SkeletalMesh->CalculateInvRefMatrices();
 
 	// A dedicated USkeleton per built mesh, rather than trying to share/reuse
@@ -432,7 +492,7 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 	// force it to finish first, or it can still race BuildMorphTargets and
 	// win, wiping the morph targets out from under it.
 	FSkinnedAssetCompilingManager::Get().FinishCompilation({ SkeletalMesh });
-	BuildMorphTargets(*SkeletalMesh, MergedMorphDeltas);
+	BuildMorphTargets(*SkeletalMesh, Data.MorphDeltas);
 	// BuildMorphTargets' own InitMorphTargetsAndRebuildRenderData can kick off
 	// further async work too — flush again before saving, or SavePackage can
 	// race it the same way.
@@ -445,18 +505,20 @@ USkeletalMesh* FSWGSkeletalMeshImporter::BuildSkeletalMesh(
 	FAssetRegistryModule::AssetCreated(NewSkeleton);
 
 	auto SavePackage = [](UPackage* PackageToSave, UObject* Asset)
-	{
-		const FString FileName = FPackageName::LongPackageNameToFilename(PackageToSave->GetName(), FPackageName::GetAssetPackageExtension());
-		FSavePackageArgs SaveArgs;
-		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-		SaveArgs.SaveFlags = SAVE_NoError;
-		return UPackage::SavePackage(PackageToSave, Asset, *FileName, SaveArgs);
-	};
+		{
+			const FString FileName = FPackageName::LongPackageNameToFilename(PackageToSave->GetName(), FPackageName::GetAssetPackageExtension());
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			SaveArgs.SaveFlags = SAVE_NoError;
+			return UPackage::SavePackage(PackageToSave, Asset, *FileName, SaveArgs);
+		};
 	SavePackage(Package, SkeletalMesh);
 	SavePackage(SkeletonPackage, NewSkeleton);
 
+	// Data.RefSkeleton/Data.Materials were moved out above — read the counts
+	// back from SkeletalMesh itself rather than the now-empty moved-from Data.
 	UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: built '%s' — %d bone(s), %d material slot(s), %d point(s), %d face(s)"),
-		*PackagePath, RefSkeleton.GetNum(), MaterialSlotNames.Num(), ImportData.Points.Num(), ImportData.Faces.Num());
+		*PackagePath, SkeletalMesh->GetRefSkeleton().GetNum(), SkeletalMesh->GetMaterials().Num(), Data.ImportData.Points.Num(), Data.ImportData.Faces.Num());
 
 	return SkeletalMesh;
 }
@@ -547,10 +609,16 @@ void FSWGSkeletalMeshImporter::BuildMorphTargets(USkeletalMesh& SkeletalMesh, co
 	// InitMorphTargets() doesn't touch render data, though, and the actual
 	// GPU-side compressed morph buffer (LODRenderData[0].MorphTargetVertexInfoBuffers)
 	// was already marked "initialized" (just empty — bResourcesInitialized=true,
-	// GetNumMorphs()=0) by the earlier IMeshBuilderModule::BuildSkeletalMesh
-	// call, back when no morph targets existed yet. USkeletalMesh::InitResources()
-	// silently no-ops against an already-"initialized" buffer, so calling it
-	// again here does nothing (confirmed via logging: GetNumMorphs() stayed 0).
+	// GetNumMorphs()=0) — originally observed with the build going through
+	// IMeshBuilderModule::BuildSkeletalMesh (since replaced by the direct
+	// FMeshUtilities::BuildSkeletalMesh call in BuildSkeletalMeshData, still
+	// running back when no morph targets existed yet); worth re-confirming
+	// via logging that the same "already initialized empty" state still
+	// holds now that PostEditChange's CacheDerivedData is what actually
+	// populates LODRenderData, not this call directly. USkeletalMesh::
+	// InitResources() silently no-ops against an already-"initialized"
+	// buffer, so calling it again here does nothing (confirmed via logging
+	// against the old call path: GetNumMorphs() stayed 0).
 	// Left empty, this is harmless right up until a material on the mesh
 	// declares bUsedWithMorphTargets, at which point USkinnedMeshComponent's
 	// GPU skin cache path hits `ensureAlways(DynamicData->MorphTargetWeights.Num()

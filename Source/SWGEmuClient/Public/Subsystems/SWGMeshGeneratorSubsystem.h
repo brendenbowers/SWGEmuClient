@@ -25,17 +25,8 @@ class USkeleton;
 class UAnimSequence;
 class UBlendSpace;
 class UAnimSingleNodeInstance;
-
-/**
- * One actor's live animation playback — a real UBlendSpace played on
- * Character->GetMesh() via UAnimSingleNodeInstance, driven every tick by the
- * actor's current horizontal speed. See TryApplyGeneratedAnimatedMesh.
- */
-struct FSWGPlayingAnimation
-{
-	TWeakObjectPtr<USkeletalMeshComponent> MeshComponent;
-	TWeakObjectPtr<UAnimSingleNodeInstance> AnimInstance;
-};
+class IMeshUtilities;
+class FSWGSkeletalAnimationPipeline;
 
 /**
  * Attached to every generated UStaticMesh/USkeletalMesh (see
@@ -129,7 +120,29 @@ class SWGEMUCLIENT_API USWGMeshGeneratorSubsystem : public UGameInstanceSubsyste
 {
 	GENERATED_BODY()
 
+	// FSWGSkeletalAnimationPipeline (owned via TUniquePtr below) needs
+	// privileged access to TreSubsystem/MeshUtilities/GetOrBuildObjectMaterial
+	// — see that class's own header comment for why this wasn't worth
+	// promoting to a public API instead.
+	friend class FSWGSkeletalAnimationPipeline;
+
 public:
+	// Declared (not defaulted) so the SkeletalAnimationPipeline raw-pointer
+	// member below can be manually deleted in the .cpp, where the complete
+	// FSWGSkeletalAnimationPipeline type is visible. Tried TUniquePtr first
+	// (the usual pImpl idiom), but even with an explicit out-of-line
+	// constructor+destructor, UHT's generated vtable-helper-ctor machinery
+	// (DEFINE_VTABLE_PTR_HELPER_CTOR_CALLER, embedded directly in this
+	// header via GENERATED_BODY) still eagerly instantiated TUniquePtr's
+	// templated destructor wherever this header is included — including
+	// translation units with no visibility into the pipeline's complete
+	// type ("deletion of pointer to incomplete type" from
+	// Module.SWGEmuClient.cpp's unity blob). A raw pointer sidesteps that
+	// entirely: it needs no special-member-function machinery at all, only
+	// the explicit `delete` call in the destructor's body needs the
+	// complete type, and that's only ever compiled in this class's own .cpp.
+	virtual ~USWGMeshGeneratorSubsystem() override;
+
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
@@ -237,68 +250,6 @@ private:
 	 * static mesh itself couldn't be built.
 	 */
 	UStaticMesh* BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials);
-
-	/**
-	 * Generic per-species resolution: works for any ACharacter whose resolved
-	 * mesh/skeleton data yields a SKTM skeleton reference and a usable LATX
-	 * locomotion LAT. Swaps in the generated skeletal mesh (see
-	 * GetOrBuildGeneratedSkeletalMesh) directly on Character->GetMesh() (no
-	 * longer kept hidden), hiding ProceduralMeshComponent instead, and plays a
-	 * generated UBlendSpace (see GetOrBuildLocomotionBlendSpace) via
-	 * UAnimSingleNodeInstance. Returns false (no-op) for anything without a
-	 * skeleton (non-animated actors) or whose generated assets aren't
-	 * available.
-	 */
-	bool TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, float>* MorphWeights = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr);
-
-	/**
-	 * Loads the once-built USkeletalMesh for this skeleton+mesh-parts
-	 * combination (package name hashed from SkeletonPath + MeshVirtualPaths,
-	 * under /Game/SWGEmu/Generated/), or builds and saves it via
-	 * FSWGSkeletalMeshImporter if it doesn't exist yet and this is an
-	 * editor/PIE build (see that class's WITH_EDITOR comment — there's no
-	 * packaged-build-safe way to construct a real skinned mesh). The saved
-	 * .uasset on disk *is* the cache — a later LoadObject call is the
-	 * cache-hit path, same role GetOrBuildGeneratedStaticMesh's own cache
-	 * plays for procedural meshes. If MeshVirtualPaths includes a "*_head*"
-	 * part, also looks for a
-	 * matching "<prefix>_face.skt" skeleton and merges it under the "head"
-	 * joint for the mesh build only — the caller's own Skeleton (used to
-	 * build locomotion animations) is left untouched since locomotion clips
-	 * never animate face bones.
-	 */
-	USkeletalMesh* GetOrBuildGeneratedSkeletalMesh(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton);
-
-	/**
-	 * Loads the once-built UAnimSequence for this skeleton+mesh-parts+clip
-	 * combination (package name hashed from SkeletonPath + MeshVirtualPaths +
-	 * ClipPath, under /Game/SWGEmu/Generated/ — MeshVirtualPaths is included
-	 * because it's also part of GetOrBuildGeneratedSkeletalMesh's own hash:
-	 * two species can share one SkeletonPath's source .skt data but still get
-	 * two distinct generated USkeleton objects, one per generated mesh, so an
-	 * anim sequence built against the wrong one would be silently
-	 * incompatible with whichever mesh is actually on screen), or builds and
-	 * saves it via FSWGAnimationImporter::BuildAnimSequence if it doesn't
-	 * exist yet and this is an editor/PIE build. TargetSkeleton is the
-	 * USkeleton the playing USkeletalMeshComponent actually uses
-	 * (GeneratedMesh->GetSkeleton(), which may include merged face bones) —
-	 * Skeleton is the plain joint list used to build the animated tracks
-	 * themselves.
-	 */
-	UAnimSequence* GetOrBuildLocomotionAnimSequence(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FString& ClipPath, const FSWGSkeletonData& Skeleton, USkeleton* TargetSkeleton);
-
-	/**
-	 * Loads the once-built UBlendSpace for this skeleton+mesh-parts+locomotion-clips
-	 * combination (package name hashed the same way as
-	 * GetOrBuildLocomotionAnimSequence, for the same reason — see its
-	 * comment), or builds and saves it if missing and this is an editor/PIE
-	 * build: a single horizontal-speed axis with idle/walk/run samples at
-	 * 0/WalkSpeed/RunSpeed. AxisToScaleAnimation is set to that axis, so the
-	 * engine scales each sample's playback rate by how far the live blend
-	 * input is from its own sample speed — no manual play-rate bookkeeping
-	 * needed at runtime.
-	 */
-	UBlendSpace* GetOrBuildLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const TArray<FString>& LocomotionPaths, UAnimSequence* IdleSequence, UAnimSequence* WalkSequence, UAnimSequence* RunSequence, float WalkSpeed, float RunSpeed, USkeleton* TargetSkeleton);
 
 	/**
 	 * Parses a .sht shader template (e.g. "shader/dl44_main_as9.sht") and
@@ -486,6 +437,8 @@ private:
 	UPROPERTY()
 	TMap<FString, TObjectPtr<UMaterialInterface>> ObjectMaterialCache;
 
+	IMeshUtilities* MeshUtilities = nullptr;
+
 	/** Loaded once on first use (see ResolveCustomizationPaletteTints) from
 	 *  customization/customization_id_manager.iff and
 	 *  customization/asset_customization_manager.iff — both are small,
@@ -494,16 +447,12 @@ private:
 	FSWGCustomizationIdManager CustomizationIdManager;
 	FSWGAssetCustomizationManager AssetCustomizationManager;
 
-	/** Slot name -> hardpoint socket name, parsed once on first use from
-	 *  abstract/slot/slot_definition/slot_definitions.iff (see
-	 *  GetSlotHardpoints) — a small, session-global reference table shared by
-	 *  every generated skeletal mesh, not per-mesh data. */
-	bool bSlotHardpointsLoaded = false;
-	TMap<FString, FString> SlotHardpoints;
-
-	/** Returns SlotHardpoints, parsing it from slot_definitions.iff on the first call. */
-	const TMap<FString, FString>& GetSlotHardpoints();
-
-	/** Actors whose blend space's speed input needs updating every tick — see TryApplyGeneratedAnimatedMesh and Tick. */
-	TArray<FSWGPlayingAnimation> PlayingAnimations;
+	/** Owns the async skeletal-mesh + locomotion-animation generation
+	 *  pipeline (GetOrBuildGeneratedSkeletalMeshAsync,
+	 *  GetOrBuildLocomotionAnimSequenceAsync, GetOrBuildLocomotionBlendSpace,
+	 *  TryApplyGeneratedAnimatedMesh — see that class for why it was split
+	 *  out). Manually new'd in Initialize() (once TreSubsystem/MeshUtilities
+	 *  are set) and deleted in ~USWGMeshGeneratorSubsystem() — raw pointer,
+	 *  not TUniquePtr, see the destructor's own comment for why. */
+	FSWGSkeletalAnimationPipeline* SkeletalAnimationPipeline = nullptr;
 };

@@ -16,17 +16,16 @@
 // overload silently fails CheckOuterClass() for every bone, leaving the built
 // AnimSequence with no animation. The double-precision overload works correctly.
 
-UAnimSequence* FSWGAnimationImporter::BuildAnimSequence(
+bool FSWGAnimationImporter::BuildAnimSequenceData(
 	const FSWGAnimationData& Animation,
 	const FSWGSkeletonData& Skeleton,
-	USkeleton* TargetSkeleton,
-	const FString& PackagePath)
+	FSWGAnimSequenceBuildData& OutData)
 {
-	if (Animation.FrameCount <= 0 || Skeleton.Joints.Num() == 0 || !TargetSkeleton)
+	if (Animation.FrameCount <= 0 || Skeleton.Joints.Num() == 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("FSWGAnimationImporter: invalid input for '%s' (FrameCount=%d, Joints=%d, TargetSkeleton=%s)"),
-			*PackagePath, Animation.FrameCount, Skeleton.Joints.Num(), TargetSkeleton ? TEXT("valid") : TEXT("null"));
-		return nullptr;
+		UE_LOG(LogTemp, Warning, TEXT("FSWGAnimationImporter: invalid input for anim sequence data (FrameCount=%d, Joints=%d)"),
+			Animation.FrameCount, Skeleton.Joints.Num());
+		return false;
 	}
 
 	// Case-insensitive lookup, same convention as FSWGSkeletalMeshImporter —
@@ -37,6 +36,65 @@ UAnimSequence* FSWGAnimationImporter::BuildAnimSequence(
 	for (const FSWGAnimationBoneTrack& Track : Animation.BoneTracks)
 	{
 		BoneNameToTrack.Add(Track.BoneName.ToLower(), &Track);
+	}
+
+	OutData.FrameRate = FMath::Max(1, FMath::RoundToInt(Animation.FrameRate));
+	OutData.FrameCount = Animation.FrameCount;
+	OutData.BoneTracks.Reserve(Skeleton.Joints.Num());
+
+	for (const FSWGSkeletonJoint& Joint : Skeleton.Joints)
+	{
+		FSWGAnimBoneTrackData& TrackData = OutData.BoneTracks.AddDefaulted_GetRef();
+		TrackData.BoneName = FName(*Joint.Name);
+
+		TrackData.ScaleKeys.Init(FVector::OneVector, Animation.FrameCount);
+
+		// Only the root bone gets a translation curve — every other bone's
+		// position is a fixed offset from its parent (rotation/FK-driven
+		// only), matching how the source data itself only ever supplies one
+		// translation curve (FORM ATRN) for the whole clip, not one per bone.
+		if (Joint.Name.Equals(TEXT("root"), ESearchCase::IgnoreCase) && Animation.RootTranslationDeltas.Num() > 0)
+		{
+			TrackData.PosKeys = SWGBuildDenseTranslationTrack(Animation.RootTranslationDeltas, Animation.FrameCount, Joint.BindPoseTranslation);
+		}
+		else
+		{
+			TrackData.PosKeys.Init(Joint.BindPoseTranslation, Animation.FrameCount);
+		}
+
+		// Each decoded sample is only part of the joint's mid rotation — the
+		// actual local rotation is the full Pre/Post composition (see
+		// FSWGSkeletonJoint::ComposeLocalRotation), same as
+		// FSWGSkeletalMeshImporter composes for the bind pose.
+		const FSWGAnimationBoneTrack* const* FoundTrack = BoneNameToTrack.Find(Joint.Name.ToLower());
+		if (FoundTrack)
+		{
+			TrackData.RotKeys = SWGBuildDenseRotationTrack((*FoundTrack)->Keyframes, Animation.FrameCount, Joint.BindPoseRotation);
+			for (FQuat& Rot : TrackData.RotKeys)
+			{
+				// An animated frame's mid is the sample combined with the
+				// joint's bind rotation, not the sample alone.
+				Rot = Joint.ComposeLocalRotation(Rot * Joint.BindPoseRotation);
+			}
+		}
+		else
+		{
+			TrackData.RotKeys.Init(Joint.ComposeLocalRotation(Joint.BindPoseRotation), Animation.FrameCount);
+		}
+	}
+
+	return true;
+}
+
+UAnimSequence* FSWGAnimationImporter::FinalizeAnimSequence(
+	FSWGAnimSequenceBuildData&& Data,
+	USkeleton* TargetSkeleton,
+	const FString& PackagePath)
+{
+	if (!TargetSkeleton)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGAnimationImporter: no TargetSkeleton for '%s'"), *PackagePath);
+		return nullptr;
 	}
 
 	const FString AssetName = FPackageName::GetShortName(PackagePath);
@@ -62,63 +120,21 @@ UAnimSequence* FSWGAnimationImporter::BuildAnimSequence(
 	Controller.InitializeModel();
 	Controller.ResetModel(false);
 
-	const int32 FrameRateInt = FMath::Max(1, FMath::RoundToInt(Animation.FrameRate));
-	Controller.SetFrameRate(FFrameRate(FrameRateInt, 1), false);
-	Controller.SetNumberOfFrames(FFrameNumber(FMath::Max(1, Animation.FrameCount - 1)), false);
+	Controller.SetFrameRate(FFrameRate(Data.FrameRate, 1), false);
+	Controller.SetNumberOfFrames(FFrameNumber(FMath::Max(1, Data.FrameCount - 1)), false);
 
-	for (const FSWGSkeletonJoint& Joint : Skeleton.Joints)
+	for (const FSWGAnimBoneTrackData& TrackData : Data.BoneTracks)
 	{
-		const FName BoneName(*Joint.Name);
-		if (!Controller.AddBoneCurve(BoneName, false))
+		if (!Controller.AddBoneCurve(TrackData.BoneName, false))
 		{
-			UE_LOG(LogTemp, Warning, TEXT("FSWGAnimationImporter: AddBoneCurve failed for bone '%s' — skipping"), *Joint.Name);
+			UE_LOG(LogTemp, Warning, TEXT("FSWGAnimationImporter: AddBoneCurve failed for bone '%s' — skipping"), *TrackData.BoneName.ToString());
 			continue;
 		}
 
-		TArray<FVector> ScaleKeys;
-		ScaleKeys.Init(FVector::OneVector, Animation.FrameCount);
-
-		// Only the root bone gets a translation curve — every other bone's
-		// position is a fixed offset from its parent (rotation/FK-driven
-		// only), matching how the source data itself only ever supplies one
-		// translation curve (FORM ATRN) for the whole clip, not one per bone.
-		TArray<FVector> PosKeys;
-		if (Joint.Name.Equals(TEXT("root"), ESearchCase::IgnoreCase) && Animation.RootTranslationDeltas.Num() > 0)
-		{
-			PosKeys = SWGBuildDenseTranslationTrack(Animation.RootTranslationDeltas, Animation.FrameCount, Joint.BindPoseTranslation);
-		}
-		else
-		{
-			PosKeys.Init(Joint.BindPoseTranslation, Animation.FrameCount);
-		}
-
-		// Each decoded sample is only part of the joint's mid rotation — the
-		// actual local rotation is the full Pre/Post composition (see
-		// FSWGSkeletonJoint::ComposeLocalRotation), same as
-		// FSWGSkeletalMeshImporter composes for the bind pose. Skipping it
-		// left every animated bone in its raw pre/post-rotated frame instead
-		// of the skeleton's frame — see WOOKIEE_ANIMATION_POSE_BUG.md.
-		TArray<FQuat> RotKeys;
-		const FSWGAnimationBoneTrack* const* FoundTrack = BoneNameToTrack.Find(Joint.Name.ToLower());
-		if (FoundTrack)
-		{
-			RotKeys = SWGBuildDenseRotationTrack((*FoundTrack)->Keyframes, Animation.FrameCount, Joint.BindPoseRotation);
-			for (FQuat& Rot : RotKeys)
-			{
-				// An animated frame's mid is the sample combined with the
-				// joint's bind rotation, not the sample alone.
-				Rot = Joint.ComposeLocalRotation(Rot * Joint.BindPoseRotation);
-			}
-		}
-		else
-		{
-			RotKeys.Init(Joint.ComposeLocalRotation(Joint.BindPoseRotation), Animation.FrameCount);
-		}
-
-		if (!Controller.SetBoneTrackKeys(BoneName, PosKeys, RotKeys, ScaleKeys, false))
+		if (!Controller.SetBoneTrackKeys(TrackData.BoneName, TrackData.PosKeys, TrackData.RotKeys, TrackData.ScaleKeys, false))
 		{
 			UE_LOG(LogTemp, Warning, TEXT("FSWGAnimationImporter: SetBoneTrackKeys failed for bone '%s' (PosKeys=%d RotKeys=%d ScaleKeys=%d)"),
-				*Joint.Name, PosKeys.Num(), RotKeys.Num(), ScaleKeys.Num());
+				*TrackData.BoneName.ToString(), TrackData.PosKeys.Num(), TrackData.RotKeys.Num(), TrackData.ScaleKeys.Num());
 		}
 	}
 
