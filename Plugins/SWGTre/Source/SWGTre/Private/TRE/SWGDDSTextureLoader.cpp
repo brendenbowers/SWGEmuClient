@@ -163,14 +163,32 @@ UTexture2D* FSWGDDSTextureLoader::LoadTexture2D(const TArray<uint8>& DDSBytes, c
 	if (bDecodeLegacyNormal) DecodeLegacyDXT5NormalMip(Mip0, DecodedMip);
 	const uint8* Mip0Data = bDecodeLegacyNormal ? DecodedMip.GetData() : Mip0.Data;
 	const int64 Mip0DataSize = bDecodeLegacyNormal ? DecodedMip.Num() : Mip0.DataSize;
-	UTexture2D* Texture = UTexture2D::CreateTransient(Mip0.Width, Mip0.Height, PixelFormat, TextureName,
-		TConstArrayView64<uint8>(Mip0Data, Mip0DataSize));
+
+	// Deliberately called with NO image data. CreateTransient() (Texture2D.cpp)
+	// calls its own internal UpdateResource() whenever image data is passed —
+	// enqueueing a render command that creates the RHI resource with just this
+	// one mip. If we then append the rest of the chain below and call
+	// UpdateResource() again, that's a second resource-init enqueued for the
+	// same UTexture2D while the first may still be in flight on the render
+	// thread. Passing no data still gets us an allocated (but
+	// uninitialized) mip 0 to fill in ourselves, and skips that internal call,
+	// so there's exactly one UpdateResource() for this texture (at the bottom
+	// of this function), after every mip is in place.
+	UTexture2D* Texture = UTexture2D::CreateTransient(Mip0.Width, Mip0.Height, PixelFormat, TextureName);
 
 	if (!Texture)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGDDSTextureLoader: CreateTransient failed for '%s'"), *TextureName.ToString());
 		delete Dds;
 		return nullptr;
+	}
+
+	{
+		FTexture2DMipMap& Mip0Map = Texture->GetPlatformData()->Mips[0];
+		Mip0Map.BulkData.Lock(LOCK_READ_WRITE);
+		void* DestData = Mip0Map.BulkData.Realloc(Mip0DataSize);
+		FMemory::Memcpy(DestData, Mip0Data, Mip0DataSize);
+		Mip0Map.BulkData.Unlock();
 	}
 
 	// Additional mips appended the same way SWGTerrainSubsystem's baked

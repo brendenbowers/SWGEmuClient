@@ -1245,14 +1245,30 @@ void USWGTerrainSubsystem::AddLandscapeComponent(ALandscape* Landscape, const FS
 	// component in the grid resolves to (and overwrites) the same transient object.
 	const TArray<FColor> Mip0Pixels = PackHeightMip(MipHeights[0], DefaultNormal);
 	const FName TextureName(*FString::Printf(TEXT("SWGTerrainHeightmap_%d_%d"), SectionBase.X, SectionBase.Y));
+
+	// Deliberately called with NO image data — see FSWGDDSTextureLoader::
+	// LoadTexture2D's matching comment: CreateTransient() calls its own
+	// internal UpdateResource() whenever image data is passed, which races
+	// against the UpdateResource() below (called once the full mip chain is
+	// appended) since the two enqueue separate RHI resource-inits for the
+	// same UTexture2D. Passing no data still yields an allocated mip 0 we
+	// populate ourselves, same as every mip after it.
 	UTexture2D* HeightmapTexture = UTexture2D::CreateTransient(
-		ComponentVerts, ComponentVerts, PF_B8G8R8A8, TextureName,
-		TConstArrayView64<uint8>(reinterpret_cast<const uint8*>(Mip0Pixels.GetData()), Mip0Pixels.Num() * sizeof(FColor)));
+		ComponentVerts, ComponentVerts, PF_B8G8R8A8, TextureName);
 
 	if (!HeightmapTexture)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: failed to create heightmap texture"));
 		return;
+	}
+
+	{
+		const int64 Mip0Bytes = (int64)Mip0Pixels.Num() * sizeof(FColor);
+		FTexture2DMipMap& Mip0Map = HeightmapTexture->GetPlatformData()->Mips[0];
+		Mip0Map.BulkData.Lock(LOCK_READ_WRITE);
+		void* DestData = Mip0Map.BulkData.Realloc(Mip0Bytes);
+		FMemory::Memcpy(DestData, Mip0Pixels.GetData(), Mip0Bytes);
+		Mip0Map.BulkData.Unlock();
 	}
 
 #if WITH_EDITOR

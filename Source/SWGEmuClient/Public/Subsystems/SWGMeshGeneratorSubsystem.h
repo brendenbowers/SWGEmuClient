@@ -47,6 +47,42 @@ public:
 	FString DebugName;
 };
 
+/** One material slot/section's occlusion zone names — see
+ *  USWGMeshOcclusionZoneData. Wrapped in its own USTRUCT because UPROPERTY
+ *  doesn't support a bare TArray<TArray<FString>>. */
+USTRUCT()
+struct FSWGMeshSectionOcclusionZones
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FString> ZoneNames;
+};
+
+/**
+ * Attached to every generated USkeletalMesh whose source .mgn part(s) carried
+ * OZN/ZTO/OZC data (see FSWGMeshSubmesh::OcclusionZoneNames) — one entry per
+ * material slot/section, same order as the mesh's own Materials array.
+ * Confirmed against real TRE data: hum_m_body.mgn's single section occupies
+ * {chest, torso_f, torso_b, waist_f, waist_b, l_arm, r_arm, l_thigh,
+ * r_thigh, l_shin, r_shin, l_foot, r_foot}, and a composite chest plate's own
+ * single section occupies {chest, torso_f, torso_b} — an exact subset. A
+ * body section is hidden (see USWGEquipmentComponent's occlusion-zone
+ * reconciliation) once every one of its own zone names is also covered by
+ * some currently-equipped item's zones — never on a partial match, since a
+ * body mesh section here is typically one combined torso+limbs region with
+ * no finer boundary in the source data to hide only part of it.
+ */
+UCLASS()
+class SWGEMUCLIENT_API USWGMeshOcclusionZoneData : public UAssetUserData
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY()
+	TArray<FSWGMeshSectionOcclusionZones> ZoneNamesBySection;
+};
+
 /** One entity waiting for its mesh to be resolved, parsed, and built. */
 struct FSWGPendingMeshRequest
 {
@@ -71,6 +107,13 @@ struct FSWGPendingMeshRequest
 	/** SAT LATX entries, keyed by the skeleton path they animate. */
 	TMap<FString, FString> AnimationLatPaths;
 
+	/** Wire containmentType (see SWGContainmentType.h) — only meaningful for
+	 *  item-mesh requests (OnItemMeshReady/OnItemSkeletalMeshReady set below).
+	 *  RequestItemMesh already uses it to skip enqueueing entirely for
+	 *  non-appearance-related slots (see ResolveArrangementSlotNames/
+	 *  IsAnySlotAppearanceRelated); kept here too for diagnostics. */
+	int32 ContainmentType = 0;
+
 	/** .mgn (skeletal) needs FSWGMeshReader::ReadSkeletalMeshBindPose instead of
 	 *  ReadStaticMesh — set by whichever resolution step determines the file kind. */
 	bool bSkeletal = false;
@@ -94,15 +137,27 @@ struct FSWGPendingMeshRequest
 
 	/**
 	 * Set instead of Actor for actor-less item-mesh requests (see
-	 * RequestItemStaticMesh) — a request carrying this has no Actor at all
+	 * RequestItemMesh) — a request carrying this has no Actor at all
 	 * (TWeakObjectPtr stays unset). ProcessNextRequest checks this before its
-	 * usual Actor-validity check: if bound, it builds the static mesh +
-	 * materials (BuildItemStaticMeshAssets — the same actor-agnostic asset
-	 * half BuildGeneratedMeshComponent uses internally) and invokes this
-	 * directly with the result instead of building/attaching any component.
-	 * Mesh is nullptr on any resolve/parse/build failure.
+	 * usual Actor-validity check: once path resolution determines bSkeletal
+	 * (see RequestItemMesh — the caller doesn't know this up front, since it
+	 * depends on the item's own appearance-chain extension), it builds either
+	 * the static mesh (BuildItemStaticMeshAssets — the same actor-agnostic
+	 * asset half BuildGeneratedMeshComponent uses internally) and invokes
+	 * this, or the skeletal mesh (SkeletalAnimationPipeline->
+	 * RequestGeneratedSkeletalMesh) and invokes OnItemSkeletalMeshReady
+	 * instead — exactly one of the two ever fires. Mesh is nullptr on any
+	 * resolve/parse/build failure.
 	 */
 	TFunction<void(UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnItemMeshReady;
+
+	/** Skeletal counterpart to OnItemMeshReady — see that field's comment.
+	 *  Fires instead of OnItemMeshReady when the item's own appearance chain
+	 *  resolves to a skeletal (.sat->.lmg->.mgn) rather than static
+	 *  (.apt->.lod->.msh) mesh — e.g. wearable clothing/armor versus a held
+	 *  weapon. Mesh is nullptr on any resolve/parse/build failure, or if the
+	 *  item's mesh part(s) carry no embedded SKTM skeleton reference. */
+	TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnItemSkeletalMeshReady;
 };
 
 /**
@@ -165,16 +220,29 @@ public:
 
 	/**
 	 * Actor-less counterpart to RequestMesh(Actor, CrcClass) — resolves
-	 * TemplateCrc, parses its mesh, and builds/caches a UStaticMesh plus its
-	 * live per-shader materials, without creating any component or requiring
-	 * any AActor. OnComplete fires on the game thread once resolved (Mesh is
-	 * nullptr on any resolve/parse/build failure — Materials is empty in
-	 * that case too). For callers like USWGEquipmentComponent that need a
-	 * built mesh to attach themselves (e.g. to a specific character socket)
-	 * rather than have this subsystem attach it to an actor that doesn't
-	 * exist for an individual equipped item.
+	 * TemplateCrc, parses its mesh, and builds/caches either a UStaticMesh
+	 * (weapons/held items — .apt->.lod->.msh appearance chain) or a
+	 * USkeletalMesh (wearable clothing/armor — .sat->.lmg->.mgn chain) plus
+	 * its live per-shader materials, without creating any component or
+	 * requiring any AActor. Exactly one of OnStaticComplete/OnSkeletalComplete
+	 * fires, on the game thread, once path resolution determines which kind
+	 * this item's own appearance chain resolves to — the caller doesn't (and
+	 * can't cheaply) know this up front, so there's no separate synchronous
+	 * classify-first step. Mesh is nullptr on any resolve/parse/build failure
+	 * (Materials empty in that case too). For callers like
+	 * USWGEquipmentComponent that need a built mesh to attach themselves
+	 * (e.g. to a specific character socket or via leader-pose-link) rather
+	 * than have this subsystem attach it to an actor that doesn't exist for
+	 * an individual equipped item. ContainmentType (see SWGContainmentType.h)
+	 * is the item's wire containmentType — used to resolve which ARG
+	 * (arrangement) group it occupies and skip the build entirely if none of
+	 * that group's slot names are appearance-related (e.g. bank/inventory/
+	 * mission_bag container slots — nothing should ever render for those).
+	 * Neither callback fires in that case.
 	 */
-	void RequestItemStaticMesh(uint32 TemplateCrc, TFunction<void(UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnComplete);
+	void RequestItemMesh(uint32 TemplateCrc, int32 ContainmentType,
+		TFunction<void(UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnStaticComplete,
+		TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnSkeletalComplete);
 
 	/** Broadcast once RequestMesh's actor has a built, attached mesh component. */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMeshReady, AActor* /*Actor*/, UMeshComponent* /*MeshComponent*/);
@@ -197,6 +265,29 @@ private:
 
 	/** The path-based half of ResolveMeshPath, factored out so RequestMeshForTemplatePath can skip the CRC->path lookup. */
 	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath);
+
+	/**
+	 * CRC -> template -> arrangementDescriptorFilename (walking the DERV chain
+	 * the same way ResolveMeshPathForTemplate does for appearanceFilename —
+	 * they're frequently set at different DERV layers, e.g. a specific chest
+	 * plate usually inherits arrangementDescriptorFilename from a shared base
+	 * wearable template while defining its own appearanceFilename locally) ->
+	 * ARGD -> the one ARG group ContainmentType selects
+	 * (SWGGetArrangementGroupIndex, SWGContainmentType.h). Only meaningful for
+	 * slotted equipment (SWGIsSlottedArrangement(ContainmentType)) — returns
+	 * false otherwise, or if any step of the resolution fails.
+	 */
+	bool ResolveArrangementSlotNames(uint32 TemplateCrc, int32 ContainmentType, TArray<FString>& OutSlotNames);
+
+	/**
+	 * True if any of SlotNames has bIsAppearanceRelated set in
+	 * abstract/slot/slot_definition/slot_definitions.iff (parsed once and
+	 * cached — see SlotAppearanceRelatedByName). Non-appearance slots
+	 * (bank/inventory/mission_bag and other pure containers) never render
+	 * their contents on the character; RequestItemMesh uses this to skip
+	 * building anything for items equipped there.
+	 */
+	bool IsAnySlotAppearanceRelated(const TArray<FString>& SlotNames);
 
 	/** mg4: FSWGMeshReader::ReadStaticMesh/ReadSkeletalMeshBindPose — intended to run off the game thread, like USWGTerrainSubsystem::BakeHeightmap. */
 	bool ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData);
@@ -240,7 +331,7 @@ private:
 
 	/**
 	 * The actor-agnostic asset-producing half of BuildGeneratedMeshComponent,
-	 * factored out so RequestItemStaticMesh can use it without an AActor.
+	 * factored out so RequestItemMesh can use it without an AActor.
 	 * Gets/builds the cached UStaticMesh (GetOrBuildGeneratedStaticMesh — a
 	 * cache hit does no geometry work at all) and resolves its live
 	 * per-shader materials, one entry per MeshData.Submeshes in order,
@@ -447,9 +538,17 @@ private:
 	FSWGCustomizationIdManager CustomizationIdManager;
 	FSWGAssetCustomizationManager AssetCustomizationManager;
 
+	/** Loaded once on first use (see IsAnySlotAppearanceRelated) from
+	 *  abstract/slot/slot_definition/slot_definitions.iff — same small,
+	 *  session-global reference table FSWGSkeletalAnimationPipeline::
+	 *  GetSlotHardpoints loads independently for its own Name->Hardpoint
+	 *  need; this one is Name->bIsAppearanceRelated instead. */
+	bool bSlotAppearanceFlagsLoaded = false;
+	TMap<FString, bool> SlotAppearanceRelatedByName;
+
 	/** Owns the async skeletal-mesh + locomotion-animation generation
-	 *  pipeline (GetOrBuildGeneratedSkeletalMeshAsync,
-	 *  GetOrBuildLocomotionAnimSequenceAsync, GetOrBuildLocomotionBlendSpace,
+	 *  pipeline (RequestGeneratedSkeletalMesh/RequestLocomotionAnimSequence
+	 *  future-returning requests, GetOrBuildLocomotionBlendSpace,
 	 *  TryApplyGeneratedAnimatedMesh — see that class for why it was split
 	 *  out). Manually new'd in Initialize() (once TreSubsystem/MeshUtilities
 	 *  are set) and deleted in ~USWGMeshGeneratorSubsystem() — raw pointer,

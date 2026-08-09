@@ -31,6 +31,9 @@
 #include "Objects/Tangible/SWGItem.h"
 #include "Objects/Creature/SWGCreature.h"
 #include "Objects/Player/SWGPlayer.h"
+#include "Objects/World/SWGBuilding.h"
+#include "Objects/World/SWGInstallation.h"
+#include "Objects/World/SWGStaticProp.h"
 
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
@@ -543,7 +546,18 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 
 	ActorRegistry.Add(Msg.ObjectId, NewActor);
 
-	if (ActorClass->IsChildOf(ASWGCreature::StaticClass()) || ActorClass->IsChildOf(ASWGPlayer::StaticClass()) || ActorClass->IsChildOf(ASWGItem::StaticClass()))
+	// Static world-snapshot objects (buildings/installations/props placed from
+	// the .ws file) get their mesh requested unconditionally by
+	// USWGTerrainSubsystem (SWGTerrainSubsystem.cpp, RequestMeshForTemplatePath)
+	// — a completely separate path from this one. Anything spawned live via
+	// SceneCreateObjectByCrc (a player placing a new structure while already
+	// in the zone, or any building the server didn't include in the initial
+	// snapshot) only gets a mesh if its class is listed here; ASWGBuilding/
+	// ASWGInstallation/ASWGStaticProp were missing, so such objects spawned,
+	// registered, and got unhidden at SceneEndBaselines same as everything
+	// else, then just sat there invisible forever with no mesh ever requested.
+	if (ActorClass->IsChildOf(ASWGCreature::StaticClass()) || ActorClass->IsChildOf(ASWGPlayer::StaticClass()) || ActorClass->IsChildOf(ASWGItem::StaticClass())
+		|| ActorClass->IsChildOf(ASWGBuilding::StaticClass()) || ActorClass->IsChildOf(ASWGInstallation::StaticClass()) || ActorClass->IsChildOf(ASWGStaticProp::StaticClass()))
 	{
 		MeshGenerator->RequestMesh(NewActor, Msg.ObjectCrc);
 	}

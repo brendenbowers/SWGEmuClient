@@ -1,5 +1,15 @@
 #include "Import/SWGSkeletalMeshImporter.h"
 
+FString ExtractShaderPathFromMaterialSlotName(const FString& SlotName)
+{
+	int32 HashIndex = INDEX_NONE;
+	if (SlotName.FindLastChar(TEXT('#'), HashIndex))
+	{
+		return SlotName.Left(HashIndex);
+	}
+	return SlotName;
+}
+
 #if WITH_EDITOR
 
 #include "Engine/SkeletalMesh.h"
@@ -29,7 +39,8 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 	const FString& PackagePath,
 	FSkeletalMeshImportData& OutImportData,
 	TArray<FString>& OutMaterialSlotNames,
-	TMap<FString, TMap<int32, FVector>>& OutMergedMorphDeltas)
+	TMap<FString, TMap<int32, FVector>>& OutMergedMorphDeltas,
+	TArray<TArray<FString>>& OutOcclusionZoneNamesBySection)
 {
 	if (Skeleton.Joints.Num() == 0)
 	{
@@ -140,13 +151,33 @@ bool FSWGSkeletalMeshImporter::PopulateImportData(
 		for (const FSWGMeshSubmesh& Submesh : MeshPart->Submeshes)
 		{
 			const int32 MatIndex = GlobalMaterialIndex++;
-			OutMaterialSlotNames.Add(Submesh.ShaderName);
+
+			// Must be unique per submesh, not just Submesh.ShaderName — the
+			// actual mesh-build chunker (SkeletalMeshTools::
+			// BuildSkeletalMeshChunks) doesn't group faces by the MatIndex set
+			// below at all; SkeletalMeshImportData::FMeshFace::
+			// MeshMaterialIndex is what it actually reads, and that field gets
+			// filled in by matching THIS name (MaterialImportName) against the
+			// asset's final Materials list (FLODUtilities::
+			// AdjustImportDataFaceMaterialIndex) — any two submeshes sharing
+			// the same name collapse onto the same final section regardless of
+			// MatIndex. SplitSubmeshesByBoneZone deliberately gives every
+			// zone-split piece of one original submesh the same ShaderName
+			// (they really do share one shader), which silently merged them
+			// all back into a single section and undid the whole split — the
+			// #<MatIndex> suffix here keeps them distinct for the mesh
+			// builder while still round-tripping to the real shader path
+			// (see TryApplyGeneratedAnimatedMesh's and RequestItemMesh's
+			// matching comment for where it gets stripped back off again).
+			const FString UniqueSlotName = FString::Printf(TEXT("%s#%d"), *Submesh.ShaderName, MatIndex);
+			OutMaterialSlotNames.Add(UniqueSlotName);
+			OutOcclusionZoneNamesBySection.Add(Submesh.OcclusionZoneNames);
 			// MeshBuilder validates/remaps every face's MatIndex against this
 			// raw-import material table. Leaving it empty silently collapses all
 			// sections to material zero, even though the triangles themselves
 			// carry distinct material IDs.
 			SkeletalMeshImportData::FMaterial ImportMaterial;
-			ImportMaterial.MaterialImportName = Submesh.ShaderName;
+			ImportMaterial.MaterialImportName = UniqueSlotName;
 			OutImportData.Materials.Add(MoveTemp(ImportMaterial));
 
 			// Points, Influences, and morph deltas are indexed/deduplicated
@@ -292,7 +323,7 @@ bool FSWGSkeletalMeshImporter::BuildSkeletalMeshData(IMeshUtilities& MeshUtiliti
 	OutData.LODModel = MakeUnique<FSkeletalMeshLODModel>();
 	TArray<FString> MaterialSlotNames;
 	TMap<FString, TMap<int32, FVector>> MergedMorphDeltas;
-	if (!PopulateImportData(Skeleton, MeshParts, PackagePath, OutData.ImportData, MaterialSlotNames, MergedMorphDeltas))
+	if (!PopulateImportData(Skeleton, MeshParts, PackagePath, OutData.ImportData, MaterialSlotNames, MergedMorphDeltas, OutData.OcclusionZoneNamesBySection))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: no geometry/skeleton to build from for '%s'"), *PackagePath);
 		return false;
@@ -424,6 +455,14 @@ bool FSWGSkeletalMeshImporter::BuildSkeletalMeshData(IMeshUtilities& MeshUtiliti
 	}
 	OutData.LODModel->NumTexCoords = FMath::Max<int32>(1, OutData.ImportData.NumTexCoords);
 
+	UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter: '%s' — %d material slot(s) declared, %d actual LOD section(s) built"),
+		*PackagePath, OutData.Materials.Num(), OutData.LODModel->Sections.Num());
+	for (int32 SectionIndex = 0; SectionIndex < OutData.LODModel->Sections.Num(); ++SectionIndex)
+	{
+		const FSkelMeshSection& Section = OutData.LODModel->Sections[SectionIndex];
+		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalMeshImporter:   LOD section %d -> MaterialIndex %d, %d triangle(s), %d vert(s)"),
+			SectionIndex, Section.MaterialIndex, Section.NumTriangles, Section.NumVertices);
+	}
 
 	return true;
 }

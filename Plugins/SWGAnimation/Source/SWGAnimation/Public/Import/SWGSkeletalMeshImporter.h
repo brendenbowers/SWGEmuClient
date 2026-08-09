@@ -4,6 +4,27 @@
 #include "TRE/SWGSkeletonReader.h"
 #include "TRE/SWGMeshReader.h"
 
+/**
+ * Recovers the real shader virtual path from a built mesh's
+ * FSkeletalMaterial::MaterialSlotName — every caller that resolves a
+ * generated skeletal mesh's real per-shader materials at runtime
+ * (FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh,
+ * USWGMeshGeneratorSubsystem's wearable item path) needs this, not just
+ * SlotName.ToString() directly: FSWGSkeletalMeshImporter's import step
+ * appends a "#<MatIndex>" suffix to keep every section's import material
+ * name unique (see PopulateImportData's own comment for why — the mesh
+ * builder's chunker groups faces by matching this name, not by the numeric
+ * MatIndex, so same-shader sections that must stay visually/hiding-
+ * independent, e.g. FSWGMeshReader::SplitSubmeshesByBoneZone's per-zone
+ * pieces of one original submesh, would otherwise silently collapse back
+ * into one). Strips everything from the last '#' onward; returns SlotName
+ * unchanged if it has none (older cached assets built before this suffix
+ * existed). Free function, not a FSWGSkeletalMeshImporter method, because
+ * callers that need it are NOT WITH_EDITOR-gated (a generated mesh is a
+ * runtime asset once built), while that whole class is.
+ */
+SWGANIMATION_API FString ExtractShaderPathFromMaterialSlotName(const FString& SlotName);
+
 #if WITH_EDITOR
 
 #include "ReferenceSkeleton.h"
@@ -43,6 +64,13 @@ struct FSWGSkeletalMeshBuildData
 	FSkeletalMeshLODInfo LODInfo;
 	FBoxSphereBounds Bounds;
 	TMap<FString, TMap<int32, FVector>> MorphDeltas;
+
+	/** One entry per material slot/section, same order as Materials — see
+	 *  FSWGMeshSubmesh::OcclusionZoneNames. The caller (FSWGSkeletalAnimation
+	 *  Pipeline::DrainCompletedSkeletalMeshBuilds) attaches this to the built
+	 *  USkeletalMesh as asset user data so it survives a save/reload; this
+	 *  struct itself is plain worker-thread-safe data. */
+	TArray<TArray<FString>> OcclusionZoneNamesBySection;
 };
 
 /**
@@ -88,6 +116,7 @@ public:
 	static USkeletalMesh* FinalizeSkeletalMesh(
 		FSWGSkeletalMeshBuildData&& Data,
 		const FString& PackagePath);
+
 private:
 	static bool PopulateImportData(
 		const FSWGSkeletonData& Skeleton,
@@ -95,7 +124,8 @@ private:
 		const FString& PackagePath,
 		class FSkeletalMeshImportData& OutImportData,
 		TArray<FString>& OutMaterialSlotNames,
-		TMap<FString, TMap<int32, FVector>>& OutMergedMorphDeltas);
+		TMap<FString, TMap<int32, FVector>>& OutMergedMorphDeltas,
+		TArray<TArray<FString>>& OutOcclusionZoneNamesBySection);
 
 	/**
 	 * Builds real UMorphTarget assets (blend/body-shape sliders — see

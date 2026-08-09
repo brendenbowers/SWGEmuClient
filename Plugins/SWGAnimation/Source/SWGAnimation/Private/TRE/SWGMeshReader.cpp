@@ -9,6 +9,177 @@ FString FSWGMeshReader::ReadNullTerminatedString(const FSWGIffReader& Reader, co
 	return ChunkReader.ReadTerminiatedString();
 }
 
+namespace
+{
+	// Standard SWG biped rig bone name (as stored in XFNM, matched case-
+	// insensitively) -> the occlusion zone name(s) its vertices belong to.
+	// Torso bones (root/spine1-3) intentionally map to
+	// *every* torso-area zone name at once — front/back torso and chest
+	// can't be told apart by bone alone, since the same spine bones deform
+	// all of them — so that section only ever hides once an equipped set
+	// covers the whole cluster together, which is how a real chest+legging
+	// combination reports its own coverage anyway. Forearm/hand bones are
+	// merged the same way, matching how a single bracer covers both at
+	// once. Returns an empty array for any bone not recognized (accessory
+	// rigs, or a name this table doesn't know about yet) — vertices there
+	// simply never become hide candidates, the same as a part with no
+	// occlusion data at all.
+	TArray<FString> GetZonesForBoneName(const FString& BoneName)
+	{
+		const FString B = BoneName.ToLower();
+		if (B == TEXT("root") || B.StartsWith(TEXT("spine")))
+		{
+			return { TEXT("chest"), TEXT("torso_f"), TEXT("torso_b"), TEXT("waist_f"), TEXT("waist_b") };
+		}
+		if (B == TEXT("lthigh")) return { TEXT("l_thigh") };
+		if (B == TEXT("rthigh")) return { TEXT("r_thigh") };
+		if (B == TEXT("lshin")) return { TEXT("l_shin") };
+		if (B == TEXT("rshin")) return { TEXT("r_shin") };
+		if (B == TEXT("lankle") || B == TEXT("ltoe")) return { TEXT("l_foot") };
+		if (B == TEXT("rankle") || B == TEXT("rtoe")) return { TEXT("r_foot") };
+		if (B == TEXT("larm") || B == TEXT("lclav")) return { TEXT("l_arm") };
+		if (B == TEXT("rarm") || B == TEXT("rclav")) return { TEXT("r_arm") };
+		if (B == TEXT("lforearm") || B == TEXT("lulna") || B == TEXT("lwrist")
+			|| B.StartsWith(TEXT("lthumb")) || B.StartsWith(TEXT("lindex")) || B.StartsWith(TEXT("lring")) || B.StartsWith(TEXT("lmiddle")) || B.StartsWith(TEXT("lpinky")))
+		{
+			return { TEXT("l_forearm"), TEXT("l_hand") };
+		}
+		if (B == TEXT("rforearm") || B == TEXT("rulna") || B == TEXT("rwrist")
+			|| B.StartsWith(TEXT("rthumb")) || B.StartsWith(TEXT("rindex")) || B.StartsWith(TEXT("rring")) || B.StartsWith(TEXT("rmiddle")) || B.StartsWith(TEXT("rpinky")))
+		{
+			return { TEXT("r_forearm"), TEXT("r_hand") };
+		}
+		if (B == TEXT("skull") || B == TEXT("head")) return { TEXT("skull") };
+		if (B == TEXT("neck")) return { TEXT("neck") };
+		if (B == TEXT("face")) return { TEXT("face") };
+		return {};
+	}
+}
+
+void FSWGMeshReader::SplitSubmeshesByBoneZone(FSWGMeshData& OutMesh)
+{
+	if (OutMesh.BoneNames.IsEmpty())
+	{
+		return; // not a skeletal mesh part — nothing to split by
+	}
+
+	TArray<FSWGMeshSubmesh> NewSubmeshes;
+	NewSubmeshes.Reserve(OutMesh.Submeshes.Num());
+
+	for (FSWGMeshSubmesh& Submesh : OutMesh.Submeshes)
+	{
+		TArray<TArray<FString>> VertexZones;
+		VertexZones.SetNum(Submesh.Vertices.Num());
+		for (int32 VertexIndex = 0; VertexIndex < Submesh.Vertices.Num(); ++VertexIndex)
+		{
+			const TArray<FSWGBoneWeight>& Weights = Submesh.Vertices[VertexIndex].BoneWeights;
+			if (Weights.IsEmpty())
+			{
+				continue;
+			}
+			int32 DominantBoneIndex = Weights[0].BoneIndex;
+			float DominantWeight = Weights[0].Weight;
+			for (const FSWGBoneWeight& Weight : Weights)
+			{
+				if (Weight.Weight > DominantWeight)
+				{
+					DominantWeight = Weight.Weight;
+					DominantBoneIndex = Weight.BoneIndex;
+				}
+			}
+			if (OutMesh.BoneNames.IsValidIndex(DominantBoneIndex))
+			{
+				VertexZones[VertexIndex] = GetZonesForBoneName(OutMesh.BoneNames[DominantBoneIndex]);
+			}
+		}
+
+		// Group triangles by their first corner's zone key — real geometry
+		// boundaries between zones are thin, so a handful of boundary
+		// triangles landing in the adjacent zone group is an acceptable
+		// approximation, same tradeoff the old whole-submesh zone tagging
+		// already accepted at a coarser level.
+		TMap<FString, TArray<int32>> TriangleStartsByKey;
+		TMap<FString, TArray<FString>> ZonesByKey;
+		for (int32 t = 0; t + 2 < Submesh.Triangles.Num(); t += 3)
+		{
+			const int32 FirstCorner = Submesh.Triangles[t];
+			const TArray<FString>* Zones = VertexZones.IsValidIndex(FirstCorner) ? &VertexZones[FirstCorner] : nullptr;
+			const bool bHasZones = Zones && !Zones->IsEmpty();
+			const FString Key = bHasZones ? FString::Join(*Zones, TEXT("|")) : FString();
+			TriangleStartsByKey.FindOrAdd(Key).Add(t);
+			if (bHasZones)
+			{
+				ZonesByKey.FindOrAdd(Key, *Zones);
+			}
+		}
+
+		if (TriangleStartsByKey.Num() <= 1)
+		{
+			// Nothing to split (single zone group, or no recognized bones
+			// at all) — keep the submesh as one piece.
+			NewSubmeshes.Add(MoveTemp(Submesh));
+			continue;
+		}
+
+		for (TPair<FString, TArray<int32>>& Pair : TriangleStartsByKey)
+		{
+			FSWGMeshSubmesh Split;
+			Split.ShaderName = Submesh.ShaderName;
+			Split.OcclusionZoneNames = ZonesByKey.FindRef(Pair.Key);
+
+			TMap<int32, int32> OldToNewVertex;
+			OldToNewVertex.Reserve(Pair.Value.Num() * 3);
+			for (const int32 TriStart : Pair.Value)
+			{
+				for (int32 Corner = 0; Corner < 3; ++Corner)
+				{
+					const int32 OldIndex = Submesh.Triangles[TriStart + Corner];
+					int32* NewIndex = OldToNewVertex.Find(OldIndex);
+					if (!NewIndex)
+					{
+						Split.Vertices.Add(Submesh.Vertices[OldIndex]);
+						NewIndex = &OldToNewVertex.Add(OldIndex, Split.Vertices.Num() - 1);
+					}
+					Split.Triangles.Add(*NewIndex);
+				}
+			}
+			NewSubmeshes.Add(MoveTemp(Split));
+		}
+	}
+
+	OutMesh.Submeshes = MoveTemp(NewSubmeshes);
+}
+
+bool FSWGMeshReader::ApplyZtoZonesToAllSubmeshes(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh)
+{
+	FSWGIffChunk OznChunk, ZtoChunk;
+	if (!Reader.FindChildChunk(Form0004, SWG_IFF_TAG('O','Z','N',' '), OznChunk)
+		|| !Reader.FindChildChunk(Form0004, SWG_IFF_TAG('Z','T','O',' '), ZtoChunk))
+	{
+		return false;
+	}
+
+	FSWGIFFChunkReader OznReader(OznChunk, Reader);
+	const TArray<FString> ZoneNames = OznReader.ReadTerminatedStrings(-1);
+
+	TArray<FString> Zones;
+	FSWGIFFChunkReader ZtoReader(ZtoChunk, Reader);
+	while (ZtoReader.CanRead(sizeof(uint16)))
+	{
+		const uint16 ZoneIndex = ZtoReader.ReadValueLE<uint16>();
+		if (ZoneNames.IsValidIndex(ZoneIndex))
+		{
+			Zones.Add(ZoneNames[ZoneIndex]);
+		}
+	}
+
+	for (FSWGMeshSubmesh& Submesh : OutMesh.Submeshes)
+	{
+		Submesh.OcclusionZoneNames = Zones;
+	}
+	return true;
+}
+
 TArray<FString> FSWGMeshReader::ReadAllNullTerminatedStrings(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk)
 {
 	FSWGIFFChunkReader ChunkReader(Chunk, Reader);
@@ -513,6 +684,14 @@ bool FSWGMeshReader::ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGM
 	if (PsdtCount == 0)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: FORM %s (SKMG version form) has no PSDT children"), *Form0004.FormType.ToString());
+	}
+
+	// Prefer the file's own hand-authored ZTO zones. Only fall back to bone-weight-derived
+	// per-zone splitting (finer-grained, but an approximation that can
+	// diverge from ZTO near a joint when a part has no ZTO at all.
+	if (!ApplyZtoZonesToAllSubmeshes(Reader, Form0004, OutMesh))
+	{
+		SplitSubmeshesByBoneZone(OutMesh);
 	}
 
 	return OutMesh.Submeshes.Num() > 0;

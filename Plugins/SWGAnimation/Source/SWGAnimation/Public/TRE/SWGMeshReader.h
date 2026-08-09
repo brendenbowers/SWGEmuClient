@@ -36,6 +36,22 @@ struct FSWGMeshSubmesh
 	FString ShaderName;
 	TArray<FSWGMeshVertex> Vertices;
 	TArray<int32> Triangles; // flat, groups of 3
+
+	/**
+	 * Named body regions this submesh's geometry occupies — decoded from the
+	 * owning .mgn part's OZN (zone name table) + ZTO (this part's zone
+	 * indices) + optional OZC (submesh-index -> zone-index pairs, only
+	 * present when a part has more than one PSDT submesh spanning different
+	 * zones; every single-submesh part observed so far omits it, in which
+	 * case every zone in ZTO applies to that one submesh). Confirmed against
+	 * real data: hum_m_body_l3.mgn's single submesh occupies {chest,
+	 * torso_f, torso_b, waist_f, waist_b, l_arm, r_arm, l_thigh, r_thigh,
+	 * l_shin, r_shin, l_foot, r_foot}; armor_composite_s01_chest_plate_m_l3
+	 * .mgn's single submesh occupies {chest, torso_f, torso_b} — an exact
+	 * subset, which is how the client hides bare skin under armor without a
+	 * literal "hide" flag anywhere in the item template data. Empty for mesh
+	 * parts with no OZN/ZTO (most non-humanoid or non-clothing geometry). */
+	TArray<FString> OcclusionZoneNames;
 };
 
 /**
@@ -120,6 +136,38 @@ private:
 
 	/** Best-effort bounding box from FORM APPR > FORM 0003 > FORM EXBX > FORM 0001 > "BOX ". Leaves OutMesh untouched if any step is missing. */
 	static void TryReadAppearance(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh);
+
+	/**
+	 * Tags every submesh in OutMesh with the SAME flat zone list, read from
+	 * the file's own hand-authored OZN (zone name table) + ZTO (this part's
+	 * zone-index list) chunks — the reliable, artist-authored "which zones
+	 * does this whole part cover" signal, confirmed correct on every
+	 * wearable item checked. Preferred over SplitSubmeshesByBoneZone
+	 * whenever present: bone-weight dominance (what that function uses
+	 * instead) is a skinning concept, not an anatomical-region one, and the
+	 * two genuinely diverge near a joint (see that function's own comment).
+	 * Returns false (OutMesh untouched) if this part has no ZTO at all —
+	 * confirmed so far to only be the Wookiee body/head parts, which fall
+	 * back to SplitSubmeshesByBoneZone instead (see ReadSkeletalMeshBindPose).
+	 */
+	static bool ApplyZtoZonesToAllSubmeshes(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh);
+
+	/**
+	 * Fallback for parts with no ZTO (see ApplyZtoZonesToAllSubmeshes) —
+	 * splits every submesh in OutMesh into one sub-submesh per occlusion
+	 * zone group, using each vertex's dominant skin-weight bone (already
+	 * decoded into FSWGMeshVertex::BoneWeights by ReadVertexWeights) mapped
+	 * through a fixed bone-name -> zone-name(s) table (see
+	 * SWGMeshReader.cpp's anonymous namespace). Bone names come from the
+	 * shared "appearance/skeleton/all_b.skt" skeleton every species checked
+	 * uses, so this table applies uniformly rather than needing per-species
+	 * handling. A triangle is assigned to whichever zone group its first
+	 * vertex belongs to; vertices with no recognized bone (or no bone
+	 * weights at all — a .msh has none) land in an untagged group that's
+	 * never a hide candidate. No-op if OutMesh has no BoneNames (i.e. this
+	 * wasn't a skeletal mesh part).
+	 */
+	static void SplitSubmeshesByBoneZone(FSWGMeshData& OutMesh);
 
 	static bool ReadMshSubmesh(const FSWGIffReader& Reader, const FSWGIffChunk& SubmeshForm, FSWGMeshSubmesh& OutSubmesh);
 	static bool ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffChunk& PsdtForm, const TArray<FVector>& Positions, const TArray<FVector>& Normals,

@@ -17,7 +17,9 @@
 #include "TRE/SWGCrc32.h"
 #include "TRE/SWGSkeletonReader.h"
 #include "TRE/SWGSlotDefinitionReader.h"
+#include "TRE/SWGArrangementDescriptorReader.h"
 #include "TRE/SWGAnimationReader.h"
+#include "Network/Objects/Zone/Object/SWGContainmentType.h"
 #include "TRE/SWGIFFChunkReader.h"
 #include "Import/SWGSkeletalMeshImporter.h"
 #include "Import/SWGAnimationImporter.h"
@@ -32,6 +34,7 @@
 #include "GameFramework/Character.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Misc/Optional.h"
 #include "Objects/World/SWGBuilding.h"
 #include "Objects/World/SWGStaticProp.h"
@@ -1006,20 +1009,42 @@ void USWGMeshGeneratorSubsystem::RequestMeshForTemplatePath(AActor* Actor, const
 	PendingRequests.Add(MoveTemp(Request));
 }
 
-void USWGMeshGeneratorSubsystem::RequestItemStaticMesh(uint32 TemplateCrc, TFunction<void(UStaticMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnComplete)
+void USWGMeshGeneratorSubsystem::RequestItemMesh(uint32 TemplateCrc, int32 ContainmentType,
+	TFunction<void(UStaticMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnStaticComplete,
+	TFunction<void(USkeletalMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnSkeletalComplete)
 {
-	if (!OnComplete)
+	if (!OnStaticComplete && !OnSkeletalComplete)
 	{
-		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestItemStaticMesh called with no OnComplete callback"));
+		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestItemMesh called with no callbacks"));
 		return;
+	}
+
+	// Checked synchronously here, on the game thread, before ever enqueueing —
+	// not in ProcessNextRequest's background Async(Thread) lambda. That lambda
+	// can run several requests concurrently on different threads within one
+	// ProcessNextRequest batch, and IsAnySlotAppearanceRelated's first-use
+	// cache population (SlotAppearanceRelatedByName/bSlotAppearanceFlagsLoaded)
+	// isn't synchronized against that. Both reads involved (the item's own
+	// template + its tiny ARGD file) are cheap enough that doing this
+	// up front costs nothing worth threading.
+	if (SWGIsSlottedArrangement(ContainmentType))
+	{
+		TArray<FString> SlotNames;
+		if (!ResolveArrangementSlotNames(TemplateCrc, ContainmentType, SlotNames) || !IsAnySlotAppearanceRelated(SlotNames))
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: skipping item mesh for template CRC %08X (containmentType %d) — no appearance-related slot"), TemplateCrc, ContainmentType);
+			return;
+		}
 	}
 
 	FSWGPendingMeshRequest Request;
 	// Request.Actor deliberately left unset (invalid TWeakObjectPtr) — this
-	// is the actor-less path; ProcessNextRequest checks OnItemMeshReady
-	// before its usual Actor-validity branch.
+	// is the actor-less path; ProcessNextRequest checks OnItemMeshReady/
+	// OnItemSkeletalMeshReady before its usual Actor-validity branch.
 	Request.TemplateCrc = TemplateCrc;
-	Request.OnItemMeshReady = MoveTemp(OnComplete);
+	Request.ContainmentType = ContainmentType;
+	Request.OnItemMeshReady = MoveTemp(OnStaticComplete);
+	Request.OnItemSkeletalMeshReady = MoveTemp(OnSkeletalComplete);
 	PendingRequests.Add(MoveTemp(Request));
 }
 
@@ -1099,15 +1124,16 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				// sharing the same underlying mesh file(s) must not share
 				// one cache entry, or whichever built it first "poisons" the
 				// tint for the other. Actor-less item-mesh requests
-				// (RequestItemStaticMesh, e.g. USWGEquipmentComponent) have no
+				// (RequestItemMesh, e.g. USWGEquipmentComponent) have no
 				// Actor at all, but GetPlaceholderColorForItem() already gives
 				// them the same tint an ASWGItem would get — so they must hash
 				// under the SAME class name too, or the same physical weapon
 				// mesh (once as its own SWGItem, once as an equipped item)
 				// ends up built and cached twice under different names.
+				const bool bIsItemRequest = Request.OnItemMeshReady || Request.OnItemSkeletalMeshReady;
 				const FString ActorClassName = Request.Actor.IsValid()
 					? Request.Actor->GetClass()->GetName()
-					: (Request.OnItemMeshReady ? ASWGItem::StaticClass()->GetName() : TEXT("Unknown"));
+					: (bIsItemRequest ? ASWGItem::StaticClass()->GetName() : TEXT("Unknown"));
 				const uint32 CacheHash = Request.bStatic
 					? GetTypeHash(Request.TemplatePath)
 					: (GetTypeHash(Request.MeshVirtualPaths) ^ GetTypeHash(ActorClassName));
@@ -1126,9 +1152,58 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				// TWeakObjectPtr specifically for that reason.
 				AsyncTask(ENamedThreads::GameThread, [this, Request, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility]()
 					{
+						if (Request.OnItemSkeletalMeshReady && Request.bSkeletal)
+						{
+							// Actor-less wearable item request (RequestItemMesh,
+							// resolved skeletal by its own appearance chain — see
+							// ResolveMeshPathForTemplate) — mirrors FSWGSkeletalAnimation
+							// Pipeline::TryApplyGeneratedAnimatedMesh's skeleton
+							// resolution, minus locomotion (wearables have no
+							// animation of their own; they're posed entirely via
+							// SetLeaderPoseComponent against the wearer's body mesh).
+							FString SkeletonPath;
+							for (const FString& MeshVirtualPath : Request.MeshVirtualPaths)
+							{
+								SkeletonPath = FSWGMeshReader::ReadSkeletalMeshSkeletonPath(TreSubsystem->CreateIffReader(MeshVirtualPath));
+								if (!SkeletonPath.IsEmpty()) break;
+							}
+							if (SkeletonPath.IsEmpty() || !SkeletalAnimationPipeline)
+							{
+								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s has no usable SKTM skeleton reference — can't build a wearable skeletal mesh"), *DebugName);
+								Request.OnItemSkeletalMeshReady(nullptr, MeshData, {});
+								return;
+							}
+							FSWGSkeletonData Skeleton;
+							if (!FSWGSkeletonReader::ReadSkeleton(TreSubsystem->CreateIffReader(SkeletonPath), Skeleton))
+							{
+								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to parse SKTM skeleton '%s' for wearable %s"), *SkeletonPath, *DebugName);
+								Request.OnItemSkeletalMeshReady(nullptr, MeshData, {});
+								return;
+							}
+
+							SkeletalAnimationPipeline->RequestGeneratedSkeletalMesh(SkeletonPath, Request.MeshVirtualPaths, Skeleton)
+								.Next([this, Request, MeshData](USkeletalMesh* GeneratedMesh)
+								{
+									// See FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh's
+									// own comment: the importer names each material slot after its
+									// shader path but leaves the material null — resolve the same real
+									// per-shader materials live here, same as every other mesh kind.
+									TArray<UMaterialInterface*> Materials;
+									if (GeneratedMesh)
+									{
+										for (const FSkeletalMaterial& Slot : GeneratedMesh->GetMaterials())
+										{
+											Materials.Add(GetOrBuildObjectMaterial(ExtractShaderPathFromMaterialSlotName(Slot.MaterialSlotName.ToString()), nullptr, nullptr));
+										}
+									}
+									Request.OnItemSkeletalMeshReady(GeneratedMesh, MeshData, Materials);
+								});
+							return;
+						}
+
 						if (Request.OnItemMeshReady)
 						{
-							// Actor-less item-mesh request (RequestItemStaticMesh) —
+							// Actor-less item-mesh request (RequestItemMesh) —
 							// build the asset half only, no actor/component to attach.
 							TArray<UMaterialInterface*> Materials;
 							UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForItem(), nullptr, nullptr, Materials);
@@ -1466,6 +1541,137 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 	}
 
 	return !OutMeshVirtualPaths.IsEmpty();
+}
+
+bool USWGMeshGeneratorSubsystem::ResolveArrangementSlotNames(uint32 TemplateCrc, int32 ContainmentType, TArray<FString>& OutSlotNames)
+{
+	OutSlotNames.Reset();
+
+	if (!SWGIsSlottedArrangement(ContainmentType))
+	{
+		return false;
+	}
+
+	const FString TemplatePath = TreSubsystem->ResolveTemplatePath(TemplateCrc);
+	if (TemplatePath.IsEmpty())
+	{
+		return false;
+	}
+
+	FSWGIffReader TemplateReader = TreSubsystem->CreateIffReader(TemplatePath);
+	if (!TemplateReader.IsValid())
+	{
+		return false;
+	}
+
+	FSWGIffChunk ShotForm, ShotDataForm;
+	if (!TemplateReader.FindForm(SWG_IFF_TAG('S','H','O','T'), ShotForm) || !FindVersionedDataForm(TemplateReader, ShotForm, ShotDataForm))
+	{
+		return false;
+	}
+
+	// Same DERV-walk shape as ResolveMeshPathForTemplate's appearanceFilename
+	// search, just for a different XXXX key — arrangementDescriptorFilename is
+	// frequently set at a different DERV layer than appearanceFilename (e.g. a
+	// specific chest plate defines its own appearanceFilename locally but
+	// inherits arrangementDescriptorFilename from a shared base wearable).
+	FString ArrangementPath;
+	{
+		TOptional<FSWGIffReader> CurrentReader;
+		const FSWGIffReader* ReaderPtr = &TemplateReader;
+		FSWGIffChunk CurrentShotForm = ShotForm;
+		FSWGIffChunk CurrentDataForm = ShotDataForm;
+
+		for (int32 Depth = 0; Depth < 8; ++Depth)
+		{
+			if (FindXxxxStringValue(*ReaderPtr, CurrentDataForm, TEXT("arrangementDescriptorFilename"), ArrangementPath))
+			{
+				break;
+			}
+
+			FString ParentPath;
+			if (!FindDervParentPath(*ReaderPtr, CurrentShotForm, ParentPath))
+			{
+				break;
+			}
+
+			FSWGIffReader ParentReader = TreSubsystem->CreateIffReader(ParentPath);
+			FSWGIffChunk ParentShotForm, ParentDataForm;
+			if (!ParentReader.IsValid()
+				|| !ParentReader.FindForm(SWG_IFF_TAG('S','H','O','T'), ParentShotForm)
+				|| !FindVersionedDataForm(ParentReader, ParentShotForm, ParentDataForm))
+			{
+				break;
+			}
+
+			CurrentReader.Emplace(MoveTemp(ParentReader));
+			ReaderPtr = &CurrentReader.GetValue();
+			CurrentShotForm = ParentShotForm;
+			CurrentDataForm = ParentDataForm;
+		}
+	}
+
+	if (ArrangementPath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: template %s has no arrangementDescriptorFilename anywhere in its DERV chain"), *TemplatePath);
+		return false;
+	}
+
+	FSWGIffReader ArgdReader = TreSubsystem->CreateIffReader(ArrangementPath);
+	if (!ArgdReader.IsValid())
+	{
+		return false;
+	}
+
+	TArray<FSWGArrangementGroup> Groups;
+	if (!FSWGArrangementDescriptorReader::Read(ArgdReader, Groups))
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: failed to parse ARGD %s (from template %s)"), *ArrangementPath, *TemplatePath);
+		return false;
+	}
+
+	const int32 GroupIndex = SWGGetArrangementGroupIndex(ContainmentType);
+	if (!Groups.IsValidIndex(GroupIndex))
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: ARGD %s has %d group(s), but containmentType %d selects out-of-range group %d"), *ArrangementPath, Groups.Num(), ContainmentType, GroupIndex);
+		return false;
+	}
+
+	OutSlotNames = Groups[GroupIndex];
+	return !OutSlotNames.IsEmpty();
+}
+
+bool USWGMeshGeneratorSubsystem::IsAnySlotAppearanceRelated(const TArray<FString>& SlotNames)
+{
+	if (!bSlotAppearanceFlagsLoaded)
+	{
+		bSlotAppearanceFlagsLoaded = true;
+
+		TArray<FSWGSlotDefinition> Definitions;
+		if (FSWGSlotDefinitionReader::Read(TreSubsystem->CreateIffReader(TEXT("abstract/slot/slot_definition/slot_definitions.iff")), Definitions))
+		{
+			for (const FSWGSlotDefinition& Definition : Definitions)
+			{
+				SlotAppearanceRelatedByName.Add(Definition.Name, Definition.bIsAppearanceRelated != 0);
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to read slot definitions for appearance-related lookup"));
+		}
+	}
+
+	for (const FString& SlotName : SlotNames)
+	{
+		if (const bool* bAppearanceRelated = SlotAppearanceRelatedByName.Find(SlotName))
+		{
+			if (*bAppearanceRelated)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 bool USWGMeshGeneratorSubsystem::ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData)
