@@ -1009,7 +1009,7 @@ void USWGMeshGeneratorSubsystem::RequestMeshForTemplatePath(AActor* Actor, const
 	PendingRequests.Add(MoveTemp(Request));
 }
 
-void USWGMeshGeneratorSubsystem::RequestItemMesh(uint32 TemplateCrc, int32 ContainmentType,
+void USWGMeshGeneratorSubsystem::RequestItemMesh(uint32 TemplateCrc, int32 ContainmentType, const FSWGCustomizationVariables& Customization,
 	TFunction<void(UStaticMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnStaticComplete,
 	TFunction<void(USkeletalMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnSkeletalComplete)
 {
@@ -1043,6 +1043,7 @@ void USWGMeshGeneratorSubsystem::RequestItemMesh(uint32 TemplateCrc, int32 Conta
 	// OnItemSkeletalMeshReady before its usual Actor-validity branch.
 	Request.TemplateCrc = TemplateCrc;
 	Request.ContainmentType = ContainmentType;
+	Request.Customization = Customization;
 	Request.OnItemMeshReady = MoveTemp(OnStaticComplete);
 	Request.OnItemSkeletalMeshReady = MoveTemp(OnSkeletalComplete);
 	PendingRequests.Add(MoveTemp(Request));
@@ -1181,19 +1182,36 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 								return;
 							}
 
+							// Same customization resolution the owning actor's own body mesh
+							// gets below (ResolveCustomizationPaletteTints/
+							// ResolveCustomizationTextureIndices) — this item's own decoded
+							// customization (see FEquiptmentItem::CustomizationBytes) resolved
+							// against its own AppearancePath, so a dyed/patterned copy of this
+							// wearable renders differently from another instance of the same
+							// template.
+							TMap<FString, FLinearColor> ItemPaletteTints;
+							TMap<FString, int32> ItemTextureIndices;
+							if (Request.Customization.Values.Num() > 0 && !Request.AppearancePath.IsEmpty())
+							{
+								ItemPaletteTints = ResolveCustomizationPaletteTints(Request.Customization, Request.AppearancePath);
+								ItemTextureIndices = ResolveCustomizationTextureIndices(Request.Customization, Request.AppearancePath);
+							}
+
 							SkeletalAnimationPipeline->RequestGeneratedSkeletalMesh(SkeletonPath, Request.MeshVirtualPaths, Skeleton)
-								.Next([this, Request, MeshData](USkeletalMesh* GeneratedMesh)
+								.Next([this, Request, MeshData, ItemPaletteTints, ItemTextureIndices](USkeletalMesh* GeneratedMesh)
 								{
 									// See FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh's
 									// own comment: the importer names each material slot after its
 									// shader path but leaves the material null — resolve the same real
 									// per-shader materials live here, same as every other mesh kind.
+									const TMap<FString, FLinearColor>* PaletteTintsPtr = ItemPaletteTints.Num() > 0 ? &ItemPaletteTints : nullptr;
+									const TMap<FString, int32>* TextureIndicesPtr = ItemTextureIndices.Num() > 0 ? &ItemTextureIndices : nullptr;
 									TArray<UMaterialInterface*> Materials;
 									if (GeneratedMesh)
 									{
 										for (const FSkeletalMaterial& Slot : GeneratedMesh->GetMaterials())
 										{
-											Materials.Add(GetOrBuildObjectMaterial(ExtractShaderPathFromMaterialSlotName(Slot.MaterialSlotName.ToString()), nullptr, nullptr));
+											Materials.Add(GetOrBuildObjectMaterial(ExtractShaderPathFromMaterialSlotName(Slot.MaterialSlotName.ToString()), PaletteTintsPtr, TextureIndicesPtr));
 										}
 									}
 									Request.OnItemSkeletalMeshReady(GeneratedMesh, MeshData, Materials);
@@ -1205,8 +1223,23 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 						{
 							// Actor-less item-mesh request (RequestItemMesh) —
 							// build the asset half only, no actor/component to attach.
+							// Same customization resolution the owning actor's own body
+							// mesh gets below — see this file's matching comment in the
+							// skeletal item branch above.
+							TMap<FString, FLinearColor> ItemPaletteTints;
+							TMap<FString, int32> ItemTextureIndices;
+							if (Request.Customization.Values.Num() > 0 && !Request.AppearancePath.IsEmpty())
+							{
+								ItemPaletteTints = ResolveCustomizationPaletteTints(Request.Customization, Request.AppearancePath);
+								ItemTextureIndices = ResolveCustomizationTextureIndices(Request.Customization, Request.AppearancePath);
+							}
+							// TEMP diagnostic — see the matching log in the skeletal item branch above.
+							UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: item %s static customization: %d raw value(s), appearancePath='%s' -> %d palette tint(s), %d texture index override(s)"),
+								*DebugName, Request.Customization.Values.Num(), *Request.AppearancePath, ItemPaletteTints.Num(), ItemTextureIndices.Num());
+							const TMap<FString, FLinearColor>* PaletteTintsPtr = ItemPaletteTints.Num() > 0 ? &ItemPaletteTints : nullptr;
+							const TMap<FString, int32>* TextureIndicesPtr = ItemTextureIndices.Num() > 0 ? &ItemTextureIndices : nullptr;
 							TArray<UMaterialInterface*> Materials;
-							UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForItem(), nullptr, nullptr, Materials);
+							UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForItem(), PaletteTintsPtr, TextureIndicesPtr, Materials);
 							Request.OnItemMeshReady(StaticMesh, MeshData, Materials);
 							return;
 						}

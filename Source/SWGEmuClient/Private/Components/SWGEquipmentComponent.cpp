@@ -1,5 +1,6 @@
 #include "Components/SWGEquipmentComponent.h"
 #include "Network/SWGPacket.h"
+#include "Customization/SWGCustomizationVariables.h"
 #include "Network/Objects/Zone/Object/SWGContainmentType.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -53,8 +54,15 @@ void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquipt
 			continue;
 		}
 
+		FSWGCustomizationVariables ItemCustomization;
+		if (!FSWGCustomizationVariables::Parse(Item.CustomizationBytes, ItemCustomization))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGEquipmentComponent: item %llu failed to decode customization data (%d byte(s))"),
+				Item.ObjectId, Item.CustomizationBytes.Num());
+		}
+
 		const uint64 ObjectId = Item.ObjectId;
-		MeshGen->RequestItemMesh(Item.TemplateCRC, Item.ContainmentType,
+		MeshGen->RequestItemMesh(Item.TemplateCRC, Item.ContainmentType, ItemCustomization,
 			[this](UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)
 			{
 				AttachMeshToHardpoint(Mesh, MeshData, Materials);

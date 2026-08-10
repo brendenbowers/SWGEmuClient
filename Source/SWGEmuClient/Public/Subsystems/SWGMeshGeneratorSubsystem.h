@@ -135,6 +135,15 @@ struct FSWGPendingMeshRequest
 	 *  MeshVirtualPaths already resolved by the caller. */
 	FString AppearancePath;
 
+	/** Decoded customization for an actor-less item-mesh request (see
+	 *  RequestItemMesh) — the equipped item's own palette/morph/texture-index
+	 *  choices (e.g. a dyed or alternate-pattern piece of armor), resolved
+	 *  against AppearancePath exactly like Tangible->DecodedCustomization is
+	 *  for the owning actor's own body mesh below. Left default-constructed
+	 *  (empty Values) for actor-bound requests, which resolve customization
+	 *  from the actor's own USWGTangibleComponent instead. */
+	FSWGCustomizationVariables Customization;
+
 	/**
 	 * Set instead of Actor for actor-less item-mesh requests (see
 	 * RequestItemMesh) — a request carrying this has no Actor at all
@@ -239,8 +248,17 @@ public:
 	 * that group's slot names are appearance-related (e.g. bank/inventory/
 	 * mission_bag container slots — nothing should ever render for those).
 	 * Neither callback fires in that case.
+	 *
+	 * Customization (decoded from the equipped item's own wire customization
+	 * bytes — see FEquiptmentItem::CustomizationBytes) is resolved against
+	 * this item's own AppearancePath (once ResolveMeshPath finds it) exactly
+	 * like a character's body customization is — see ProcessNextRequest and
+	 * ResolveCustomizationPaletteTints/ResolveCustomizationMorphWeights/
+	 * ResolveCustomizationTextureIndices. This is what lets one dyed/patterned
+	 * copy of an item (e.g. armor with a player-chosen color) render
+	 * differently from another instance of the exact same template.
 	 */
-	void RequestItemMesh(uint32 TemplateCrc, int32 ContainmentType,
+	void RequestItemMesh(uint32 TemplateCrc, int32 ContainmentType, const FSWGCustomizationVariables& Customization,
 		TFunction<void(UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnStaticComplete,
 		TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnSkeletalComplete);
 
