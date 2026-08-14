@@ -1,6 +1,6 @@
 #include "Network/Handler/SWGEncryptionComponent.h"
 #include "Network/SWGSessionOp.h"
-#include "Network/SWGCrypto.h"
+#include "Common/SWGCrypto.h"
 #include "Network/SWGSession.h"
 
 FString FSWGEncryptionComponent::GetComponentName()

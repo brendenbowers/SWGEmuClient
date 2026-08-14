@@ -1,5 +1,5 @@
 #include "Network/Handler/SWGCrcComponent.h"
-#include "Network/SWGCrypto.h"
+#include "Common/SWGCrypto.h"
 #include "Network/SWGSession.h"
 #include "Network/SWGSessionOp.h"
 

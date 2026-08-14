@@ -1,6 +1,6 @@
 #include "Network/Handler/SWGCompressionComponent.h"
 #include "Network/SWGSessionOp.h"
-#include "Network/SWGCrypto.h"
+#include "Common/SWGCrypto.h"
 #include "Network/SWGSession.h"
 
 // Maximum decompressed payload per packet. SOE packets are bounded by MaxPacketSize

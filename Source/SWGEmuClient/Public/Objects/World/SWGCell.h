@@ -21,7 +21,11 @@ class SWGEMUCLIENT_API ASWGCell : public ASWGObject
 public:
 	ASWGCell() = default;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	int32 CellNumber = 0;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	FString MeshPath;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	TObjectPtr<ASWGBuilding> OwningBuilding;

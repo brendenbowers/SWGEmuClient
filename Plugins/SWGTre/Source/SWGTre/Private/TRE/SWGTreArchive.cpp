@@ -1,5 +1,5 @@
 #include "TRE/SWGTreArchive.h"
-#include "Network/SWGCrypto.h"
+#include "Common/SWGCrypto.h"
 #include "HAL/PlatformFileManager.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 

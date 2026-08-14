@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "TRE/SWGIffReader.h"
 
+
 /**
  * 
  */
@@ -254,6 +255,61 @@ public:
 		return Value;
 	}
 
+	template<typename TTransformType, typename TComponentType>
+	bool ReadTransform(TTransformType& OutTransform, TComponentType WorldScale)
+	{
+		using FMatrixType = UE::Math::TMatrix<typename TTransformType::FReal>;
+		using FVectorType = UE::Math::TVector<typename TTransformType::FReal>;
+
+
+		TComponentType T[3] = {};
+		TComponentType R[3][3] = {};
+		bool bReadOk = true;
+		for (int32 Row = 0; Row < 3 && bReadOk; ++Row)
+		{
+			bReadOk = ReadValueLE(R[Row][0])
+				&& ReadValueLE(R[Row][1])
+				&& ReadValueLE(R[Row][2])
+				&& ReadValueLE(T[Row]);
+		}
+		if (!bReadOk)
+		{
+			return false;
+		}
+
+		// R_ue[i][j] = R_swg[SwgAxis[i]][SwgAxis[j]] — same axis-swap
+		// conjugation as ReadMshHardpoints; a reflection, so it needs no
+		// extra sign the way ReadQuatLE does.
+		static constexpr int32 SwgAxis[3] = { 0, 2, 1 };
+		FMatrixType RotationMatrix = FMatrixType::Identity;
+
+		for (int32 i = 0; i < 3; ++i)
+		{
+			for (int32 j = 0; j < 3; ++j)
+			{
+				RotationMatrix.M[i][j] = R[SwgAxis[i]][SwgAxis[j]];
+			}
+		}
+
+		OutTransform.SetRotation(RotationMatrix.ToQuat());
+		OutTransform.SetTranslation(FVectorType(T[SwgAxis[0]], T[SwgAxis[1]], T[SwgAxis[2]]) * WorldScale);
+		OutTransform.SetScale3D(FVectorType::OneVector);
+		return true;
+	}
+
+	template<typename TTransformType>
+	bool ReadTransform(TTransformType& OutTransform, typename TTransformType::FReal WorldScale)
+	{
+		return ReadTransform<TTransformType, typename TTransformType::FReal>(OutTransform, WorldScale);
+	}
+
+	template<typename TTransformType, typename TComponentType>
+	TTransformType ReadTransform(TComponentType WorldScale)
+	{
+		TTransformType OutTransform;
+		ReadTransform<TTransformType, TComponentType>(OutTransform, WorldScale);
+		return OutTransform;
+	}
 
 protected:
 	const FSWGIffChunk& Chunk;

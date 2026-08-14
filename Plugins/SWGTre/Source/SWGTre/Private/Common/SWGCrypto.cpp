@@ -1,4 +1,4 @@
-#include "Network/SWGCrypto.h"
+#include "Common/SWGCrypto.h"
 #include "zlib.h"
 
 // CRC32 lookup table for SOE protocol
