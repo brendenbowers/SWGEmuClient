@@ -83,6 +83,34 @@ public:
 	TArray<FSWGMeshSectionOcclusionZones> ZoneNamesBySection;
 };
 
+struct FSWGMeshGenerationResult
+{
+	/** The generated mesh, or nullptr on failure. */
+	/** a bit hacky taking a variant atm **/
+	TVariant<UStaticMesh*, USkeletalMesh*, UMeshComponent*> MeshOrComponent;
+	/** The generated mesh's materials, in the same order as the mesh's own
+	 *  Materials array. Empty on failure. */
+	TArray<UMaterialInterface*> Materials;
+
+	FSWGMeshData MeshData;
+
+	FSWGMeshGenerationResult(UStaticMesh* InMesh, TArray<UMaterialInterface*>&& Materials, const FSWGMeshData& VirtualPaths) : Materials(Materials), MeshData(VirtualPaths)
+	{
+		MeshOrComponent.Set<UStaticMesh*>(InMesh);
+	}
+	FSWGMeshGenerationResult(USkeletalMesh* InMesh, TArray<UMaterialInterface*>&& Materials, const FSWGMeshData& VirtualPaths) : Materials(Materials), MeshData(VirtualPaths)
+	{
+		MeshOrComponent.Set<USkeletalMesh*>(InMesh);
+	}
+	FSWGMeshGenerationResult(UMeshComponent* InMeshComponent, TArray<UMaterialInterface*>&& Materials, const FSWGMeshData& VirtualPaths) : Materials(Materials), MeshData(VirtualPaths)
+	{
+		MeshOrComponent.Set<UMeshComponent*>(InMeshComponent);
+	}
+
+
+	FSWGMeshGenerationResult() {}
+};
+
 /** One entity waiting for its mesh to be resolved, parsed, and built. */
 struct FSWGPendingMeshRequest
 {
@@ -167,6 +195,8 @@ struct FSWGPendingMeshRequest
 	 *  weapon. Mesh is nullptr on any resolve/parse/build failure, or if the
 	 *  item's mesh part(s) carry no embedded SKTM skeleton reference. */
 	TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnItemSkeletalMeshReady;
+
+	mutable TUniquePtr<TPromise<FSWGMeshGenerationResult>> Promise;
 };
 
 /**
@@ -220,12 +250,23 @@ public:
 	 * bSkeletal selects FSWGMeshReader::ReadSkeletalMeshBindPose over
 	 * ReadStaticMesh for the parse step.
 	 */
-	void RequestMesh(AActor* Actor, const FString& MeshVirtualPath, bool bSkeletal = false);
-	void RequestMesh(AActor* Actor, const uint32 CrcClass);
+	TFuture<FSWGMeshGenerationResult> RequestMesh(AActor* Actor, const FString& MeshVirtualPath, bool bSkeletal = false);
+	TFuture<FSWGMeshGenerationResult> RequestMesh(AActor* Actor, const uint32 CrcClass);
 
 	/** Like RequestMesh(Actor, CrcClass), but for callers that already have the
 	 *  template's virtual path (world-snapshot objects) instead of a CRC. */
 	void RequestMeshForTemplatePath(AActor* Actor, const FString& TemplatePath);
+
+	/**
+	 * Walks TemplatePath's DERV inheritance chain (same walk
+	 * ResolveMeshPathForTemplate does for appearanceFilename) looking for
+	 * portalLayoutFilename — the .pob a building-with-interior template
+	 * points at. Exposed separately so a spawn handler that wants the full
+	 * FSWGPobReader::ReadPob parse (every cell, not just the exterior shell
+	 * ResolveMeshPathForTemplate/ReadPobExteriorMeshPath stop at) can resolve
+	 * just this path without going through mesh resolution at all.
+	 */
+	bool ResolvePortalLayoutPath(const FString& TemplatePath, FString& OutPobPath);
 
 	/**
 	 * Actor-less counterpart to RequestMesh(Actor, CrcClass) — resolves

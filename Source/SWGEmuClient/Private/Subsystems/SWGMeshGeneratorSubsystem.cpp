@@ -963,33 +963,40 @@ bool USWGMeshGeneratorSubsystem::IsTickable() const
 	return true;
 }
 
-void USWGMeshGeneratorSubsystem::RequestMesh(AActor* Actor, const FString& MeshVirtualPath, bool bSkeletal)
+TFuture<FSWGMeshGenerationResult> USWGMeshGeneratorSubsystem::RequestMesh(AActor* Actor, const FString& MeshVirtualPath, bool bSkeletal)
 {
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestMesh called with a null actor"));
-		return;
+		return  MakeFulfilledPromise<FSWGMeshGenerationResult>(FSWGMeshGenerationResult()).GetFuture();
 	}
 
 	FSWGPendingMeshRequest Request;
 	Request.Actor = Actor;
 	Request.MeshVirtualPaths = { MeshVirtualPath };
 	Request.bSkeletal = bSkeletal;
+	Request.Promise = MakeUnique<TPromise<FSWGMeshGenerationResult>>();
+	TFuture<FSWGMeshGenerationResult> Future = Request.Promise->GetFuture();
 	PendingRequests.Add(MoveTemp(Request));
+
+	return Future;
 }
 
-void USWGMeshGeneratorSubsystem::RequestMesh(AActor* Actor, const uint32 TemplateCrc)
+TFuture<FSWGMeshGenerationResult> USWGMeshGeneratorSubsystem::RequestMesh(AActor* Actor, const uint32 TemplateCrc)
 {
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestMesh called with a null actor"));
-		return;
+		return MakeFulfilledPromise<FSWGMeshGenerationResult>(FSWGMeshGenerationResult()).GetFuture();
 	}
 
 	FSWGPendingMeshRequest Request;
 	Request.Actor = Actor;
 	Request.TemplateCrc = TemplateCrc;
+	Request.Promise = MakeUnique<TPromise<FSWGMeshGenerationResult>>();
+	TFuture<FSWGMeshGenerationResult> Future = Request.Promise->GetFuture();
 	PendingRequests.Add(MoveTemp(Request));
+	return Future;
 }
 
 void USWGMeshGeneratorSubsystem::RequestMeshForTemplatePath(AActor* Actor, const FString& TemplatePath)
@@ -1151,7 +1158,11 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				// The actor can be destroyed/GC'd during this background parse
 				// (streaming out, zone change, etc.) — Request.Actor is a
 				// TWeakObjectPtr specifically for that reason.
-				AsyncTask(ENamedThreads::GameThread, [this, Request, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility]()
+				// mutable: the skeletal branch below has to move Request onward into
+				// its own continuation. Without it this lambda's operator() is const,
+				// Request is a const FSWGPendingMeshRequest, and any attempt to pass
+				// it on selects the (deleted) copy constructor instead of the move.
+				AsyncTask(ENamedThreads::GameThread, [this, Request = MoveTemp(Request), MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility]() mutable
 					{
 						if (Request.OnItemSkeletalMeshReady && Request.bSkeletal)
 						{
@@ -1172,13 +1183,22 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							{
 								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s has no usable SKTM skeleton reference — can't build a wearable skeletal mesh"), *DebugName);
 								Request.OnItemSkeletalMeshReady(nullptr, MeshData, {});
+								if (Request.Promise.IsValid())
+								{
+									Request.Promise->SetValue(FSWGMeshGenerationResult(static_cast<USkeletalMesh*>(nullptr), {}, MeshData));
+								}
 								return;
 							}
 							FSWGSkeletonData Skeleton;
 							if (!FSWGSkeletonReader::ReadSkeleton(TreSubsystem->CreateIffReader(SkeletonPath), Skeleton))
 							{
 								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to parse SKTM skeleton '%s' for wearable %s"), *SkeletonPath, *DebugName);
-								Request.OnItemSkeletalMeshReady(nullptr, MeshData, {});
+
+								Request.OnItemSkeletalMeshReady(nullptr, MeshData, {});								
+								if (Request.Promise.IsValid())
+								{
+									Request.Promise->SetValue(FSWGMeshGenerationResult(static_cast<USkeletalMesh*>(nullptr), {}, MeshData));
+								}
 								return;
 							}
 
@@ -1198,24 +1218,28 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							}
 
 							SkeletalAnimationPipeline->RequestGeneratedSkeletalMesh(SkeletonPath, Request.MeshVirtualPaths, Skeleton)
-								.Next([this, Request, MeshData, ItemPaletteTints, ItemTextureIndices](USkeletalMesh* GeneratedMesh)
-								{
-									// See FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh's
-									// own comment: the importer names each material slot after its
-									// shader path but leaves the material null — resolve the same real
-									// per-shader materials live here, same as every other mesh kind.
-									const TMap<FString, FLinearColor>* PaletteTintsPtr = ItemPaletteTints.Num() > 0 ? &ItemPaletteTints : nullptr;
-									const TMap<FString, int32>* TextureIndicesPtr = ItemTextureIndices.Num() > 0 ? &ItemTextureIndices : nullptr;
-									TArray<UMaterialInterface*> Materials;
-									if (GeneratedMesh)
+								.Next([this, Request = MoveTemp(Request), MeshData, ItemPaletteTints, ItemTextureIndices](USkeletalMesh* GeneratedMesh) mutable
 									{
-										for (const FSkeletalMaterial& Slot : GeneratedMesh->GetMaterials())
+										// See FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh's
+										// own comment: the importer names each material slot after its
+										// shader path but leaves the material null — resolve the same real
+										// per-shader materials live here, same as every other mesh kind.
+										const TMap<FString, FLinearColor>* PaletteTintsPtr = ItemPaletteTints.Num() > 0 ? &ItemPaletteTints : nullptr;
+										const TMap<FString, int32>* TextureIndicesPtr = ItemTextureIndices.Num() > 0 ? &ItemTextureIndices : nullptr;
+										TArray<UMaterialInterface*> Materials;
+										if (GeneratedMesh)
 										{
-											Materials.Add(GetOrBuildObjectMaterial(ExtractShaderPathFromMaterialSlotName(Slot.MaterialSlotName.ToString()), PaletteTintsPtr, TextureIndicesPtr));
+											for (const FSkeletalMaterial& Slot : GeneratedMesh->GetMaterials())
+											{
+												Materials.Add(GetOrBuildObjectMaterial(ExtractShaderPathFromMaterialSlotName(Slot.MaterialSlotName.ToString()), PaletteTintsPtr, TextureIndicesPtr));
+											}
 										}
-									}
-									Request.OnItemSkeletalMeshReady(GeneratedMesh, MeshData, Materials);
-								});
+										Request.OnItemSkeletalMeshReady(GeneratedMesh, MeshData, Materials);
+										if (Request.Promise.IsValid())
+										{
+											Request.Promise->SetValue(FSWGMeshGenerationResult(GeneratedMesh, MoveTemp(Materials), MoveTemp(MeshData)));
+										}
+									});
 							return;
 						}
 
@@ -1241,6 +1265,10 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							TArray<UMaterialInterface*> Materials;
 							UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForItem(), PaletteTintsPtr, TextureIndicesPtr, Materials);
 							Request.OnItemMeshReady(StaticMesh, MeshData, Materials);
+							if (Request.Promise.IsValid())
+							{
+								Request.Promise->SetValue(FSWGMeshGenerationResult(StaticMesh, MoveTemp(Materials), MoveTemp(MeshData)));
+							}
 							return;
 						}
 
@@ -1280,6 +1308,11 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 						if (SkeletalAnimationPipeline)
 						{
 							SkeletalAnimationPipeline->TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent, PaletteTintsPtr, MorphWeightsPtr, TextureIndicesPtr);
+						}
+
+						if (Request.Promise.IsValid())
+						{
+							Request.Promise->SetValue(FSWGMeshGenerationResult(MeshComponent, {}, MoveTemp(MeshData)));
 						}
 					});
 			});
@@ -1574,6 +1607,68 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 	}
 
 	return !OutMeshVirtualPaths.IsEmpty();
+}
+
+bool USWGMeshGeneratorSubsystem::ResolvePortalLayoutPath(const FString& TemplatePath, FString& OutPobPath)
+{
+	// Same DERV-chain walk ResolveMeshPathForTemplate does for
+	// appearanceFilename/portalLayoutFilename together, but looking only for
+	// portalLayoutFilename and stopping as soon as it's found — a spawn
+	// handler wanting the full FSWGPobReader::ReadPob parse has no use for
+	// the exterior-only appearance path that function would also resolve.
+	FSWGIffReader TemplateReader = TreSubsystem->CreateIffReader(TemplatePath);
+	if (!TemplateReader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: template %s failed to open as an IFF reader"), *TemplatePath);
+		return false;
+	}
+
+	FSWGIffChunk ShotForm, ShotDataForm;
+	if (!TemplateReader.FindForm(SWG_IFF_TAG('S','H','O','T'), ShotForm) || !FindVersionedDataForm(TemplateReader, ShotForm, ShotDataForm))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: template %s has no SHOT data form"), *TemplatePath);
+		return false;
+	}
+
+	TOptional<FSWGIffReader> CurrentReader;
+	const FSWGIffReader* ReaderPtr = &TemplateReader;
+	FSWGIffChunk CurrentShotForm = ShotForm;
+	FSWGIffChunk CurrentDataForm = ShotDataForm;
+	FString CurrentPath = TemplatePath;
+
+	for (int32 Depth = 0; Depth < 8; ++Depth)
+	{
+		if (FindXxxxStringValue(*ReaderPtr, CurrentDataForm, TEXT("portalLayoutFilename"), OutPobPath))
+		{
+			return true;
+		}
+
+		FString ParentPath;
+		if (!FindDervParentPath(*ReaderPtr, CurrentShotForm, ParentPath))
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s (depth %d) has no DERV form, chain ends here"), *CurrentPath, Depth);
+			break;
+		}
+
+		FSWGIffReader ParentReader = TreSubsystem->CreateIffReader(ParentPath);
+		FSWGIffChunk ParentShotForm, ParentDataForm;
+		if (!ParentReader.IsValid()
+			|| !ParentReader.FindForm(SWG_IFF_TAG('S','H','O','T'), ParentShotForm)
+			|| !FindVersionedDataForm(ParentReader, ParentShotForm, ParentDataForm))
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: DERV parent %s (from %s) has no usable SHOT data form"), *ParentPath, *CurrentPath);
+			break;
+		}
+
+		CurrentReader.Emplace(MoveTemp(ParentReader));
+		ReaderPtr = &CurrentReader.GetValue();
+		CurrentShotForm = ParentShotForm;
+		CurrentDataForm = ParentDataForm;
+		CurrentPath = ParentPath;
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: template %s has no portalLayoutFilename anywhere in its DERV chain"), *TemplatePath);
+	return false;
 }
 
 bool USWGMeshGeneratorSubsystem::ResolveArrangementSlotNames(uint32 TemplateCrc, int32 ContainmentType, TArray<FString>& OutSlotNames)

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Objects/SWGObject.h"
+#include "TRE/SWGPobReader.h"
 #include "SWGBuilding.generated.h"
 
 class ASWGCell;
@@ -24,4 +25,6 @@ public:
 	/** Populated via CellObject's "parent building" reference once cells spawn (createCellObjects()). */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	TArray<TObjectPtr<ASWGCell>> Cells;
+
+	FSWGPobData PortalData;
 };

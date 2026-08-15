@@ -49,6 +49,7 @@
 #include "Components/SWGMovementComponent.h"
 
 #include "Engine/LevelStreaming.h"
+#include <Subsystems/SWGActorSpawnHandlerRegistry.h>
 
 namespace
 {
@@ -556,10 +557,15 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 	// ASWGInstallation/ASWGStaticProp were missing, so such objects spawned,
 	// registered, and got unhidden at SceneEndBaselines same as everything
 	// else, then just sat there invisible forever with no mesh ever requested.
+
 	if (ActorClass->IsChildOf(ASWGCreature::StaticClass()) || ActorClass->IsChildOf(ASWGPlayer::StaticClass()) || ActorClass->IsChildOf(ASWGItem::StaticClass())
 		|| ActorClass->IsChildOf(ASWGBuilding::StaticClass()) || ActorClass->IsChildOf(ASWGInstallation::StaticClass()) || ActorClass->IsChildOf(ASWGStaticProp::StaticClass()))
 	{
-		MeshGenerator->RequestMesh(NewActor, Msg.ObjectCrc);
+		FSWGActorSpawnArguments SpawnInfo{Msg.ObjectCrc, ActorClass };
+		if (!FSWGActorSpawnHandlerRegistry::Get().TryHandle(*NewActor, SpawnInfo))
+		{
+			MeshGenerator->RequestMesh(NewActor, Msg.ObjectCrc);
+		}
 	}
 
 

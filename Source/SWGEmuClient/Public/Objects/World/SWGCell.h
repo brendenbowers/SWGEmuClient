@@ -28,5 +28,5 @@ public:
 	FString MeshPath;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
-	TObjectPtr<ASWGBuilding> OwningBuilding;
+	TWeakObjectPtr<ASWGBuilding> OwningBuilding;
 };

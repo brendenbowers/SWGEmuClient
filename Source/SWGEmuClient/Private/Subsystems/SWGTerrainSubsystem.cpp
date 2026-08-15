@@ -3,6 +3,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
+#include "Subsystems/SWGActorSpawnHandlerRegistry.h"
 #include "TRE/SWGTerrainReader.h"
 #include "TRE/SWGTerrainEvaluator.h"
 #include "TRE/SWGWorldSnapshotReader.h"
@@ -862,10 +863,22 @@ void USWGTerrainSubsystem::SpawnWorldSnapshotObjects(const TArray<FSWGWorldSnaps
 			continue;
 		}
 
-		if (MeshGenerator)
+		if (!MeshGenerator)
 		{
-			MeshGenerator->RequestMeshForTemplatePath(Actor, Info.TemplateName);
+			continue;
 		}
+
+		// A registered handler (e.g. buildings, once ASWGBuilding registers
+		// one — see FSWGActorSpawnHandlerRegistry) gets first refusal on
+		// continuing this actor's generation; only fall back to the generic
+		// one-mesh-component path when nothing is registered for its class.
+		FSWGActorSpawnArguments SpawnInfo { 0, Info.ActorClass, Info.TemplateName };
+		if (FSWGActorSpawnHandlerRegistry::Get().TryHandle(*Actor, SpawnInfo))
+		{
+			continue;
+		}
+
+		MeshGenerator->RequestMeshForTemplatePath(Actor, Info.TemplateName);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: spawned %d world snapshot object(s)"), Objects.Num());
