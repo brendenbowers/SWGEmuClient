@@ -70,22 +70,32 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 	for (int i = 0; i < BuildingActor->PortalData.Cells.Num(); ++i)
 	{
 		const FSWGPobCell& CellData = BuildingActor->PortalData.Cells[i];
-		if (CellData.CellName == TEXT("exterior"))
+		// A cell's MeshPath is sometimes a final .msh path directly and
+		// sometimes a bare .lod reference (always .lod for cell 0/exterior,
+		// always .msh for interior cells, in every sample in the corpus —
+		// Sheet 00 §00.2). RequestMesh's direct-path overload expects an
+		// already-final .msh/.mgn path and silently fails to parse a raw
+		// .lod (ParseMesh hands it straight to FSWGMeshReader::ReadStaticMesh,
+		// which doesn't understand FORM DTLA at all) — resolve it first.
+		FString CellMeshPath;
+		if (!MeshGeneratorSubsystem->ResolveLodMeshPath(CellData.MeshPath, CellMeshPath) || CellMeshPath.IsEmpty())
 		{
-			MeshGeneratorSubsystem->RequestMesh(BuildingActor, CellData.MeshPath);
+			UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: cell %s in portal layout file %s has no usable mesh path (raw: %s)"), *CellData.CellName, *PobPath, *CellData.MeshPath);
 			continue;
 		}
 
-		FString CellMeshPath = CellData.MeshPath;
-		if (CellMeshPath.IsEmpty())
+		if (CellData.CellName == TEXT("exterior"))
 		{
-			UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: cell %s in portal layout file %s has no mesh path"), *CellData.CellName, *PobPath);
+			MeshGeneratorSubsystem->RequestMesh(BuildingActor, CellMeshPath);
 			continue;
 		}
 		ASWGCell* CellActor = World->SpawnActor<ASWGCell>(ASWGCell::StaticClass(), FTransform::Identity);
+		CellActor->CellNumber = CellData.CellIndex;
+		CellActor->MeshPath = CellMeshPath;
 		CellActor->OwningBuilding = BuildingActor;
 		
 		BuildingActor->Cells.Add(CellActor);
+		CellActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
 
 		TWeakObjectPtr<ASWGCell> CellActorWeakPtr = CellActor;	
 		MeshGeneratorSubsystem->RequestMesh(CellActor, CellMeshPath).Next([CellActorWeakPtr](const FSWGMeshGenerationResult& Result)
@@ -105,8 +115,6 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 				}
 
 				ASWGBuilding* BuildingActor = CellActor->OwningBuilding.Get();
-
-				CellActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
 
 				FSWGPobCell CellData = BuildingActor->PortalData.Cells[CellActor->CellNumber];
 
@@ -129,13 +137,18 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 						PointLight->AttenuationRadius = AttenuationRadius;
 						LightComp = PointLight;
 					}
-					else // Ambient or Parallel — no spatially-bounded UE equivalent, fake it as a soft fill
+					else
 					{
-						UPointLightComponent* FillLight = NewObject<UPointLightComponent>(CellActor);
-						FillLight->bUseInverseSquaredFalloff = false;   // flat falloff instead of physical 1/d^2
-						FillLight->CastShadows = false;
-						FillLight->AttenuationRadius = 800.f;            // big enough to blanket a room; tune per-cell if you have bounds
+						continue; // Skip non-point lights for now
 					}
+					//else // Ambient or Parallel — no spatially-bounded UE equivalent, fake it as a soft fill
+					//{
+					//	UPointLightComponent* FillLight = NewObject<UPointLightComponent>(CellActor);
+					//	FillLight->bUseInverseSquaredFalloff = false;   // flat falloff instead of physical 1/d^2
+					//	FillLight->CastShadows = false;
+					//	FillLight->AttenuationRadius = 800.f;            // big enough to blanket a room; tune per-cell if you have bounds
+					//	LightComp = FillLight;
+					//}
 
 					LightComp->SetRelativeTransform(LightData.Transform);
 					LightComp->SetLightColor(LightData.DiffuseColor);

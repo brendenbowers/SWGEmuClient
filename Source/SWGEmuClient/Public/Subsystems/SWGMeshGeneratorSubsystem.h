@@ -258,15 +258,17 @@ public:
 	void RequestMeshForTemplatePath(AActor* Actor, const FString& TemplatePath);
 
 	/**
-	 * Walks TemplatePath's DERV inheritance chain (same walk
-	 * ResolveMeshPathForTemplate does for appearanceFilename) looking for
+	 * Walks TemplatePath's DERV inheritance chain looking for
 	 * portalLayoutFilename — the .pob a building-with-interior template
-	 * points at. Exposed separately so a spawn handler that wants the full
-	 * FSWGPobReader::ReadPob parse (every cell, not just the exterior shell
-	 * ResolveMeshPathForTemplate/ReadPobExteriorMeshPath stop at) can resolve
-	 * just this path without going through mesh resolution at all.
+	 * points at.
 	 */
 	bool ResolvePortalLayoutPath(const FString& TemplatePath, FString& OutPobPath);
+
+	/**
+	 * A .pob cell's MeshPath (FSWGPobCell::MeshPath) is sometimes a final
+	 * .msh path directly and sometimes a bare .lod reference 
+	 */
+	bool ResolveLodMeshPath(const FString& LodOrMeshPath, FString& OutMeshPath);
 
 	/**
 	 * Actor-less counterpart to RequestMesh(Actor, CrcClass) — resolves
@@ -274,28 +276,10 @@ public:
 	 * (weapons/held items — .apt->.lod->.msh appearance chain) or a
 	 * USkeletalMesh (wearable clothing/armor — .sat->.lmg->.mgn chain) plus
 	 * its live per-shader materials, without creating any component or
-	 * requiring any AActor. Exactly one of OnStaticComplete/OnSkeletalComplete
-	 * fires, on the game thread, once path resolution determines which kind
-	 * this item's own appearance chain resolves to — the caller doesn't (and
-	 * can't cheaply) know this up front, so there's no separate synchronous
-	 * classify-first step. Mesh is nullptr on any resolve/parse/build failure
-	 * (Materials empty in that case too). For callers like
-	 * USWGEquipmentComponent that need a built mesh to attach themselves
-	 * (e.g. to a specific character socket or via leader-pose-link) rather
-	 * than have this subsystem attach it to an actor that doesn't exist for
-	 * an individual equipped item. ContainmentType (see SWGContainmentType.h)
-	 * is the item's wire containmentType — used to resolve which ARG
-	 * (arrangement) group it occupies and skip the build entirely if none of
-	 * that group's slot names are appearance-related (e.g. bank/inventory/
-	 * mission_bag container slots — nothing should ever render for those).
-	 * Neither callback fires in that case.
+	 * requiring any AActor.
 	 *
-	 * Customization (decoded from the equipped item's own wire customization
-	 * bytes — see FEquiptmentItem::CustomizationBytes) is resolved against
-	 * this item's own AppearancePath (once ResolveMeshPath finds it) exactly
-	 * like a character's body customization is — see ProcessNextRequest and
-	 * ResolveCustomizationPaletteTints/ResolveCustomizationMorphWeights/
-	 * ResolveCustomizationTextureIndices. This is what lets one dyed/patterned
+	 * Customization is resolved against this item's own AppearancePath
+	 * like a character's body customization is. This is what lets one dyed/patterned
 	 * copy of an item (e.g. armor with a player-chosen color) render
 	 * differently from another instance of the exact same template.
 	 */

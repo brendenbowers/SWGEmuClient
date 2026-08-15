@@ -298,7 +298,7 @@ void USWGNetworkSubsystem::SendPacketThroughPipeline(const FSWGPacket& Pkt)
 	const int32 TotalBytes = (int32)Writer.GetNumBytes();
 	if (TotalBytes > 0)
 	{
-		UE_LOG(LogTemp, Log, TEXT("SWG NET TX (%d pre / %d wire): %s"),
+		UE_LOG(LogTemp, Verbose, TEXT("SWG NET TX (%d pre / %d wire): %s"),
 			NumBytes, TotalBytes, *BytesToHex(Writer.GetData(), TotalBytes));
 
 		int32 BytesSent = 0;

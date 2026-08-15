@@ -295,7 +295,7 @@ void FSWGHandshakeComponent::SendNetStatusRequest()
 
 	SessionPtr->OutgoingUnreliable.Enqueue(MoveTemp(Request));
 
-	UE_LOG(LogTemp, Log, TEXT("FSWGHandshakeComponent: sent NetStatusRequest tick=%u"), Tick);
+	UE_LOG(LogTemp, Verbose, TEXT("FSWGHandshakeComponent: sent NetStatusRequest tick=%u"), Tick);
 }
 
 void FSWGHandshakeComponent::HandleDisconnect(FBitReader& Packet)

@@ -55,6 +55,7 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "Kismet/KismetRenderingLibrary.h"
 #include "Engine/Canvas.h"
+#include "Common/SWGAutoFulfillPromise.h"
 
 using namespace UE::Geometry;
 
@@ -996,6 +997,7 @@ TFuture<FSWGMeshGenerationResult> USWGMeshGeneratorSubsystem::RequestMesh(AActor
 	Request.Promise = MakeUnique<TPromise<FSWGMeshGenerationResult>>();
 	TFuture<FSWGMeshGenerationResult> Future = Request.Promise->GetFuture();
 	PendingRequests.Add(MoveTemp(Request));
+
 	return Future;
 }
 
@@ -1058,30 +1060,21 @@ void USWGMeshGeneratorSubsystem::RequestItemMesh(uint32 TemplateCrc, int32 Conta
 
 void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 {
-	// TODO: pop PendingRequests[0], call ResolveMeshPath (if the request only
-	// carries a CRC, not yet supported) then ParseMesh then BuildDynamicMesh,
-	// broadcasting OnMeshReady/OnMeshError. See USWGTerrainSubsystem::LoadTerrain
-	// for the equivalent parse->bake->spawn sequencing this should mirror once
-	// mesh parsing moves to a background thread.
-
-	if (PendingRequests.Num() == 0)
+	while (PendingRequests.Num() > 0)
 	{
-		return;
-	}
-
-	uint64 StartTime = FPlatformTime::Cycles64();
-	uint64 Limit = 3 * (FPlatformTime::SecondsToCycles64(1) / 1000);
-
-	while (FPlatformTime::Cycles64() - StartTime < Limit && PendingRequests.Num() > 0)
-	{
-
 		FSWGPendingMeshRequest Request = PendingRequests.Pop();
 		// Diagnostic: pins down where a request silently vanishes without hitting
 		// any existing error/warning log.
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ProcessNextRequest starting for actor %s (crc %08X, %d path(s) already resolved)"),
 			Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, Request.MeshVirtualPaths.Num());
-		Async(EAsyncExecution::Thread, [this, Request = MoveTemp(Request)]() mutable
+		Async(EAsyncExecution::ThreadPool, [this, Request = MoveTemp(Request)]() mutable
 			{
+				// Covers every plain "nothing more specific to report" early
+				// return below — no explicit SetValue needed at those sites,
+				// just a bare return. Dismiss()'d further down once Request
+				// is handed off to the nested AsyncTask, which declares its
+				// own guard over the same Promise for its own exit paths.
+				TSWGScopedPromiseFulfiller<FSWGMeshGenerationResult> ResultGuard(Request.Promise);
 
 				if (Request.TemplateCrc != 0 && Request.MeshVirtualPaths.IsEmpty())
 				{
@@ -1118,26 +1111,6 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 					return;
 				}
 
-				// Every generated mesh (world-snapshot static objects and
-				// creature/player/item procedural ones alike) is a real
-				// UStaticMesh cached under /Game/SWGEmu/Generated/SM_<hash> —
-				// see GetOrBuildGeneratedStaticMesh — instead of the old
-				// ephemeral Saved/MeshCache/*.dmesh raw-serialization cache.
-				// Static objects key on TemplatePath alone (one asset shared
-				// by every placed instance of that template — its geometry
-				// never varies per-instance). Everything else keys on the
-				// resolved mesh file(s) + actor class, matching the old
-				// .dmesh key: PlaceholderColor (baked into the mesh's vertex
-				// colors) is a pure function of actor class, so two classes
-				// sharing the same underlying mesh file(s) must not share
-				// one cache entry, or whichever built it first "poisons" the
-				// tint for the other. Actor-less item-mesh requests
-				// (RequestItemMesh, e.g. USWGEquipmentComponent) have no
-				// Actor at all, but GetPlaceholderColorForItem() already gives
-				// them the same tint an ASWGItem would get — so they must hash
-				// under the SAME class name too, or the same physical weapon
-				// mesh (once as its own SWGItem, once as an equipped item)
-				// ends up built and cached twice under different names.
 				const bool bIsItemRequest = Request.OnItemMeshReady || Request.OnItemSkeletalMeshReady;
 				const FString ActorClassName = Request.Actor.IsValid()
 					? Request.Actor->GetClass()->GetName()
@@ -1151,8 +1124,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				const float YawCorrectionDegrees = GetStaticMeshYawCorrection(Request.MeshVirtualPaths);
 				const EComponentMobility::Type Mobility = Request.bStatic ? EComponentMobility::Static : EComponentMobility::Movable;
 
-
-
+				ResultGuard.Dismiss();
 
 				// Back on the game thread to build/attach the mesh component.
 				// The actor can be destroyed/GC'd during this background parse
@@ -1164,6 +1136,10 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				// it on selects the (deleted) copy constructor instead of the move.
 				AsyncTask(ENamedThreads::GameThread, [this, Request = MoveTemp(Request), MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility]() mutable
 					{
+						// Own guard over the same (moved-in) Promise — the outer
+						// lambda's guard Dismiss()'d before handing off here.
+						TSWGScopedPromiseFulfiller<FSWGMeshGenerationResult> ResultGuard(Request.Promise);
+
 						if (Request.OnItemSkeletalMeshReady && Request.bSkeletal)
 						{
 							// Actor-less wearable item request (RequestItemMesh,
@@ -1183,10 +1159,6 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							{
 								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s has no usable SKTM skeleton reference — can't build a wearable skeletal mesh"), *DebugName);
 								Request.OnItemSkeletalMeshReady(nullptr, MeshData, {});
-								if (Request.Promise.IsValid())
-								{
-									Request.Promise->SetValue(FSWGMeshGenerationResult(static_cast<USkeletalMesh*>(nullptr), {}, MeshData));
-								}
 								return;
 							}
 							FSWGSkeletonData Skeleton;
@@ -1194,11 +1166,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							{
 								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to parse SKTM skeleton '%s' for wearable %s"), *SkeletonPath, *DebugName);
 
-								Request.OnItemSkeletalMeshReady(nullptr, MeshData, {});								
-								if (Request.Promise.IsValid())
-								{
-									Request.Promise->SetValue(FSWGMeshGenerationResult(static_cast<USkeletalMesh*>(nullptr), {}, MeshData));
-								}
+								Request.OnItemSkeletalMeshReady(nullptr, MeshData, {});
 								return;
 							}
 
@@ -1217,6 +1185,9 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 								ItemTextureIndices = ResolveCustomizationTextureIndices(Request.Customization, Request.AppearancePath);
 							}
 
+							// Handing off to .Next() below, which declares its own
+							// guard over the same (about-to-be-moved) Promise.
+							ResultGuard.Dismiss();
 							SkeletalAnimationPipeline->RequestGeneratedSkeletalMesh(SkeletonPath, Request.MeshVirtualPaths, Skeleton)
 								.Next([this, Request = MoveTemp(Request), MeshData, ItemPaletteTints, ItemTextureIndices](USkeletalMesh* GeneratedMesh) mutable
 									{
@@ -1235,7 +1206,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 											}
 										}
 										Request.OnItemSkeletalMeshReady(GeneratedMesh, MeshData, Materials);
-										if (Request.Promise.IsValid())
+										if(Request.Promise.IsValid())
 										{
 											Request.Promise->SetValue(FSWGMeshGenerationResult(GeneratedMesh, MoveTemp(Materials), MoveTemp(MeshData)));
 										}
@@ -1265,10 +1236,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							TArray<UMaterialInterface*> Materials;
 							UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForItem(), PaletteTintsPtr, TextureIndicesPtr, Materials);
 							Request.OnItemMeshReady(StaticMesh, MeshData, Materials);
-							if (Request.Promise.IsValid())
-							{
-								Request.Promise->SetValue(FSWGMeshGenerationResult(StaticMesh, MoveTemp(Materials), MoveTemp(MeshData)));
-							}
+							ResultGuard.Succeed(FSWGMeshGenerationResult(StaticMesh, MoveTemp(Materials), MoveTemp(MeshData)));
 							return;
 						}
 
@@ -1310,10 +1278,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							SkeletalAnimationPipeline->TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent, PaletteTintsPtr, MorphWeightsPtr, TextureIndicesPtr);
 						}
 
-						if (Request.Promise.IsValid())
-						{
-							Request.Promise->SetValue(FSWGMeshGenerationResult(MeshComponent, {}, MoveTemp(MeshData)));
-						}
+						ResultGuard.Succeed(FSWGMeshGenerationResult(MeshComponent, {}, MoveTemp(MeshData)));
 					});
 			});
 	}
@@ -1669,6 +1634,53 @@ bool USWGMeshGeneratorSubsystem::ResolvePortalLayoutPath(const FString& Template
 
 	UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: template %s has no portalLayoutFilename anywhere in its DERV chain"), *TemplatePath);
 	return false;
+}
+
+bool USWGMeshGeneratorSubsystem::ResolveLodMeshPath(const FString& LodOrMeshPath, FString& OutMeshPath)
+{
+	if (!LodOrMeshPath.EndsWith(TEXT(".lod")))
+	{
+		OutMeshPath = LodOrMeshPath;
+		return true;
+	}
+
+	// Same FORM DTLA > 0007 > DATA > CHLD walk ResolveMeshPathForTemplate
+	// does for the static (non-skeletal) mesh-group case — see that
+	// function's own comment on this exact chunk layout.
+	FSWGIffReader GroupReader = TreSubsystem->CreateIffReader(LodOrMeshPath);
+	if (!GroupReader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to open .lod file %s"), *LodOrMeshPath);
+		return false;
+	}
+
+	FSWGIffChunk DtlaForm, Form0007, DataForm;
+	if (!GroupReader.FindForm(SWG_IFF_TAG('D','T','L','A'), DtlaForm)
+		|| !GroupReader.FindChildForm(DtlaForm, SWG_IFF_TAG('0','0','0','7'), Form0007)
+		|| !GroupReader.FindChildForm(Form0007, SWGIffTags::Data, DataForm))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s missing DTLA/0007/DATA structure"), *LodOrMeshPath);
+		return false;
+	}
+
+	TArray<FString> Candidates;
+	for (const FSWGIffChunk& Child : GroupReader.ReadChildren(DataForm))
+	{
+		if (Child.Tag == SWG_IFF_TAG('C','H','L','D') && Child.DataSize > 4)
+		{
+			const uint8* Data = GroupReader.GetChunkData(Child);
+			const FString RelativePath = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + 4), Child.DataSize - 4 - 1);
+			Candidates.Add(TEXT("appearance/") + RelativePath);
+		}
+	}
+
+	OutMeshPath = PickHighestDetailLod(Candidates);
+	if (OutMeshPath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s produced no mesh candidates"), *LodOrMeshPath);
+		return false;
+	}
+	return true;
 }
 
 bool USWGMeshGeneratorSubsystem::ResolveArrangementSlotNames(uint32 TemplateCrc, int32 ContainmentType, TArray<FString>& OutSlotNames)
