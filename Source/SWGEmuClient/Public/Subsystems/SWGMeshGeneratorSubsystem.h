@@ -271,6 +271,11 @@ public:
 	bool ResolveLodMeshPath(const FString& LodOrMeshPath, FString& OutMeshPath);
 
 	/**
+	 * Cache-or-build a collision-only UStaticMesh from raw triangle geometry
+	 */
+	UStaticMesh* GetOrBuildGeneratedCollisionMesh(uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices);
+
+	/**
 	 * Actor-less counterpart to RequestMesh(Actor, CrcClass) — resolves
 	 * TemplateCrc, parses its mesh, and builds/caches either a UStaticMesh
 	 * (weapons/held items — .apt->.lod->.msh appearance chain) or a

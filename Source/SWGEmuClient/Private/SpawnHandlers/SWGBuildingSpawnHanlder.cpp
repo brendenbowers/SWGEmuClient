@@ -5,8 +5,8 @@
 #include "TRE/SWGPobReader.h"
 #include "TRE/SWGFloorReader.h"
 #include "Components/PointLightComponent.h"
-#include "Components/DynamicMeshComponent.h"
-#include "DynamicMesh/DynamicMesh3.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 
 
 REGISTER_SWG_ACTOR_SPAWN_HANDLER(FSWGBuildingSpawnHandler, ASWGBuilding)
@@ -81,7 +81,7 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 		if (CellData.CellName == TEXT("exterior"))
 		{
 			MeshGeneratorSubsystem->RequestMesh(BuildingActor, CellMeshPath);
-			CreateCollisionForCell(TreSubsystem, BuildingActor, CellData);
+			CreateCollisionForCell(TreSubsystem, MeshGeneratorSubsystem, BuildingActor, CellData);
 			continue;
 		}
 		ASWGCell* CellActor = World->SpawnActor<ASWGCell>(ASWGCell::StaticClass(), FTransform::Identity);
@@ -94,7 +94,8 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 
 		TWeakObjectPtr<ASWGCell> CellActorWeakPtr = CellActor;
 		TObjectPtr<USWGTreSubsystem> TreSubsystemCapture = TreSubsystem; // this (the handler) doesn't survive past HandleActorSpawn returning — can't rely on capturing it
-		MeshGeneratorSubsystem->RequestMesh(CellActor, CellMeshPath).Next([CellActorWeakPtr, TreSubsystemCapture](const FSWGMeshGenerationResult& Result)
+		TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystemCapture = MeshGeneratorSubsystem; // same reason
+		MeshGeneratorSubsystem->RequestMesh(CellActor, CellMeshPath).Next([CellActorWeakPtr, TreSubsystemCapture, MeshGeneratorSubsystemCapture](const FSWGMeshGenerationResult& Result)
 			{
 				if (!CellActorWeakPtr.IsValid())
 				{
@@ -156,7 +157,7 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 					LightComp->RegisterComponent();
 					LightComp->AttachToComponent(CellActor->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
 				}
-				CreateCollisionForCell(TreSubsystemCapture, CellActor, CellData);
+				CreateCollisionForCell(TreSubsystemCapture, MeshGeneratorSubsystemCapture, CellActor, CellData);
 			});
 
 	}
@@ -166,44 +167,55 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 }
 
 
-void FSWGBuildingSpawnHandler::CreateCollisionForCell(TObjectPtr<USWGTreSubsystem> TreSubsystem, AActor* Actor, const FSWGPobCell& CellData)
+void FSWGBuildingSpawnHandler::CreateCollisionForCell(TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem, AActor* Actor, const FSWGPobCell& CellData)
 {
 	FSWGIffReader FloorReader = TreSubsystem->CreateIffReader(CellData.CollisionFloorPath);
 	FSWGFloorData FloorData;
 	const bool bFloorParsed = FloorReader.IsValid() && FSWGFloorReader::ReadFloor(FloorReader, FloorData);
-	if (bFloorParsed && !FloorData.Triangles.IsEmpty())
+	if (!bFloorParsed || FloorData.Triangles.IsEmpty())
 	{
-		UDynamicMeshComponent* FloorCollisionComp = NewObject<UDynamicMeshComponent>(Actor);
-		FloorCollisionComp->SetupAttachment(Actor->GetRootComponent());
-		FloorCollisionComp->EditMesh([&FloorData](FDynamicMesh3& EditMesh)
-			{
-				TArray<int32> VertexIds;
-				VertexIds.Reserve(FloorData.Vertices.Num());
-				for (const FVector& Vertex : FloorData.Vertices)
-				{
-					VertexIds.Add(EditMesh.AppendVertex(Vertex));
-				}
-				for (const FSWGFloorTriangle& Tri : FloorData.Triangles)
-				{
-					EditMesh.AppendTriangle(
-						VertexIds[Tri.CornerIndex1],
-						VertexIds[Tri.CornerIndex2],
-						VertexIds[Tri.CornerIndex3]);
-				}
-			});
+		if (FloorReader.IsValid())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: failed to parse floor file %s for cell %s"), *CellData.CollisionFloorPath, *CellData.CellName);
+		}
+		return;
+	}
 
-		FloorCollisionComp->SetVisibility(false);
-		FloorCollisionComp->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-		FloorCollisionComp->SetCollisionObjectType(ECC_WorldStatic);
-		FloorCollisionComp->SetCollisionResponseToAllChannels(ECR_Block);
-		FloorCollisionComp->RegisterComponent();
-		FloorCollisionComp->EnableComplexAsSimpleCollision();
-		UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler: cell %s floor collision component registered, bounds=%s"), *CellData.CellName, *FloorCollisionComp->Bounds.GetBox().ToString());
-	}
-	else if (FloorReader.IsValid())
+	// CollisionFloorPath is a unique file per room type — the same room type
+	// spawned across many buildings shares the exact same floor geometry, so
+	// hashing the path is a stable, collision-free cache key straight out of
+	// the .pob data, no extra bookkeeping needed to keep it consistent with
+	// how USWGMeshGeneratorSubsystem hashes render meshes.
+	const uint32 CacheHash = GetTypeHash(CellData.CollisionFloorPath);
+
+	TArray<int32> FlatIndices;
+	FlatIndices.Reserve(FloorData.Triangles.Num() * 3);
+	for (const FSWGFloorTriangle& Tri : FloorData.Triangles)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: failed to parse floor file %s for cell %s"), *CellData.CollisionFloorPath, *CellData.CellName);
+		FlatIndices.Add(Tri.CornerIndex1);
+		FlatIndices.Add(Tri.CornerIndex2);
+		FlatIndices.Add(Tri.CornerIndex3);
 	}
+
+	UStaticMesh* CollisionMesh = MeshGeneratorSubsystem->GetOrBuildGeneratedCollisionMesh(CacheHash, CellData.CollisionFloorPath, FloorData.Vertices, FlatIndices);
+	if (!CollisionMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: failed to get/build cached collision mesh for cell %s floor %s"), *CellData.CellName, *CellData.CollisionFloorPath);
+		return;
+	}
+
+	// Cache hit or not, this is now just an asset reference + component
+	// registration — no per-spawn EditMesh/physics-mesh-cook cost, unlike
+	// the UDynamicMeshComponent this replaces.
+	UStaticMeshComponent* FloorCollisionComp = NewObject<UStaticMeshComponent>(Actor);
+	FloorCollisionComp->SetupAttachment(Actor->GetRootComponent());
+	FloorCollisionComp->SetStaticMesh(CollisionMesh);
+	FloorCollisionComp->SetVisibility(false);
+	FloorCollisionComp->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	FloorCollisionComp->SetCollisionObjectType(ECC_WorldStatic);
+	FloorCollisionComp->SetCollisionResponseToAllChannels(ECR_Block);
+	FloorCollisionComp->RegisterComponent();
+	UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler: cell %s floor collision component registered, bounds=%s"), *CellData.CellName, *FloorCollisionComp->Bounds.GetBox().ToString());
 }
 
 void FSWGBuildingSpawnHandler::Initialize(UWorld* World)

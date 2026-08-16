@@ -25,7 +25,7 @@ private:
 	TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem = nullptr;
 	bool bIsInitialized = false;
 	
-	static void CreateCollisionForCell(TObjectPtr<USWGTreSubsystem> TreSubsystem, AActor* Actor, const FSWGPobCell& CellData);
+	static void CreateCollisionForCell(TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem, AActor* Actor, const FSWGPobCell& CellData);
 
 	void Initialize(UWorld* World);
 

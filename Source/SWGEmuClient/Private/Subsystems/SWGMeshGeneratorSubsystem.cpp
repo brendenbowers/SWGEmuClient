@@ -7,6 +7,7 @@
 #include "Engine/StaticMesh.h"
 #include "Components/StaticMeshComponent.h"
 #include "GeometryScript/MeshAssetFunctions.h"
+#include "PhysicsEngine/BodySetup.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "TRE/SWGIffReader.h"
@@ -2798,6 +2799,93 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 Ca
 	return StaticMesh;
 #else
 	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated static mesh '%s' isn't built yet and can't be built in a packaged build"), *PackagePath);
+	return nullptr;
+#endif
+}
+
+UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedCollisionMesh(uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices)
+{
+	const FString AssetName = FString::Printf(TEXT("SM_Collision_%u"), CacheHash);
+	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
+
+	// Same cache-first shape as GetOrBuildGeneratedStaticMesh: the saved
+	// .uasset IS the cache, shared by every cell whose CacheHash matches
+	// (one room type's collision geometry never varies between instances).
+	if (UStaticMesh* Existing = LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
+	{
+		return Existing;
+	}
+
+#if WITH_EDITOR
+	if (Vertices.IsEmpty() || Indices.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no collision geometry to build a generated collision mesh for '%s'"), *DebugName);
+		return nullptr;
+	}
+
+	// Same scratch-UDynamicMesh approach GetOrBuildGeneratedStaticMesh uses —
+	// this mesh's only purpose is the CopyMeshToStaticMesh call below, never
+	// registered/rendered.
+	UDynamicMesh* ScratchMesh = NewObject<UDynamicMesh>(GetTransientPackage());
+	ScratchMesh->EditMesh([&Vertices, &Indices](FDynamicMesh3& EditMesh)
+	{
+		TArray<int32> VertexIds;
+		VertexIds.Reserve(Vertices.Num());
+		for (const FVector& Vertex : Vertices)
+		{
+			VertexIds.Add(EditMesh.AppendVertex(Vertex));
+		}
+		for (int32 i = 0; i + 2 < Indices.Num(); i += 3)
+		{
+			EditMesh.AppendTriangle(VertexIds[Indices[i]], VertexIds[Indices[i + 1]], VertexIds[Indices[i + 2]]);
+		}
+	});
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	Package->FullyLoad();
+	UStaticMesh* StaticMesh = NewObject<UStaticMesh>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+
+	FGeometryScriptCopyMeshToAssetOptions Options;
+	Options.bEmitTransaction = false;
+
+	FGeometryScriptMeshWriteLOD TargetLOD;
+	EGeometryScriptOutcomePins Outcome;
+	UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(ScratchMesh, StaticMesh, Options, TargetLOD, Outcome);
+
+	if (Outcome != EGeometryScriptOutcomePins::Success)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: CopyMeshToStaticMesh failed for collision mesh '%s'"), *DebugName);
+		return nullptr;
+	}
+
+	// This asset's geometry IS the collision shape (it's never rendered) —
+	// complex-as-simple derives collision straight from those own triangles,
+	// same mechanism UDynamicMeshComponent::EnableComplexAsSimpleCollision()
+	// used per-spawn before this cache existed.
+	if (UBodySetup* BodySetup = StaticMesh->GetBodySetup())
+	{
+		BodySetup->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
+		BodySetup->InvalidatePhysicsData();
+		BodySetup->CreatePhysicsMeshes();
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: collision mesh '%s' has no BodySetup to configure"), *DebugName);
+	}
+
+	StaticMesh->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(StaticMesh);
+
+	const FString FileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	UPackage::SavePackage(Package, StaticMesh, *FileName, SaveArgs);
+
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated collision mesh '%s' for '%s'"), *PackagePath, *DebugName);
+	return StaticMesh;
+#else
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated collision mesh '%s' isn't built yet and can't be built in a packaged build"), *PackagePath);
 	return nullptr;
 #endif
 }

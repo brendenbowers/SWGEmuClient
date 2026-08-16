@@ -175,9 +175,33 @@ TArray<uint8> USWGTreSubsystem::ExtractFile(const FString& VirtualPath) const
 
 FString USWGTreSubsystem::ResolveTemplatePath(uint32 Crc) const
 {
-	if (const FString* Path = CrcToTemplatePath.Find(Crc))
+	const FString* Path = CrcToTemplatePath.Find(Crc);
+	if (!Path)
+	{
+		return FString();
+	}
+
+	if (FileExists(*Path))
+	{
 		return *Path;
-	return FString();
+	}
+
+	// A small number of legacy CRC table entries (~35 of 15792) point at
+	// object/creature/player/* templates that were renamed to add a
+	// "shared_" prefix in later patches (see SWGInitializationState's
+	// CRC-to-class-map build). The CRC string is kept for wire
+	// compatibility, but the archive only has the renamed path.
+	int32 SlashIndex;
+	if (Path->FindLastChar(TEXT('/'), SlashIndex))
+	{
+		const FString RemappedPath = Path->Left(SlashIndex + 1) + TEXT("shared_") + Path->Mid(SlashIndex + 1);
+		if (FileExists(RemappedPath))
+		{
+			return RemappedPath;
+		}
+	}
+
+	return *Path;
 }
 
 void USWGTreSubsystem::BuildCrcTable()

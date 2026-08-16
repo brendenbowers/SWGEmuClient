@@ -3,6 +3,8 @@
 #include "UI/UCharacterSelectWidget.h"
 #include "UI/UCharacterListEntryData.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
+#include "Kismet/GameplayStatics.h"
+#include "Blueprint/SlateBlueprintLibrary.h"
 
 void UCharacterSelectWidget::NativeConstruct()
 {
@@ -22,6 +24,81 @@ void UCharacterSelectWidget::NativeConstruct()
 	}
 
 	RefreshCharacterList();
+}
+
+void UCharacterSelectWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+
+	if (!bPositionedPreviewSpawn)
+	{
+		PositionCharacterPreviewSpawnPoint();
+	}
+}
+
+bool UCharacterSelectWidget::GetCharacterPreviewWorldLocation(float GroundZ, FVector2D PanelAnchor, FVector& OutLocation) const
+{
+	if (!CharacterPreviewPanel)
+	{
+		return false;
+	}
+
+	APlayerController* PC = GetOwningPlayer();
+	if (!PC)
+	{
+		return false;
+	}
+
+	const FGeometry& PanelGeometry = CharacterPreviewPanel->GetCachedGeometry();
+	if (PanelGeometry.GetLocalSize().IsNearlyZero())
+	{
+		// Not laid out yet - GetCachedGeometry() is only valid after the widget has painted once.
+		return false;
+	}
+
+	const FVector2D PanelAnchorAbsolute = PanelGeometry.LocalToAbsolute(PanelGeometry.GetLocalSize() * PanelAnchor);
+
+	FVector2D PixelPos, ViewportPos;
+	USlateBlueprintLibrary::AbsoluteToViewport(this, PanelAnchorAbsolute, PixelPos, ViewportPos);
+
+	FVector WorldPosition, WorldDirection;
+	if (!UGameplayStatics::DeprojectScreenToWorld(PC, PixelPos, WorldPosition, WorldDirection))
+	{
+		return false;
+	}
+
+	// Intersect the ray with the horizontal ground plane at GroundZ
+	const bool bRayHitsGround = !FMath::IsNearlyZero(WorldDirection.Z)
+		&& ((GroundZ - WorldPosition.Z) / WorldDirection.Z) > 0.f;
+
+	const float Distance = bRayHitsGround
+		? (GroundZ - WorldPosition.Z) / WorldDirection.Z
+		: CharacterPreviewFallbackDistance;
+
+	OutLocation = WorldPosition + WorldDirection * Distance;
+	return true;
+}
+
+bool UCharacterSelectWidget::PositionCharacterPreviewSpawnPoint()
+{
+	FVector WorldLocation;
+	if (!GetCharacterPreviewWorldLocation(CharacterPreviewGroundZ, CharacterPreviewFeetAnchor, WorldLocation))
+	{
+		return false;
+	}
+
+	TArray<AActor*> SpawnPoints;
+	UGameplayStatics::GetAllActorsWithTag(GetWorld(), CharacterPreviewSpawnPointTag, SpawnPoints);
+	if (SpawnPoints.Num() > 0)
+	{
+		SpawnPoints[0]->SetActorLocation(WorldLocation);
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("UCharacterSelectWidget::PositionCharacterPreviewSpawnPoint on instance %s -> %s (found %d spawn point(s))"),
+		*GetName(), *WorldLocation.ToString(), SpawnPoints.Num());
+
+	bPositionedPreviewSpawn = true;
+	return true;
 }
 
 void UCharacterSelectWidget::RefreshCharacterList()
@@ -99,11 +176,14 @@ void UCharacterSelectWidget::OnNextClicked()
 
 void UCharacterSelectWidget::OnCharacterSelectionChanged(UObject* Item)
 {
-	if (!CharacterNamePreviewText)
+	const UCharacterListEntryData* EntryData = Cast<UCharacterListEntryData>(Item);
+	if (CharacterNamePreviewText)
 	{
-		return;
+		CharacterNamePreviewText->SetText(EntryData ? FText::FromString(EntryData->Character.Name) : FText::GetEmpty());
 	}
 
-	const UCharacterListEntryData* EntryData = Cast<UCharacterListEntryData>(Item);
-	CharacterNamePreviewText->SetText(EntryData ? FText::FromString(EntryData->Character.Name) : FText::GetEmpty());
+	if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>(); FlowSubsystem && EntryData)
+	{
+		FlowSubsystem->Context.SelectedCharacterID = EntryData->Character.CharacterID;
+	}
 }
