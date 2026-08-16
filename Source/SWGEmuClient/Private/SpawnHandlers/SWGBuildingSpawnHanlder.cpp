@@ -1,12 +1,12 @@
-
-
-
 #include "SpawnHandlers/SWGBuildingSpawnHanlder.h"
 #include "Subsystems/SWGActorSpawnHandlerRegistry.h"
 #include "Objects/World/SWGBuilding.h"
 #include "Objects/World/SWGCell.h"
 #include "TRE/SWGPobReader.h"
+#include "TRE/SWGFloorReader.h"
 #include "Components/PointLightComponent.h"
+#include "Components/DynamicMeshComponent.h"
+#include "DynamicMesh/DynamicMesh3.h"
 
 
 REGISTER_SWG_ACTOR_SPAWN_HANDLER(FSWGBuildingSpawnHandler, ASWGBuilding)
@@ -70,13 +70,7 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 	for (int i = 0; i < BuildingActor->PortalData.Cells.Num(); ++i)
 	{
 		const FSWGPobCell& CellData = BuildingActor->PortalData.Cells[i];
-		// A cell's MeshPath is sometimes a final .msh path directly and
-		// sometimes a bare .lod reference (always .lod for cell 0/exterior,
-		// always .msh for interior cells, in every sample in the corpus —
-		// Sheet 00 §00.2). RequestMesh's direct-path overload expects an
-		// already-final .msh/.mgn path and silently fails to parse a raw
-		// .lod (ParseMesh hands it straight to FSWGMeshReader::ReadStaticMesh,
-		// which doesn't understand FORM DTLA at all) — resolve it first.
+
 		FString CellMeshPath;
 		if (!MeshGeneratorSubsystem->ResolveLodMeshPath(CellData.MeshPath, CellMeshPath) || CellMeshPath.IsEmpty())
 		{
@@ -87,6 +81,7 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 		if (CellData.CellName == TEXT("exterior"))
 		{
 			MeshGeneratorSubsystem->RequestMesh(BuildingActor, CellMeshPath);
+			CreateCollisionForCell(TreSubsystem, BuildingActor, CellData);
 			continue;
 		}
 		ASWGCell* CellActor = World->SpawnActor<ASWGCell>(ASWGCell::StaticClass(), FTransform::Identity);
@@ -97,8 +92,9 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 		BuildingActor->Cells.Add(CellActor);
 		CellActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
 
-		TWeakObjectPtr<ASWGCell> CellActorWeakPtr = CellActor;	
-		MeshGeneratorSubsystem->RequestMesh(CellActor, CellMeshPath).Next([CellActorWeakPtr](const FSWGMeshGenerationResult& Result)
+		TWeakObjectPtr<ASWGCell> CellActorWeakPtr = CellActor;
+		TObjectPtr<USWGTreSubsystem> TreSubsystemCapture = TreSubsystem; // this (the handler) doesn't survive past HandleActorSpawn returning — can't rely on capturing it
+		MeshGeneratorSubsystem->RequestMesh(CellActor, CellMeshPath).Next([CellActorWeakPtr, TreSubsystemCapture](const FSWGMeshGenerationResult& Result)
 			{
 				if (!CellActorWeakPtr.IsValid())
 				{
@@ -116,6 +112,11 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 
 				ASWGBuilding* BuildingActor = CellActor->OwningBuilding.Get();
 
+				// Re-attach: USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent
+				// just replaced CellActor's root with the newly-built render mesh
+				// component
+				CellActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepWorldTransform);
+
 				FSWGPobCell CellData = BuildingActor->PortalData.Cells[CellActor->CellNumber];
 
 				for(int i = 0; i < CellData.Lights.Num(); ++i)
@@ -130,9 +131,9 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 					
 						FVector BoxCenter, BoxExtent;
 						CellActor->GetActorBounds(false, BoxCenter, BoxExtent);
-						const float CircumRadius = BoxExtent.Size();                                   // center -> farthest corner
+						const float CircumRadius = BoxExtent.Size();
 						const float LightToCenter = (LightData.Transform.GetLocation() - BoxCenter).Size();
-						const float AttenuationRadius = LightToCenter + CircumRadius;                  // upper bound from the light's actual position
+						const float AttenuationRadius = LightToCenter + CircumRadius;
 
 						PointLight->AttenuationRadius = AttenuationRadius;
 						LightComp = PointLight;
@@ -155,13 +156,54 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 					LightComp->RegisterComponent();
 					LightComp->AttachToComponent(CellActor->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
 				}
-
+				CreateCollisionForCell(TreSubsystemCapture, CellActor, CellData);
 			});
 
 	}
 
 
 	return true;
+}
+
+
+void FSWGBuildingSpawnHandler::CreateCollisionForCell(TObjectPtr<USWGTreSubsystem> TreSubsystem, AActor* Actor, const FSWGPobCell& CellData)
+{
+	FSWGIffReader FloorReader = TreSubsystem->CreateIffReader(CellData.CollisionFloorPath);
+	FSWGFloorData FloorData;
+	const bool bFloorParsed = FloorReader.IsValid() && FSWGFloorReader::ReadFloor(FloorReader, FloorData);
+	if (bFloorParsed && !FloorData.Triangles.IsEmpty())
+	{
+		UDynamicMeshComponent* FloorCollisionComp = NewObject<UDynamicMeshComponent>(Actor);
+		FloorCollisionComp->SetupAttachment(Actor->GetRootComponent());
+		FloorCollisionComp->EditMesh([&FloorData](FDynamicMesh3& EditMesh)
+			{
+				TArray<int32> VertexIds;
+				VertexIds.Reserve(FloorData.Vertices.Num());
+				for (const FVector& Vertex : FloorData.Vertices)
+				{
+					VertexIds.Add(EditMesh.AppendVertex(Vertex));
+				}
+				for (const FSWGFloorTriangle& Tri : FloorData.Triangles)
+				{
+					EditMesh.AppendTriangle(
+						VertexIds[Tri.CornerIndex1],
+						VertexIds[Tri.CornerIndex2],
+						VertexIds[Tri.CornerIndex3]);
+				}
+			});
+
+		FloorCollisionComp->SetVisibility(false);
+		FloorCollisionComp->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		FloorCollisionComp->SetCollisionObjectType(ECC_WorldStatic);
+		FloorCollisionComp->SetCollisionResponseToAllChannels(ECR_Block);
+		FloorCollisionComp->RegisterComponent();
+		FloorCollisionComp->EnableComplexAsSimpleCollision();
+		UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler: cell %s floor collision component registered, bounds=%s"), *CellData.CellName, *FloorCollisionComp->Bounds.GetBox().ToString());
+	}
+	else if (FloorReader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: failed to parse floor file %s for cell %s"), *CellData.CollisionFloorPath, *CellData.CellName);
+	}
 }
 
 void FSWGBuildingSpawnHandler::Initialize(UWorld* World)

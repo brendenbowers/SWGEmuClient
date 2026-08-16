@@ -39,7 +39,7 @@ uint32 FSWGSocketReader::Run()
 			continue;
 		}
 
-		UE_LOG(LogTemp, Log, TEXT("SWG NET RX (%d wire): %s"),
+		UE_LOG(LogTemp, Verbose, TEXT("SWG NET RX (%d wire): %s"),
 			BytesRead, *BytesToHex(RecvBuf, BytesRead));
 
 		// Wrap raw bytes in a bit-reader and push through the pipeline.

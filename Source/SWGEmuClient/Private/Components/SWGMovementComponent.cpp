@@ -72,6 +72,10 @@ void USWGMovementComponent::ApplyBase4Part3(FSWGPacket& Packet)
 	// raw radians value straight through (e.g. ~0.87 for a 50-degree template default)
 	// collapses the walkable threshold to under 1 degree, so almost any surface reads
 	// as too steep and the character slides continuously — convert back to degrees.
-	SetWalkableFloorAngle(FMath::RadiansToDegrees(SlopeModAngle));
+	//
+	// Floored at 55: our baked interior floor/ramp collision is per-triangle
+	// complex ("CTF_UseComplexAsSimple") geometry, not the original engine's
+	// own floor-graph-based walkability
+	SetWalkableFloorAngle(FMath::Max(FMath::RadiansToDegrees(SlopeModAngle), 55.0f));
 	MaxSwimSpeed = WaterModPercent * MetersToUnrealUnits;
 }

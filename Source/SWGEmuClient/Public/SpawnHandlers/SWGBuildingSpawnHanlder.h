@@ -7,6 +7,9 @@
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
 
+
+struct FSWGPobCell;
+
 /**
  * 
  */
@@ -22,6 +25,8 @@ private:
 	TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem = nullptr;
 	bool bIsInitialized = false;
 	
+	static void CreateCollisionForCell(TObjectPtr<USWGTreSubsystem> TreSubsystem, AActor* Actor, const FSWGPobCell& CellData);
+
 	void Initialize(UWorld* World);
 
 };
