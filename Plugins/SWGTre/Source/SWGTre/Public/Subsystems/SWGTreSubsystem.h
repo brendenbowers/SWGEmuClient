@@ -6,6 +6,8 @@
 #include "TRE/SWGIffReader.h"
 #include "SWGTreSubsystem.generated.h"
 
+class UTexture2D;
+
 /**
  * Owns the read-only virtual filesystem over the game's .tre archives.
  *
@@ -52,6 +54,16 @@ public:
 	/** Convenience: extracts a file and wraps it in an FSWGIffReader in one call. Reader.IsValid() is false if the path wasn't found. */
 	FSWGIffReader CreateIffReader(const FString& VirtualPath) const;
 
+	/**
+	 * Loads/decodes a texture/<name>.dds file once (via FSWGDDSTextureLoader)
+	 * and caches the result, keyed by path + sRGB/normal-map flags. Returns
+	 * nullptr if the path doesn't exist or the DDS is unsupported/malformed.
+	 * For decorative/UI imagery that doesn't go through a real SWG shader -
+	 * callers building actual object materials from .sht shader definitions
+	 * should keep using their own shader-aware texture resolution instead.
+	 */
+	UTexture2D* GetOrLoadTexture(const FString& VirtualPath, bool bSRGB = true, bool bLegacyDXT5Normal = false);
+
 	/** Looks up a template's virtual path from its CRC (from SceneCreateObjectByCrc), or empty if unknown. */
 	FString ResolveTemplatePath(uint32 Crc) const;
 
@@ -88,4 +100,8 @@ private:
 	TMap<FString, int32> VirtualPathToArchiveIndex;
 
 	TMap<uint32, FString> CrcToTemplatePath;
+
+	/** Virtual path + flags -> decoded transient UTexture2D. See GetOrLoadTexture. */
+	UPROPERTY()
+	TMap<FString, TObjectPtr<UTexture2D>> LoadedTextures;
 };

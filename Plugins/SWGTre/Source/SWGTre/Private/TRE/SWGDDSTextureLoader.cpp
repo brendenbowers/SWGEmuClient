@@ -127,11 +127,74 @@ UTexture2D* FSWGDDSTextureLoader::LoadTexture2D(const TArray<uint8>& DDSBytes, c
 		return nullptr;
 	}
 
+	// Some SWG-era DDS writers set DDSCAPS_MIPMAP (claiming a mip chain) but
+	// leave dwMipMapCount at 0 - evidently meant as "1 mip level", but UE5.8's
+	// strict DDS parser takes DDSCAPS_MIPMAP at face value, uses the raw
+	// (zero) count, and rejects the file outright (EDDSError::BadImageDimension,
+	// "all dimensions must be non-zero"). Confirmed via swg.DumpTexture on
+	// texture/ui_rebel_starfield.dds: dwCaps=0x00401008 (DDSCAPS_MIPMAP set),
+	// dwMipMapCount=0, and the payload is exactly one top-level mip's worth of
+	// bytes. Patch a copy of the header so the count reads 1 before handing it
+	// to the engine parser - cheap enough to just always check.
+	TArray<uint8> PatchedDDSBytes;
+	const TArray<uint8>* BytesToParse = &DDSBytes;
+	if (DDSBytes.Num() >= 128)
+	{
+		constexpr int32 MipMapCountOffset = 28;
+		constexpr int32 CapsOffset = 108;
+		constexpr uint32 DDSCAPS_MIPMAP = 0x00400000;
+
+		auto ReadU32 = [&DDSBytes](int32 Offset) -> uint32
+		{
+			return DDSBytes[Offset] | (DDSBytes[Offset + 1] << 8) | (DDSBytes[Offset + 2] << 16) | (DDSBytes[Offset + 3] << 24);
+		};
+
+		if (ReadU32(MipMapCountOffset) == 0 && (ReadU32(CapsOffset) & DDSCAPS_MIPMAP))
+		{
+			PatchedDDSBytes = DDSBytes;
+			PatchedDDSBytes[MipMapCountOffset] = 1;
+			PatchedDDSBytes[MipMapCountOffset + 1] = 0;
+			PatchedDDSBytes[MipMapCountOffset + 2] = 0;
+			PatchedDDSBytes[MipMapCountOffset + 3] = 0;
+			BytesToParse = &PatchedDDSBytes;
+		}
+	}
+
 	EDDSError Error = EDDSError::OK;
-	FDDSFile* Dds = FDDSFile::CreateFromDDSInMemory(DDSBytes.GetData(), DDSBytes.Num(), &Error, EDDSReadMipMode::Full);
+	FDDSFile* Dds = FDDSFile::CreateFromDDSInMemory(BytesToParse->GetData(), BytesToParse->Num(), &Error, EDDSReadMipMode::Full);
 	if (!Dds)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGDDSTextureLoader: failed to parse DDS '%s' (error %d)"), *TextureName.ToString(), (int32)Error);
+
+		// Diagnostic: dump the classic DDS_HEADER fields by hand (magic + 124-byte
+		// header = 128 bytes total) since CreateFromDDSInMemory doesn't hand back
+		// a partially-populated FDDSFile on failure to inspect.
+		if (DDSBytes.Num() >= 128)
+		{
+			auto ReadU32 = [&DDSBytes](int32 Offset) -> uint32
+			{
+				return DDSBytes[Offset] | (DDSBytes[Offset + 1] << 8) | (DDSBytes[Offset + 2] << 16) | (DDSBytes[Offset + 3] << 24);
+			};
+			const uint32 dwSize            = ReadU32(4);
+			const uint32 dwFlags           = ReadU32(8);
+			const uint32 dwHeight          = ReadU32(12);
+			const uint32 dwWidth           = ReadU32(16);
+			const uint32 dwPitchOrLinear   = ReadU32(20);
+			const uint32 dwDepth           = ReadU32(24);
+			const uint32 dwMipMapCount     = ReadU32(28);
+			const uint32 pfSize            = ReadU32(76);
+			const uint32 pfFlags           = ReadU32(80);
+			const uint32 pfFourCC          = ReadU32(84);
+			const uint32 dwCaps            = ReadU32(108);
+			const uint32 dwCaps2           = ReadU32(112);
+			UE_LOG(LogTemp, Warning, TEXT("FSWGDDSTextureLoader: raw header for '%s': dwSize=%u dwFlags=0x%08X dwHeight=%u dwWidth=%u dwPitchOrLinear=%u dwDepth=%u dwMipMapCount=%u pfSize=%u pfFlags=0x%08X pfFourCC=0x%08X dwCaps=0x%08X dwCaps2=0x%08X totalBytes=%d"),
+				*TextureName.ToString(), dwSize, dwFlags, dwHeight, dwWidth, dwPitchOrLinear, dwDepth, dwMipMapCount, pfSize, pfFlags, pfFourCC, dwCaps, dwCaps2, DDSBytes.Num());
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGDDSTextureLoader: '%s' is only %d bytes - too small for even a DDS header"), *TextureName.ToString(), DDSBytes.Num());
+		}
+
 		return nullptr;
 	}
 

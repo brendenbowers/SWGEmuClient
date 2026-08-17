@@ -6,6 +6,12 @@
 #include "Async/Async.h"
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGFormTagMapping.h"
+#include "Kismet/GameplayStatics.h"
+#include "Engine/StaticMeshActor.h"
+#include "Components/StaticMeshComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "UI/SWGCharacterPreviewLayout.h"
+
 
 void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
 {
@@ -28,7 +34,7 @@ void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 			TWeakObjectPtr<USWGTreSubsystem> TreSubsystemWeakRef = TreSubsystem;
 			TWeakObjectPtr<USWGObjectGraphSubsystem> ObjectGraphWeakRef = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>();
 
-			Async(EAsyncExecution::ThreadPool, [StateMchineWeakRef, TreSubsystemWeakRef, ObjectGraphWeakRef, FormTagMappingTable = FormTagMappingTable, Epoch]()
+			Async(EAsyncExecution::ThreadPool, [this, StateMchineWeakRef, TreSubsystemWeakRef, ObjectGraphWeakRef, FormTagMappingTable = FormTagMappingTable, Epoch]()
 				{
 					TStrongObjectPtr<USWGClientFlowSubsystem> StateMachine = StateMchineWeakRef.Pin();
 					TStrongObjectPtr<USWGTreSubsystem> TreSubsystem = TreSubsystemWeakRef.Pin();
@@ -101,11 +107,19 @@ void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 						CrcToSubclass.Add(Crc, Mapping->ActorClass);
 					}
 
-					AsyncTask(ENamedThreads::GameThread, [StateMachine, ObjectGraph, CrcToSubclass = MoveTemp(CrcToSubclass), Epoch]()
+					AsyncTask(ENamedThreads::GameThread, [this, StateMachine, ObjectGraph, CrcToSubclass = MoveTemp(CrcToSubclass), Epoch]()
 						{
 							if (ObjectGraph.IsValid())
 							{
 								ObjectGraph->SetCrcToActorClassMap(CrcToSubclass);
+							}
+
+							if (StateMachine.IsValid())
+							{
+								if (UGameInstance* GameInstance = StateMachine->GetGameInstance())
+								{
+									SetupPreviewBackdrop(*GameInstance);
+								}
 							}
 
 							if (StateMachine.IsValid() && StateMachine->Epoch == Epoch)
@@ -117,6 +131,52 @@ void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 		}
 	}
 
+}
+
+void FSWGInitializationState::SetupPreviewBackdrop(UGameInstance& GameInstance)
+{
+	UWorld* World = GameInstance.GetWorld();
+	USWGTreSubsystem* TreSubsystem = GameInstance.GetSubsystem<USWGTreSubsystem>();
+	if (!World || !TreSubsystem)
+	{
+		return;
+	}
+
+	TArray<AActor*> Backdrops;
+	UGameplayStatics::GetAllActorsOfClassWithTag(World, AStaticMeshActor::StaticClass(), TEXT("CharacterPreviewBackdrop"), Backdrops);
+	if (Backdrops.IsEmpty())
+	{
+		return;
+	}
+
+	UTexture2D* BackdropTexture = TreSubsystem->GetOrLoadTexture(TEXT("texture/ui_background_arrow.dds"));
+	UMaterial* BackdropMaterialParent = LoadObject<UMaterial>(nullptr, TEXT("/Game/SWGEmu/UI/M_UIBackdropUnlit.M_UIBackdropUnlit"));
+	if (!BackdropTexture || !BackdropMaterialParent)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGInitializationState: failed to set up preview backdrop (texture=%d, material=%d)"),
+			BackdropTexture != nullptr, BackdropMaterialParent != nullptr);
+		return;
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("FSWGInitializationState: preview backdrop texture '%s' loaded %dx%d, format=%d, SRGB=%d, numMips=%d"),
+		*BackdropTexture->GetName(), BackdropTexture->GetSizeX(), BackdropTexture->GetSizeY(),
+		(int32)BackdropTexture->GetPixelFormat(), BackdropTexture->SRGB, BackdropTexture->GetPlatformData() ? BackdropTexture->GetPlatformData()->Mips.Num() : -1);
+
+	UMaterialInstanceDynamic* BackdropMID = UMaterialInstanceDynamic::Create(BackdropMaterialParent, World);
+	BackdropMID->SetTextureParameterValue(TEXT("Texture"), BackdropTexture);
+
+	AStaticMeshActor* Backdrop = Cast<AStaticMeshActor>(Backdrops[0]);
+	if (!Backdrop)
+	{
+		return;
+	}
+
+	if (UStaticMeshComponent* MeshComponent = Backdrop->GetStaticMeshComponent())
+	{
+		MeshComponent->SetMaterial(0, BackdropMID);
+	}
+
+	SWGCharacterPreview::FitBackdropToCamera(*World);
 }
 
 void FSWGInitializationState::Exit(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx)

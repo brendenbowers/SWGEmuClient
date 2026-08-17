@@ -99,6 +99,9 @@ private:
 
 	bool bPositionedPreviewSpawn = false;
 
+	/** Viewport size the spawn point was last derived for - see NativeTick. */
+	FVector2D LastViewportSize = FVector2D::ZeroVector;
+
 	UPROPERTY()
 	TArray<UObject*> CharacterEntries;
 };

@@ -9,6 +9,45 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Camera/CameraActor.h"
 
+namespace
+{
+	/**
+	 * Keeps the spawned preview character sitting on the spawn point.
+	 * UCharacterSelectWidget re-derives that point whenever the viewport
+	 * resizes, but the character is only spawned on a selection change - so
+	 * without this it stays where the panel used to be and slides out from
+	 * under its own name label. Looked up rather than cached so nothing holds a
+	 * stale actor across respawns.
+	 */
+	void SyncPreviewCharacterToSpawnPoint(UWorld& World)
+	{
+		TArray<AActor*> SpawnPoints;
+		UGameplayStatics::GetAllActorsOfClassWithTag(&World, ATargetPoint::StaticClass(), TEXT("CharacterPreviewSpawnPoint"), SpawnPoints);
+		if (SpawnPoints.IsEmpty())
+		{
+			return;
+		}
+
+		TArray<AActor*> Characters;
+		UGameplayStatics::GetAllActorsOfClass(&World, ASWGPlayer::StaticClass(), Characters);
+
+		// Only the horizontal placement comes from the spawn point. The actor's
+		// Z is the capsule centre the mesh pipeline settled on (the mesh
+		// component carries an equal and opposite offset so the feet land on the
+		// ground), so preserve it rather than snapping the character downward.
+		const FVector SpawnLocation = SpawnPoints[0]->GetActorLocation();
+		for (AActor* Character : Characters)
+		{
+			const FVector Current = Character->GetActorLocation();
+			const FVector Desired(SpawnLocation.X, SpawnLocation.Y, Current.Z);
+			if (!Current.Equals(Desired))
+			{
+				Character->SetActorLocation(Desired);
+			}
+		}
+	}
+}
+
 void FSWGCharacterSelectState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
 {
 	UWorld* World = UIStateMachine.GetWorld();
@@ -38,6 +77,11 @@ void FSWGCharacterSelectState::Tick(USWGClientFlowSubsystem& UIStateMachine, FSW
 	{
 		SelectedCharacterID = Ctx.SelectedCharacterID;
 		DisplpayCharacter(UIStateMachine, Ctx);
+	}
+
+	if (UWorld* World = UIStateMachine.GetWorld())
+	{
+		SyncPreviewCharacterToSpawnPoint(*World);
 	}
 }
 

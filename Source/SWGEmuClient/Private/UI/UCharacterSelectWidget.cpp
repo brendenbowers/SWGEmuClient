@@ -5,6 +5,7 @@
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Kismet/GameplayStatics.h"
 #include "Blueprint/SlateBlueprintLibrary.h"
+#include "UI/SWGCharacterPreviewLayout.h"
 
 void UCharacterSelectWidget::NativeConstruct()
 {
@@ -30,9 +31,28 @@ void UCharacterSelectWidget::NativeTick(const FGeometry& MyGeometry, float InDel
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
-	if (!bPositionedPreviewSpawn)
+	// The spawn point is derived from where CharacterPreviewPanel lands on
+	// screen, so it has to be re-derived whenever the viewport changes size -
+	// and not just because the panel moves. The renderer holds the VERTICAL fov
+	// constant (AspectRatio_MaintainYFOV), so a height-only change still
+	// re-maps every world position to a different screen X: a point placed to
+	// sit under the panel at startup slides out from under it once the viewport
+	// settles to a different size, which it routinely does while the window is
+	// still coming up.
+	const FVector2D ViewportSize = SWGCharacterPreview::GetViewportSize();
+	if (!bPositionedPreviewSpawn || !ViewportSize.Equals(LastViewportSize))
 	{
-		PositionCharacterPreviewSpawnPoint();
+		if (PositionCharacterPreviewSpawnPoint())
+		{
+			LastViewportSize = ViewportSize;
+
+			// The backdrop is fitted to the same camera and has the same
+			// staleness problem.
+			if (UWorld* World = GetWorld())
+			{
+				SWGCharacterPreview::FitBackdropToCamera(*World);
+			}
+		}
 	}
 }
 

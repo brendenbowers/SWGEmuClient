@@ -1,6 +1,7 @@
 #include "Subsystems/SWGTreSubsystem.h"
 #include "TRE/SWGIffTags.h"
 #include "TRE/SWGIffReader.h"
+#include "TRE/SWGDDSTextureLoader.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 
@@ -202,6 +203,31 @@ FString USWGTreSubsystem::ResolveTemplatePath(uint32 Crc) const
 	}
 
 	return *Path;
+}
+
+UTexture2D* USWGTreSubsystem::GetOrLoadTexture(const FString& VirtualPath, bool bSRGB, bool bLegacyDXT5Normal)
+{
+	if (VirtualPath.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	const FString CacheKey = FString::Printf(TEXT("%s|%s|%s"), *VirtualPath,
+		bSRGB ? TEXT("sRGB") : TEXT("linear"), bLegacyDXT5Normal ? TEXT("dxt5nm") : TEXT("native"));
+	if (const TObjectPtr<UTexture2D>* Existing = LoadedTextures.Find(CacheKey))
+	{
+		return *Existing;
+	}
+
+	UTexture2D* Result = nullptr;
+	if (FileExists(VirtualPath))
+	{
+		const TArray<uint8> Bytes = ExtractFile(VirtualPath);
+		Result = FSWGDDSTextureLoader::LoadTexture2D(Bytes, FName(*VirtualPath), bSRGB, bLegacyDXT5Normal);
+	}
+
+	LoadedTextures.Add(CacheKey, Result);
+	return Result;
 }
 
 void USWGTreSubsystem::BuildCrcTable()

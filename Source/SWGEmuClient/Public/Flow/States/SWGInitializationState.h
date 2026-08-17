@@ -18,4 +18,16 @@ public:
 
 	virtual void Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload) override;
 	virtual void Exit (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) override;
+
+private:
+	/**
+	 * One-time setup for the character-select preview backdrop: loads
+	 * texture/ui_background_arrow.dds (see ui/ui_backdrop_default.inc's
+	 * SourceResource='ui_background_arrow' binding) via USWGTreSubsystem::
+	 * GetOrLoadTexture, wraps it in a plain unlit material (M_UIBackdropUnlit),
+	 * and applies it to the CharacterPreviewBackdrop-tagged actor in
+	 * L_Startup. Runs once here rather than every time the character-select
+	 * state is entered, since neither the texture nor the actor change.
+	 */
+	void SetupPreviewBackdrop(UGameInstance& GameInstance);
 };
