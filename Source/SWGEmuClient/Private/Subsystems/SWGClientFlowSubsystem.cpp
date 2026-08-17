@@ -7,6 +7,8 @@
 #include "Flow/SWGCharacterSelectedPayload.h"
 #include "Flow/SWGStateTransitionConfig.h"
 #include "UI/SWGGameLayout.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 
 void USWGClientFlowSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -89,17 +91,13 @@ void USWGClientFlowSubsystem::Status(const FString& Status)
 
 void USWGClientFlowSubsystem::HandleStateChanged(ESWGClientState OldState, ESWGClientState NewState)
 {
-	if (!StateTransitionTable)
+	USWGGameLayout* Layout = USWGGameLayout::GetLayout(GetWorld());
+	if (StateTransitionTable && Layout)
 	{
-		return;
-	}
-
-	for (auto& Row : StateTransitionTable->GetRowMap())
-	{
-		FSWGStateTransitionRow* TransitionRow = (FSWGStateTransitionRow*)Row.Value;
-		if (TransitionRow && TransitionRow->OldState == OldState && TransitionRow->NewState == NewState)
+		for (auto& Row : StateTransitionTable->GetRowMap())
 		{
-			if (USWGGameLayout* Layout = USWGGameLayout::GetLayout(GetWorld()))
+			FSWGStateTransitionRow* TransitionRow = (FSWGStateTransitionRow*)Row.Value;
+			if (TransitionRow && TransitionRow->OldState == OldState && TransitionRow->NewState == NewState)
 			{
 				FGameplayTag Tag = USWGGameLayout::TAG_Layer_Menu;
 				if (TransitionRow->LayerTag != FGameplayTag::EmptyTag)
@@ -111,6 +109,43 @@ void USWGClientFlowSubsystem::HandleStateChanged(ESWGClientState OldState, ESWGC
 				break;
 			}
 		}
+	}
+
+	if (Layout && NewState == ESWGClientState::CharacterSelected)
+	{
+		Layout->ClearLayer(USWGGameLayout::TAG_Layer_Menu);
+	}
+	else if (Layout && NewState == ESWGClientState::InWorld)
+	{
+		Layout->ClearLayer(USWGGameLayout::TAG_Layer_Menu);
+		Layout->ClearLayer(USWGGameLayout::TAG_Layer_Loading);
+		Layout->ClearLayer(USWGGameLayout::TAG_Layer_Modal);
+	}
+
+	APlayerController* PlayerController = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	if (NewState == ESWGClientState::InWorld)
+	{
+		PlayerController->SetInputMode(FInputModeGameOnly());
+		PlayerController->bShowMouseCursor = false;
+		PlayerController->ResetIgnoreLookInput();
+		PlayerController->ResetIgnoreMoveInput();
+		PlayerController->FlushPressedKeys();
+	}
+	else if (NewState == ESWGClientState::Disconnected
+		|| NewState == ESWGClientState::GalaxySelect
+		|| NewState == ESWGClientState::CharacterSelect
+		|| NewState == ESWGClientState::Error)
+	{
+		FInputModeGameAndUI InputMode;
+		InputMode.SetHideCursorDuringCapture(false);
+		InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		PlayerController->SetInputMode(InputMode);
+		PlayerController->bShowMouseCursor = true;
 	}
 }
 
