@@ -33,6 +33,13 @@ void USWGEquipmentComponent::ApplyDelta6(FSWGPacket& Packet)
 
 }
 
+void USWGEquipmentComponent::SetPreviewEquipment(TArray<FEquiptmentItem> InEquipment, FString InAlternateAppearance)
+{
+	EquipmentList.Items = MoveTemp(InEquipment);
+	AlternateAppearance = MoveTemp(InAlternateAppearance);
+	BuildEquipmentVisuals(EquipmentList.Items);
+}
+
 void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquiptmentItem> ChangedEquipment)
 {
 	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
@@ -62,14 +69,21 @@ void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquipt
 		}
 
 		const uint64 ObjectId = Item.ObjectId;
+		TWeakObjectPtr<USWGEquipmentComponent> WeakThis(this);
 		MeshGen->RequestItemMesh(Item.TemplateCRC, Item.ContainmentType, ItemCustomization,
-			[this](UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)
+			[WeakThis](UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)
 			{
-				AttachMeshToHardpoint(Mesh, MeshData, Materials);
+				if (USWGEquipmentComponent* Equipment = WeakThis.Get())
+				{
+					Equipment->AttachMeshToHardpoint(Mesh, MeshData, Materials);
+				}
 			},
-			[this, ObjectId](USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)
+			[WeakThis, ObjectId](USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)
 			{
-				AttachWearableSkeletalMesh(ObjectId, Mesh, Materials);
+				if (USWGEquipmentComponent* Equipment = WeakThis.Get())
+				{
+					Equipment->AttachWearableSkeletalMesh(ObjectId, Mesh, Materials);
+				}
 			});
 	}
 }

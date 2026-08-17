@@ -8,6 +8,14 @@
 #include "Network/Messages/Zone/Object/TeleportAck.h"
 #include "Common/SWGWorldScale.h"
 #include "Engine/GameInstance.h"
+#include "Subsystems/SWGMessageWaitSubsystem.h"
+#include "Network/Messages/Zone/SceneEndBaselinesMessage.h"
+#include "Objects/Player/SWGPlayer.h"
+#include "Components/SWGTangibleComponent.h"
+#include "Components/SWGEquipmentComponent.h"
+#include "Network/Objects/Zone/Object/SWGContainmentType.h"
+#include "SaveData/SWGCharacterPreviewSaveGame.h"
+#include "Kismet/GameplayStatics.h"
 
 void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
 {
@@ -35,9 +43,21 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 	{
 		if (UGameInstance* GameInstance = UIStateMachine.GetGameInstance())
 		{
+
 			if (USWGObjectGraphSubsystem* ObjectGraph = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>())
 			{
 				const int64 PlayerObjectId = ObjectGraph->GetLocalPlayerObjectId();
+				if (USWGMessageWaitSubsystem* WaitSubsystem = GameInstance->GetSubsystem<USWGMessageWaitSubsystem>())
+				{
+					WaitSubsystem->WaitForMessage<FSceneEndBaselinesMessage>(ESWGMessageOp::SceneEndBaselines, 10.0f, [PlayerObjectId](const FSWGNetMessage& Msg) 
+						{
+							return static_cast<const FSceneEndBaselinesMessage*>(&Msg)->ObjectId == PlayerObjectId;
+						}).Next([&UIStateMachine, Ctx](TResult<TSharedPtr<const FSceneEndBaselinesMessage>> EndMsg) mutable
+							{
+								HandleSaveCharacterCache(UIStateMachine, Ctx, EndMsg);
+							});
+				}
+
 
 				// Core3 sets PlayerObject::isTeleporting on every zone-in
 				// (PlayerZoneComponent::switchZone) and DataTransformCallback::run
@@ -75,5 +95,67 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 	}
 }
 void FSWGInWorldState::Exit (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) {}
+
+void FSWGInWorldState::HandleSaveCharacterCache(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, TResult<TSharedPtr<const FSceneEndBaselinesMessage>> Msg)
+{
+
+	if (Msg.IsFailure())
+	{
+		const FString& Error = Msg.GetError();
+		UE_LOG(LogTemp, Verbose, TEXT("FSWGInWorldState: %s"), *Error);
+		return;
+	}
+
+	UGameInstance* GameInstance = UIStateMachine.GetGameInstance();
+	if(!GameInstance)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGInWorldState: Failed to get Game instance when trying to save character cacahe"));
+		return;
+	}
+
+	USWGObjectGraphSubsystem* ObjectGraph = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>();
+	if (!ObjectGraph)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGInWorldState: Failed to get Object Graph when trying to save character cacahe"));
+		return;
+	}
+
+	int64 ObjectID = Msg.GetValue()->ObjectId;
+
+	ASWGPlayer* Player = Cast<ASWGPlayer>(ObjectGraph->FindActor(ObjectID));
+	if (!Player)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGInWorldState: Failed to get Player for object id %d"), ObjectID);
+		return;
+	}
+
+	FSWGCachedCharacterPreview* CharacterCache = Ctx.CharacterCache->Characters.FindByPredicate([ObjectID](const FSWGCachedCharacterPreview& CachedCharacter) { return CachedCharacter.CharacterID == ObjectID; });
+	if (!CharacterCache)
+	{
+		CharacterCache = &Ctx.CharacterCache->Characters.AddDefaulted_GetRef();
+	}
+
+	CharacterCache->CharacterID = ObjectID;
+	CharacterCache->BodyTemplateCRC = Player->GetObjectCrc();
+	CharacterCache->CharacterName = Player->TangibleComponent->CustomName;
+	CharacterCache->CustomizationBytes = Player->TangibleComponent->CustomizationBytes;
+	CharacterCache->AlternateAppearance = Player->EquipmentComponent->AlternateAppearance;
+	CharacterCache->Equipment.Reset();
+
+	for (const FEquiptmentItem& Item : Player->EquipmentComponent->EquipmentList.Items)
+	{
+		if (!SWGIsSlottedArrangement(Item.ContainmentType))
+		{
+			continue;
+		}
+
+		FSWGCachedEquipment& CachedEquipment = CharacterCache->Equipment.AddDefaulted_GetRef();
+		CachedEquipment.TemplateCRC = Item.TemplateCRC;
+		CachedEquipment.ContainmentType = Item.ContainmentType;
+		CachedEquipment.CustomizationBytes = Item.CustomizationBytes;
+	}
+
+	UGameplayStatics::AsyncSaveGameToSlot(Ctx.CharacterCache.Get(), TEXT("CharacterPreviews"), 0);
+}
 
 REGISTER_FLOW_STATE(FSWGInWorldState, ESWGClientState::InWorld)

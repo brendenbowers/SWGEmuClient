@@ -27,6 +27,9 @@ public:
 	void ApplyBase6(FSWGPacket& Packet);
 	void ApplyDelta6(FSWGPacket& Packet);
 
+	/** Hydrates and renders equipment on a client-only character-select actor. */
+	void SetPreviewEquipment(TArray<FEquiptmentItem> InEquipment, FString InAlternateAppearance);
+
 protected:
 	void BuildEquipmentVisuals(const TConstArrayView<FEquiptmentItem> EquipmentList);
 

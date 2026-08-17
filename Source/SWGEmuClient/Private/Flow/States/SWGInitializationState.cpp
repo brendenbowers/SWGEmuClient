@@ -11,11 +11,22 @@
 #include "Components/StaticMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "UI/SWGCharacterPreviewLayout.h"
+#include "SaveData/SWGCharacterPreviewSaveGame.h"
 
 
 void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
 {
 	UIStateMachine.OnStatus.Broadcast(FText::FromString(TEXT("Initializing...")));
+
+	constexpr TCHAR CharacterCacheSlot[] = TEXT("CharacterPreviews");
+	USWGCharacterPreviewSaveGame* CharacterCache = Cast<USWGCharacterPreviewSaveGame>(
+		UGameplayStatics::LoadGameFromSlot(CharacterCacheSlot, 0));
+	if (!CharacterCache)
+	{
+		CharacterCache = Cast<USWGCharacterPreviewSaveGame>(UGameplayStatics::CreateSaveGameObject(
+			USWGCharacterPreviewSaveGame::StaticClass()));
+	}
+	Ctx.CharacterCache.Reset(CharacterCache);
 
 	if (!FormTagMappingTable)
 	{

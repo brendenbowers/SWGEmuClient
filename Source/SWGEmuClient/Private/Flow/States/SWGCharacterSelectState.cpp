@@ -5,6 +5,11 @@
 #include "Kismet/GameplayStatics.h"
 #include "Engine/TargetPoint.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
+#include "Components/SWGTangibleComponent.h"
+#include "Components/SWGEquipmentComponent.h"
+#include "Customization/SWGCustomizationVariables.h"
+#include "Network/Objects/Zone/Creature/EquiptmentItem.h"
+#include "SaveData/SWGCharacterPreviewSaveGame.h"
 #include "Components/MeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Camera/CameraActor.h"
@@ -151,10 +156,45 @@ void FSWGCharacterSelectState::DisplpayCharacter(USWGClientFlowSubsystem& UIStat
 		return;
 	}
 
+	const FSWGCachedCharacterPreview* CachedCharacter = Ctx.CharacterCache.IsValid()
+		? Ctx.CharacterCache->Characters.FindByPredicate([CharacterID = Ctx.SelectedCharacterID](const FSWGCachedCharacterPreview& Cached)
+		{
+			return Cached.CharacterID == static_cast<uint64>(CharacterID);
+		})
+		: nullptr;
+
+	const uint32 BodyTemplateCRC = CachedCharacter && CachedCharacter->BodyTemplateCRC != 0
+		? CachedCharacter->BodyTemplateCRC
+		: static_cast<uint32>(CharacterInfo->RaceGenderCRC);
+	PlayerActor->SetObjectId(Ctx.SelectedCharacterID);
+	PlayerActor->SetObjectCrc(BodyTemplateCRC);
+
+	TArray<FEquiptmentItem> PreviewEquipment;
+	FString AlternateAppearance;
+	if (CachedCharacter)
+	{
+		PlayerActor->TangibleComponent->CustomName = CachedCharacter->CharacterName;
+		PlayerActor->TangibleComponent->CustomizationBytes = CachedCharacter->CustomizationBytes;
+		FSWGCustomizationVariables::Parse(
+			PlayerActor->TangibleComponent->CustomizationBytes,
+			PlayerActor->TangibleComponent->DecodedCustomization);
+
+		AlternateAppearance = CachedCharacter->AlternateAppearance;
+		PreviewEquipment.Reserve(CachedCharacter->Equipment.Num());
+		for (int32 Index = 0; Index < CachedCharacter->Equipment.Num(); ++Index)
+		{
+			const FSWGCachedEquipment& CachedEquipment = CachedCharacter->Equipment[Index];
+			FEquiptmentItem& Item = PreviewEquipment.AddDefaulted_GetRef();
+			Item.CustomizationBytes = CachedEquipment.CustomizationBytes;
+			Item.ContainmentType = CachedEquipment.ContainmentType;
+			Item.ObjectId = static_cast<uint64>(Index + 1);
+			Item.TemplateCRC = CachedEquipment.TemplateCRC;
+		}
+	}
+
 	// TODO: Support Cancelling the request
-	// TODO: Add loading the cached character data to load the visuals for equipment
 	TWeakObjectPtr<AActor> WeakPlayerActor = PlayerActor;
-	MeshGenerator->RequestMesh(PlayerActor, CharacterInfo->RaceGenderCRC)
+	MeshGenerator->RequestMesh(PlayerActor, BodyTemplateCRC)
 		.Next([WeakPlayerActor](FSWGMeshGenerationResult Result)
 		{
 			if (!WeakPlayerActor.IsValid() || !Result.MeshOrComponent.IsType<UMeshComponent*>())
@@ -171,6 +211,11 @@ void FSWGCharacterSelectState::DisplpayCharacter(USWGClientFlowSubsystem& UIStat
 			MeshComponent->SetCastShadow(false);
 			MeshComponent->bVisibleInRayTracing = false;
 		});
+
+	if (CachedCharacter)
+	{
+		PlayerActor->EquipmentComponent->SetPreviewEquipment(MoveTemp(PreviewEquipment), MoveTemp(AlternateAppearance));
+	}
 }
 
 REGISTER_FLOW_STATE(FSWGCharacterSelectState, ESWGClientState::CharacterSelect)

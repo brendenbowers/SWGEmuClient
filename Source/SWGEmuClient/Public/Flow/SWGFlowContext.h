@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "Flow/SWGFlowTypes.h"
+#include "SaveData/SWGCharacterPreviewSaveGame.h"
+#include "UObject/StrongObjectPtr.h"
 
 /** Shared blackboard passed into every state's Enter/Exit/Tick. */
 struct FSWGFlowContext
@@ -11,6 +13,7 @@ struct FSWGFlowContext
 	FString Password;
 
 	TArray<uint8> SessionToken;
+	TStrongObjectPtr<USWGCharacterPreviewSaveGame> CharacterCache;
 
 	TArray<FSWGGalaxyInfo>    Galaxies;
 	TArray<FSWGCharacterInfo> Characters;

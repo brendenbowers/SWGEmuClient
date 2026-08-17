@@ -1,9 +1,14 @@
 #pragma once
 #include "Flow/SWGFlowState.h"
+#include "Common/ResultTypes.h"
+
+struct FSceneEndBaselinesMessage;
 
 class FSWGInWorldState : public ISWGFlowState
 {
 public:
 	virtual void Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload) override;
 	virtual void Exit (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) override;
+private:
+	static void HandleSaveCharacterCache(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, TResult<TSharedPtr<const FSceneEndBaselinesMessage>> Msg);
 };
