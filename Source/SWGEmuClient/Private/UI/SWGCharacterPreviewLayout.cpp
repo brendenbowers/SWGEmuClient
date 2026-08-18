@@ -48,6 +48,7 @@ void FitBackdropToCamera(UWorld& World)
 		UE_LOG(LogTemp, Warning, TEXT("SWGCharacterPreview: no CharacterPreviewCamera to fit the backdrop to"));
 		return;
 	}
+	CameraComponent->SetConstraintAspectRatio(false);
 
 	const FVector2D ViewportSize = GetViewportSize();
 	if (ViewportSize.X <= 0.f || ViewportSize.Y <= 0.f)

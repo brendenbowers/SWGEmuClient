@@ -8,6 +8,9 @@
 #include "TRE/SWGFormTagMapping.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/StaticMeshActor.h"
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Components/StaticMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "UI/SWGCharacterPreviewLayout.h"
@@ -17,6 +20,23 @@
 void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
 {
 	UIStateMachine.OnStatus.Broadcast(FText::FromString(TEXT("Initializing...")));
+
+	if (UWorld* World = UIStateMachine.GetWorld())
+	{
+		TArray<AActor*> Cameras;
+		UGameplayStatics::GetAllActorsOfClassWithTag(World, ACameraActor::StaticClass(), TEXT("CharacterPreviewCamera"), Cameras);
+		if (!Cameras.IsEmpty())
+		{
+			if (ACameraActor* PreviewCamera = Cast<ACameraActor>(Cameras[0]))
+			{
+				PreviewCamera->GetCameraComponent()->SetConstraintAspectRatio(false);
+				if (APlayerController* PlayerController = UGameplayStatics::GetPlayerController(World, 0))
+				{
+					PlayerController->SetViewTarget(PreviewCamera);
+				}
+			}
+		}
+	}
 
 	constexpr TCHAR CharacterCacheSlot[] = TEXT("CharacterPreviews");
 	USWGCharacterPreviewSaveGame* CharacterCache = Cast<USWGCharacterPreviewSaveGame>(

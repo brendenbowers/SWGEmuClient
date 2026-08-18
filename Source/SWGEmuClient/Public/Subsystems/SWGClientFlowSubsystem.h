@@ -95,4 +95,5 @@ private:
 	ESWGClientState              CurrentState = ESWGClientState::Initialization;
 	TSharedPtr<ISWGFlowState>    ActiveState;
 	TMap<uint32, TSharedPtr<ISWGFlowState>> Registry;
+	FVector2D LastBackdropViewportSize = FVector2D::ZeroVector;
 };

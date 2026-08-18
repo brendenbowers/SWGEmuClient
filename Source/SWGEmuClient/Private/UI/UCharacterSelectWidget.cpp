@@ -45,13 +45,6 @@ void UCharacterSelectWidget::NativeTick(const FGeometry& MyGeometry, float InDel
 		if (PositionCharacterPreviewSpawnPoint())
 		{
 			LastViewportSize = ViewportSize;
-
-			// The backdrop is fitted to the same camera and has the same
-			// staleness problem.
-			if (UWorld* World = GetWorld())
-			{
-				SWGCharacterPreview::FitBackdropToCamera(*World);
-			}
 		}
 	}
 }

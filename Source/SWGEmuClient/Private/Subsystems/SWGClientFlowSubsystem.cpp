@@ -7,6 +7,7 @@
 #include "Flow/SWGCharacterSelectedPayload.h"
 #include "Flow/SWGStateTransitionConfig.h"
 #include "UI/SWGGameLayout.h"
+#include "UI/SWGCharacterPreviewLayout.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 
@@ -34,6 +35,20 @@ void USWGClientFlowSubsystem::Deinitialize()
 
 void USWGClientFlowSubsystem::Tick(float DeltaTime)
 {
+	if (UWorld* World = GetWorld(); GetState() != ESWGClientState::InWorld && World && World->GetMapName().EndsWith(TEXT("L_Startup")))
+	{
+		const FVector2D ViewportSize = SWGCharacterPreview::GetViewportSize();
+		if (!ViewportSize.IsNearlyZero() && !ViewportSize.Equals(LastBackdropViewportSize))
+		{
+			LastBackdropViewportSize = ViewportSize;
+			SWGCharacterPreview::FitBackdropToCamera(*World);
+		}
+	}
+	else
+	{
+		LastBackdropViewportSize = FVector2D::ZeroVector;
+	}
+
 	if (ActiveState)
 	{
 		ActiveState->Tick(*this, Context, DeltaTime);
