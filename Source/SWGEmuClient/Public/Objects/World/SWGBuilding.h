@@ -6,6 +6,7 @@
 #include "SWGBuilding.generated.h"
 
 class ASWGCell;
+class ASWGDoor;
 
 /**
  * BUIO. Placeholder only — the live baseline construction path wasn't found
@@ -25,6 +26,10 @@ public:
 	/** Populated via CellObject's "parent building" reference once cells spawn (createCellObjects()). */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	TArray<TObjectPtr<ASWGCell>> Cells;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TArray<TObjectPtr<ASWGDoor>> Doors;
+
 
 	FSWGPobData PortalData;
 };

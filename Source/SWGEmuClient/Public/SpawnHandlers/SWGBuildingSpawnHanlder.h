@@ -9,9 +9,12 @@
 
 
 struct FSWGPobCell;
+class ASWGCell;
+class ASWGBuilding;
+class USWGObjectGraphSubsystem;
 
 /**
- * 
+ *
  */
 class SWGEMUCLIENT_API FSWGBuildingSpawnHandler final : public ISWGActorSpawnHandler
 {
@@ -24,9 +27,17 @@ private:
 	TObjectPtr<USWGTreSubsystem> TreSubsystem = nullptr;
 	TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem = nullptr;
 	bool bIsInitialized = false;
-	
-	static void CreateCollisionForCell(TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem, AActor* Actor, const FSWGPobCell& CellData);
 
 	void Initialize(UWorld* World);
 
+};
+
+class SWGEMUCLIENT_API FSWGCellSpawnHandler final : public ISWGActorSpawnHandler
+{
+public:
+	bool HandleActorSpawn(AActor& Actor, const FSWGActorSpawnArguments& SpawnInfo) override final;
+
+	static void CheckAndFinishCell(USWGObjectGraphSubsystem& ObjectGraph, int64 ObjectId, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem);
+
+	static void FinishCell(ASWGCell* CellActor, ASWGBuilding* BuildingActor, int32 CellIndex, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem);
 };

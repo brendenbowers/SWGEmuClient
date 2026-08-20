@@ -15,6 +15,7 @@ class USWGNetworkSubsystem;
 class USWGMeshGeneratorSubsystem;
 class UDataTable;
 class ULevelStreaming;
+class ASWGCell;
 struct FSWGNetMessage;
 struct FSceneCreateObjectMessage;
 struct FBaselinesMessage;
@@ -76,6 +77,14 @@ public:
 		AActor* Actor = FindActor(ObjectId);
 		return Actor ? Actor->FindComponentByClass<T>() : nullptr;
 	}
+
+	/** ObjectId's most recent UpdateContainmentMessage::ContainerId, or null if none has arrived yet. */
+	const int64* FindContainerId(int64 ObjectId) const { return ContainerByObjectId.Find(ObjectId); }
+
+	/**
+	 * ObjectId's cellNumber, or null
+	 */
+	const int32* FindCellNumber(int64 ObjectId) const { return CellNumberByObjectId.Find(ObjectId); }
 
 	/** Fired once SceneEndBaselines confirms an object's baselines are complete. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnObjectReady, int64 /*ObjectId*/);
@@ -164,6 +173,9 @@ private:
 	 *  HandleSceneEndBaselines so a contained object doesn't get revealed as a free-floating world actor at its raw (usually (0,0,0)) position. */
 	TMap<int64, int64> ContainerByObjectId;
 
+	/** ObjectId -> cellNumber */
+	TMap<int64, int32> CellNumberByObjectId;
+
 	UPROPERTY()
 	TObjectPtr<USWGTerrainSubsystem> TerrainSubsystem;
 
@@ -183,6 +195,7 @@ private:
 	UPROPERTY()
 	TObjectPtr<USWGNetworkSubsystem> Network;
 	TObjectPtr<USWGMeshGeneratorSubsystem> MeshGenerator;
+	TObjectPtr<USWGTreSubsystem> TreSubsystem;
 
 	FDelegateHandle MessageHandle;
 };

@@ -87,7 +87,7 @@ struct FSWGMeshGenerationResult
 {
 	/** The generated mesh, or nullptr on failure. */
 	/** a bit hacky taking a variant atm **/
-	TVariant<UStaticMesh*, USkeletalMesh*, UMeshComponent*> MeshOrComponent;
+	TVariant<FEmptyVariantState, UStaticMesh*, USkeletalMesh*, UMeshComponent*> MeshOrComponent;
 	/** The generated mesh's materials, in the same order as the mesh's own
 	 *  Materials array. Empty on failure. */
 	TArray<UMaterialInterface*> Materials;

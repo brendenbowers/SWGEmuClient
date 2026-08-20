@@ -32,8 +32,10 @@
 #include "Objects/Creature/SWGCreature.h"
 #include "Objects/Player/SWGPlayer.h"
 #include "Objects/World/SWGBuilding.h"
+#include "Objects/World/SWGCell.h"
 #include "Objects/World/SWGInstallation.h"
 #include "Objects/World/SWGStaticProp.h"
+#include "SpawnHandlers/SWGBuildingSpawnHanlder.h"
 
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
@@ -257,6 +259,22 @@ namespace
 	}
 
 
+	int32 ApplyCellBaseline(uint8 Slot, FSWGPacket& Packet)
+	{
+		if (Slot != 3)
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no TLCS baseline dispatch for slot %d"), Slot);
+			return -1;
+		}
+
+		Packet.ReadInt32();  // unlabeled ("something")
+		Packet.ReadInt16();  // STFName
+		Packet.ReadInt32();  // unlabeled ("something")
+		Packet.ReadInt16();  // STF
+		Packet.ReadInt32();  // custom name
+		Packet.ReadInt32();  // unlabeled ("something")
+		return Packet.ReadInt32(); // cellNumber
+	}
 }
 
 void USWGObjectGraphSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -264,6 +282,7 @@ void USWGObjectGraphSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Network = Cast<USWGNetworkSubsystem>(Collection.InitializeDependency(USWGNetworkSubsystem::StaticClass()));
 	MeshGenerator = Cast<USWGMeshGeneratorSubsystem>(Collection.InitializeDependency(USWGMeshGeneratorSubsystem::StaticClass()));
 	TerrainSubsystem = Cast<USWGTerrainSubsystem>(Collection.InitializeDependency(USWGTerrainSubsystem::StaticClass()));
+	TreSubsystem = Cast<USWGTreSubsystem>(Collection.InitializeDependency(USWGTreSubsystem::StaticClass()));
 
 	if (Network)
 	{
@@ -547,22 +566,19 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 
 	ActorRegistry.Add(Msg.ObjectId, NewActor);
 
-	// Static world-snapshot objects (buildings/installations/props placed from
-	// the .ws file) get their mesh requested unconditionally by
-	// USWGTerrainSubsystem (SWGTerrainSubsystem.cpp, RequestMeshForTemplatePath)
-	// — a completely separate path from this one. Anything spawned live via
-	// SceneCreateObjectByCrc (a player placing a new structure while already
-	// in the zone, or any building the server didn't include in the initial
-	// snapshot) only gets a mesh if its class is listed here; ASWGBuilding/
-	// ASWGInstallation/ASWGStaticProp were missing, so such objects spawned,
-	// registered, and got unhidden at SceneEndBaselines same as everything
-	// else, then just sat there invisible forever with no mesh ever requested.
-
-	if (ActorClass->IsChildOf(ASWGCreature::StaticClass()) || ActorClass->IsChildOf(ASWGPlayer::StaticClass()) || ActorClass->IsChildOf(ASWGItem::StaticClass())
-		|| ActorClass->IsChildOf(ASWGBuilding::StaticClass()) || ActorClass->IsChildOf(ASWGInstallation::StaticClass()) || ActorClass->IsChildOf(ASWGStaticProp::StaticClass()))
+	// A registered handler (buildings, cells, ...) gets first refusal on
+	// continuing this actor's generation; only fall back to the generic
+	// one-mesh-component path when nothing is registered for its class. Note
+	// this used to be a hardcoded allowlist of classes (ASWGCreature/Player/
+	// Item/Building/Installation/StaticProp) — ASWGCell was missing from it,
+	// so every cell spawned, registered, and just sat there invisible forever
+	// with nothing ever finishing it. Always calling TryHandle means the next
+	// class added to FSWGActorSpawnHandlerRegistry can't be missed the same way.
+	FSWGActorSpawnArguments SpawnInfo{Msg.ObjectCrc, ActorClass };
+	if (!FSWGActorSpawnHandlerRegistry::Get().TryHandle(*NewActor, SpawnInfo))
 	{
-		FSWGActorSpawnArguments SpawnInfo{Msg.ObjectCrc, ActorClass };
-		if (!FSWGActorSpawnHandlerRegistry::Get().TryHandle(*NewActor, SpawnInfo))
+		if (ActorClass->IsChildOf(ASWGCreature::StaticClass()) || ActorClass->IsChildOf(ASWGPlayer::StaticClass()) || ActorClass->IsChildOf(ASWGItem::StaticClass())
+			|| ActorClass->IsChildOf(ASWGBuilding::StaticClass()) || ActorClass->IsChildOf(ASWGInstallation::StaticClass()) || ActorClass->IsChildOf(ASWGStaticProp::StaticClass()))
 		{
 			MeshGenerator->RequestMesh(NewActor, Msg.ObjectCrc);
 		}
@@ -575,6 +591,7 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 
 void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 {
+	//TODO: This baseline code needs to be moved to sometinlikeliek the spawn handlers.
 	AActor* Actor = FindActor(Msg.ObjectId);
 	if (!Actor)
 	{
@@ -596,6 +613,18 @@ void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 		// share the same TangibleObjectMessage3/6-derived baseline layout.
 		if (ASWGItem* Item = Cast<ASWGItem>(Actor))
 			ApplyTangibleBaseline(*Item, Msg.BaselineType, Sub);
+	}
+	else if (FourCC == TEXT("SCLT"))
+	{
+		if (ASWGCell* CellActor = Cast<ASWGCell>(Actor))
+		{
+			const int32 CellNumber = ApplyCellBaseline(Msg.BaselineType, Sub);
+			if (CellNumber >= 0)
+			{
+				CellNumberByObjectId.Add(Msg.ObjectId, CellNumber);
+				FSWGCellSpawnHandler::CheckAndFinishCell(*this, Msg.ObjectId, TreSubsystem, MeshGenerator);
+			}
+		}
 	}
 	else if (FourCC == TEXT("CREO"))
 	{
@@ -624,7 +653,11 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 	// ContainerId. If that's already arrived by now, stay hidden instead of
 	// revealing it as a free-floating world actor at its (usually (0,0,0))
 	// raw position — that position is container-relative, not world-relative.
-	if (const int64* ContainerId = ContainerByObjectId.Find(Msg.ObjectId); ContainerId && *ContainerId != 0)
+	// A cell's ContainerId (its owning building) doesn't mean this — a cell
+	// IS a room of the building, not something tucked away inside it, so it
+	// should render like any other world actor once its own baselines/mesh
+	// are ready (see FSWGBuildingSpawnHandler::FinishCell).
+	if (const int64* ContainerId = ContainerByObjectId.Find(Msg.ObjectId); ContainerId && *ContainerId != 0 && !Cast<ASWGCell>(Actor))
 	{
 		UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: SceneEndBaselines object=%lld actor=%s — staying hidden (contained in %lld)"),
 			Msg.ObjectId, *Actor->GetName(), *ContainerId);
@@ -682,10 +715,20 @@ void USWGObjectGraphSubsystem::HandleUpdateContainment(const FUpdateContainmentM
 	// If the actor hasn't spawned yet (containment can arrive before its own
 	// SceneCreateObjectByCrc), there's nothing to hide/show right now —
 	// HandleSceneEndBaselines checks ContainerByObjectId itself once it does.
-	if (Actor)
+	// Cells are exempt: a cell's ContainerId is its owning building, not a
+	// "tucked away, not visible" container like inventory/equipment — see
+	// the matching exemption in HandleSceneEndBaselines.
+	if (Actor && !Cast<ASWGCell>(Actor))
 	{
 		ApplyContainment(Actor, Msg.ContainerId);
 	}
+
+	// A cell's owning building is ContainerId here, but its cell number comes
+	// from its own TLCS baseline (HandleBaselines/ApplyCellBaseline), not
+	// from Msg.Type — that's always -1 (VolumeContained) for a cell, same as
+	// any other volume-contained object. FSWGCellSpawnHandler owns deciding
+	// whether both pieces are known yet and actually finishing the cell.
+	FSWGCellSpawnHandler::CheckAndFinishCell(*this, Msg.ObjectId, TreSubsystem, MeshGenerator);
 }
 
 void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessage& Msg)
