@@ -12,6 +12,7 @@ struct FSWGPobCell;
 class ASWGCell;
 class ASWGBuilding;
 class USWGObjectGraphSubsystem;
+class UDataTable;
 
 /**
  *
@@ -40,4 +41,7 @@ public:
 	static void CheckAndFinishCell(USWGObjectGraphSubsystem& ObjectGraph, int64 ObjectId, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem);
 
 	static void FinishCell(ASWGCell* CellActor, ASWGBuilding* BuildingActor, int32 CellIndex, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem);
+
+private:
+	static TWeakObjectPtr<UDataTable> GetDoorStyleTable();
 };

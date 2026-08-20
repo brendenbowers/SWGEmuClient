@@ -6,6 +6,8 @@
 #include "Async/Async.h"
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGFormTagMapping.h"
+#include "TRE/SWGDataTableReader.h"
+#include "TRE/SWGDoorStyleRow.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/StaticMeshActor.h"
 #include "Camera/CameraActor.h"
@@ -138,12 +140,24 @@ void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 						CrcToSubclass.Add(Crc, Mapping->ActorClass);
 					}
 
-					AsyncTask(ENamedThreads::GameThread, [this, StateMachine, ObjectGraph, CrcToSubclass = MoveTemp(CrcToSubclass), Epoch]()
+					StateMachine->Status(TEXT("Loading door styles"));
+					FSWGDataTableData DoorStyleData;
+					FSWGIffReader DoorStyleReader = TreSubsystem->CreateIffReader(TEXT("datatables/appearance/door_style.iff"));
+					if (!DoorStyleReader.IsValid() || !FSWGDataTableReader::ReadDataTable(DoorStyleReader, DoorStyleData))
+					{
+						UE_LOG(LogTemp, Warning, TEXT("SWGInitializationState: failed to load datatables/appearance/door_style.iff — doors will have no open/close data"));
+						DoorStyleData = FSWGDataTableData();
+					}
+
+					AsyncTask(ENamedThreads::GameThread, [this, StateMachine, ObjectGraph, CrcToSubclass = MoveTemp(CrcToSubclass), DoorStyleData = MoveTemp(DoorStyleData), Epoch]()
 						{
 							if (ObjectGraph.IsValid())
 							{
 								ObjectGraph->SetCrcToActorClassMap(CrcToSubclass);
 							}
+
+
+							SWGDoorStyle::BuildDataTable(DoorStyleData);
 
 							if (StateMachine.IsValid())
 							{

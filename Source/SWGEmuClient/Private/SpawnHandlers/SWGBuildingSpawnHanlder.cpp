@@ -6,6 +6,8 @@
 #include "Objects/World/SWGDoor.h"
 #include "TRE/SWGPobReader.h"
 #include "TRE/SWGFloorReader.h"
+#include "TRE/SWGDoorStyleRow.h"
+#include "Engine/DataTable.h"
 #include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
@@ -61,6 +63,16 @@ namespace
 
 REGISTER_SWG_ACTOR_SPAWN_HANDLER(FSWGBuildingSpawnHandler, ASWGBuilding)
 REGISTER_SWG_ACTOR_SPAWN_HANDLER(FSWGCellSpawnHandler, ASWGCell)
+
+TWeakObjectPtr<UDataTable> FSWGCellSpawnHandler::GetDoorStyleTable()
+{
+	static TWeakObjectPtr<UDataTable> CachedTable;
+	if (!CachedTable.IsValid())
+	{
+		CachedTable = LoadObject<UDataTable>(nullptr, SWGDoorStyle::DataTablePath);
+	}
+	return CachedTable;
+}
 
 bool FSWGCellSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSpawnArguments& SpawnInfo)
 {
@@ -345,6 +357,13 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 					}
 
 					DoorActorWeakPtr->AttachToActor(OwningBuilding.Get(), FAttachmentTransformRules::KeepWorldTransform);
+
+					const FSWGDoorStyleRow* StyleRow = nullptr;
+					if (TWeakObjectPtr<UDataTable> DoorStyleTable = FSWGCellSpawnHandler::GetDoorStyleTable(); DoorStyleTable.IsValid())
+					{
+						StyleRow = DoorStyleTable->FindRow<FSWGDoorStyleRow>(FName(*PortalRef.DoorStyle), TEXT("FSWGCellSpawnHandler::FinishCell"), false);
+					}
+					DoorActorWeakPtr->InitializeDoorStyle(StyleRow);
 				});
 		}
 	}

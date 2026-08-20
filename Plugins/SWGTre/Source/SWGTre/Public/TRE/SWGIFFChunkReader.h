@@ -219,10 +219,7 @@ public:
 		return Value;
 	}
 
-	// Quaternions are stored (W,X,Y,Z) — confirmed against the root joint's
-	// BPRO/RPRE, which is (1,0,0,0) on disk; that's only the identity
-	// quaternion if the first float is W, not X.
-	//
+	// Quaternions are stored (W,X,Y,Z)
 	// Applies the same Y/Z swap as ReadVectorLE, plus a conjugate (negated
 	// vector part). Positions and rotations do not transform alike under this
 	// conversion: because the swap is a reflection, a position maps v -> Mv,
@@ -277,9 +274,15 @@ public:
 			return false;
 		}
 
-		// R_ue[i][j] = R_swg[SwgAxis[i]][SwgAxis[j]] — same axis-swap
-		// conjugation as ReadMshHardpoints; a reflection, so it needs no
-		// extra sign the way ReadQuatLE does.
+		// Axis-swap conjugation (a reflection, so it needs no extra sign the
+		// way ReadQuatLE does) AND a transpose — note the [j]/[i] order.
+		//
+		// The transpose is not cosmetic: SWG stores this 3x4 as three rows of
+		// [Rx Ry Rz T], where the basis axes are the matrix's COLUMNS
+		// (world = R * local, column-vector convention). UE's FMatrix is
+		// row-vector convention (v' = v * M), where the basis axes are its
+		// ROWS. Copying straight across therefore stored the transpose of a
+		// rotation — i.e. its inverse.
 		static constexpr int32 SwgAxis[3] = { 0, 2, 1 };
 		FMatrixType RotationMatrix = FMatrixType::Identity;
 
@@ -287,7 +290,7 @@ public:
 		{
 			for (int32 j = 0; j < 3; ++j)
 			{
-				RotationMatrix.M[i][j] = R[SwgAxis[i]][SwgAxis[j]];
+				RotationMatrix.M[i][j] = R[SwgAxis[j]][SwgAxis[i]];
 			}
 		}
 
