@@ -10,6 +10,7 @@
 #include "Engine/DataTable.h"
 #include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/BoxComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/GameInstance.h"
 
@@ -58,6 +59,62 @@ namespace
 		FloorCollisionComp->SetCollisionObjectType(ECC_WorldStatic);
 		FloorCollisionComp->SetCollisionResponseToAllChannels(ECR_Block);
 		FloorCollisionComp->RegisterComponent();
+
+		// Room-shaped containment volume for "which cell is the player in"
+	if (Cast<ASWGCell>(Actor))
+	{
+		if (!CellData.CollisionVertices.IsEmpty() && !CellData.CollisionIndices.IsEmpty())
+		{
+			const uint32 TriggerCacheHash = HashCombine(GetTypeHash(CellData.CellName), GetTypeHash(CellData.CellIndex));
+
+			if (UStaticMesh* TriggerMesh = MeshGeneratorSubsystem->GetOrBuildGeneratedCollisionMesh(TriggerCacheHash, CellData.CellName + TEXT("_TriggerVolume"), CellData.CollisionVertices, CellData.CollisionIndices))
+			{
+				UStaticMeshComponent* TriggerComp = NewObject<UStaticMeshComponent>(Actor);
+				TriggerComp->SetupAttachment(Actor->GetRootComponent());
+				TriggerComp->SetStaticMesh(TriggerMesh);
+				TriggerComp->SetVisibility(false);
+				TriggerComp->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+				TriggerComp->SetCollisionObjectType(ECC_WorldDynamic);
+				TriggerComp->SetCollisionResponseToAllChannels(ECR_Ignore);
+				TriggerComp->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+				TriggerComp->RegisterComponent();
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("CreateCollisionForCell: failed to build CMSH trigger volume mesh for cell %s"), *CellData.CellName);
+			}
+		}
+		else
+		{
+			// Older CELL/0004-format cells carry no boundingVolume chunk at
+			FBox FloorBounds(ForceInit);
+			for (const FVector& Vert : FloorData.Vertices)
+			{
+				FloorBounds += Vert;
+			}
+
+			if (FloorBounds.IsValid)
+			{
+				constexpr float ApproxRoomHeight = 300.f; // 3m — typical SWG interior cell height; only a guess since there's no real ceiling data to measure here
+				FloorBounds.Max.Z = FloorBounds.Min.Z + ApproxRoomHeight;
+
+				UBoxComponent* TriggerComp = NewObject<UBoxComponent>(Actor);
+				TriggerComp->SetupAttachment(Actor->GetRootComponent());
+				TriggerComp->SetBoxExtent(FloorBounds.GetExtent());
+				TriggerComp->SetRelativeLocation(FloorBounds.GetCenter());
+				TriggerComp->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+				TriggerComp->SetCollisionObjectType(ECC_WorldDynamic);
+				TriggerComp->SetCollisionResponseToAllChannels(ECR_Ignore);
+				TriggerComp->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+				TriggerComp->RegisterComponent();
+
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("CreateCollisionForCell: cell %s has no CMSH geometry and no floor vertices either — no trigger volume built"), *CellData.CellName);
+			}
+		}
+	}
 	}
 }
 

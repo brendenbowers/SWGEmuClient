@@ -650,23 +650,23 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 	// A contained object (equipped gear, inventory contents) still goes
 	// through the normal SceneCreateObjectByCrc/Baselines/SceneEndBaselines
 	// flow — it just also gets an UpdateContainmentMessage with a nonzero
-	// ContainerId. If that's already arrived by now, stay hidden instead of
-	// revealing it as a free-floating world actor at its (usually (0,0,0))
-	// raw position — that position is container-relative, not world-relative.
-	// A cell's ContainerId (its owning building) doesn't mean this — a cell
-	// IS a room of the building, not something tucked away inside it, so it
-	// should render like any other world actor once its own baselines/mesh
-	// are ready (see FSWGBuildingSpawnHandler::FinishCell).
-	if (const int64* ContainerId = ContainerByObjectId.Find(Msg.ObjectId); ContainerId && *ContainerId != 0 && !Cast<ASWGCell>(Actor))
+	if (const int64* ContainerId = ContainerByObjectId.Find(Msg.ObjectId); ContainerId && *ContainerId != 0)
 	{
-		UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: SceneEndBaselines object=%lld actor=%s — staying hidden (contained in %lld)"),
-			Msg.ObjectId, *Actor->GetName(), *ContainerId);
-		OnObjectReady.Broadcast(Msg.ObjectId);
-		return;
-	}
+		ApplyContainment(Actor, *ContainerId);
 
-	Actor->SetActorHiddenInGame(false);
-	Actor->SetActorEnableCollision(true);
+		if (Actor->IsHidden())
+		{
+			UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: SceneEndBaselines object=%lld actor=%s — staying hidden (contained in %lld)"),
+				Msg.ObjectId, *Actor->GetName(), *ContainerId);
+			OnObjectReady.Broadcast(Msg.ObjectId);
+			return;
+		}
+	}
+	else
+	{
+		Actor->SetActorHiddenInGame(false);
+		Actor->SetActorEnableCollision(true);
+	}
 
 	// The local player's own CREO — swap control from the editor's default
 	// free-fly pawn to this one now that its position/orientation are final
@@ -810,9 +810,33 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ContainerId
 		return;
 	}
 
-	const bool bContained = ContainerId != 0;
+	if (Actor->IsA<ASWGCell>())
+	{
+		Actor->SetActorHiddenInGame(false);
+		Actor->SetActorEnableCollision(true);
+		return;
+	}
+
+	AActor* ContainerActor = ContainerId != 0 ? FindActor(ContainerId) : nullptr;
+	ASWGCell* ContainerCell = Cast<ASWGCell>(ContainerActor);
+	const bool bContainedInCell = ContainerCell != nullptr;
+	const bool bContained = ContainerId != 0 && !bContainedInCell;
 	Actor->SetActorHiddenInGame(bContained);
 	Actor->SetActorEnableCollision(!bContained);
+
+	const bool bIsCreature = Actor->IsA<ASWGCreature>();
+
+	if (bContainedInCell && !bIsCreature)
+	{
+		if (Actor->GetAttachParentActor() != ContainerCell)
+		{
+			Actor->AttachToActor(ContainerCell, FAttachmentTransformRules::KeepRelativeTransform);
+		}
+	}
+	else if (!bContainedInCell && !bIsCreature && Actor->GetAttachParentActor() != nullptr)
+	{
+		Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	}
 }
 
 void USWGObjectGraphSubsystem::HandleDeltas(const FDeltasMessage& Msg)

@@ -16,6 +16,9 @@
 //#include "Network/Messages/Zone/DataTransformMessage.h"
 #include "Engine/GameInstance.h"
 #include "Network/Messages/Zone/Object/DataTransform.h"
+#include "Network/Messages/Zone/Object/DataTransformWithParent.h"
+#include "Objects/World/SWGCell.h"
+#include "Objects/World/SWGBuilding.h"
 
 ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -266,19 +269,47 @@ void ASWGPlayer::SendDataTransformUpdate()
 		return;
 	}
 
-	FDataTransform DTMessage(SWGObjectId);
-	DTMessage.Position = SWGToRawSpace(GetActorLocation());
-	DTMessage.Direction = GetActorQuat();
-	DTMessage.TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
-	DTMessage.MoveCount = ++TransformMovementCounter;
+	const FVector RawPosition = SWGToRawSpace(GetActorLocation());
+	const FQuat RawDirection = GetActorQuat();
+	const uint32 RawTimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
+	const int32 RawMoveCount = ++TransformMovementCounter;
 	// Same raw/pre-scale conversion as Position — server compares this against
 	// the character's real WalkSpeed/RunSpeed (meters/sec) in
 	// PlayerManager::checkSpeedHackTests; sending raw UE cm/s here (e.g. 154.9
 	// for a ~1.55 m/s walk) reads as 100x overspeed and trips the speed-hack
 	// bounce back.
-	DTMessage.Speed = SWGToRawSpace(GetVelocity().Size());
+	const float RawSpeed = SWGToRawSpace(GetVelocity().Size());
 
-	Network->SendMessage(DTMessage.Serialize());
+	const ASWGCell* CurrentCell = ResolveCurrentCell();
+
+	if (CurrentCell != nullptr)
+	{
+		const ASWGBuilding* OwningBuilding = CurrentCell->OwningBuilding.Get();
+		const FVector BuildingLocalPosition = OwningBuilding
+			? SWGToRawSpace(OwningBuilding->GetActorTransform().InverseTransformPosition(GetActorLocation()))
+			: RawPosition;
+
+		FDataTransformWithParent DTMessage(SWGObjectId);
+		DTMessage.ParentId = (uint64)CurrentCell->GetObjectId();
+		DTMessage.Position = BuildingLocalPosition;
+		DTMessage.Direction = RawDirection;
+		DTMessage.TimeStamp = RawTimeStamp;
+		DTMessage.MoveCount = RawMoveCount;
+		DTMessage.Speed = RawSpeed;
+
+		Network->SendMessage(DTMessage.Serialize());
+	}
+	else
+	{
+		FDataTransform DTMessage(SWGObjectId);
+		DTMessage.Position = RawPosition;
+		DTMessage.Direction = RawDirection;
+		DTMessage.TimeStamp = RawTimeStamp;
+		DTMessage.MoveCount = RawMoveCount;
+		DTMessage.Speed = RawSpeed;
+
+		Network->SendMessage(DTMessage.Serialize());
+	}
 
 
 	//FDataTransformMessage Transform;
@@ -292,4 +323,36 @@ void ASWGPlayer::SendDataTransformUpdate()
 	//Transform.Speed = GetVelocity().Size();
 
 	//Network->SendMessage(Transform.Serialize());
+}
+
+void ASWGPlayer::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Overlap);
+
+	}
+}
+
+ASWGCell* ASWGPlayer::ResolveCurrentCell() const
+{
+	UCapsuleComponent* Capsule = GetCapsuleComponent();
+	if (!Capsule)
+	{
+		return nullptr;
+	}
+	TArray<AActor*> OverlappingActors;
+	Capsule->GetOverlappingActors(OverlappingActors, ASWGCell::StaticClass());
+
+	for (AActor* OverlappingActor : OverlappingActors)
+	{
+		if (ASWGCell* Cell = Cast<ASWGCell>(OverlappingActor))
+		{
+			return Cell;
+		}
+	}
+
+	return nullptr;
 }

@@ -8,6 +8,7 @@ class UCameraComponent;
 class USpringArmComponent;
 class UInputAction;
 class UInputMappingContext;
+class UPrimitiveComponent;
 struct FInputActionValue;
 
 /**
@@ -51,6 +52,12 @@ public:
 
 	virtual void Tick(float DeltaTime) override;
 
+	UFUNCTION()
+	void OnCapsuleBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
+
+	UFUNCTION()
+	void OnCapsuleEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
+
 	// Re-derives CameraBoom's height above the capsule from the capsule's
 	// *current* size. Called once in the constructor (default 88 half-height,
 	// before any mesh exists) and again by USWGMeshGeneratorSubsystem once
@@ -73,6 +80,8 @@ public:
 	virtual void PawnClientRestart() override;
 
 protected:
+	virtual void BeginPlay() override;
+
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
 	void Move(const FInputActionValue& Value);
@@ -101,6 +110,8 @@ protected:
 	// FDataTransformMessage, throttled by Tick — see the .cpp for the
 	// send-rate/stop-detection reasoning.
 	void SendDataTransformUpdate();
+
+	class ASWGCell* ResolveCurrentCell() const;
 
 	// Third-person: a spring arm holding the camera behind/above the
 	// character, orbiting freely around it with mouse look

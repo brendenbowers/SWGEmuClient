@@ -47,19 +47,6 @@ void ASWGDoor::InitializeDoorStyle(const FSWGDoorStyleRow* StyleRow)
     {
         TriggerVolume->SetSphereRadius(FMath::Max(StyleRow->TriggerRadius * SWGWorldScale, SWGWorldScale));
     }
-
-    // RawMoveOffset is door_style.iff's untouched doorMoveX/Y/Z (pre
-    // axis-swap, pre world scale), so it stays directly comparable to a raw
-    // dump of the table.
-    const AActor* OwningBuildingActor = GetAttachParentActor();
-    UE_LOG(LogTemp, Verbose, TEXT("ASWGDoor::InitializeDoorStyle: %s portal=%d building=%s RawMoveOffset=%s OpenOffset(ue,cm)=%s ClosedRelLoc=%s ClosedRelRot=%s BuildingWorldRot=%s"),
-        *GetName(), PortalNumber,
-        OwningBuildingActor ? *OwningBuildingActor->GetName() : TEXT("<none>"),
-        *StyleRow->MoveOffset.ToString(),
-        *OpenOffset.ToString(),
-        *ClosedRelativeTransform.GetLocation().ToString(),
-        *ClosedRelativeTransform.GetRotation().Rotator().ToString(),
-        OwningBuildingActor ? *OwningBuildingActor->GetActorRotation().ToString() : TEXT("<none>"));
 }
 
 void ASWGDoor::Open()
@@ -73,8 +60,6 @@ void ASWGDoor::Open()
     SetActorTickEnabled(true);
 
     const FVector LocalDelta = ClosedRelativeTransform.TransformVectorNoScale(OpenOffset);
-    UE_LOG(LogTemp, Verbose, TEXT("ASWGDoor::Open: %s LocalDelta(buildingSpace)=%s DoorWorldLoc=%s DoorWorldRot=%s"),
-        *GetName(), *LocalDelta.ToString(), *GetActorLocation().ToString(), *GetActorRotation().ToString());
 }
 
 void ASWGDoor::Close()
