@@ -7,6 +7,7 @@
 
 class ASWGCell;
 class ASWGDoor;
+class UPrimitiveComponent;
 
 /**
  * BUIO. Placeholder only — the live baseline construction path wasn't found
@@ -32,4 +33,21 @@ public:
 
 
 	FSWGPobData PortalData;
+
+	/** Called by FSWGCellSpawnHandler::FinishCell once Cell->TriggerVolume exists. */
+	void RegisterCellTrigger(ASWGCell* Cell, bool bCanSeeParent);
+
+private:
+	UFUNCTION()
+	void OnCellTriggerBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
+
+	UFUNCTION()
+	void OnCellTriggerEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
+
+	void SetExteriorShellHidden(bool bShouldHide);
+
+	/** Counted, not a bool, so straddling two triggers in a doorway doesn't reveal the shell early. */
+	int32 NonSeeThroughOverlapCount = 0;
+
+	TMap<TWeakObjectPtr<UPrimitiveComponent>, bool> CellSeeParentByTrigger;
 };
