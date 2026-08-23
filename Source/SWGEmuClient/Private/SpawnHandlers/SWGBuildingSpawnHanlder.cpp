@@ -218,36 +218,28 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 		return false;
 	}
 
-	// Cell index 0 is always the exterior/outside cell (Sheet 00 §00.2) —
-	// its name varies
 	if (BuildingActor->PortalData.Cells.IsEmpty())
 	{
 		UE_LOG(LogTemp, Error, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: portal layout file %s has no cells"), *PobPath);
 		return false;
 	}
 
+	// Cell 0 is always the exterior shell (Sheet 00 §00.2). Keyed by index,
+	// not name: most buildings call it "exterior" but plenty just use "r0"
+	// (ply_nboo_cloning_facility_s01.pob, thm_tato_cantina.pob, ...). Every
+	// other cell is an interior room, built on demand from its own CCLT
+	// SceneCreateObjectByCrc/UpdateContainmentMessage pair.
+	const FSWGPobCell& ExteriorCell = BuildingActor->PortalData.Cells[0];
 
-	for (int i = 0; i < BuildingActor->PortalData.Cells.Num(); ++i)
+	FString CellMeshPath;
+	if (!MeshGeneratorSubsystem->ResolveLodMeshPath(ExteriorCell.MeshPath, CellMeshPath) || CellMeshPath.IsEmpty())
 	{
-		const FSWGPobCell& CellData = BuildingActor->PortalData.Cells[i];
-
-		if (CellData.CellName != TEXT("exterior"))
-		{
-			// Interior cells are built on demand, from their own CCLT
-			// SceneCreateObjectByCrc/UpdateContainmentMessage pair
-			continue;
-		}
-
-		FString CellMeshPath;
-		if (!MeshGeneratorSubsystem->ResolveLodMeshPath(CellData.MeshPath, CellMeshPath) || CellMeshPath.IsEmpty())
-		{
-			UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: cell %s in portal layout file %s has no usable mesh path (raw: %s)"), *CellData.CellName, *PobPath, *CellData.MeshPath);
-			continue;
-		}
-
-		MeshGeneratorSubsystem->RequestMesh(BuildingActor, CellMeshPath);
-		CreateCollisionForCell(TreSubsystem, MeshGeneratorSubsystem, BuildingActor, CellData);
+		UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: exterior cell '%s' in portal layout file %s has no usable mesh path (raw: %s)"), *ExteriorCell.CellName, *PobPath, *ExteriorCell.MeshPath);
+		return true;
 	}
+
+	MeshGeneratorSubsystem->RequestMesh(BuildingActor, CellMeshPath);
+	CreateCollisionForCell(TreSubsystem, MeshGeneratorSubsystem, BuildingActor, ExteriorCell);
 
 
 	return true;
