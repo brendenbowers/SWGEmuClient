@@ -37,6 +37,7 @@ ESWGShaderTextureUsage FSWGShaderReader::ClassifyTextureTag(const FString& Tag)
 	if (Tag == TEXT("NRML") || Tag == TEXT("CNRM")) return ESWGShaderTextureUsage::Normal;
 	if (Tag == TEXT("SPEC")) return ESWGShaderTextureUsage::Specular;
 	if (Tag == TEXT("DOT3")) return ESWGShaderTextureUsage::Lightmap;
+	if (Tag == TEXT("REP0")) return ESWGShaderTextureUsage::Replaceable;
 	return ESWGShaderTextureUsage::Unknown;
 }
 
@@ -125,6 +126,36 @@ bool FSWGShaderReader::ReadShader(const FSWGIffReader& Reader, FSWGShaderData& O
 		}
 
 		OutShader.Textures.Add(MoveTemp(Texture));
+	}
+
+	// FORM TCSS > CHUNK 0000: repeated [4-byte reversed tag][uint8 uvSet].
+	// e.g. con_gen_inorganic_minerals_arsd24.sht holds MAIN=0, REP0=1.
+	// Absent on single-texture shaders, where UV0 for everything is correct.
+	FSWGIffChunk TcssForm;
+	if (Reader.FindChildForm(Form0000, SWG_IFF_TAG('T','C','S','S'), TcssForm))
+	{
+		for (const FSWGIffChunk& Child : Reader.ReadChildren(TcssForm))
+		{
+			if (Child.IsForm())
+			{
+				continue;
+			}
+
+			const uint8* Data = Reader.GetChunkData(Child);
+			const int32 Size = Reader.GetChunkSize(Child);
+			for (int32 Offset = 0; Offset + 5 <= Size; Offset += 5)
+			{
+				const FString Tag = ReadReversedTag(Data + Offset);
+				const uint8 UvSet = Data[Offset + 4];
+				for (FSWGShaderTexture& Texture : OutShader.Textures)
+				{
+					if (Texture.Tag == Tag)
+					{
+						Texture.TexCoordSet = UvSet;
+					}
+				}
+			}
+		}
 	}
 
 	return OutShader.Textures.Num() > 0;

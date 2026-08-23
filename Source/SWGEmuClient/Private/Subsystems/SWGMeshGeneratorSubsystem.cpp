@@ -13,6 +13,7 @@
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGDDSTextureLoader.h"
 #include "TRE/SWGShaderReader.h"
+#include "TRE/SWGResourceClassRow.h"
 #include "TRE/SWGCustomizationIdManager.h"
 #include "TRE/SWGAssetCustomizationManager.h"
 #include "TRE/SWGCrc32.h"
@@ -370,25 +371,48 @@ namespace
 		EditMesh.Attributes()->EnableMaterialID();
 		EditMesh.EnableVertexColors(PlaceholderColor);
 
+		// Decal shaders sample a second UV set (see FSWGShaderTexture::
+		// TexCoordSet) — carry it through when any submesh supplies one, since
+		// CopyMeshToStaticMesh only emits the layers that exist here.
+		int32 MaxUVChannels = 1;
+		for (const FSWGMeshSubmesh& Submesh : MeshData.Submeshes)
+		{
+			for (const FSWGMeshVertex& V : Submesh.Vertices)
+			{
+				MaxUVChannels = FMath::Max(MaxUVChannels, V.UVs.Num());
+			}
+		}
+		MaxUVChannels = FMath::Min(MaxUVChannels, 4);
+		EditMesh.Attributes()->SetNumUVLayers(MaxUVChannels);
+
 		FDynamicMeshNormalOverlay* Normals = EditMesh.Attributes()->PrimaryNormals();
-		FDynamicMeshUVOverlay* UVs = EditMesh.Attributes()->PrimaryUV();
 		FDynamicMeshMaterialAttribute* MaterialIDs = EditMesh.Attributes()->GetMaterialID();
 
 		for (int32 SubmeshIndex = 0; SubmeshIndex < MeshData.Submeshes.Num(); ++SubmeshIndex)
 		{
 			const FSWGMeshSubmesh& Submesh = MeshData.Submeshes[SubmeshIndex];
 
-			TArray<int32> VertexIds, NormalIds, UVIds;
+			TArray<int32> VertexIds, NormalIds;
 			VertexIds.SetNumUninitialized(Submesh.Vertices.Num());
 			NormalIds.SetNumUninitialized(Submesh.Vertices.Num());
-			UVIds.SetNumUninitialized(Submesh.Vertices.Num());
+
+			TArray<TArray<int32>> UVIdsPerLayer;
+			UVIdsPerLayer.SetNum(MaxUVChannels);
+			for (int32 Layer = 0; Layer < MaxUVChannels; ++Layer)
+			{
+				UVIdsPerLayer[Layer].SetNumUninitialized(Submesh.Vertices.Num());
+			}
 
 			for (int32 i = 0; i < Submesh.Vertices.Num(); ++i)
 			{
 				const FSWGMeshVertex& V = Submesh.Vertices[i];
 				VertexIds[i] = EditMesh.AppendVertex((FVector3d)V.Position);
 				NormalIds[i] = Normals->AppendElement((FVector3f)V.Normal);
-				UVIds[i] = UVs->AppendElement(V.UVs.Num() > 0 ? FVector2f(V.UVs[0]) : FVector2f::Zero());
+				for (int32 Layer = 0; Layer < MaxUVChannels; ++Layer)
+				{
+					UVIdsPerLayer[Layer][i] = EditMesh.Attributes()->GetUVLayer(Layer)->AppendElement(
+						V.UVs.IsValidIndex(Layer) ? FVector2f(V.UVs[Layer]) : FVector2f::Zero());
+				}
 				EditMesh.SetVertexColor(VertexIds[i], PlaceholderColor);
 			}
 
@@ -412,7 +436,11 @@ namespace
 				if (TriId >= 0)
 				{
 					Normals->SetTriangle(TriId, FIndex3i(NormalIds[IA], NormalIds[IB], NormalIds[IC]));
-					UVs->SetTriangle(TriId, FIndex3i(UVIds[IA], UVIds[IB], UVIds[IC]));
+					for (int32 Layer = 0; Layer < MaxUVChannels; ++Layer)
+					{
+						const TArray<int32>& LayerIds = UVIdsPerLayer[Layer];
+						EditMesh.Attributes()->GetUVLayer(Layer)->SetTriangle(TriId, FIndex3i(LayerIds[IA], LayerIds[IB], LayerIds[IC]));
+					}
 					MaterialIDs->SetValue(TriId, SubmeshIndex);
 				}
 			}
@@ -1268,10 +1296,19 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							}
 						}
 
+						// Resource containers carry a REP0 decal showing which
+						// resource they hold (ASWGItem::ResourceType, from the
+						// RCNO baseline).
+						FString ReplaceableTexturePath;
+						if (const ASWGItem* Item = Cast<ASWGItem>(Request.Actor.Get()))
+						{
+							ReplaceableTexturePath = ResolveResourceDecalTexturePath(Item->ResourceType);
+						}
+
 						const TMap<FString, FLinearColor>* PaletteTintsPtr = PaletteTints.Num() > 0 ? &PaletteTints : nullptr;
 						const TMap<FString, float>* MorphWeightsPtr = MorphWeights.Num() > 0 ? &MorphWeights : nullptr;
 						const TMap<FString, int32>* TextureIndicesPtr = TextureIndices.Num() > 0 ? &TextureIndices : nullptr;
-						UMeshComponent* MeshComponent = BuildGeneratedMeshComponent(*Request.Actor, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility, PaletteTintsPtr, TextureIndicesPtr);
+						UMeshComponent* MeshComponent = BuildGeneratedMeshComponent(*Request.Actor, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility, PaletteTintsPtr, TextureIndicesPtr, ReplaceableTexturePath);
 						// SkeletalAnimationPipeline is null until Initialize() runs — see Tick()'s
 						// own comment for why this can't be assumed non-null unconditionally.
 						if (SkeletalAnimationPipeline)
@@ -2516,15 +2553,15 @@ TMap<FString, int32> USWGMeshGeneratorSubsystem::ResolveCustomizationTextureIndi
 }
 
 UTexture2D* USWGMeshGeneratorSubsystem::GetOrLoadObjectTexture(const FString& TextureVirtualPath, bool bSRGB,
-	bool bLegacyDXT5Normal)
+	bool bLegacyDXT5Normal, TextureAddress AddressMode)
 {
 	if (TextureVirtualPath.IsEmpty())
 	{
 		return nullptr;
 	}
 
-	const FString CacheKey = FString::Printf(TEXT("%s|%s|%s"), *TextureVirtualPath,
-		bSRGB ? TEXT("sRGB") : TEXT("linear"), bLegacyDXT5Normal ? TEXT("dxt5nm") : TEXT("native"));
+	const FString CacheKey = FString::Printf(TEXT("%s|%s|%s|%d"), *TextureVirtualPath,
+		bSRGB ? TEXT("sRGB") : TEXT("linear"), bLegacyDXT5Normal ? TEXT("dxt5nm") : TEXT("native"), (int32)AddressMode);
 	if (TObjectPtr<UTexture2D>* Existing = LoadedObjectTextures.Find(CacheKey))
 	{
 		return *Existing;
@@ -2535,6 +2572,12 @@ UTexture2D* USWGMeshGeneratorSubsystem::GetOrLoadObjectTexture(const FString& Te
 	{
 		const TArray<uint8> Bytes = TreSubsystem->ExtractFile(TextureVirtualPath);
 		Result = FSWGDDSTextureLoader::LoadTexture2D(Bytes, FName(*TextureVirtualPath), bSRGB, bLegacyDXT5Normal);
+		if (Result && AddressMode != TA_Wrap)
+		{
+			Result->AddressX = AddressMode;
+			Result->AddressY = AddressMode;
+			Result->UpdateResource();
+		}
 	}
 
 	if (!Result)
@@ -2546,7 +2589,68 @@ UTexture2D* USWGMeshGeneratorSubsystem::GetOrLoadObjectTexture(const FString& Te
 	return Result;
 }
 
-UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides)
+namespace
+{
+	/**
+	 * SWG's TXM address codes are 0-based (0=wrap, 1=mirror, 2=clamp,
+	 * 3=border). Confirmed against the shipped shaders: body textures tagged
+	 * MAIN use 0, while decal slots (REP0) use 2 — and their UVs run well
+	 * outside [0,1], which only makes sense clamped.
+	 */
+	TextureAddress SWGAddressModeToTextureAddress(uint8 SWGAddress)
+	{
+		switch (SWGAddress)
+		{
+			case 1:  return TA_Mirror;
+			case 2:  return TA_Clamp;
+			case 3:  return TA_Clamp; // border; no TA_Border in UE, clamp is the closest
+			default: return TA_Wrap;
+		}
+	}
+}
+
+FString USWGMeshGeneratorSubsystem::ResolveResourceDecalTexturePath(const FString& ResourceType)
+{
+	if (ResourceType.IsEmpty() || !TreSubsystem)
+	{
+		return FString();
+	}
+
+	if (!ResourceClassTable)
+	{
+		ResourceClassTable = LoadObject<UDataTable>(nullptr, *SWGResourceClass::DataTablePath);
+		if (!ResourceClassTable)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s not built — resource container decals will fall back to the shader's placeholder"), *SWGResourceClass::DataTablePath);
+			return FString();
+		}
+	}
+
+	for (const FString& Candidate : SWGResourceClass::GetIconCandidates(ResourceClassTable, ResourceType))
+	{
+		const FString ShaderPath = FString::Printf(TEXT("shader/ui_res_%s.sht"), *Candidate);
+		if (!TreSubsystem->FileExists(ShaderPath))
+		{
+			continue;
+		}
+
+		FSWGShaderData IconShader;
+		if (FSWGShaderReader::ReadShader(TreSubsystem->CreateIffReader(ShaderPath), IconShader))
+		{
+			if (const FSWGShaderTexture* Diffuse = IconShader.FindTexture(ESWGShaderTextureUsage::Diffuse))
+			{
+				UE_LOG(LogTemp, Log, TEXT("USWGMeshGeneratorSubsystem: resource '%s' -> decal '%s' (via ui_res_%s)"),
+					*ResourceType, *Diffuse->VirtualPath, *Candidate);
+				return Diffuse->VirtualPath;
+			}
+		}
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: no ui_res icon shader anywhere in the ancestry of resource type '%s'"), *ResourceType);
+	return FString();
+}
+
+UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, const FString& ReplaceableTexturePath)
 {
 	if (ShaderVirtualPath.IsEmpty())
 	{
@@ -2596,7 +2700,8 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 	// A tinted/variant-overridden material is specific to this one actor's
 	// customization, not reusable shader-wide — bypass the shared cache
 	// entirely for it (both read and, further below, write).
-	if (!TintOverride && !TintOverride2 && !TextureIndexOverride)
+	// A decal-substituted material is likewise per-object, not shader-wide.
+	if (!TintOverride && !TintOverride2 && !TextureIndexOverride && ReplaceableTexturePath.IsEmpty())
 	{
 		if (TObjectPtr<UMaterialInterface>* Existing = ObjectMaterialCache.Find(ShaderVirtualPath))
 		{
@@ -2627,6 +2732,17 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 	UTexture2D* NormalTexture = NormalDef ? GetOrLoadObjectTexture(NormalDef->VirtualPath, /*bSRGB=*/false,
 		/*bLegacyDXT5Normal=*/NormalDef->Tag.Equals(TEXT("CNRM"), ESearchCase::IgnoreCase)) : nullptr;
 	UTexture2D* SpecularTexture = SpecularDef ? GetOrLoadObjectTexture(SpecularDef->VirtualPath, /*bSRGB=*/false) : nullptr;
+
+	// REP0 decal slot: prefer the caller's substitution, else the shader's own
+	// (placeholder) texture so the slot is at least populated.
+	const FSWGShaderTexture* DecalDef = ShaderData.FindTexture(ESWGShaderTextureUsage::Replaceable);
+	UTexture2D* DecalTexture = nullptr;
+	if (DecalDef)
+	{
+		const FString DecalPath = ReplaceableTexturePath.IsEmpty() ? DecalDef->VirtualPath : ReplaceableTexturePath;
+		DecalTexture = GetOrLoadObjectTexture(DecalPath, /*bSRGB=*/true, /*bLegacyDXT5Normal=*/false,
+			SWGAddressModeToTextureAddress(DecalDef->AddressU));
+	}
 
 	if (!Texture)
 	{
@@ -2670,6 +2786,21 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 				if (SpecularTexture)
 				{
 					MID->SetTextureParameterValue(TEXT("Specular"), SpecularTexture);
+				}
+				if (DecalTexture)
+				{
+					// DecalOpacity gates the whole layer; the parent material
+					// defaults it to 0 so every non-decal shader is unaffected.
+					// The material samples the decal from UV1 — a UV index is
+					// compile-time, so a shader declaring anything else would
+					// need its own material rather than a parameter.
+					if (DecalDef->TexCoordSet != 1)
+					{
+						UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: shader '%s' samples its REP0 decal from UV%d, but the material assumes UV1"),
+							*ShaderVirtualPath, DecalDef->TexCoordSet);
+					}
+					MID->SetTextureParameterValue(TEXT("Decal"), DecalTexture);
+					MID->SetScalarParameterValue(TEXT("DecalOpacity"), 1.0f);
 				}
 
 				// Creature/player skins are a pattern texture meant to be
@@ -2890,7 +3021,7 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedCollisionMesh(uint32
 #endif
 }
 
-UStaticMesh* USWGMeshGeneratorSubsystem::BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials)
+UStaticMesh* USWGMeshGeneratorSubsystem::BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials, const FString& ReplaceableTexturePath)
 {
 	OutMaterials.Reset();
 
@@ -2916,7 +3047,7 @@ UStaticMesh* USWGMeshGeneratorSubsystem::BuildItemStaticMeshAssets(const FSWGMes
 	int32 NumTextured = 0;
 	for (int32 i = 0; i < MeshData.Submeshes.Num(); ++i)
 	{
-		UMaterialInterface* Mat = GetOrBuildObjectMaterial(MeshData.Submeshes[i].ShaderName, PaletteTintOverrides, TextureIndexOverrides);
+		UMaterialInterface* Mat = GetOrBuildObjectMaterial(MeshData.Submeshes[i].ShaderName, PaletteTintOverrides, TextureIndexOverrides, ReplaceableTexturePath);
 		if (Mat)
 		{
 			++NumTextured;
@@ -2930,10 +3061,10 @@ UStaticMesh* USWGMeshGeneratorSubsystem::BuildItemStaticMeshAssets(const FSWGMes
 	return StaticMesh;
 }
 
-UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides)
+UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, const FString& ReplaceableTexturePath)
 {
 	TArray<UMaterialInterface*> Materials;
-	UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForActor(Actor), PaletteTintOverrides, TextureIndexOverrides, Materials);
+	UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForActor(Actor), PaletteTintOverrides, TextureIndexOverrides, Materials, ReplaceableTexturePath);
 	if (!StaticMesh)
 	{
 		return nullptr;

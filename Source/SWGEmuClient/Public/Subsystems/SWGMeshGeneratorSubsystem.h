@@ -26,6 +26,7 @@ class UAnimSequence;
 class UBlendSpace;
 class UAnimSingleNodeInstance;
 class IMeshUtilities;
+class UDataTable;
 class FSWGSkeletalAnimationPipeline;
 
 /**
@@ -375,7 +376,7 @@ private:
 	 * root's world transform (the actor's already-correct network spawn
 	 * placement), since nothing else carries that placement once it's gone.
 	 */
-	UMeshComponent* BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr);
+	UMeshComponent* BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr, const FString& ReplaceableTexturePath = FString());
 
 	/**
 	 * The actor-agnostic asset-producing half of BuildGeneratedMeshComponent,
@@ -388,7 +389,7 @@ private:
 	 * failed/unresolved. Returns nullptr (OutMaterials left empty) if the
 	 * static mesh itself couldn't be built.
 	 */
-	UStaticMesh* BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials);
+	UStaticMesh* BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials, const FString& ReplaceableTexturePath = FString());
 
 	/**
 	 * Parses a .sht shader template (e.g. "shader/dl44_main_as9.sht") and
@@ -534,9 +535,18 @@ private:
 	 *  ResolveCustomizationMorphWeights) — a no-op after the first call. */
 	void EnsureCustomizationManagersLoaded();
 
-	/** Loads/decodes texture/<name>.dds once and caches the result (see LoadedObjectTextures) — same pattern as USWGTerrainSubsystem::GetOrLoadShaderTexture. */
+	/**
+	 * Loads/decodes texture/<name>.dds once and caches the result (see
+	 * LoadedObjectTextures) — same pattern as
+	 * USWGTerrainSubsystem::GetOrLoadShaderTexture.
+	 *
+	 * AddressMode comes from the shader's own TXM entry
+	 * (FSWGShaderTexture::AddressU/V). It matters for decal slots, whose UVs
+	 * deliberately run outside [0,1] so the icon covers only a small patch —
+	 * wrapping those tiles the decal over the whole model.
+	 */
 	UTexture2D* GetOrLoadObjectTexture(const FString& TextureVirtualPath, bool bSRGB = true,
-		bool bLegacyDXT5Normal = false);
+		bool bLegacyDXT5Normal = false, TextureAddress AddressMode = TA_Wrap);
 
 	/**
 	 * Builds (or returns an already-built) UMaterialInstanceDynamic for one
@@ -553,7 +563,17 @@ private:
 	 * is NOT added to ObjectMaterialCache (it's specific to this one actor's
 	 * customization, not reusable shader-wide like the cached/average case).
 	 */
-	UMaterialInterface* GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr);
+	/**
+	 * ReplaceableTexturePath fills a shader's REP0 decal slot (see
+	 * ESWGShaderTextureUsage::Replaceable). The .sht only carries a
+	 * placeholder there — resource containers ship a test texture — so the
+	 * real one has to come from the object's own state. Empty leaves the
+	 * shader's own texture in place.
+	 */
+	UMaterialInterface* GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr, const FString& ReplaceableTexturePath = FString());
+
+	/** Resolves an RCNO resource type (e.g. "steel_duralloy") to the decal texture for its resource class. Empty if nothing in its ancestry has an icon. */
+	FString ResolveResourceDecalTexturePath(const FString& ResourceType);
 
 	UPROPERTY()
 	TObjectPtr<USWGTreSubsystem> TreSubsystem;
@@ -575,6 +595,10 @@ private:
 	/** Shader virtual path (e.g. "shader/dl44_main_as9.sht") -> built MaterialInstanceDynamic. See GetOrBuildObjectMaterial. */
 	UPROPERTY()
 	TMap<FString, TObjectPtr<UMaterialInterface>> ObjectMaterialCache;
+
+	/** Resource class tree, converted from resource_tree.iff at init (see SWGResourceClass::BuildDataTable) and loaded here on first use. */
+	UPROPERTY()
+	TObjectPtr<UDataTable> ResourceClassTable;
 
 	IMeshUtilities* MeshUtilities = nullptr;
 

@@ -95,6 +95,34 @@ namespace
 		}
 	}
 
+	// RCNO base3 derives from TangibleObjectMessage3 (same layout, plus a
+	// trailing quantity/spawnID), so slot 3 goes through ApplyTangibleBaseline.
+	// Base6 does NOT derive from TangibleObjectMessage6 — it's its own layout,
+	// parsed here (ResourceContainerObjectMessage6).
+	void ApplyResourceContainerBaseline(ASWGItem& Item, uint8 Slot, FSWGPacket& Packet)
+	{
+		switch (Slot)
+		{
+			case 3:
+				ApplyTangibleBaseline(Item, Slot, Packet);
+				Item.ResourceQuantity = Packet.ReadInt32();
+				Packet.ReadInt64(); // spawnID
+				break;
+			case 6:
+				Packet.ReadAsciiString();  // unused, server sends ""
+				Packet.ReadInt32();
+				Packet.ReadAsciiString();  // unused, server sends ""
+				Packet.ReadUnicodeString();
+				Packet.ReadInt32();        // max stack size
+				Item.ResourceType = Packet.ReadAsciiString();
+				Item.ResourceName = Packet.ReadUnicodeString();
+				break;
+			default:
+				UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no RCNO baseline dispatch for slot %d"), Slot);
+				break;
+		}
+	}
+
 	void ApplyTangibleDeltas(ASWGItem& Item, uint8 Slot, FSWGPacket& Packet)
 	{
 		switch (Slot)
@@ -613,6 +641,11 @@ void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 		// share the same TangibleObjectMessage3/6-derived baseline layout.
 		if (ASWGItem* Item = Cast<ASWGItem>(Actor))
 			ApplyTangibleBaseline(*Item, Msg.BaselineType, Sub);
+	}
+	else if (FourCC == TEXT("RCNO"))
+	{
+		if (ASWGItem* Item = Cast<ASWGItem>(Actor))
+			ApplyResourceContainerBaseline(*Item, Msg.BaselineType, Sub);
 	}
 	else if (FourCC == TEXT("SCLT"))
 	{

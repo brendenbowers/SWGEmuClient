@@ -8,6 +8,7 @@
 #include "TRE/SWGFormTagMapping.h"
 #include "TRE/SWGDataTableReader.h"
 #include "TRE/SWGDoorStyleRow.h"
+#include "TRE/SWGResourceClassRow.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/StaticMeshActor.h"
 #include "Camera/CameraActor.h"
@@ -149,7 +150,16 @@ void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 						DoorStyleData = FSWGDataTableData();
 					}
 
-					AsyncTask(ENamedThreads::GameThread, [this, StateMachine, ObjectGraph, CrcToSubclass = MoveTemp(CrcToSubclass), DoorStyleData = MoveTemp(DoorStyleData), Epoch]()
+					StateMachine->Status(TEXT("Loading resource classes"));
+					FSWGDataTableData ResourceTreeData;
+					FSWGIffReader ResourceTreeReader = TreSubsystem->CreateIffReader(TEXT("datatables/resource/resource_tree.iff"));
+					if (!ResourceTreeReader.IsValid() || !FSWGDataTableReader::ReadDataTable(ResourceTreeReader, ResourceTreeData))
+					{
+						UE_LOG(LogTemp, Warning, TEXT("SWGInitializationState: failed to load datatables/resource/resource_tree.iff — resource containers will show the shader's placeholder decal"));
+						ResourceTreeData = FSWGDataTableData();
+					}
+
+					AsyncTask(ENamedThreads::GameThread, [this, StateMachine, ObjectGraph, CrcToSubclass = MoveTemp(CrcToSubclass), DoorStyleData = MoveTemp(DoorStyleData), ResourceTreeData = MoveTemp(ResourceTreeData), Epoch]()
 						{
 							if (ObjectGraph.IsValid())
 							{
@@ -158,6 +168,7 @@ void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 
 
 							SWGDoorStyle::BuildDataTable(DoorStyleData);
+							SWGResourceClass::BuildDataTable(ResourceTreeData);
 
 							if (StateMachine.IsValid())
 							{

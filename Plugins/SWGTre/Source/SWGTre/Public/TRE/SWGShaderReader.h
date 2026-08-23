@@ -9,7 +9,11 @@ enum class ESWGShaderTextureUsage : uint8
 	Diffuse,
 	Normal,
 	Specular,
-	Lightmap
+	Lightmap,
+	// REP0: a decal slot the runtime substitutes per-object (effect names
+	// carry "replace0"). The texture stored in the .sht is only a placeholder
+	// — resource containers ship texture/test_ui_res_cereal.dds here.
+	Replaceable
 };
 
 struct FSWGShaderTexture
@@ -17,6 +21,9 @@ struct FSWGShaderTexture
 	FString Tag;
 	FString VirtualPath;
 	ESWGShaderTextureUsage Usage = ESWGShaderTextureUsage::Unknown;
+	/** Which mesh UV set samples this texture, from FORM TCSS. Decal slots
+	 *  typically sit on UV1 while MAIN stays on UV0. */
+	uint8 TexCoordSet = 0;
 	uint8 AddressU = 0;
 	uint8 AddressV = 0;
 	uint8 AddressW = 0;

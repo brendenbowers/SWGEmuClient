@@ -29,4 +29,16 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	TObjectPtr<USWGDefenderComponent> DefenderComponent;
+
+	// RCNO only. ResourceType drives the container's swappable decal texture
+	// (shader/ui_res_<type>.sht) — see USWGMeshGeneratorSubsystem's REP0
+	// handling. Empty on every non-resource-container item.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu|Resource")
+	FString ResourceType;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu|Resource")
+	FString ResourceName;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu|Resource")
+	int32 ResourceQuantity = 0;
 };
