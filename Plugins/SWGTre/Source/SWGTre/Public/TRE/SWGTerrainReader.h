@@ -231,6 +231,23 @@ public:
 	/** Parses a .trn buffer (FORM PTAT). Returns false if the buffer isn't recognized. */
 	static bool ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData& OutData);
 
+	/**
+	 * Parses a .lay buffer — the target of a shared object template's
+	 * "terrainModificationFileName", i.e. the terrain edit a runtime-placed
+	 * object applies to the ground it lands on. 468 templates carry one, 451 of
+	 * them POIs (camps, lairs, ruins); 46 distinct .lay files exist in the TREs.
+	 *
+	 * Structurally it is a .trn's layer graph with the PTAT/TGEN wrapper
+	 * removed: SGRP/FGRP/RGRP/EGRP/MGRP stubs and one or more LAYR forms, all
+	 * as top-level siblings. terrain/thm_tatt_mos_imprv_building02_s01.lay for
+	 * instance is a single layer "Tatooine Filler Building02_s01" holding one
+	 * BoundaryRectangle (+/-14.03 m, feathered) and one AffectorHeightConstant.
+	 *
+	 * Coordinates and heights are LOCAL to the placed object — transform the
+	 * result into world space before appending it to a live FSWGTerrainData.
+	 */
+	static bool ReadLayerFile(const FSWGIffReader& Reader, FSWGTerrainData& OutData);
+
 private:
 	static FString ReadNullTerminatedStringAt(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk, int32 Offset);
 

@@ -13,9 +13,95 @@
 #include "Components/BoxComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/GameInstance.h"
+#include "Subsystems/SWGTerrainSubsystem.h"
+#include "Common/SWGWorldScale.h"
 
 namespace
 {
+	// How far below the lowest interior floor the terrain pad is placed, in raw
+	// units (metres). Enough to keep the ground from z-fighting the floor it sits
+	// directly under, small enough not to leave a visible step at the doorway.
+	// Note this only buys headroom against a *flat* pad being marginally too
+	// high; it does nothing for terrain entering a room through the boundary
+	// feather ramp, which is a horizontal problem solved in BuildFlattenLayer by
+	// growing the pad outward instead.
+	constexpr float TerrainFloorClearance = 0.5f;
+
+	/**
+	 * Lowest walkable floor across every *interior* cell, in building-local UE
+	 * units — what a terrain pad has to stay under so it doesn't surface inside
+	 * a room. Cell 0 is deliberately excluded: it's the exterior shell, whose
+	 * geometry can reach well below the rooms (foundations, skirting), and
+	 * sinking the pad to that would drop the building into a pit.
+	 *
+	 * Prefers the cell's .flr walkable floor; falls back to the embedded CMSH
+	 * collision mesh when the floor is missing or is one of the older FORM 0003
+	 * layouts FSWGFloorReader deliberately refuses to guess at.
+	 *
+	 * Returns false when no interior cell yields usable geometry, in which case
+	 * the caller should leave the pad at the actor origin's height.
+	 */
+	bool FindLowestInteriorFloorZ(TObjectPtr<USWGTreSubsystem> TreSubsystem, const FSWGPobData& PortalData, float& OutLowestZ)
+	{
+		if (!TreSubsystem)
+		{
+			return false;
+		}
+
+		bool bFound = false;
+		double LowestZ = TNumericLimits<double>::Max();
+
+		for (int32 CellIndex = 1; CellIndex < PortalData.Cells.Num(); ++CellIndex)
+		{
+			const FSWGPobCell& Cell = PortalData.Cells[CellIndex];
+
+			bool bUsedFloor = false;
+			double CellLowest = TNumericLimits<double>::Max();
+			const TCHAR* Source = TEXT("none");
+
+			if (!Cell.CollisionFloorPath.IsEmpty())
+			{
+				FSWGIffReader FloorReader = TreSubsystem->CreateIffReader(Cell.CollisionFloorPath);
+				FSWGFloorData FloorData;
+				if (FloorReader.IsValid() && FSWGFloorReader::ReadFloor(FloorReader, FloorData) && !FloorData.Vertices.IsEmpty())
+				{
+					for (const FVector& Vertex : FloorData.Vertices)
+					{
+						CellLowest = FMath::Min(CellLowest, Vertex.Z);
+					}
+					bFound = true;
+					bUsedFloor = true;
+					Source = TEXT("flr");
+				}
+			}
+
+			if (!bUsedFloor && !Cell.CollisionVertices.IsEmpty())
+			{
+				for (const FVector& Vertex : Cell.CollisionVertices)
+				{
+					CellLowest = FMath::Min(CellLowest, Vertex.Z);
+				}
+				bFound = true;
+				Source = TEXT("cmsh");
+			}
+
+			UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD   cell[%d] '%s' source=%s lowestZ(UE)=%s floorPath=%s"),
+				CellIndex, *Cell.CellName, Source,
+				CellLowest == TNumericLimits<double>::Max() ? TEXT("<none>") : *FString::Printf(TEXT("%.2f"), CellLowest),
+				*Cell.CollisionFloorPath);
+
+			LowestZ = FMath::Min(LowestZ, CellLowest);
+		}
+
+		if (!bFound)
+		{
+			return false;
+		}
+
+		OutLowestZ = (float)LowestZ;
+		return true;
+	}
+
 	// Owned by neither spawn concept — bakes floor collision from FSWGPobCell
 	// data onto Actor (the building itself for the exterior shell, or a cell
 	// actor once FSWGCellSpawnHandler::FinishCell builds it).
@@ -222,6 +308,49 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 	{
 		UE_LOG(LogTemp, Error, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: portal layout file %s has no cells"), *PobPath);
 		return false;
+	}
+
+	// Now that the portal layout is parsed, stamp this building's terrain edit.
+	// It has to come after ReadPob, not before: the pad's height is driven by
+	// the building's *lowest interior floor*, which only the POB knows. A
+	// building whose rooms sit at different elevations (the cloning facility's
+	// back room is below its entrance) would otherwise get a pad at the actor
+	// origin's height, which cuts straight through every lower room.
+	// No-ops for templates with neither a terrainModificationFileName nor a
+	// structureFootprintFileName.
+	if (UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr)
+	{
+		if (USWGTerrainSubsystem* TerrainSubsystem = GameInstance->GetSubsystem<USWGTerrainSubsystem>())
+		{
+			// The subsystem works in raw/native space (the .trn's own units),
+			// not final UE actor coordinates. Yaw needs no handedness fix —
+			// SWGWorldScale is a pure scale, with no axis remap.
+			const FVector ActorLocation = Actor.GetActorLocation();
+			FVector RawPosition = SWGToRawSpace(ActorLocation);
+			const float OriginRawZ = (float)RawPosition.Z;
+
+			float LowestFloorZ = 0.0f;
+			const bool bFoundFloor = FindLowestInteriorFloorZ(TreSubsystem, BuildingActor->PortalData, LowestFloorZ);
+			if (bFoundFloor)
+			{
+				// Floor geometry is building-local and already in UE units (it
+				// reaches the collision mesh unscaled), so it converts to raw
+				// before being combined with the raw actor Z.
+				RawPosition.Z += SWGToRawSpace(LowestFloorZ) - TerrainFloorClearance;
+			}
+
+			UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD %s cells=%d actorUE=(%.1f,%.1f,%.1f) originRawZ=%.3f foundFloor=%d lowestFloorUE=%.2f lowestFloorRaw=%.3f clearance=%.2f -> padRawZ=%.3f yaw=%.1f"),
+				*TemplateName, BuildingActor->PortalData.Cells.Num(),
+				ActorLocation.X, ActorLocation.Y, ActorLocation.Z,
+				OriginRawZ, bFoundFloor ? 1 : 0,
+				LowestFloorZ, SWGToRawSpace(LowestFloorZ), TerrainFloorClearance,
+				RawPosition.Z, Actor.GetActorRotation().Yaw);
+
+			TerrainSubsystem->ApplyObjectTerrainModification(
+				TemplateName,
+				RawPosition,
+				FMath::DegreesToRadians(Actor.GetActorRotation().Yaw));
+		}
 	}
 
 	// Cell 0 is always the exterior shell (Sheet 00 §00.2). Keyed by index,

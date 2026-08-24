@@ -656,6 +656,64 @@ bool FSWGTerrainReader::ReadShadersGroup(const FSWGIffReader& Reader, const FSWG
 	return true;
 }
 
+bool FSWGTerrainReader::ReadLayerFile(const FSWGIffReader& Reader, FSWGTerrainData& OutData)
+{
+	if (!Reader.IsValid()) return false;
+
+	// Unlike ReadTerrain there is no PTAT/TGEN wrapper to descend through — the
+	// group stubs and the LAYR form(s) sit directly at the top level. The group
+	// stubs in a .lay are empty placeholders (a version form and nothing else),
+	// so only MGRP is worth reading, and only for the fractal table an
+	// AffectorHeightFractal would index into.
+	bool bFoundMapGroup = false;
+	bool bFoundAnyLayer = false;
+
+	for (const FSWGIffChunk& Child : Reader.ReadChunks())
+	{
+		if (!Child.IsForm())
+			continue;
+
+		if (Child.FormType == SWG_IFF_TAG('S','G','R','P'))
+		{
+			ReadShadersGroup(Reader, Child, OutData.ShaderFamilies);
+		}
+		else if (Child.FormType == SWG_IFF_TAG('M','G','R','P'))
+		{
+			if (!bFoundMapGroup)
+			{
+				ReadMapGroup(Reader, Child, OutData.MapGroup);
+				bFoundMapGroup = true;
+			}
+		}
+		else if (Child.FormType == SWG_IFF_TAG('L','A','Y','R'))
+		{
+			FSWGTerrainLayer Layer;
+			if (ReadLayer(Reader, Child, Layer))
+			{
+				OutData.TopLevelLayers.Add(MoveTemp(Layer));
+				bFoundAnyLayer = true;
+			}
+		}
+		else if (Child.FormType == SWG_IFF_TAG('L','Y','R','S'))
+		{
+			for (const FSWGIffChunk& LayrChild : Reader.ReadChildren(Child))
+			{
+				if (LayrChild.IsForm() && LayrChild.FormType == SWG_IFF_TAG('L','A','Y','R'))
+				{
+					FSWGTerrainLayer Layer;
+					if (ReadLayer(Reader, LayrChild, Layer))
+					{
+						OutData.TopLevelLayers.Add(MoveTemp(Layer));
+						bFoundAnyLayer = true;
+					}
+				}
+			}
+		}
+	}
+
+	return bFoundAnyLayer;
+}
+
 bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData& OutData)
 {
 	if (!Reader.IsValid()) return false;

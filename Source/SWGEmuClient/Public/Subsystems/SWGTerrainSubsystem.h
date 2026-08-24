@@ -11,6 +11,7 @@ class ALandscape;
 class UDataTable;
 class UTexture2D;
 class UMaterialInterface;
+class UDynamicMeshComponent;
 
 /**
  * One static world-snapshot object (building, wall, pillar, item, etc.)
@@ -97,7 +98,62 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Terrain")
 	float GetHeightAt(float X, float Y) const;
 
+	/**
+	 * Stamps a runtime-placed object's terrain modification into the live
+	 * terrain and regenerates only the baked tiles it overlaps.
+	 *
+	 * TemplatePath is the object's shared template (.iff). Its terrain edit is
+	 * resolved in retail's own order of preference: "terrainModificationFileName"
+	 * (a .lay layer graph — what POIs and a few world buildings use) first,
+	 * then "structureFootprintFileName" (a .sfp grid — player houses,
+	 * installations, faction HQs), which is synthesised into an equivalent
+	 * boundary + AffectorHeightConstant layer. Objects with neither are a no-op.
+	 *
+	 * WorldPosition/YawRadians are RAW/native space (the .trn's own units and
+	 * the network wire's raw X/Y/Z), matching GetHeightAt — not final UE-space
+	 * actor coordinates.
+	 *
+	 * Safe to call at any time and from the game thread only. Re-baking happens
+	 * on a worker thread; if one is already in flight the request is queued, so
+	 * a burst of buildings arriving together coalesces instead of racing.
+	 *
+	 * Returns false only when the template has no terrain modification at all.
+	 */
+	bool ApplyObjectTerrainModification(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians);
+
 private:
+	/**
+	 * A terrain modification requested before the terrain existed. Buildings
+	 * routinely spawn ahead of the async terrain load finishing (confirmed in
+	 * the logs: every building lands ~150ms before the tile does), so these are
+	 * held and replayed by FlushPendingObjectTerrainModifications rather than
+	 * dropped — dropping them meant a building's pad silently never applied.
+	 */
+	struct FSWGPendingTerrainModification
+	{
+		FString TemplatePath;
+		FVector WorldPosition = FVector::ZeroVector;
+		float YawRadians = 0.0f;
+	};
+
+	/** Replays everything queued while the terrain was still loading. Game thread, called once the tiles exist. */
+	void FlushPendingObjectTerrainModifications();
+
+	/** Resolves TemplatePath's .lay / .sfp into world-space layers ready to append to CachedTerrainData. Off-thread safe. */
+	bool BuildObjectTerrainLayers(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians, TArray<FSWGTerrainLayer>& OutLayers);
+
+	/** Appends Layers to CachedTerrainData and kicks (or queues) a re-bake of every tile they overlap. Game thread. */
+	void ApplyTerrainLayersAndRegenerate(TArray<FSWGTerrainLayer> Layers);
+
+	/** Starts the worker-thread re-bake for PendingDirtyTiles, if any and if none is already running. Game thread. */
+	void ProcessPendingTerrainRegeneration();
+
+	/** Rewrites one already-registered tile component's mesh + material from a (re-)baked heightmap. Game thread. */
+	void RebuildTerrainTileMesh(UDynamicMeshComponent* MeshComponent, const FSWGBakedHeightmap& Heightmap, const FVector& GridOrigin);
+
+	/** World-space XY extent one baked tile covers. */
+	static FBox2D GetTileBounds(const FSWGBakedHeightmap& Heightmap);
+
 	void Error(const FString& ErrorMessage);
 
 	void LoadTerrain(const FString& TerrainVirtualPath, const FVector& SpawnPosition);
@@ -214,6 +270,35 @@ private:
 	// future on-the-fly-height need) without re-parsing the .trn each call.
 	FSWGTerrainData CachedTerrainData;
 	bool bTerrainDataCached = false;
+
+	// Live tile state, retained so a terrain modification can regenerate an
+	// individual tile in place rather than reloading the whole zone. Index i of
+	// TerrainTileComponents and TerrainTileHeightmaps describe the same tile.
+	UPROPERTY()
+	TObjectPtr<AActor> TerrainMeshActor;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UDynamicMeshComponent>> TerrainTileComponents;
+
+	TArray<FSWGBakedHeightmap> TerrainTileHeightmaps;
+	FVector TerrainGridOrigin = FVector::ZeroVector;
+	FString ActiveTerrainVirtualPath;
+
+	// Re-baking reads CachedTerrainData from a worker thread while the game
+	// thread may still be calling GetHeightAt against it. Concurrent reads are
+	// fine; a concurrent *append* is not, so modifications arriving during an
+	// in-flight bake are held here and drained once it lands.
+	TArray<FSWGTerrainLayer> QueuedTerrainLayers;
+	TSet<int32> PendingDirtyTiles;
+	bool bTerrainRegenerationInFlight = false;
+
+	/** Modifications requested before the terrain finished loading — see FSWGPendingTerrainModification. */
+	TArray<FSWGPendingTerrainModification> PendingObjectModifications;
+
+	// Bumped every time the tile grid is rebuilt (zone travel). An in-flight
+	// re-bake that lands after a zone change carries the old value and is
+	// discarded rather than written into the new zone's tiles.
+	int32 TerrainGeneration = 0;
 
 	// Bake grid tuning — placeholder extent, not a finished sizing decision (see
 	// world-object-plan.html "Heightmap baking + local cache": "resolution TBD
