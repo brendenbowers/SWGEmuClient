@@ -86,24 +86,6 @@ namespace
 			break;
 		}
 	}
-
-
-	int32 ApplyCellBaseline(uint8 Slot, FSWGPacket& Packet)
-	{
-		if (Slot != 3)
-		{
-			UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no TLCS baseline dispatch for slot %d"), Slot);
-			return -1;
-		}
-
-		Packet.ReadInt32();  // unlabeled ("something")
-		Packet.ReadInt16();  // STFName
-		Packet.ReadInt32();  // unlabeled ("something")
-		Packet.ReadInt16();  // STF
-		Packet.ReadInt32();  // custom name
-		Packet.ReadInt32();  // unlabeled ("something")
-		return Packet.ReadInt32(); // cellNumber
-	}
 }
 
 void USWGObjectGraphSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -420,8 +402,6 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 
 void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 {
-	//TODO: SCLT below still needs to move into a FSWGBaselineHandlerRegistry handler
-	// (it needs a public way to record a cell number on the object graph first).
 	AActor* Actor = FindActor(Msg.ObjectId);
 	if (!Actor)
 	{
@@ -430,36 +410,16 @@ void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 		return;
 	}
 
-	FSWGPacket Sub(Msg.RawPayload.GetData(), Msg.RawPayload.Num());
 	const FString FourCC = Msg.GetObjectTypeFourCC();
 
 	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: Baselines object=%lld FourCC=%s slot=%d actor=%s"),
 		Msg.ObjectId, *FourCC, Msg.BaselineType, *Actor->GetName());
 
 	FSWGBaselineArguments BaselineArgs{this};
-	if (FSWGBaselineHandlerRegistry::Get().TryHandle(*Actor, Msg, BaselineArgs))
+	if (!FSWGBaselineHandlerRegistry::Get().TryHandle(*Actor, Msg, BaselineArgs))
 	{
-		return;
-	}
-
-	switch (Msg.GetObjectType())
-	{
-		case ESWGObjectType::SCLT:
-			if (ASWGCell* CellActor = Cast<ASWGCell>(Actor))
-			{
-				const int32 CellNumber = ApplyCellBaseline(Msg.BaselineType, Sub);
-				if (CellNumber >= 0)
-				{
-					CellNumberByObjectId.Add(Msg.ObjectId, CellNumber);
-					FSWGCellSpawnHandler::CheckAndFinishCell(*this, Msg.ObjectId, TreSubsystem, MeshGenerator);
-				}
-			}
-			break;
-
-		default:
-			UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no baseline dispatch for FourCC '%s' (object %lld, slot %d)"),
-				*FourCC, Msg.ObjectId, Msg.BaselineType);
-			break;
+		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no baseline dispatch for FourCC '%s' (object %lld, slot %d)"),
+			*FourCC, Msg.ObjectId, Msg.BaselineType);
 	}
 }
 
@@ -549,7 +509,7 @@ void USWGObjectGraphSubsystem::HandleUpdateContainment(const FUpdateContainmentM
 	}
 
 	// A cell's owning building is ContainerId here, but its cell number comes
-	// from its own TLCS baseline (HandleBaselines/ApplyCellBaseline), not
+	// from its own TLCS baseline (FSWGCellBaselineHandler), not
 	// from Msg.Type — that's always -1 (VolumeContained) for a cell, same as
 	// any other volume-contained object. FSWGCellSpawnHandler owns deciding
 	// whether both pieces are known yet and actually finishing the cell.

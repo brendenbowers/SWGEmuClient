@@ -18,6 +18,11 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	int32 CellNumber = 0;
 
+	// Room name from the TLCS baseline — the custom name when the server sent one,
+	// otherwise the STF key (e.g. "cantina").
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	FString CellName;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	FString MeshPath;
 

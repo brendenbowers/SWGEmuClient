@@ -86,6 +86,9 @@ public:
 	 */
 	const int32* FindCellNumber(int64 ObjectId) const { return CellNumberByObjectId.Find(ObjectId); }
 
+	/** Records ObjectId's cellNumber — set by FSWGCellBaselineHandler from the TLCS baseline. */
+	void SetCellNumber(int64 ObjectId, int32 CellNumber) { CellNumberByObjectId.Add(ObjectId, CellNumber); }
+
 	/** Fired once SceneEndBaselines confirms an object's baselines are complete. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnObjectReady, int64 /*ObjectId*/);
 	FOnObjectReady OnObjectReady;
