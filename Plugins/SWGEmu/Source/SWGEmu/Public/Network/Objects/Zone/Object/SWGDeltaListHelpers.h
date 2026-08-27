@@ -53,6 +53,26 @@ struct TSWGListChanges
 	TArray<TSWGListChange<T>> Changes;
 };
 
+/**
+ * Walks a delta payload's updates, handing each field index to ApplyUpdate to
+ * read its operand. Stops early if ApplyUpdate returns false: operands are only
+ * self-delimiting once the field is known, so an unrecognised index makes the
+ * rest of the payload unreadable.
+ */
+template<typename FApplyUpdate>
+void ReadDeltaUpdates(FSWGPacket& Packet, uint16 UpdateCount, FApplyUpdate ApplyUpdate)
+{
+	for (uint16 i = 0; i < UpdateCount; ++i)
+	{
+		const uint16 Index = Packet.ReadUInt16();
+		if (!ApplyUpdate(Packet, Index))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ReadDeltaUpdates: unknown update index 0x%02X — stopping"), Index);
+			return;
+		}
+	}
+}
+
 /** Reads the count/updateCounter header, then defers each operation to ReadChange. */
 template<typename T, typename FReadChange>
 TSWGListChanges<T> ReadListChanges(FSWGPacket& Packet, FReadChange ReadChange)
