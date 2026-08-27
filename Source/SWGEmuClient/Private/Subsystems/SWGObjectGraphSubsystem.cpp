@@ -57,15 +57,6 @@
 
 namespace
 {
-	// Dispatch order below is byte-exact against each free-function parser
-	// (SWGTangibleBaselineParser / SWGCreatureBaselineParser — see
-	// world-object-plan.html "Component breakdown" / "Delta application").
-	// Several slots interleave components mid-stream (e.g. CREO base3 is
-	// Tangible/Condition, then CombatState, then loose actor fields, then
-	// Health, then CombatState again, then Health again) — each component's
-	// ApplyBaseX is split into ApplyBaseXPartN sub-calls wherever that happens,
-	// called here in the exact wire order.
-
 	void ApplyTangibleDeltas(ASWGItem& Item, uint8 Slot, FSWGPacket& Packet)
 	{
 		switch (Slot)
@@ -93,139 +84,6 @@ namespace
 		default:
 			UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no TANO delta dispatch for slot %d"), Slot);
 			break;
-		}
-	}
-
-	// CREO base1/3/4/6: SWGCreatureBaselineParser::ParseBase1/3/4/6. "Loose"
-	// fields (BankCredits/CashCredits/CreatureLinkId/Height/Level/GuildId) live
-	// directly on ASWGCreature — see world-object-plan.html "Component
-	// breakdown" — so they're read inline here rather than via a component.
-	void ApplyCreatureBaseline(ASWGCreature& Creature, uint8 Slot, FSWGPacket& Packet)
-	{
-		switch (Slot)
-		{
-			case 1:
-				Creature.BankCredits = Packet.ReadInt32();
-				Creature.CashCredits = Packet.ReadInt32();
-				if (Creature.HealthComponent)
-				{
-					Creature.HealthComponent->ApplyBase1(Packet);
-				}
-				if (Creature.SkillComponent)
-				{
-					Creature.SkillComponent->ApplyBase1(Packet);
-				}
-				break;
-			case 3:
-				 //TangibleObjectMessage3 fields come first on the wire.
-				if (Creature.TangibleComponent)
-				{
-					Creature.TangibleComponent->ApplyBase3Part1(Packet);
-				}
-				if (Creature.ConditionComponent)
-				{
-					Creature.ConditionComponent->ApplyBase3(Packet);
-				}
-				if (Creature.TangibleComponent)
-				{
-					Creature.TangibleComponent->ApplyBase3Part2(Packet);
-				}
-				if (Creature.CombatStateComponent)
-				{
-					Creature.CombatStateComponent->ApplyBase3Part1(Packet);
-				}
-				Creature.CreatureLinkId = Packet.ReadInt64();
-				Creature.Height = Packet.ReadFloat();
-				if (Creature.HealthComponent)
-				{
-					Creature.HealthComponent->ApplyBase3Part1(Packet);
-				}
-				if (Creature.CombatStateComponent)
-				{
-					Creature.CombatStateComponent->ApplyBase3Part2(Packet);
-				}
-				if (Creature.HealthComponent)
-				{
-					Creature.HealthComponent->ApplyBase3Part2(Packet);
-				}
-				break;
-			case 4:
-			{
-				USWGMovementComponent* Movement = Creature.GetSWGMovementComponent();
-				if (Movement)
-				{
-					Movement->ApplyBase4Part1(Packet);
-				}
-				if (Creature.EncumbranceComponent)
-				{
-					Creature.EncumbranceComponent->ApplyBase4(Packet);
-				}
-				if (Creature.SkillComponent)
-				{
-					Creature.SkillComponent->ApplyBase4(Packet);
-				}
-				if (Movement)
-				{
-					Movement->ApplyBase4Part2(Packet);
-				}
-				if (Creature.SpaceMissionComponent)
-				{
-					Creature.SpaceMissionComponent->ApplyBase4Part1(Packet);
-				}
-				if (Movement)
-				{
-					Movement->ApplyBase4Part3(Packet);
-				}
-				if (Creature.SpaceMissionComponent)
-				{
-					Creature.SpaceMissionComponent->ApplyBase4Part2(Packet);
-				}
-				break;
-			}
-			case 6:
-				//TangibleObjectMessage6 fields (Unknown076 + DefenderList) come first.
-				if (Creature.DefenderComponent)
-				{
-					Creature.DefenderComponent->ApplyBase6(Packet);
-				}
-				Creature.Level = Packet.ReadUInt16();
-				if (Creature.PerformanceComponent)
-				{
-					Creature.PerformanceComponent->ApplyBase6Part1(Packet);
-				}
-				if (Creature.CombatStateComponent)
-				{
-					Creature.CombatStateComponent->ApplyBase6Part1(Packet);
-				}
-				if (Creature.GroupComponent)
-				{
-					Creature.GroupComponent->ApplyBase6(Packet);
-				}
-				Creature.GuildId = Packet.ReadInt32();
-				if (Creature.CombatStateComponent)
-				{
-					Creature.CombatStateComponent->ApplyBase6Part2(Packet);
-				}
-				if (Creature.PerformanceComponent)
-				{
-					Creature.PerformanceComponent->ApplyBase6Part2(Packet);
-				}
-				if (Creature.HealthComponent)
-				{
-					Creature.HealthComponent->ApplyBase6(Packet);
-				}
-				if (Creature.EquipmentComponent)
-				{
-					Creature.EquipmentComponent->ApplyBase6(Packet);
-				}
-				if (Creature.CombatStateComponent)
-				{
-					Creature.CombatStateComponent->ApplyBase6Part3(Packet);
-				}
-				break;
-			default:
-				UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no CREO baseline dispatch for slot %d"), Slot);
-				break;
 		}
 	}
 
@@ -562,8 +420,8 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 
 void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 {
-	//TODO: SCLT/CREO below still need to move into FSWGBaselineHandlerRegistry handlers
-	// (SCLT needs a public way to record a cell number on the object graph first).
+	//TODO: SCLT below still needs to move into a FSWGBaselineHandlerRegistry handler
+	// (it needs a public way to record a cell number on the object graph first).
 	AActor* Actor = FindActor(Msg.ObjectId);
 	if (!Actor)
 	{
@@ -595,13 +453,6 @@ void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 					CellNumberByObjectId.Add(Msg.ObjectId, CellNumber);
 					FSWGCellSpawnHandler::CheckAndFinishCell(*this, Msg.ObjectId, TreSubsystem, MeshGenerator);
 				}
-			}
-			break;
-
-		case ESWGObjectType::CREO:
-			if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor))
-			{
-				ApplyCreatureBaseline(*Creature, Msg.BaselineType, Sub);
 			}
 			break;
 

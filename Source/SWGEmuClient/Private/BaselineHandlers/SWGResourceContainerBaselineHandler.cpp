@@ -23,7 +23,7 @@ bool FSWGResourceContainerBaselineHandler::HandleBaseline(AActor& Actor, const F
 		return false;
 	}
 
-	FSWGPacket Packet Msg.AsPayloadPacket();
+	FSWGPacket Packet = Msg.AsPayloadPacket();
 
 	switch (Msg.BaselineType)
 	{
