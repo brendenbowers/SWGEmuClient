@@ -37,6 +37,7 @@
 #include "Objects/World/SWGStaticProp.h"
 #include "SpawnHandlers/SWGBuildingSpawnHanlder.h"
 #include "Subsystems/SWGBaselineHandlerRegistry.h"
+#include "Subsystems/SWGDeltaHandlerRegistry.h"
 #include "Network/Messages/SWGFourCC.h"
 
 #include "Components/SWGTangibleComponent.h"
@@ -634,7 +635,10 @@ void USWGObjectGraphSubsystem::HandleDeltas(const FDeltasMessage& Msg)
 		return;
 	}
 
-	// Field-index application deferred — see world-object-plan.html "Delta application".
-	UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: delta for object %lld type '%s' slot %d (%d update ops, not yet applied)"),
-		Msg.ObjectId, *Msg.GetObjectTypeFourCC(), Msg.DeltaType, Msg.UpdateCount);
+	FSWGDeltaArguments DeltaArgs{this};
+	if (!FSWGDeltaHandlerRegistry::Get().TryHandle(*Actor, Msg, DeltaArgs))
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: delta for object %lld type '%s' slot %d (%d update ops, not yet applied)"),
+			Msg.ObjectId, *Msg.GetObjectTypeFourCC(), Msg.DeltaType, Msg.UpdateCount);
+	}
 }

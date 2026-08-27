@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Network/SWGPacket.h"
 #include "Network/Messages/SWGNetMessage.h"
 #include "Network/Messages/SWGFourCC.h"
 
@@ -42,4 +43,6 @@ struct SWGEMU_API FDeltasMessage : public FSWGNetMessage
 
 	/** Decode ObjectType back into its 4-character ASCII form (e.g. "CREO"). */
 	FString GetObjectTypeFourCC() const;
+
+	FSWGPacket AsPayloadPacket() const { return FSWGPacket(RawUpdates.GetData(), RawUpdates.Num()); }
 };
