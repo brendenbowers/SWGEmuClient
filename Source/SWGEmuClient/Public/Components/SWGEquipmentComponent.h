@@ -33,7 +33,11 @@ public:
 	void SetPreviewEquipment(TArray<FEquiptmentItem> InEquipment, FString InAlternateAppearance);
 
 protected:
-	void BuildEquipmentVisuals(const TConstArrayView<FEquiptmentItem> EquipmentList);
+	/** Callers pass the full current equipment list: anything attached but absent from it is detached. */
+	void BuildEquipmentVisuals(const TConstArrayView<FEquiptmentItem> CurrentEquipment);
+
+	/** Destroys the attached meshes of items no longer equipped in CurrentEquipment. */
+	void RemoveUnequippedVisuals(const TConstArrayView<FEquiptmentItem> CurrentEquipment);
 
 	/**
 	 * RetryCount: the character's own base skeletal mesh is a separate,
@@ -41,7 +45,7 @@ protected:
 	 * USWGMeshGeneratorSubsystem::ProcessNextRequest) — it can still be
 	 * mid-flight when this item's mesh finishes.
 	 */
-	void AttachMeshToHardpoint(UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials, int32 RetryCount = 0);
+	void AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials, int32 RetryCount = 0);
 
 	/**
 	 * Wearable clothing/armor counterpart to AttachMeshToHardpoint — attaches
@@ -81,4 +85,9 @@ protected:
 	 *  doesn't spawn a duplicate component. */
 	UPROPERTY()
 	TMap<uint64, TObjectPtr<USkeletalMeshComponent>> WearableComponentsByObjectId;
+
+	/** Hardpoint components created by AttachMeshToHardpoint, keyed the same way
+	 *  so a held item is reused rather than duplicated, and can be detached. */
+	UPROPERTY()
+	TMap<uint64, TObjectPtr<UStaticMeshComponent>> HardpointComponentsByObjectId;
 };

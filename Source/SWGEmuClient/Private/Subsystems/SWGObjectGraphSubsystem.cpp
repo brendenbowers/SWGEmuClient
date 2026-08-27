@@ -14,6 +14,7 @@
 #include "Network/Messages/Zone/SceneCreateObjectMessage.h"
 #include "Network/Messages/Zone/BaselinesMessage.h"
 #include "Network/Messages/Zone/SceneEndBaselinesMessage.h"
+#include "Network/Messages/Zone/SceneDestroyObjectMessage.h"
 #include "Network/Messages/Zone/DeltasMessage.h"
 #include "Network/Messages/Zone/CmdStartSceneMessage.h"
 #include "Network/Messages/Zone/UpdateContainmentMessage.h"
@@ -226,6 +227,10 @@ void USWGObjectGraphSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> 
 	else if (Opcode == static_cast<uint32>(ESWGMessageOp::SceneEndBaselines))
 	{
 		HandleSceneEndBaselines(*static_cast<const FSceneEndBaselinesMessage*>(Msg.Get()));
+	}
+	else if (Opcode == static_cast<uint32>(ESWGMessageOp::SceneDestroyObject))
+	{
+		HandleSceneDestroyObject(*static_cast<const FSceneDestroyObjectMessage*>(Msg.Get()));
 	}
 	else if (Opcode == static_cast<uint32>(ESWGMessageOp::DeltasMessage))
 	{
@@ -590,6 +595,77 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ContainerId
 	{
 		Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 	}
+}
+
+void USWGObjectGraphSubsystem::HandleSceneDestroyObject(const FSceneDestroyObjectMessage& Msg)
+{
+	RemoveObject(Msg.ObjectId);
+}
+
+void USWGObjectGraphSubsystem::RemoveObject(int64 ObjectId)
+{
+	TWeakObjectPtr<AActor> Registered;
+	if (!ActorRegistry.RemoveAndCopyValue(ObjectId, Registered))
+	{
+		// Destroys arrive for objects that never spawned — an unresolved CRC, or
+		// one that left view before its SceneCreateObjectByCrc was processed.
+		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: destroy for unregistered object %lld"), ObjectId);
+		ContainerByObjectId.Remove(ObjectId);
+		CellNumberByObjectId.Remove(ObjectId);
+		return;
+	}
+
+	ContainerByObjectId.Remove(ObjectId);
+	CellNumberByObjectId.Remove(ObjectId);
+
+	OnObjectDestroyed.Broadcast(ObjectId);
+
+	AActor* Actor = Registered.Get();
+	if (!Actor)
+	{
+		return;
+	}
+
+	// The local player's actor is possessed by the player controller; tearing it
+	// out from under the controller mid-session leaves the client with no pawn.
+	// Logout and zone changes destroy it through the level teardown instead.
+	if (ObjectId != 0 && ObjectId == LocalPlayerObjectId)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGObjectGraphSubsystem: destroy for the local player object %lld — unregistered, actor left alone"), ObjectId);
+		return;
+	}
+
+	// Buildings own their cells and doors by attachment, and those carry their
+	// own registry entries. Destroy takes the children with it so nothing is
+	// left parented to a destroyed actor if the server doesn't send a destroy
+	// for each one.
+	TArray<AActor*> Attached;
+	Actor->GetAttachedActors(Attached, /*bResetArray*/ true, /*bRecursivelyIncludeAttachedActors*/ true);
+
+	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: destroying object %lld (%s) and %d attached actor(s)"),
+		ObjectId, *Actor->GetName(), Attached.Num());
+
+	for (AActor* Child : Attached)
+	{
+		if (!Child)
+		{
+			continue;
+		}
+
+		// Drop the child's own registry entry so it can't be looked up after this.
+		if (const ISWGNetworkObjectInterface* NetworkObject = Cast<ISWGNetworkObjectInterface>(Child))
+		{
+			const int64 ChildId = NetworkObject->GetObjectId();
+			ActorRegistry.Remove(ChildId);
+			ContainerByObjectId.Remove(ChildId);
+			CellNumberByObjectId.Remove(ChildId);
+			OnObjectDestroyed.Broadcast(ChildId);
+		}
+
+		Child->Destroy();
+	}
+
+	Actor->Destroy();
 }
 
 void USWGObjectGraphSubsystem::HandleDeltas(const FDeltasMessage& Msg)

@@ -20,6 +20,7 @@ struct FSWGNetMessage;
 struct FSceneCreateObjectMessage;
 struct FBaselinesMessage;
 struct FSceneEndBaselinesMessage;
+struct FSceneDestroyObjectMessage;
 struct FDeltasMessage;
 struct FCmdStartSceneMessage;
 struct FUpdateContainmentMessage;
@@ -93,6 +94,16 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnObjectReady, int64 /*ObjectId*/);
 	FOnObjectReady OnObjectReady;
 
+	/** Fired just before a destroyed object's actor is torn down, while it can still be looked up. */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnObjectDestroyed, int64 /*ObjectId*/);
+	FOnObjectDestroyed OnObjectDestroyed;
+
+	/**
+	 * Destroys ObjectId's actor and drops every trace of it from the graph.
+	 * Safe to call for an id that isn't registered.
+	 */
+	void RemoveObject(int64 ObjectId);
+
 	/**
 	 * CharacterID from CmdStartScene — the ObjectId of the local player's own
 	 * CREO (same value used server-side as the character's object id). 0 until
@@ -146,6 +157,7 @@ private:
 	void HandleSceneCreateObject(const FSceneCreateObjectMessage& Msg);
 	void HandleBaselines(const FBaselinesMessage& Msg);
 	void HandleSceneEndBaselines(const FSceneEndBaselinesMessage& Msg);
+	void HandleSceneDestroyObject(const FSceneDestroyObjectMessage& Msg);
 	void HandleDeltas(const FDeltasMessage& Msg);
 	void HandleUpdateContainment(const FUpdateContainmentMessage& Msg);
 	void HandleUpdateTransform(const FUpdateTransformMessage& Msg);

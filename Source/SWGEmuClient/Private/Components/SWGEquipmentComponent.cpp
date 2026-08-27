@@ -49,8 +49,55 @@ void USWGEquipmentComponent::SetPreviewEquipment(TArray<FEquiptmentItem> InEquip
 	BuildEquipmentVisuals(EquipmentList.Items);
 }
 
-void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquiptmentItem> ChangedEquipment)
+void USWGEquipmentComponent::RemoveUnequippedVisuals(const TConstArrayView<FEquiptmentItem> CurrentEquipment)
 {
+	TSet<uint64> EquippedIds;
+	EquippedIds.Reserve(CurrentEquipment.Num());
+	for (const FEquiptmentItem& Item : CurrentEquipment)
+	{
+		if (SWGIsSlottedArrangement(Item.ContainmentType))
+		{
+			EquippedIds.Add(Item.ObjectId);
+		}
+	}
+
+	for (auto It = WearableComponentsByObjectId.CreateIterator(); It; ++It)
+	{
+		if (EquippedIds.Contains(It.Key()))
+		{
+			continue;
+		}
+
+		if (USkeletalMeshComponent* WearableComponent = It.Value())
+		{
+			WearableComponent->DestroyComponent();
+		}
+		It.RemoveCurrent();
+	}
+
+	for (auto It = HardpointComponentsByObjectId.CreateIterator(); It; ++It)
+	{
+		if (EquippedIds.Contains(It.Key()))
+		{
+			continue;
+		}
+
+		if (UStaticMeshComponent* ItemMeshComponent = It.Value())
+		{
+			ItemMeshComponent->DestroyComponent();
+		}
+		It.RemoveCurrent();
+	}
+
+	// Unequipping the last wearable produces no attach callback, so the body's
+	// hidden sections would otherwise never be re-shown.
+	ReconcileBodyOcclusion();
+}
+
+void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquiptmentItem> CurrentEquipment)
+{
+	RemoveUnequippedVisuals(CurrentEquipment);
+
 	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
 	if (!GameInstance)
 	{
@@ -63,7 +110,7 @@ void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquipt
 		return;
 	}
 
-	for (const FEquiptmentItem& Item : ChangedEquipment)
+	for (const FEquiptmentItem& Item : CurrentEquipment)
 	{
 		if (!SWGIsSlottedArrangement(Item.ContainmentType))
 		{
@@ -80,11 +127,11 @@ void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquipt
 		const uint64 ObjectId = Item.ObjectId;
 		TWeakObjectPtr<USWGEquipmentComponent> WeakThis(this);
 		MeshGen->RequestItemMesh(Item.TemplateCRC, Item.ContainmentType, ItemCustomization,
-			[WeakThis](UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)
+			[WeakThis, ObjectId](UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)
 			{
 				if (USWGEquipmentComponent* Equipment = WeakThis.Get())
 				{
-					Equipment->AttachMeshToHardpoint(Mesh, MeshData, Materials);
+					Equipment->AttachMeshToHardpoint(ObjectId, Mesh, MeshData, Materials);
 				}
 			},
 			[WeakThis, ObjectId](USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)
@@ -98,7 +145,7 @@ void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquipt
 }
 
 
-void USWGEquipmentComponent::AttachMeshToHardpoint(UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials, int32 RetryCount)
+void USWGEquipmentComponent::AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials, int32 RetryCount)
 {
 	if (!Mesh || !GetOwner())
 	{
@@ -127,25 +174,34 @@ void USWGEquipmentComponent::AttachMeshToHardpoint(UStaticMesh* Mesh, const FSWG
 		}
 
 		TWeakObjectPtr<USWGEquipmentComponent> WeakThis(this);
-		GetWorld()->GetTimerManager().SetTimerForNextTick([WeakThis, Mesh, MeshData, Materials, RetryCount]()
+		GetWorld()->GetTimerManager().SetTimerForNextTick([WeakThis, ObjectId, Mesh, MeshData, Materials, RetryCount]()
 		{
 			if (USWGEquipmentComponent* StrongThis = WeakThis.Get())
 			{
-				StrongThis->AttachMeshToHardpoint(Mesh, MeshData, Materials, RetryCount + 1);
+				StrongThis->AttachMeshToHardpoint(ObjectId, Mesh, MeshData, Materials, RetryCount + 1);
 			}
 		});
 		return;
 	}
 
-	UStaticMeshComponent* ItemMeshComponent = NewObject<UStaticMeshComponent>(GetOwner());
-	ItemMeshComponent->SetRelativeTransform(FTransform::Identity);
+	// Reuse on re-equip, for the same reason as AttachWearableSkeletalMesh: every
+	// equipment change rebuilds from the whole list, so this runs again for items
+	// that were already attached.
+	UStaticMeshComponent* ItemMeshComponent = HardpointComponentsByObjectId.FindRef(ObjectId);
+	if (!ItemMeshComponent)
+	{
+		ItemMeshComponent = NewObject<UStaticMeshComponent>(GetOwner());
+		ItemMeshComponent->SetRelativeTransform(FTransform::Identity);
+		ItemMeshComponent->RegisterComponent();
+		ItemMeshComponent->AttachToComponent(SkeletalMeshComponent, FAttachmentTransformRules::KeepRelativeTransform, FName("hold_r"));
+		HardpointComponentsByObjectId.Add(ObjectId, ItemMeshComponent);
+	}
+
 	ItemMeshComponent->SetStaticMesh(Mesh);
 	for (int32 i = 0; i < Materials.Num(); ++i)
 	{
 		ItemMeshComponent->SetMaterial(i, Materials[i]);
 	}
-	ItemMeshComponent->RegisterComponent();
-	ItemMeshComponent->AttachToComponent(SkeletalMeshComponent, FAttachmentTransformRules::KeepRelativeTransform, FName("hold_r"));
 }
 
 void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkeletalMesh* Mesh, const TArray<UMaterialInterface*>& Materials, int32 RetryCount)
