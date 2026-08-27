@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
 #include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
 #include "SWGEncumbranceComponent.generated.h"
 
@@ -20,5 +21,5 @@ public:
 	TSWGBaselineList<int32> Encumbrances;
 	bool bHasBase4 = false;
 
-	void ApplyBase4(FSWGPacket& Packet);
+	void ApplyBase4(const FCreatureObjectBaseline& Baseline);
 };

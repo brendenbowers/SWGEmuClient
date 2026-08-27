@@ -1,15 +1,14 @@
 #include "Components/SWGGroupComponent.h"
-#include "Network/SWGPacket.h"
 
 USWGGroupComponent::USWGGroupComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGGroupComponent::ApplyBase6(FSWGPacket& Packet)
+void USWGGroupComponent::ApplyBase6(const FCreatureObjectBaseline& Baseline)
 {
-	GroupId = Packet.ReadInt64();
-	GroupInviterId = Packet.ReadInt64();
-	GroupInviteCounter = Packet.ReadInt64();
+	GroupId = Baseline.GroupId;
+	GroupInviterId = Baseline.GroupInviterId;
+	GroupInviteCounter = Baseline.GroupInviteCounter;
 	bHasBase6 = true;
 }

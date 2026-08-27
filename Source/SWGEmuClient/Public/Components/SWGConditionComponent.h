@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Network/Objects/Zone/Object/TangibleObjectBaseline.h"
 #include "SWGConditionComponent.generated.h"
 
 struct FSWGPacket;
@@ -21,5 +22,5 @@ public:
 	int32 MaxCondition    = 0;
 	bool  bHasBase3       = false;
 
-	void ApplyBase3(FSWGPacket& Packet);
+	void ApplyBase3(const FTangibleObjectBaseline& Baseline);
 };

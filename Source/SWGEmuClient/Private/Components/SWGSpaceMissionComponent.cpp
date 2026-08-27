@@ -1,23 +1,13 @@
 #include "Components/SWGSpaceMissionComponent.h"
-#include "Network/SWGPacket.h"
 
 USWGSpaceMissionComponent::USWGSpaceMissionComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGSpaceMissionComponent::ApplyBase4Part1(FSWGPacket& Packet)
+void USWGSpaceMissionComponent::ApplyBase4(const FCreatureObjectBaseline& Baseline)
 {
-	ListenId = Packet.ReadInt64();
-}
-
-void USWGSpaceMissionComponent::ApplyBase4Part2(FSWGPacket& Packet)
-{
-	SpaceMissionObjects = ReadBaselineVector<FGroupMissionCriticalObject>(Packet, [](FSWGPacket& P)
-	{
-		FGroupMissionCriticalObject Obj;
-		Obj.Deserialize(P);
-		return Obj;
-	});
+	ListenId = Baseline.ListenId;
+	SpaceMissionObjects = Baseline.SpaceMissionObjects;
 	bHasBase4 = true;
 }

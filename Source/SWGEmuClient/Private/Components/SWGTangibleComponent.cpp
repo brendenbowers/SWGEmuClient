@@ -10,14 +10,18 @@ USWGTangibleComponent::USWGTangibleComponent()
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGTangibleComponent::ApplyBase3Part1(FSWGPacket& Packet)
+void USWGTangibleComponent::ApplyBase3(const FTangibleObjectBaseline& Baseline)
 {
-	Complexity = Packet.ReadFloat();
-	ObjectName = FSWGStringId::Read(Packet);
-	CustomName = Packet.ReadUnicodeString();
-	Volume = Packet.ReadInt32();
+	Complexity = Baseline.Complexity;
+	ObjectName = Baseline.ObjectName;
+	CustomName = Baseline.CustomName;
+	Volume = Baseline.Volume;
+	VisibleComponents = Baseline.VisibleComponents;
+	OptionsBitmask = Baseline.OptionsBitmask;
+	ObjectVisible = Baseline.ObjectVisible;
+	bHasBase3 = true;
 
-	CustomizationBytes = Packet.ReadAsciiBytes();
+	CustomizationBytes = Baseline.CustomizationBytes;
 	if (!FSWGCustomizationVariables::Parse(CustomizationBytes, DecodedCustomization))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGTangibleComponent: %s failed to decode customization data (%d byte(s))"),
@@ -32,10 +36,6 @@ void USWGTangibleComponent::ApplyBase3Part1(FSWGPacket& Packet)
 		}
 		UE_LOG(LogTemp, Warning, TEXT("USWGTangibleComponent: %s customization: %s"), *GetOwner()->GetName(), *Dump);
 	}
-
-	VisibleComponents = ReadBaselineVector<int32>(Packet, [](FSWGPacket& P) { return P.ReadInt32(); });
-
-	OptionsBitmask = Packet.ReadInt32();
 
 	UpdateNameLabel();
 }
@@ -104,10 +104,4 @@ void USWGTangibleComponent::RepositionNameLabel()
 	}
 
 	NameLabel->SetRelativeLocation(FVector(0.0f, 0.0f, ComputeHeightAboveRoot(GetOwner())));
-}
-
-void USWGTangibleComponent::ApplyBase3Part2(FSWGPacket& Packet)
-{
-	ObjectVisible = Packet.ReadByte();
-	bHasBase3 = true;
 }

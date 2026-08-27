@@ -17,7 +17,7 @@ struct SWGEMU_API FTangibleObjectDelta
 	TOptional<FSWGStringId> ObjectName;
 	TOptional<FString>      CustomName;
 	TOptional<int32>        Volume;
-	TOptional<FString>      CustomizationString;
+	TOptional<TArray<uint8>> CustomizationBytes;
 	TSWGListChanges<int32>  VisibleComponents;
 	TOptional<int32>        OptionsBitmask;
 	TOptional<int32>        UseCount;

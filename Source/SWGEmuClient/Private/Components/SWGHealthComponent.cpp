@@ -1,31 +1,26 @@
 #include "Components/SWGHealthComponent.h"
-#include "Network/SWGPacket.h"
 
 USWGHealthComponent::USWGHealthComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGHealthComponent::ApplyBase1(FSWGPacket& Packet)
+void USWGHealthComponent::ApplyBase1(const FCreatureObjectBaseline& Baseline)
 {
-	BaseHAM = ReadBaselineVector<int32>(Packet, [](FSWGPacket& P) { return P.ReadInt32(); });
+	BaseHAM = Baseline.BaseHAM;
 	bHasBase1 = true;
 }
 
-void USWGHealthComponent::ApplyBase3Part1(FSWGPacket& Packet)
+void USWGHealthComponent::ApplyBase3(const FCreatureObjectBaseline& Baseline)
 {
-	ShockWounds = Packet.ReadInt32();
-}
-
-void USWGHealthComponent::ApplyBase3Part2(FSWGPacket& Packet)
-{
-	Wounds = ReadBaselineVector<int32>(Packet, [](FSWGPacket& P) { return P.ReadInt32(); });
+	ShockWounds = Baseline.ShockWounds;
+	Wounds = Baseline.Wounds;
 	bHasBase3 = true;
 }
 
-void USWGHealthComponent::ApplyBase6(FSWGPacket& Packet)
+void USWGHealthComponent::ApplyBase6(const FCreatureObjectBaseline& Baseline)
 {
-	HAM = ReadBaselineVector<int32>(Packet, [](FSWGPacket& P) { return P.ReadInt32(); });
-	MaxHAM = ReadBaselineVector<int32>(Packet, [](FSWGPacket& P) { return P.ReadInt32(); });
+	HAM = Baseline.HAM;
+	MaxHAM = Baseline.MaxHAM;
 	bHasBase6 = true;
 }

@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
-#include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
+#include "Network/Objects/Zone/Object/TangibleObjectBaseline.h"
 #include "Customization/SWGCustomizationVariables.h"
 #include "SWGTangibleComponent.generated.h"
 
@@ -43,11 +43,7 @@ public:
 	uint8          ObjectVisible = 0;
 	bool           bHasBase3 = false;
 
-	// Split in two: TANO base3 interleaves with USWGConditionComponent mid-streamok do
-	// (Complexity..OptionsBitmask, then Condition's UseCount/ConditionDamage/
-	// MaxCondition, then ObjectVisible last) — see SWGTangibleBaselineParser::ParseBase3.
-	void ApplyBase3Part1(FSWGPacket& Packet); // Complexity..OptionsBitmask
-	void ApplyBase3Part2(FSWGPacket& Packet); // ObjectVisible
+	void ApplyBase3(const FTangibleObjectBaseline& Baseline);
 
 	// Re-derives NameLabel's height above the root from the owner's *current*
 	// capsule size — called by USWGMeshGeneratorSubsystem once the owner's

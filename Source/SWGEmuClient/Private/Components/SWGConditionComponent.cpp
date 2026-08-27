@@ -6,10 +6,10 @@ USWGConditionComponent::USWGConditionComponent()
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGConditionComponent::ApplyBase3(FSWGPacket& Packet)
+void USWGConditionComponent::ApplyBase3(const FTangibleObjectBaseline& Baseline)
 {
-	UseCount = Packet.ReadInt32();
-	ConditionDamage = Packet.ReadInt32();
-	MaxCondition = Packet.ReadInt32();
+	UseCount = Baseline.UseCount;
+	ConditionDamage = Baseline.ConditionDamage;
+	MaxCondition = Baseline.MaxCondition;
 	bHasBase3 = true;
 }

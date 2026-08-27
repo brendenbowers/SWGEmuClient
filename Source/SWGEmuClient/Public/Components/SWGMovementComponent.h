@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
 #include "SWGMovementComponent.generated.h"
 
 struct FSWGPacket;
@@ -56,7 +57,5 @@ public:
 	// SWGCreatureBaselineParser::ParseBase4. Part3 recomputes the actual
 	// UCharacterMovementComponent properties per the class comment's mapping,
 	// once all raw fields are known.
-	void ApplyBase4Part1(FSWGPacket& Packet); // AccelerationMultiplierBase, AccelerationMultiplierMod
-	void ApplyBase4Part2(FSWGPacket& Packet); // SpeedMultiplierBase, SpeedMultiplierMod
-	void ApplyBase4Part3(FSWGPacket& Packet); // RunSpeed..WaterModPercent
+	void ApplyBase4(const FCreatureObjectBaseline& Baseline);
 };

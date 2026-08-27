@@ -3,7 +3,7 @@
 #include "Network/SWGPacket.h"
 #include "Network/Messages/Zone/BaselinesMessage.h"
 #include "Network/Messages/SWGFourCC.h"
-#include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
+#include "Network/Objects/Zone/Cell/CellObjectBaseline.h"
 #include "Objects/World/SWGCell.h"
 #include "SpawnHandlers/SWGBuildingSpawnHanlder.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
@@ -13,8 +13,7 @@
 
 namespace
 {
-	// TLCS base3: the SceneObjectMessage3 fields, then cellNumber. Returns -1 when
-	// there's no cell number to record.
+	// Returns -1 when there's no cell number to record.
 	int32 ApplyCellBaseline(ASWGCell& Cell, uint8 Slot, FSWGPacket& Packet)
 	{
 		if (Slot != 3)
@@ -23,14 +22,12 @@ namespace
 			return -1;
 		}
 
-		Packet.ReadFloat(); // complexity
-		const FSWGStringId ObjectName = FSWGStringId::Read(Packet);
-		const FString CustomName = Packet.ReadUnicodeString();
-		Packet.ReadInt32(); // volume
+		FCellObjectBaseline Baseline;
+		SWGCellBaselineParser::ParseBase3(Packet, Baseline);
 
-		Cell.CellName = CustomName.IsEmpty() ? ObjectName.StringTableId : CustomName;
+		Cell.CellName = Baseline.CustomName.IsEmpty() ? Baseline.ObjectName.StringTableId : Baseline.CustomName;
 
-		return Packet.ReadInt32(); // cellNumber
+		return Baseline.CellNumber;
 	}
 }
 

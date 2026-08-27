@@ -1,24 +1,18 @@
 #include "Components/SWGSkillComponent.h"
-#include "Network/SWGPacket.h"
 
 USWGSkillComponent::USWGSkillComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGSkillComponent::ApplyBase1(FSWGPacket& Packet)
+void USWGSkillComponent::ApplyBase1(const FCreatureObjectBaseline& Baseline)
 {
-	SkillList = ReadBaselineVector<FString>(Packet, [](FSWGPacket& P) { return P.ReadAsciiString(); });
+	SkillList = Baseline.SkillList;
 	bHasBase1 = true;
 }
 
-void USWGSkillComponent::ApplyBase4(FSWGPacket& Packet)
+void USWGSkillComponent::ApplyBase4(const FCreatureObjectBaseline& Baseline)
 {
-	SkillMods = ReadBaselineMap<FSkillModifier>(Packet, [](FSWGPacket& P)
-	{
-		FSkillModifier Mod;
-		Mod.Deserialize(P);
-		return Mod;
-	});
+	SkillMods = Baseline.SkillMods;
 	bHasBase4 = true;
 }

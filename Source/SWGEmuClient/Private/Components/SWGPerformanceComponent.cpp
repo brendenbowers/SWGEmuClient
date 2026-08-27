@@ -1,21 +1,16 @@
 #include "Components/SWGPerformanceComponent.h"
-#include "Network/SWGPacket.h"
 
 USWGPerformanceComponent::USWGPerformanceComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGPerformanceComponent::ApplyBase6Part1(FSWGPacket& Packet)
+void USWGPerformanceComponent::ApplyBase6(const FCreatureObjectBaseline& Baseline)
 {
-	PerformanceAnimation = Packet.ReadAsciiString();
-	MoodString = Packet.ReadAsciiString();
-}
-
-void USWGPerformanceComponent::ApplyBase6Part2(FSWGPacket& Packet)
-{
-	MoodId = Packet.ReadByte();
-	PerformanceStartTime = Packet.ReadInt32();
-	PerformanceType = Packet.ReadInt32();
+	PerformanceAnimation = Baseline.PerformanceAnimation;
+	MoodString = Baseline.MoodString;
+	MoodId = Baseline.MoodId;
+	PerformanceStartTime = Baseline.PerformanceStartTime;
+	PerformanceType = Baseline.PerformanceType;
 	bHasBase6 = true;
 }

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
 #include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
 #include "Network/Objects/Zone/Creature/GroupMissionCriticalObject.h"
 #include "SWGSpaceMissionComponent.generated.h"
@@ -24,6 +25,5 @@ public:
 	// Split in two: ListenId and SpaceMissionObjects are not adjacent on the wire
 	// — USWGMovementComponent's speed fields sit between them — see
 	// SWGCreatureBaselineParser::ParseBase4.
-	void ApplyBase4Part1(FSWGPacket& Packet); // ListenId
-	void ApplyBase4Part2(FSWGPacket& Packet); // SpaceMissionObjects
+	void ApplyBase4(const FCreatureObjectBaseline& Baseline);
 };

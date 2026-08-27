@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
 #include "SWGCombatStateComponent.generated.h"
 
 struct FSWGPacket;
@@ -30,12 +31,9 @@ public:
 	// Split: CREO base3's Posture/FactionRank come before the CreatureLinkId/
 	// Height/ShockWounds fields, StateBitmask comes after — see
 	// SWGCreatureBaselineParser::ParseBase3.
-	void ApplyBase3Part1(FSWGPacket& Packet); // Posture, FactionRank
-	void ApplyBase3Part2(FSWGPacket& Packet); // StateBitmask
+	void ApplyBase3(const FCreatureObjectBaseline& Baseline);
 
 	// Split: CREO base6's WeaponId, TargetId, and Frozen are each separated by
 	// other components' fields — see SWGCreatureBaselineParser::ParseBase6.
-	void ApplyBase6Part1(FSWGPacket& Packet); // WeaponId
-	void ApplyBase6Part2(FSWGPacket& Packet); // TargetId
-	void ApplyBase6Part3(FSWGPacket& Packet); // Frozen
+	void ApplyBase6(const FCreatureObjectBaseline& Baseline);
 };

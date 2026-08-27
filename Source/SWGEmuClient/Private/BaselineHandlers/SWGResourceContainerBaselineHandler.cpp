@@ -3,6 +3,7 @@
 #include "Network/SWGPacket.h"
 #include "Network/Messages/Zone/BaselinesMessage.h"
 #include "Network/Messages/SWGFourCC.h"
+#include "Network/Objects/Zone/Resource/ResourceContainerObjectBaseline.h"
 #include "Objects/Tangible/SWGItem.h"
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
@@ -24,11 +25,14 @@ bool FSWGResourceContainerBaselineHandler::HandleBaseline(AActor& Actor, const F
 	}
 
 	FSWGPacket Packet = Msg.AsPayloadPacket();
+	FResourceContainerObjectBaseline Baseline;
 
 	switch (Msg.BaselineType)
 	{
 		case 3:
 		{
+			SWGResourceContainerBaselineParser::ParseBase3(Packet, Baseline);
+
 			USWGTangibleComponent* TangibleComponent = Item->GetComponentByClass<USWGTangibleComponent>();
 			USWGConditionComponent* ConditionComponent = Item->GetComponentByClass<USWGConditionComponent>();
 			if (!TangibleComponent || !ConditionComponent)
@@ -38,22 +42,16 @@ bool FSWGResourceContainerBaselineHandler::HandleBaseline(AActor& Actor, const F
 				return false;
 			}
 
-			TangibleComponent->ApplyBase3Part1(Packet);
-			ConditionComponent->ApplyBase3(Packet);
-			TangibleComponent->ApplyBase3Part2(Packet);
-			Item->ResourceQuantity = Packet.ReadInt32();
-			Packet.ReadInt64(); // spawnID
+			TangibleComponent->ApplyBase3(Baseline.Tangible);
+			ConditionComponent->ApplyBase3(Baseline.Tangible);
+			Item->ResourceQuantity = Baseline.Quantity;
 			return true;
 		}
 
 		case 6:
-			Packet.ReadAsciiString();  // unused, server sends ""
-			Packet.ReadInt32();
-			Packet.ReadAsciiString();  // unused, server sends ""
-			Packet.ReadUnicodeString();
-			Packet.ReadInt32();        // max stack size
-			Item->ResourceType = Packet.ReadAsciiString();
-			Item->ResourceName = Packet.ReadUnicodeString();
+			SWGResourceContainerBaselineParser::ParseBase6(Packet, Baseline);
+			Item->ResourceType = Baseline.ResourceType;
+			Item->ResourceName = Baseline.ResourceName;
 			return true;
 
 		default:

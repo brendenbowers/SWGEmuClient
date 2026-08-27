@@ -13,16 +13,10 @@ USWGEquipmentComponent::USWGEquipmentComponent()
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGEquipmentComponent::ApplyBase6(FSWGPacket& Packet)
+void USWGEquipmentComponent::ApplyBase6(const FCreatureObjectBaseline& Baseline)
 {
-	EquipmentList = ReadBaselineVector<FEquiptmentItem>(Packet, [](FSWGPacket& P)
-	{
-		FEquiptmentItem Item;
-		Item.Deserialize(P);
-		return Item;
-	});
-
-	AlternateAppearance = Packet.ReadAsciiString();
+	EquipmentList = Baseline.EquipmentList;
+	AlternateAppearance = Baseline.AlternateAppearance;
 	bHasBase6 = true;
 
 	BuildEquipmentVisuals(EquipmentList.Items);

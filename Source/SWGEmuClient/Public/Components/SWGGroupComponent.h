@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
 #include "SWGGroupComponent.generated.h"
 
 struct FSWGPacket;
@@ -21,5 +22,5 @@ public:
 	int64 GroupInviteCounter  = 0;
 	bool bHasBase6 = false;
 
-	void ApplyBase6(FSWGPacket& Packet);
+	void ApplyBase6(const FCreatureObjectBaseline& Baseline);
 };

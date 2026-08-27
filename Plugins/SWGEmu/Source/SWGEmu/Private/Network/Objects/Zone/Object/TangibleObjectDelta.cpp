@@ -10,7 +10,7 @@ namespace SWGTangibleDeltaParser
 			case 0x01: Out.ObjectName = FSWGStringId::Read(Packet); return true;
 			case 0x02: Out.CustomName = Packet.ReadUnicodeString(); return true;
 			case 0x03: Out.Volume = Packet.ReadInt32(); return true;
-			case 0x04: Out.CustomizationString = Packet.ReadAsciiString(); return true;
+			case 0x04: Out.CustomizationBytes = Packet.ReadAsciiBytes(); return true;
 			case 0x05: Out.VisibleComponents = ReadInt32DeltaVectorChanges(Packet); return true;
 			case 0x06: Out.OptionsBitmask = Packet.ReadInt32(); return true;
 			case 0x07: Out.UseCount = Packet.ReadInt32(); return true;

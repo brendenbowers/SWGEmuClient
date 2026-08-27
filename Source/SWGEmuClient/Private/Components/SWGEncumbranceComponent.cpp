@@ -1,13 +1,12 @@
 #include "Components/SWGEncumbranceComponent.h"
-#include "Network/SWGPacket.h"
 
 USWGEncumbranceComponent::USWGEncumbranceComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
-void USWGEncumbranceComponent::ApplyBase4(FSWGPacket& Packet)
+void USWGEncumbranceComponent::ApplyBase4(const FCreatureObjectBaseline& Baseline)
 {
-	Encumbrances = ReadBaselineVector<int32>(Packet, [](FSWGPacket& P) { return P.ReadInt32(); });
+	Encumbrances = Baseline.Encumbrances;
 	bHasBase4 = true;
 }

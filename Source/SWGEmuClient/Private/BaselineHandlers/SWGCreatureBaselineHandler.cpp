@@ -3,6 +3,7 @@
 #include "Network/SWGPacket.h"
 #include "Network/Messages/Zone/BaselinesMessage.h"
 #include "Network/Messages/SWGFourCC.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
 #include "Objects/Creature/SWGCreature.h"
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
@@ -19,16 +20,44 @@
 
 namespace
 {
+	// The loose fields are members of ASWGCreature rather than component state.
+	void ApplyLooseFields(AActor& Actor, uint8 Slot, const FCreatureObjectBaseline& Baseline)
+	{
+		ASWGCreature* Creature = Cast<ASWGCreature>(&Actor);
+		if (!Creature)
+		{
+			return;
+		}
+
+		switch (Slot)
+		{
+			case 1:
+				Creature->BankCredits = Baseline.BankCredits;
+				Creature->CashCredits = Baseline.CashCredits;
+				break;
+			case 3:
+				Creature->CreatureLinkId = Baseline.CreatureLinkId;
+				Creature->Height = Baseline.Height;
+				break;
+			case 6:
+				Creature->Level = Baseline.Level;
+				Creature->GuildId = Baseline.GuildId;
+				break;
+			default:
+				break;
+		}
+	}
+
 	bool ApplyCreatureBaseline(AActor& Actor, uint8 Slot, FSWGPacket& Packet)
 	{
-
-		// The some fields are members of ASWGCreature rather than component state
-		ASWGCreature* Creature = Cast<ASWGCreature>(&Actor);
+		FCreatureObjectBaseline Baseline;
 
 		switch (Slot)
 		{
 			case 1:
 			{
+				SWGCreatureBaselineParser::ParseBase1(Packet, Baseline);
+
 				USWGHealthComponent* HealthComponent = Actor.GetComponentByClass<USWGHealthComponent>();
 				USWGSkillComponent* SkillComponent = Actor.GetComponentByClass<USWGSkillComponent>();
 				if (!HealthComponent || !SkillComponent)
@@ -36,22 +65,14 @@ namespace
 					return false;
 				}
 
-				if (Creature)
-				{
-					Creature->BankCredits = Packet.ReadInt32();
-					Creature->CashCredits = Packet.ReadInt32();
-				}
-				else
-				{
-					Packet.Skip(sizeof(int32) * 2);
-				}
-
-				HealthComponent->ApplyBase1(Packet);
-				SkillComponent->ApplyBase1(Packet);
-				return true;
+				HealthComponent->ApplyBase1(Baseline);
+				SkillComponent->ApplyBase1(Baseline);
+				break;
 			}
 			case 3:
 			{
+				SWGCreatureBaselineParser::ParseBase3(Packet, Baseline);
+
 				USWGTangibleComponent* TangibleComponent = Actor.GetComponentByClass<USWGTangibleComponent>();
 				USWGConditionComponent* ConditionComponent = Actor.GetComponentByClass<USWGConditionComponent>();
 				USWGCombatStateComponent* CombatStateComponent = Actor.GetComponentByClass<USWGCombatStateComponent>();
@@ -61,30 +82,19 @@ namespace
 					return false;
 				}
 
-				//TangibleObjectMessage3 fields come first on the wire.
-				TangibleComponent->ApplyBase3Part1(Packet);
-				ConditionComponent->ApplyBase3(Packet);
-				TangibleComponent->ApplyBase3Part2(Packet);
-				CombatStateComponent->ApplyBase3Part1(Packet);
-				if (Creature)
-				{
-					Creature->CreatureLinkId = Packet.ReadInt64();
-					Creature->Height = Packet.ReadFloat();
-				}
-				else
-				{
-					Packet.Skip(sizeof(int64) + sizeof(float));
-				}
-				HealthComponent->ApplyBase3Part1(Packet);
-				CombatStateComponent->ApplyBase3Part2(Packet);
-				HealthComponent->ApplyBase3Part2(Packet);
-				return true;
+				TangibleComponent->ApplyBase3(Baseline.Tangible);
+				ConditionComponent->ApplyBase3(Baseline.Tangible);
+				CombatStateComponent->ApplyBase3(Baseline);
+				HealthComponent->ApplyBase3(Baseline);
+				break;
 			}
 			case 4:
 			{
-				// The movement component IS the character's movement component, so it
-				// comes off ASWGCreature rather than a component search.
-				USWGMovementComponent* Movement = Actor.GetComponentByClass<USWGMovementComponent>();
+				SWGCreatureBaselineParser::ParseBase4(Packet, Baseline);
+
+				// The movement component is the character's own, so it isn't found by class.
+				ASWGCreature* Creature = Cast<ASWGCreature>(&Actor);
+				USWGMovementComponent* Movement = Creature ? Creature->GetSWGMovementComponent() : nullptr;
 				USWGEncumbranceComponent* EncumbranceComponent = Actor.GetComponentByClass<USWGEncumbranceComponent>();
 				USWGSkillComponent* SkillComponent = Actor.GetComponentByClass<USWGSkillComponent>();
 				USWGSpaceMissionComponent* SpaceMissionComponent = Actor.GetComponentByClass<USWGSpaceMissionComponent>();
@@ -93,17 +103,16 @@ namespace
 					return false;
 				}
 
-				Movement->ApplyBase4Part1(Packet);
-				EncumbranceComponent->ApplyBase4(Packet);
-				SkillComponent->ApplyBase4(Packet);
-				Movement->ApplyBase4Part2(Packet);
-				SpaceMissionComponent->ApplyBase4Part1(Packet);
-				Movement->ApplyBase4Part3(Packet);
-				SpaceMissionComponent->ApplyBase4Part2(Packet);
-				return true;
+				Movement->ApplyBase4(Baseline);
+				EncumbranceComponent->ApplyBase4(Baseline);
+				SkillComponent->ApplyBase4(Baseline);
+				SpaceMissionComponent->ApplyBase4(Baseline);
+				break;
 			}
 			case 6:
 			{
+				SWGCreatureBaselineParser::ParseBase6(Packet, Baseline);
+
 				USWGDefenderComponent* DefenderComponent = Actor.GetComponentByClass<USWGDefenderComponent>();
 				USWGPerformanceComponent* PerformanceComponent = Actor.GetComponentByClass<USWGPerformanceComponent>();
 				USWGCombatStateComponent* CombatStateComponent = Actor.GetComponentByClass<USWGCombatStateComponent>();
@@ -115,38 +124,21 @@ namespace
 					return false;
 				}
 
-				//TangibleObjectMessage6 fields (Unknown076 + DefenderList) come first.
-				DefenderComponent->ApplyBase6(Packet);
-				if (Creature)
-				{
-					Creature->Level = Packet.ReadUInt16();
-				}
-				else
-				{
-					Packet.Skip(sizeof(uint16));
-				}
-				PerformanceComponent->ApplyBase6Part1(Packet);
-				CombatStateComponent->ApplyBase6Part1(Packet);
-				GroupComponent->ApplyBase6(Packet);
-				if (Creature)
-				{
-					Creature->GuildId = Packet.ReadInt32();
-				}
-				else
-				{
-					Packet.Skip(sizeof(int32));
-				}
-				CombatStateComponent->ApplyBase6Part2(Packet);
-				PerformanceComponent->ApplyBase6Part2(Packet);
-				HealthComponent->ApplyBase6(Packet);
-				EquipmentComponent->ApplyBase6(Packet);
-				CombatStateComponent->ApplyBase6Part3(Packet);
-				return true;
+				DefenderComponent->ApplyBase6(Baseline.Tangible);
+				PerformanceComponent->ApplyBase6(Baseline);
+				CombatStateComponent->ApplyBase6(Baseline);
+				GroupComponent->ApplyBase6(Baseline);
+				HealthComponent->ApplyBase6(Baseline);
+				EquipmentComponent->ApplyBase6(Baseline);
+				break;
 			}
 			default:
 				UE_LOG(LogTemp, Verbose, TEXT("FSWGCreatureBaselineHandler: no CREO baseline dispatch for slot %d"), Slot);
 				return true;
 		}
+
+		ApplyLooseFields(Actor, Slot, Baseline);
+		return true;
 	}
 }
 

@@ -8,7 +8,7 @@ namespace SWGTangibleBaselineParser
 		Out.ObjectName = FSWGStringId::Read(Packet);
 		Out.CustomName = Packet.ReadUnicodeString();
 		Out.Volume = Packet.ReadInt32();
-		Out.CustomizationString = Packet.ReadAsciiString();
+		Out.CustomizationBytes = Packet.ReadAsciiBytes();
 
 		Out.VisibleComponents = ReadBaselineVector<int32>(Packet, [](FSWGPacket& P) { return P.ReadInt32(); });
 

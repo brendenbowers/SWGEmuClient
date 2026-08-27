@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
-#include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
+#include "Network/Objects/Zone/Object/TangibleObjectBaseline.h"
 #include "SWGDefenderComponent.generated.h"
 
 struct FSWGPacket;
@@ -20,5 +20,5 @@ public:
 	TSWGBaselineList<uint64> DefenderList;
 	bool bHasBase6 = false;
 
-	void ApplyBase6(FSWGPacket& Packet);
+	void ApplyBase6(const FTangibleObjectBaseline& Baseline);
 };

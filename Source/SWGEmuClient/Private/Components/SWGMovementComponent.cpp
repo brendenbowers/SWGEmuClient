@@ -14,31 +14,23 @@ USWGMovementComponent::USWGMovementComponent()
 	// ASWGPlayer::PossessedBy sets MOVE_Walking before the CREO base4 baseline
 	// (RunSpeed/WalkSpeed) arrives; movement at UCharacterMovementComponent's
 	// stock defaults would trip Core3's speed-hack check. Start conservative;
-	// ApplyBase4Part3 overwrites these once the real values are known.
+	// ApplyBase4 overwrites these once the real values are known.
 	MaxWalkSpeed = 155.0f;
 	MaxAcceleration = 100.0f;
 }
 
-void USWGMovementComponent::ApplyBase4Part1(FSWGPacket& Packet)
+void USWGMovementComponent::ApplyBase4(const FCreatureObjectBaseline& Baseline)
 {
-	AccelerationMultiplierBase = Packet.ReadFloat();
-	AccelerationMultiplierMod = Packet.ReadFloat();
-}
-
-void USWGMovementComponent::ApplyBase4Part2(FSWGPacket& Packet)
-{
-	SpeedMultiplierBase = Packet.ReadFloat();
-	SpeedMultiplierMod = Packet.ReadFloat();
-}
-
-void USWGMovementComponent::ApplyBase4Part3(FSWGPacket& Packet)
-{
-	RunSpeed = Packet.ReadFloat();
-	SlopeModAngle = Packet.ReadFloat();
-	SlopeModPercent = Packet.ReadFloat();
-	TurnScale = Packet.ReadFloat();
-	WalkSpeed = Packet.ReadFloat();
-	WaterModPercent = Packet.ReadFloat();
+	AccelerationMultiplierBase = Baseline.AccelerationMultiplierBase;
+	AccelerationMultiplierMod = Baseline.AccelerationMultiplierMod;
+	SpeedMultiplierBase = Baseline.SpeedMultiplierBase;
+	SpeedMultiplierMod = Baseline.SpeedMultiplierMod;
+	RunSpeed = Baseline.RunSpeed;
+	SlopeModAngle = Baseline.SlopeModAngle;
+	SlopeModPercent = Baseline.SlopeModPercent;
+	TurnScale = Baseline.TurnScale;
+	WalkSpeed = Baseline.WalkSpeed;
+	WaterModPercent = Baseline.WaterModPercent;
 	bHasBase4 = true;
 
 	// Unreal uses MaxWalkSpeed as the top ground speed for both digital and

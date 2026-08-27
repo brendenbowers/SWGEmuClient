@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
 #include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
 #include "Network/Objects/Zone/Creature/SkillModifier.h"
 #include "SWGSkillComponent.generated.h"
@@ -23,6 +24,6 @@ public:
 	TSWGBaselineList<FSkillModifier> SkillMods;
 	bool bHasBase4 = false;
 
-	void ApplyBase1(FSWGPacket& Packet);
-	void ApplyBase4(FSWGPacket& Packet);
+	void ApplyBase1(const FCreatureObjectBaseline& Baseline);
+	void ApplyBase4(const FCreatureObjectBaseline& Baseline);
 };

@@ -3,19 +3,23 @@
 #include "Network/SWGPacket.h"
 #include "Network/Messages/Zone/BaselinesMessage.h"
 #include "Network/Messages/SWGFourCC.h"
+#include "Network/Objects/Zone/Object/TangibleObjectBaseline.h"
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
 #include "Components/SWGDefenderComponent.h"
 
 namespace
 {
-	// TANO base3: SWGTangibleBaselineParser::ParseBase3.
 	bool ApplyTangibleBaseline(AActor& Actor, uint8 Slot, FSWGPacket& Packet)
 	{
+		FTangibleObjectBaseline Baseline;
+
 		switch (Slot)
 		{
 			case 3:
 			{
+				SWGTangibleBaselineParser::ParseBase3(Packet, Baseline);
+
 				USWGTangibleComponent* TangibleComponent = Actor.GetComponentByClass<USWGTangibleComponent>();
 				USWGConditionComponent* ConditionComponent = Actor.GetComponentByClass<USWGConditionComponent>();
 				if (!TangibleComponent || !ConditionComponent)
@@ -23,20 +27,21 @@ namespace
 					return false;
 				}
 
-				TangibleComponent->ApplyBase3Part1(Packet);
-				ConditionComponent->ApplyBase3(Packet);
-				TangibleComponent->ApplyBase3Part2(Packet);
+				TangibleComponent->ApplyBase3(Baseline);
+				ConditionComponent->ApplyBase3(Baseline);
 				return true;
 			}
 			case 6:
 			{
+				SWGTangibleBaselineParser::ParseBase6(Packet, Baseline);
+
 				USWGDefenderComponent* DefenderComponent = Actor.GetComponentByClass<USWGDefenderComponent>();
 				if (!DefenderComponent)
 				{
 					return false;
 				}
 
-				DefenderComponent->ApplyBase6(Packet);
+				DefenderComponent->ApplyBase6(Baseline);
 				return true;
 			}
 			default:
@@ -58,8 +63,6 @@ bool FSWGTangibleBaselineHandler::HandleBaseline(AActor& Actor, const FBaselines
 
 	if (!ApplyTangibleBaseline(Actor, Msg.BaselineType, Packet))
 	{
-		// Declining lets any other handler registered for this type try, then
-		// the object graph's own fallback dispatch.
 		UE_LOG(LogTemp, Warning, TEXT("FSWGTangibleBaselineHandler: %s (object %lld) can't take a %s slot %d baseline — missing components"),
 			*Actor.GetClass()->GetName(), Msg.ObjectId, *Msg.GetObjectTypeFourCC(), Msg.BaselineType);
 		return false;

@@ -21,7 +21,7 @@ struct SWGEMU_API FTangibleObjectBaseline
 	FSWGStringId   ObjectName;
 	FString        CustomName;
 	int32          Volume          = 0;
-	FString        CustomizationString;
+	TArray<uint8>  CustomizationBytes; // Binary, despite riding the wire as an ascii string
 	TSWGBaselineList<int32> VisibleComponents;
 	int32          OptionsBitmask  = 0;
 	int32          UseCount        = 0;
