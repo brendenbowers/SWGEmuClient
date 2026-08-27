@@ -1208,7 +1208,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							// template.
 							TMap<FString, FLinearColor> ItemPaletteTints;
 							TMap<FString, int32> ItemTextureIndices;
-							if (Request.Customization.Values.Num() > 0 && !Request.AppearancePath.IsEmpty())
+							if (!Request.AppearancePath.IsEmpty())
 							{
 								ItemPaletteTints = ResolveCustomizationPaletteTints(Request.Customization, Request.AppearancePath);
 								ItemTextureIndices = ResolveCustomizationTextureIndices(Request.Customization, Request.AppearancePath);
@@ -1252,7 +1252,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							// skeletal item branch above.
 							TMap<FString, FLinearColor> ItemPaletteTints;
 							TMap<FString, int32> ItemTextureIndices;
-							if (Request.Customization.Values.Num() > 0 && !Request.AppearancePath.IsEmpty())
+							if (!Request.AppearancePath.IsEmpty())
 							{
 								ItemPaletteTints = ResolveCustomizationPaletteTints(Request.Customization, Request.AppearancePath);
 								ItemTextureIndices = ResolveCustomizationTextureIndices(Request.Customization, Request.AppearancePath);
@@ -1288,7 +1288,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 						TMap<FString, int32> TextureIndices;
 						if (USWGTangibleComponent* Tangible = Request.Actor->FindComponentByClass<USWGTangibleComponent>())
 						{
-							if (Tangible->DecodedCustomization.Values.Num() > 0 && !Request.AppearancePath.IsEmpty())
+							if (!Request.AppearancePath.IsEmpty())
 							{
 								PaletteTints = ResolveCustomizationPaletteTints(Tangible->DecodedCustomization, Request.AppearancePath);
 								MorphWeights = ResolveCustomizationMorphWeights(Tangible->DecodedCustomization, Request.AppearancePath);
@@ -2418,16 +2418,13 @@ TMap<FString, FLinearColor> USWGMeshGeneratorSubsystem::ResolveCustomizationPale
 			continue;
 		}
 
-		const uint8* TypeId = CustomizationIdManager.NameToId.Find(Def.Name);
-		if (!TypeId)
+		int32 PaletteIndex = Def.DefaultValue;
+		if (const uint8* TypeId = CustomizationIdManager.NameToId.Find(Def.Name))
 		{
-			continue;
-		}
-
-		const int16* Value = Customization.Values.Find(*TypeId);
-		if (!Value)
-		{
-			continue; // This object never customized this particular variable — leave it at whatever the shader's own default/average gives.
+			if (const int16* Value = Customization.Values.Find(*TypeId))
+			{
+				PaletteIndex = *Value;
+			}
 		}
 
 		// Keyed by the variable's own bare name (e.g. "index_color_1"), not
@@ -2447,7 +2444,7 @@ TMap<FString, FLinearColor> USWGMeshGeneratorSubsystem::ResolveCustomizationPale
 		{
 			BareName = BareName.Mid(SlashIndex + 1);
 		}
-		Result.Add(BareName, LoadPaletteColorAtIndex(Def.PaletteFileName, *Value));
+		Result.Add(BareName, LoadPaletteColorAtIndex(Def.PaletteFileName, PaletteIndex));
 	}
 
 	return Result;
@@ -2814,8 +2811,19 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 				// per-character customization to drive it anyway).
 				if (TintOverride)
 				{
-					MID->SetVectorParameterValue(TEXT("TintColor"), *TintOverride);
-					MID->SetVectorParameterValue(TEXT("TintColor2"), TintOverride2 ? *TintOverride2 : *TintOverride);
+					// The material lerps TintColor -> TintColor2 across the diffuse
+					// alpha, and which end each factor belongs on depends on the
+					// shader's effect. The "color2w" effects put MAIN where alpha
+					// is 1 (Wookiee armour, Ithorian chest/helmet); every other
+					// effect puts it where alpha is 0 (creature bodies, Ithorian
+					// legs/arms, feather trim), so the two colours swap slots
+					// between the two families.
+					const bool bMainAtHighAlpha = ShaderData.EffectName.Contains(TEXT("color2w"), ESearchCase::IgnoreCase);
+					const FLinearColor MainTint = *TintOverride;
+					const FLinearColor HueTint = TintOverride2 ? *TintOverride2 : *TintOverride;
+
+					MID->SetVectorParameterValue(TEXT("TintColor"), bMainAtHighAlpha ? HueTint : MainTint);
+					MID->SetVectorParameterValue(TEXT("TintColor2"), bMainAtHighAlpha ? MainTint : HueTint);
 				}
 				else
 				{
