@@ -36,6 +36,8 @@
 #include "Objects/World/SWGInstallation.h"
 #include "Objects/World/SWGStaticProp.h"
 #include "SpawnHandlers/SWGBuildingSpawnHanlder.h"
+#include "Subsystems/SWGBaselineHandlerRegistry.h"
+#include "Network/Messages/SWGFourCC.h"
 
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
@@ -63,65 +65,6 @@ namespace
 	// Health, then CombatState again, then Health again) — each component's
 	// ApplyBaseX is split into ApplyBaseXPartN sub-calls wherever that happens,
 	// called here in the exact wire order.
-
-	// TANO base3: SWGTangibleBaselineParser::ParseBase3.
-	void ApplyTangibleBaseline(ASWGItem& Item, uint8 Slot, FSWGPacket& Packet)
-	{
-		switch (Slot)
-		{
-			case 3:
-				if (Item.TangibleComponent)
-				{
-					Item.TangibleComponent->ApplyBase3Part1(Packet);
-				}
-				if (Item.ConditionComponent)
-				{
-					Item.ConditionComponent->ApplyBase3(Packet);
-				}
-				if (Item.TangibleComponent)
-				{
-					Item.TangibleComponent->ApplyBase3Part2(Packet);
-				}
-				break;
-			case 6:
-				if (Item.DefenderComponent)
-				{
-					Item.DefenderComponent->ApplyBase6(Packet);
-				}
-				break;
-			default:
-				UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no TANO baseline dispatch for slot %d"), Slot);
-				break;
-		}
-	}
-
-	// RCNO base3 derives from TangibleObjectMessage3 (same layout, plus a
-	// trailing quantity/spawnID), so slot 3 goes through ApplyTangibleBaseline.
-	// Base6 does NOT derive from TangibleObjectMessage6 — it's its own layout,
-	// parsed here (ResourceContainerObjectMessage6).
-	void ApplyResourceContainerBaseline(ASWGItem& Item, uint8 Slot, FSWGPacket& Packet)
-	{
-		switch (Slot)
-		{
-			case 3:
-				ApplyTangibleBaseline(Item, Slot, Packet);
-				Item.ResourceQuantity = Packet.ReadInt32();
-				Packet.ReadInt64(); // spawnID
-				break;
-			case 6:
-				Packet.ReadAsciiString();  // unused, server sends ""
-				Packet.ReadInt32();
-				Packet.ReadAsciiString();  // unused, server sends ""
-				Packet.ReadUnicodeString();
-				Packet.ReadInt32();        // max stack size
-				Item.ResourceType = Packet.ReadAsciiString();
-				Item.ResourceName = Packet.ReadUnicodeString();
-				break;
-			default:
-				UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no RCNO baseline dispatch for slot %d"), Slot);
-				break;
-		}
-	}
 
 	void ApplyTangibleDeltas(ASWGItem& Item, uint8 Slot, FSWGPacket& Packet)
 	{
@@ -619,7 +562,8 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 
 void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 {
-	//TODO: This baseline code needs to be moved to sometinlikeliek the spawn handlers.
+	//TODO: SCLT/CREO below still need to move into FSWGBaselineHandlerRegistry handlers
+	// (SCLT needs a public way to record a cell number on the object graph first).
 	AActor* Actor = FindActor(Msg.ObjectId);
 	if (!Actor)
 	{
@@ -634,40 +578,37 @@ void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: Baselines object=%lld FourCC=%s slot=%d actor=%s"),
 		Msg.ObjectId, *FourCC, Msg.BaselineType, *Actor->GetName());
 
-	if (FourCC == TEXT("TANO") || FourCC == TEXT("WEAO"))
+	FSWGBaselineArguments BaselineArgs{this};
+	if (FSWGBaselineHandlerRegistry::Get().TryHandle(*Actor, Msg, BaselineArgs))
 	{
-		// WEAO (weapon objects, FORM tag SWOT) is a distinct wire FourCC from
-		// plain TANO, but both resolve to ASWGItem (see FSWGFormTagMapping) and
-		// share the same TangibleObjectMessage3/6-derived baseline layout.
-		if (ASWGItem* Item = Cast<ASWGItem>(Actor))
-			ApplyTangibleBaseline(*Item, Msg.BaselineType, Sub);
+		return;
 	}
-	else if (FourCC == TEXT("RCNO"))
+
+	switch (Msg.GetObjectType())
 	{
-		if (ASWGItem* Item = Cast<ASWGItem>(Actor))
-			ApplyResourceContainerBaseline(*Item, Msg.BaselineType, Sub);
-	}
-	else if (FourCC == TEXT("SCLT"))
-	{
-		if (ASWGCell* CellActor = Cast<ASWGCell>(Actor))
-		{
-			const int32 CellNumber = ApplyCellBaseline(Msg.BaselineType, Sub);
-			if (CellNumber >= 0)
+		case ESWGObjectType::SCLT:
+			if (ASWGCell* CellActor = Cast<ASWGCell>(Actor))
 			{
-				CellNumberByObjectId.Add(Msg.ObjectId, CellNumber);
-				FSWGCellSpawnHandler::CheckAndFinishCell(*this, Msg.ObjectId, TreSubsystem, MeshGenerator);
+				const int32 CellNumber = ApplyCellBaseline(Msg.BaselineType, Sub);
+				if (CellNumber >= 0)
+				{
+					CellNumberByObjectId.Add(Msg.ObjectId, CellNumber);
+					FSWGCellSpawnHandler::CheckAndFinishCell(*this, Msg.ObjectId, TreSubsystem, MeshGenerator);
+				}
 			}
-		}
-	}
-	else if (FourCC == TEXT("CREO"))
-	{
-		if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor))
-			ApplyCreatureBaseline(*Creature, Msg.BaselineType, Sub);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no baseline dispatch for FourCC '%s' (object %lld, slot %d)"),
-			*FourCC, Msg.ObjectId, Msg.BaselineType);
+			break;
+
+		case ESWGObjectType::CREO:
+			if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor))
+			{
+				ApplyCreatureBaseline(*Creature, Msg.BaselineType, Sub);
+			}
+			break;
+
+		default:
+			UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no baseline dispatch for FourCC '%s' (object %lld, slot %d)"),
+				*FourCC, Msg.ObjectId, Msg.BaselineType);
+			break;
 	}
 }
 

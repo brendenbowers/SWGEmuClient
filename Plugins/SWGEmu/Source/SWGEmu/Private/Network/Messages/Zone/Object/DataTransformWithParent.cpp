@@ -17,6 +17,7 @@ FSWGPacket FDataTransformWithParent::Serialize() const
 	Pkt.WriteFloat(Direction.Z);
 	Pkt.WriteFloat(Direction.W);
 
+	// Wire order is X, Z, Y.
 	Pkt.WriteFloat(Position.X);
 	Pkt.WriteFloat(Position.Z);
 	Pkt.WriteFloat(Position.Y);

@@ -26,12 +26,5 @@ bool FBaselinesMessage::Deserialize(FSWGMessage& Reader)
 
 FString FBaselinesMessage::GetObjectTypeFourCC() const
 {
-	const TCHAR Chars[5] = {
-		(TCHAR)((ObjectType >> 24) & 0xFF),
-		(TCHAR)((ObjectType >> 16) & 0xFF),
-		(TCHAR)((ObjectType >> 8)  & 0xFF),
-		(TCHAR)(ObjectType & 0xFF),
-		0
-	};
-	return FString(Chars);
+	return SWGFourCCToString(ObjectType);
 }

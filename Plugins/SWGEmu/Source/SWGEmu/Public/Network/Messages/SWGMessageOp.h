@@ -49,22 +49,8 @@ enum class ESWGMessageOp : uint32
 
 	ErrorMessage = 0xb5abf91au,
 
-	// ── Object Type Four-CCs ───────────────────────────────────
-	// These are used as ObjectType in Baseline/Delta messages.
-	// Format: FOURCC (e.g., 0x4352454F = "CREO")
-	CREO = 0x4352454Fu,  // Creature (NPC/Player)
-	PLAY = 0x504C4159u,  // Player
-	TANO = 0x54414E4Fu,  // Tangible (item)
-	STAO = 0x5354414Fu,  // Static (prop)
-	BUIO = 0x4255494Fu,  // Building
-	HINO = 0x48494E4Fu,  // House Installation
-	INSO = 0x494E534Fu,  // Installation (factory/harvester)
-	SCLT = 0x53434C54u,  // Scene Cell
-	GRUP = 0x47525550u,  // Group
-	GILD = 0x47494C44u,  // Guild
-	MISO = 0x4D49534Fu,  // Mission
-	ITNO = 0x4F4E5449u,  // Item
-	FCYT = 0x46435954u,  // Factory/Crafting
+	// Object type FourCCs (the ObjectType field of Baseline/Delta messages)
+	// live in ESWGObjectType — see Network/Messages/SWGFourCC.h.
 
 	// ── Other Messages ────────────────────────────────────────
 	ParametersMessage = 0x487652DAu,

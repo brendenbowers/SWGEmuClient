@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Network/Messages/SWGNetMessage.h"
+#include "Network/Messages/SWGFourCC.h"
 
 /**
  * DeltasMessage (opcode 0x12862153, opcount 0x05)
@@ -26,7 +27,7 @@
 struct SWGEMU_API FDeltasMessage : public FSWGNetMessage
 {
 	int64         ObjectId    = 0;
-	uint32        ObjectType  = 0; // FourCC, e.g. CREO/PLAY/TANO — see ESWGMessageOp
+	uint32        ObjectType  = 0; // FourCC, e.g. CREO/PLAY/TANO — see ESWGObjectType
 	uint8         DeltaType   = 0; // Slot number (3, 4, 6, 7, 8, 9, ...)
 	uint32        MessageSize = 0; // Byte count of [updateCount + rawUpdates]
 	uint16        UpdateCount = 0;
@@ -35,6 +36,9 @@ struct SWGEMU_API FDeltasMessage : public FSWGNetMessage
 	FDeltasMessage(uint32 OPCode, FSWGMessage& Reader) : FSWGNetMessage(OPCode, Reader) { Deserialize(Reader); }
 
 	bool Deserialize(FSWGMessage& Reader);
+
+	/** ObjectType as an ESWGObjectType, for switching on. Unknown types come back as their raw FourCC value. */
+	ESWGObjectType GetObjectType() const { return static_cast<ESWGObjectType>(ObjectType); }
 
 	/** Decode ObjectType back into its 4-character ASCII form (e.g. "CREO"). */
 	FString GetObjectTypeFourCC() const;
