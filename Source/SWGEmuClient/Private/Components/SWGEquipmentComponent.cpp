@@ -22,9 +22,24 @@ void USWGEquipmentComponent::ApplyBase6(const FCreatureObjectBaseline& Baseline)
 	BuildEquipmentVisuals(EquipmentList.Items);
 }
 
-void USWGEquipmentComponent::ApplyDelta6(FSWGPacket& Packet)
+void USWGEquipmentComponent::ApplyDelta6(const FCreatureObjectDelta& Delta)
 {
+	if (Delta.AlternateAppearance.IsSet())
+	{
+		AlternateAppearance = *Delta.AlternateAppearance;
+	}
 
+	if (Delta.EquipmentList.Changes.IsEmpty())
+	{
+		return;
+	}
+
+	ApplyIndexedListChanges(Delta.EquipmentList, EquipmentList);
+
+	// Rebuilds against the whole list rather than the changed entries: a removal
+	// carries only an index, so the attached meshes can't be reconciled from the
+	// change set alone.
+	BuildEquipmentVisuals(EquipmentList.Items);
 }
 
 void USWGEquipmentComponent::SetPreviewEquipment(TArray<FEquiptmentItem> InEquipment, FString InAlternateAppearance)

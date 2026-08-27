@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectDelta.h"
 #include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
 #include "Network/Objects/Zone/Creature/GroupMissionCriticalObject.h"
 #include "SWGSpaceMissionComponent.generated.h"
@@ -26,4 +27,5 @@ public:
 	// — USWGMovementComponent's speed fields sit between them — see
 	// SWGCreatureBaselineParser::ParseBase4.
 	void ApplyBase4(const FCreatureObjectBaseline& Baseline);
+	void ApplyDelta4(const FCreatureObjectDelta& Delta);
 };

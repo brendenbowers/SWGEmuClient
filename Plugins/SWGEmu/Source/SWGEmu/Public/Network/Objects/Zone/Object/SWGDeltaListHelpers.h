@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Network/SWGPacket.h"
+#include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
 
 /**
  * Shared decode helpers for the list-change payloads inside a DeltasMessage.
@@ -232,4 +233,98 @@ inline TSWGListChanges<FString> ReadAsciiStringDeltaSetChanges(FSWGPacket& Packe
 inline TSWGListChanges<FString> ReadUnicodeStringDeltaSetChanges(FSWGPacket& Packet)
 {
 	return ReadDeltaSetChanges<FString>(Packet, [](FSWGPacket& P) { return P.ReadUnicodeString(); });
+}
+
+// ── Applying changes to a held collection ──────────────────────────
+
+/** Applies position-addressed changes (from ReadDeltaVectorChanges) to List. */
+template<typename T>
+void ApplyIndexedListChanges(const TSWGListChanges<T>& Changes, TSWGBaselineList<T>& List)
+{
+	for (const TSWGListChange<T>& Change : Changes.Changes)
+	{
+		switch (Change.Operation)
+		{
+			case ESWGListChangeOperation::Add:
+				if (List.Items.IsValidIndex(Change.Index))
+				{
+					List.Items.Insert(Change.Value, Change.Index);
+				}
+				else
+				{
+					List.Items.Add(Change.Value);
+				}
+				break;
+
+			case ESWGListChangeOperation::Set:
+				if (List.Items.IsValidIndex(Change.Index))
+				{
+					List.Items[Change.Index] = Change.Value;
+				}
+				else
+				{
+					List.Items.Add(Change.Value);
+				}
+				break;
+
+			case ESWGListChangeOperation::Remove:
+				if (List.Items.IsValidIndex(Change.Index))
+				{
+					List.Items.RemoveAt(Change.Index);
+				}
+				break;
+
+			case ESWGListChangeOperation::ClearAll:
+				List.Items.Empty();
+				break;
+		}
+	}
+
+	List.UpdateCounter = Changes.UpdateCounter;
+}
+
+/**
+ * Applies value-addressed changes (from ReadDeltaSetChanges or
+ * ReadDeltaVectorMapChanges) to List. Matches compares a held item against a
+ * changed one to find what an op refers to — usually a key field, since the
+ * value half of a pair is what's being replaced.
+ */
+template<typename T, typename FMatches>
+void ApplyKeyedListChanges(const TSWGListChanges<T>& Changes, TSWGBaselineList<T>& List, FMatches Matches)
+{
+	for (const TSWGListChange<T>& Change : Changes.Changes)
+	{
+		const int32 Existing = List.Items.IndexOfByPredicate([&Change, &Matches](const T& Item)
+		{
+			return Matches(Item, Change.Value);
+		});
+
+		switch (Change.Operation)
+		{
+			case ESWGListChangeOperation::Add:
+			case ESWGListChangeOperation::Set:
+				if (Existing != INDEX_NONE)
+				{
+					List.Items[Existing] = Change.Value;
+				}
+				else
+				{
+					List.Items.Add(Change.Value);
+				}
+				break;
+
+			case ESWGListChangeOperation::Remove:
+				if (Existing != INDEX_NONE)
+				{
+					List.Items.RemoveAt(Existing);
+				}
+				break;
+
+			case ESWGListChangeOperation::ClearAll:
+				List.Items.Empty();
+				break;
+		}
+	}
+
+	List.UpdateCounter = Changes.UpdateCounter;
 }

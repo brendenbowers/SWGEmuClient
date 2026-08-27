@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Network/Objects/Zone/Object/TangibleObjectBaseline.h"
+#include "Network/Objects/Zone/Object/TangibleObjectDelta.h"
 #include "Customization/SWGCustomizationVariables.h"
 #include "SWGTangibleComponent.generated.h"
 
@@ -44,6 +45,7 @@ public:
 	bool           bHasBase3 = false;
 
 	void ApplyBase3(const FTangibleObjectBaseline& Baseline);
+	void ApplyDelta3(const FTangibleObjectDelta& Delta);
 
 	// Re-derives NameLabel's height above the root from the owner's *current*
 	// capsule size — called by USWGMeshGeneratorSubsystem once the owner's

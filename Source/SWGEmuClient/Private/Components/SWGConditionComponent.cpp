@@ -13,3 +13,10 @@ void USWGConditionComponent::ApplyBase3(const FTangibleObjectBaseline& Baseline)
 	MaxCondition = Baseline.MaxCondition;
 	bHasBase3 = true;
 }
+
+void USWGConditionComponent::ApplyDelta3(const FTangibleObjectDelta& Delta)
+{
+	if (Delta.UseCount.IsSet())        { UseCount = *Delta.UseCount; }
+	if (Delta.ConditionDamage.IsSet()) { ConditionDamage = *Delta.ConditionDamage; }
+	if (Delta.MaxCondition.IsSet())    { MaxCondition = *Delta.MaxCondition; }
+}

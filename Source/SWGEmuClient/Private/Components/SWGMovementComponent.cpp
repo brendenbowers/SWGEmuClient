@@ -33,6 +33,27 @@ void USWGMovementComponent::ApplyBase4(const FCreatureObjectBaseline& Baseline)
 	WaterModPercent = Baseline.WaterModPercent;
 	bHasBase4 = true;
 
+	RecomputeMovementLimits();
+}
+
+void USWGMovementComponent::ApplyDelta4(const FCreatureObjectDelta& Delta)
+{
+	if (Delta.AccelerationMultiplierBase.IsSet()) { AccelerationMultiplierBase = *Delta.AccelerationMultiplierBase; }
+	if (Delta.AccelerationMultiplierMod.IsSet())  { AccelerationMultiplierMod = *Delta.AccelerationMultiplierMod; }
+	if (Delta.SpeedMultiplierBase.IsSet())        { SpeedMultiplierBase = *Delta.SpeedMultiplierBase; }
+	if (Delta.SpeedMultiplierMod.IsSet())         { SpeedMultiplierMod = *Delta.SpeedMultiplierMod; }
+	if (Delta.RunSpeed.IsSet())                   { RunSpeed = *Delta.RunSpeed; }
+	if (Delta.SlopeModAngle.IsSet())              { SlopeModAngle = *Delta.SlopeModAngle; }
+	if (Delta.SlopeModPercent.IsSet())            { SlopeModPercent = *Delta.SlopeModPercent; }
+	if (Delta.TurnScale.IsSet())                  { TurnScale = *Delta.TurnScale; }
+	if (Delta.WalkSpeed.IsSet())                  { WalkSpeed = *Delta.WalkSpeed; }
+	if (Delta.WaterModPercent.IsSet())            { WaterModPercent = *Delta.WaterModPercent; }
+
+	RecomputeMovementLimits();
+}
+
+void USWGMovementComponent::RecomputeMovementLimits()
+{
 	// Unreal uses MaxWalkSpeed as the top ground speed for both digital and
 	// analog movement. Use SWG's run speed as that ceiling; analog magnitude
 	// naturally produces the walk/jog ranges below it, while a full keyboard

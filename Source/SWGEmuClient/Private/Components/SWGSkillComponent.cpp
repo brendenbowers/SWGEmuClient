@@ -16,3 +16,16 @@ void USWGSkillComponent::ApplyBase4(const FCreatureObjectBaseline& Baseline)
 	SkillMods = Baseline.SkillMods;
 	bHasBase4 = true;
 }
+
+void USWGSkillComponent::ApplyDelta1(const FCreatureObjectDelta& Delta)
+{
+	ApplyIndexedListChanges(Delta.SkillList, SkillList);
+}
+
+void USWGSkillComponent::ApplyDelta4(const FCreatureObjectDelta& Delta)
+{
+	ApplyKeyedListChanges(Delta.SkillMods, SkillMods, [](const FSkillModifier& A, const FSkillModifier& B)
+	{
+		return A.SkillModString == B.SkillModString;
+	});
+}

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectDelta.h"
 #include "SWGCombatStateComponent.generated.h"
 
 struct FSWGPacket;
@@ -32,8 +33,10 @@ public:
 	// Height/ShockWounds fields, StateBitmask comes after — see
 	// SWGCreatureBaselineParser::ParseBase3.
 	void ApplyBase3(const FCreatureObjectBaseline& Baseline);
+	void ApplyDelta3(const FCreatureObjectDelta& Delta);
 
 	// Split: CREO base6's WeaponId, TargetId, and Frozen are each separated by
 	// other components' fields — see SWGCreatureBaselineParser::ParseBase6.
 	void ApplyBase6(const FCreatureObjectBaseline& Baseline);
+	void ApplyDelta6(const FCreatureObjectDelta& Delta);
 };

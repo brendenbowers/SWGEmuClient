@@ -14,3 +14,12 @@ void USWGPerformanceComponent::ApplyBase6(const FCreatureObjectBaseline& Baselin
 	PerformanceType = Baseline.PerformanceType;
 	bHasBase6 = true;
 }
+
+void USWGPerformanceComponent::ApplyDelta6(const FCreatureObjectDelta& Delta)
+{
+	if (Delta.PerformanceAnimation.IsSet()) { PerformanceAnimation = *Delta.PerformanceAnimation; }
+	if (Delta.MoodString.IsSet())           { MoodString = *Delta.MoodString; }
+	if (Delta.MoodId.IsSet())               { MoodId = *Delta.MoodId; }
+	if (Delta.PerformanceStartTime.IsSet()) { PerformanceStartTime = *Delta.PerformanceStartTime; }
+	if (Delta.PerformanceType.IsSet())      { PerformanceType = *Delta.PerformanceType; }
+}

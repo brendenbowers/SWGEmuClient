@@ -11,26 +11,6 @@
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
 #include "Engine/GameInstance.h"
 
-namespace
-{
-	// Returns -1 when there's no cell number to record.
-	int32 ApplyCellBaseline(ASWGCell& Cell, uint8 Slot, FSWGPacket& Packet)
-	{
-		if (Slot != 3)
-		{
-			UE_LOG(LogTemp, Verbose, TEXT("FSWGCellBaselineHandler: no TLCS baseline dispatch for slot %d"), Slot);
-			return -1;
-		}
-
-		FCellObjectBaseline Baseline;
-		SWGCellBaselineParser::ParseBase3(Packet, Baseline);
-
-		Cell.CellName = Baseline.CustomName.IsEmpty() ? Baseline.ObjectName.StringTableId : Baseline.CustomName;
-
-		return Baseline.CellNumber;
-	}
-}
-
 bool FSWGCellBaselineHandler::CanHandleBaseline(const AActor& Actor, const FBaselinesMessage& Msg) const
 {
 	// the filter on the message type should be enough, this may need to be updated in the future
@@ -39,26 +19,27 @@ bool FSWGCellBaselineHandler::CanHandleBaseline(const AActor& Actor, const FBase
 
 bool FSWGCellBaselineHandler::HandleBaseline(AActor& Actor, const FBaselinesMessage& Msg, const FSWGBaselineArguments& Args)
 {
-	ASWGCell* CellActor = Cast<ASWGCell>(&Actor);
-	UGameInstance* GameInstance = Actor.GetWorld() ? Actor.GetWorld()->GetGameInstance() : nullptr;
-	if (!CellActor || !GameInstance || !Args.ObjectGraph)
+	if (Msg.BaselineType != 3)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("FSWGCellBaselineHandler: SCLT baseline for object %lld landed on %s — skipping slot %d"),
-			Msg.ObjectId, *Actor.GetClass()->GetName(), Msg.BaselineType);
-		return false;
+		UE_LOG(LogTemp, Verbose, TEXT("FSWGCellBaselineHandler: no TLCS baseline dispatch for slot %d"), Msg.BaselineType);
+		return true;
 	}
 
 	FSWGPacket Packet = Msg.AsPayloadPacket();
+	FCellObjectBaseline Baseline;
+	SWGCellBaselineParser::ParseBase3(Packet, Baseline);
 
-	const int32 CellNumber = ApplyCellBaseline(*CellActor, Msg.BaselineType, Packet);
-	if (CellNumber >= 0)
+	if (ASWGCell* CellActor = Cast<ASWGCell>(&Actor))
 	{
-		UE_LOG(LogTemp, Log, TEXT("FSWGCellBaselineHandler: cell %lld is number %d, name '%s'"),
-			Msg.ObjectId, CellNumber, *CellActor->CellName);
+		CellActor->CellName = Baseline.CustomName.IsEmpty() ? Baseline.ObjectName.StringTableId : Baseline.CustomName;
+	}
 
-		// The cell can't be finished until its containment has arrived too, so this
-		// only completes whichever of the two lands second.
-		Args.ObjectGraph->SetCellNumber(Msg.ObjectId, CellNumber);
+	// The cell can't be finished until its containment has arrived too, so this
+	// only completes whichever of the two lands second.
+	UGameInstance* GameInstance = Actor.GetWorld() ? Actor.GetWorld()->GetGameInstance() : nullptr;
+	if (Args.ObjectGraph && GameInstance)
+	{
+		Args.ObjectGraph->SetCellNumber(Msg.ObjectId, Baseline.CellNumber);
 		FSWGCellSpawnHandler::CheckAndFinishCell(*Args.ObjectGraph, Msg.ObjectId,
 			GameInstance->GetSubsystem<USWGTreSubsystem>(), GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>());
 	}

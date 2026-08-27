@@ -1,9 +1,9 @@
-#include "BaselineHandlers/SWGCreatureBaselineHandler.h"
+#include "DeltaHandlers/SWGCreatureDeltaHandler.h"
 
 #include "Network/SWGPacket.h"
-#include "Network/Messages/Zone/BaselinesMessage.h"
+#include "Network/Messages/Zone/DeltasMessage.h"
 #include "Network/Messages/SWGFourCC.h"
-#include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectDelta.h"
 #include "Objects/Creature/SWGCreature.h"
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
@@ -18,127 +18,131 @@
 #include "Components/SWGPerformanceComponent.h"
 #include "Components/SWGMovementComponent.h"
 
-bool FSWGCreatureBaselineHandler::CanHandleBaseline(const AActor& Actor, const FBaselinesMessage& Msg) const
+namespace
+{
+	// The loose fields are members of ASWGCreature rather than component state.
+	void ApplyLooseFields(ASWGCreature* Creature, const FCreatureObjectDelta& Delta)
+	{
+		if (!Creature)
+		{
+			return;
+		}
+
+		if (Delta.BankCredits.IsSet())    { Creature->BankCredits = *Delta.BankCredits; }
+		if (Delta.CashCredits.IsSet())    { Creature->CashCredits = *Delta.CashCredits; }
+		if (Delta.CreatureLinkId.IsSet()) { Creature->CreatureLinkId = *Delta.CreatureLinkId; }
+		if (Delta.Height.IsSet())         { Creature->Height = *Delta.Height; }
+		if (Delta.Level.IsSet())          { Creature->Level = *Delta.Level; }
+		if (Delta.GuildId.IsSet())        { Creature->GuildId = *Delta.GuildId; }
+	}
+}
+
+bool FSWGCreatureDeltaHandler::CanHandleDelta(const AActor& Actor, const FDeltasMessage& Msg) const
 {
 	return true;
 }
 
-bool FSWGCreatureBaselineHandler::HandleBaseline(AActor& Actor, const FBaselinesMessage& Msg, const FSWGBaselineArguments& Args)
+bool FSWGCreatureDeltaHandler::HandleDelta(AActor& Actor, const FDeltasMessage& Msg, const FSWGDeltaArguments& Args)
 {
 	FSWGPacket Packet = Msg.AsPayloadPacket();
-	FCreatureObjectBaseline Baseline;
+	FCreatureObjectDelta Delta;
 
-	// The loose fields are members of ASWGCreature rather than component state.
 	ASWGCreature* Creature = Cast<ASWGCreature>(&Actor);
 
-	switch (Msg.BaselineType)
+	switch (Msg.DeltaType)
 	{
 		case 1:
-			SWGCreatureBaselineParser::ParseBase1(Packet, Baseline);
+			SWGCreatureDeltaParser::ParseDelta1(Packet, Delta, Msg.UpdateCount);
 
 			if (USWGHealthComponent* HealthComponent = Actor.GetComponentByClass<USWGHealthComponent>())
 			{
-				HealthComponent->ApplyBase1(Baseline);
+				HealthComponent->ApplyDelta1(Delta);
 			}
 			if (USWGSkillComponent* SkillComponent = Actor.GetComponentByClass<USWGSkillComponent>())
 			{
-				SkillComponent->ApplyBase1(Baseline);
-			}
-			if (Creature)
-			{
-				Creature->BankCredits = Baseline.BankCredits;
-				Creature->CashCredits = Baseline.CashCredits;
+				SkillComponent->ApplyDelta1(Delta);
 			}
 			break;
 
 		case 3:
-			SWGCreatureBaselineParser::ParseBase3(Packet, Baseline);
+			SWGCreatureDeltaParser::ParseDelta3(Packet, Delta, Msg.UpdateCount);
 
 			if (USWGTangibleComponent* TangibleComponent = Actor.GetComponentByClass<USWGTangibleComponent>())
 			{
-				TangibleComponent->ApplyBase3(Baseline.Tangible);
+				TangibleComponent->ApplyDelta3(Delta.Tangible);
 			}
 			if (USWGConditionComponent* ConditionComponent = Actor.GetComponentByClass<USWGConditionComponent>())
 			{
-				ConditionComponent->ApplyBase3(Baseline.Tangible);
+				ConditionComponent->ApplyDelta3(Delta.Tangible);
 			}
 			if (USWGCombatStateComponent* CombatStateComponent = Actor.GetComponentByClass<USWGCombatStateComponent>())
 			{
-				CombatStateComponent->ApplyBase3(Baseline);
+				CombatStateComponent->ApplyDelta3(Delta);
 			}
 			if (USWGHealthComponent* HealthComponent = Actor.GetComponentByClass<USWGHealthComponent>())
 			{
-				HealthComponent->ApplyBase3(Baseline);
-			}
-			if (Creature)
-			{
-				Creature->CreatureLinkId = Baseline.CreatureLinkId;
-				Creature->Height = Baseline.Height;
+				HealthComponent->ApplyDelta3(Delta);
 			}
 			break;
 
 		case 4:
-			SWGCreatureBaselineParser::ParseBase4(Packet, Baseline);
+			SWGCreatureDeltaParser::ParseDelta4(Packet, Delta, Msg.UpdateCount);
 
 			// The movement component is the character's own, so it isn't found by class.
 			if (USWGMovementComponent* Movement = Creature ? Creature->GetSWGMovementComponent() : nullptr)
 			{
-				Movement->ApplyBase4(Baseline);
+				Movement->ApplyDelta4(Delta);
 			}
 			if (USWGEncumbranceComponent* EncumbranceComponent = Actor.GetComponentByClass<USWGEncumbranceComponent>())
 			{
-				EncumbranceComponent->ApplyBase4(Baseline);
+				EncumbranceComponent->ApplyDelta4(Delta);
 			}
 			if (USWGSkillComponent* SkillComponent = Actor.GetComponentByClass<USWGSkillComponent>())
 			{
-				SkillComponent->ApplyBase4(Baseline);
+				SkillComponent->ApplyDelta4(Delta);
 			}
 			if (USWGSpaceMissionComponent* SpaceMissionComponent = Actor.GetComponentByClass<USWGSpaceMissionComponent>())
 			{
-				SpaceMissionComponent->ApplyBase4(Baseline);
+				SpaceMissionComponent->ApplyDelta4(Delta);
 			}
 			break;
 
 		case 6:
-			SWGCreatureBaselineParser::ParseBase6(Packet, Baseline);
+			SWGCreatureDeltaParser::ParseDelta6(Packet, Delta, Msg.UpdateCount);
 
 			if (USWGDefenderComponent* DefenderComponent = Actor.GetComponentByClass<USWGDefenderComponent>())
 			{
-				DefenderComponent->ApplyBase6(Baseline.Tangible);
+				DefenderComponent->ApplyDelta6(Delta.Tangible);
 			}
 			if (USWGPerformanceComponent* PerformanceComponent = Actor.GetComponentByClass<USWGPerformanceComponent>())
 			{
-				PerformanceComponent->ApplyBase6(Baseline);
+				PerformanceComponent->ApplyDelta6(Delta);
 			}
 			if (USWGCombatStateComponent* CombatStateComponent = Actor.GetComponentByClass<USWGCombatStateComponent>())
 			{
-				CombatStateComponent->ApplyBase6(Baseline);
+				CombatStateComponent->ApplyDelta6(Delta);
 			}
 			if (USWGGroupComponent* GroupComponent = Actor.GetComponentByClass<USWGGroupComponent>())
 			{
-				GroupComponent->ApplyBase6(Baseline);
+				GroupComponent->ApplyDelta6(Delta);
 			}
 			if (USWGHealthComponent* HealthComponent = Actor.GetComponentByClass<USWGHealthComponent>())
 			{
-				HealthComponent->ApplyBase6(Baseline);
+				HealthComponent->ApplyDelta6(Delta);
 			}
 			if (USWGEquipmentComponent* EquipmentComponent = Actor.GetComponentByClass<USWGEquipmentComponent>())
 			{
-				EquipmentComponent->ApplyBase6(Baseline);
-			}
-			if (Creature)
-			{
-				Creature->Level = Baseline.Level;
-				Creature->GuildId = Baseline.GuildId;
+				EquipmentComponent->ApplyDelta6(Delta);
 			}
 			break;
 
 		default:
-			UE_LOG(LogTemp, Verbose, TEXT("FSWGCreatureBaselineHandler: no CREO baseline dispatch for slot %d"), Msg.BaselineType);
-			break;
+			UE_LOG(LogTemp, Verbose, TEXT("FSWGCreatureDeltaHandler: no CREO delta dispatch for slot %d"), Msg.DeltaType);
+			return true;
 	}
 
+	ApplyLooseFields(Creature, Delta);
 	return true;
 }
 
-REGISTER_SWG_BASELINE_HANDLER(FSWGCreatureBaselineHandler, ESWGObjectType::CREO)
+REGISTER_SWG_DELTA_HANDLER(FSWGCreatureDeltaHandler, ESWGObjectType::CREO)

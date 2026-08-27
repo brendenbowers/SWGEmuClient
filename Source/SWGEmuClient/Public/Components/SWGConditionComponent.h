@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Network/Objects/Zone/Object/TangibleObjectBaseline.h"
+#include "Network/Objects/Zone/Object/TangibleObjectDelta.h"
 #include "SWGConditionComponent.generated.h"
 
 struct FSWGPacket;
@@ -23,4 +24,5 @@ public:
 	bool  bHasBase3       = false;
 
 	void ApplyBase3(const FTangibleObjectBaseline& Baseline);
+	void ApplyDelta3(const FTangibleObjectDelta& Delta);
 };

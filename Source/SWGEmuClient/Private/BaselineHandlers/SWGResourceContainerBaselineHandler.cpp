@@ -16,48 +16,47 @@ bool FSWGResourceContainerBaselineHandler::CanHandleBaseline(const AActor& Actor
 
 bool FSWGResourceContainerBaselineHandler::HandleBaseline(AActor& Actor, const FBaselinesMessage& Msg, const FSWGBaselineArguments& Args)
 {
-	ASWGItem* Item = Cast<ASWGItem>(&Actor);
-	if (!Item)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("FSWGResourceContainerBaselineHandler: RCNO baseline for object %lld landed on %s, not an ASWGItem — skipping slot %d"),
-			Msg.ObjectId, *Actor.GetClass()->GetName(), Msg.BaselineType);
-		return false;
-	}
-
 	FSWGPacket Packet = Msg.AsPayloadPacket();
 	FResourceContainerObjectBaseline Baseline;
+
+	// The resource fields are members of ASWGItem rather than component state.
+	ASWGItem* Item = Cast<ASWGItem>(&Actor);
 
 	switch (Msg.BaselineType)
 	{
 		case 3:
-		{
 			SWGResourceContainerBaselineParser::ParseBase3(Packet, Baseline);
 
-			USWGTangibleComponent* TangibleComponent = Item->GetComponentByClass<USWGTangibleComponent>();
-			USWGConditionComponent* ConditionComponent = Item->GetComponentByClass<USWGConditionComponent>();
-			if (!TangibleComponent || !ConditionComponent)
+			if (USWGTangibleComponent* TangibleComponent = Actor.GetComponentByClass<USWGTangibleComponent>())
 			{
-				UE_LOG(LogTemp, Warning, TEXT("FSWGResourceContainerBaselineHandler: %s (object %lld) can't take an RCNO slot 3 baseline — missing components"),
-					*Actor.GetClass()->GetName(), Msg.ObjectId);
-				return false;
+				TangibleComponent->ApplyBase3(Baseline.Tangible);
 			}
-
-			TangibleComponent->ApplyBase3(Baseline.Tangible);
-			ConditionComponent->ApplyBase3(Baseline.Tangible);
-			Item->ResourceQuantity = Baseline.Quantity;
-			return true;
-		}
+			if (USWGConditionComponent* ConditionComponent = Actor.GetComponentByClass<USWGConditionComponent>())
+			{
+				ConditionComponent->ApplyBase3(Baseline.Tangible);
+			}
+			if (Item)
+			{
+				Item->ResourceQuantity = Baseline.Quantity;
+			}
+			break;
 
 		case 6:
 			SWGResourceContainerBaselineParser::ParseBase6(Packet, Baseline);
-			Item->ResourceType = Baseline.ResourceType;
-			Item->ResourceName = Baseline.ResourceName;
-			return true;
+
+			if (Item)
+			{
+				Item->ResourceType = Baseline.ResourceType;
+				Item->ResourceName = Baseline.ResourceName;
+			}
+			break;
 
 		default:
 			UE_LOG(LogTemp, Verbose, TEXT("FSWGResourceContainerBaselineHandler: no RCNO baseline dispatch for slot %d"), Msg.BaselineType);
-			return true;
+			break;
 	}
+
+	return true;
 }
 
 REGISTER_SWG_BASELINE_HANDLER(FSWGResourceContainerBaselineHandler, ESWGObjectType::RCNO)

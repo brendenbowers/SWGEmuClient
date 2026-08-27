@@ -40,6 +40,33 @@ void USWGTangibleComponent::ApplyBase3(const FTangibleObjectBaseline& Baseline)
 	UpdateNameLabel();
 }
 
+void USWGTangibleComponent::ApplyDelta3(const FTangibleObjectDelta& Delta)
+{
+	if (Delta.Complexity.IsSet())     { Complexity = *Delta.Complexity; }
+	if (Delta.ObjectName.IsSet())     { ObjectName = *Delta.ObjectName; }
+	if (Delta.CustomName.IsSet())     { CustomName = *Delta.CustomName; }
+	if (Delta.Volume.IsSet())         { Volume = *Delta.Volume; }
+	if (Delta.OptionsBitmask.IsSet()) { OptionsBitmask = *Delta.OptionsBitmask; }
+	if (Delta.ObjectVisible.IsSet())  { ObjectVisible = *Delta.ObjectVisible; }
+
+	ApplyIndexedListChanges(Delta.VisibleComponents, VisibleComponents);
+
+	if (Delta.CustomizationBytes.IsSet())
+	{
+		CustomizationBytes = *Delta.CustomizationBytes;
+		if (!FSWGCustomizationVariables::Parse(CustomizationBytes, DecodedCustomization))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGTangibleComponent: %s failed to decode customization data (%d byte(s))"),
+				*GetOwner()->GetName(), CustomizationBytes.Num());
+		}
+	}
+
+	if (Delta.ObjectName.IsSet() || Delta.CustomName.IsSet())
+	{
+		UpdateNameLabel();
+	}
+}
+
 namespace
 {
 	// Scale to the owner's actual capsule size (2*HalfHeight = full standing

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectDelta.h"
 #include "SWGPerformanceComponent.generated.h"
 
 struct FSWGPacket;
@@ -27,4 +28,5 @@ public:
 	// PerformanceStartTime/PerformanceType come much later (after TargetId) —
 	// see SWGCreatureBaselineParser::ParseBase6.
 	void ApplyBase6(const FCreatureObjectBaseline& Baseline);
+	void ApplyDelta6(const FCreatureObjectDelta& Delta);
 };

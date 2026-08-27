@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectDelta.h"
 #include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
 #include "SWGHealthComponent.generated.h"
 
@@ -32,9 +33,12 @@ public:
 	bool bHasBase6 = false;
 
 	void ApplyBase1(const FCreatureObjectBaseline& Baseline);
+	void ApplyDelta1(const FCreatureObjectDelta& Delta);
 	// Split in two: CREO base3 interleaves ShockWounds and Wounds around
 	// USWGCombatStateComponent's StateBitmask — see
 	// SWGCreatureBaselineParser::ParseBase3.
 	void ApplyBase3(const FCreatureObjectBaseline& Baseline);
+	void ApplyDelta3(const FCreatureObjectDelta& Delta);
 	void ApplyBase6(const FCreatureObjectBaseline& Baseline);
+	void ApplyDelta6(const FCreatureObjectDelta& Delta);
 };

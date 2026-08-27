@@ -56,39 +56,6 @@
 #include "Engine/LevelStreaming.h"
 #include <Subsystems/SWGActorSpawnHandlerRegistry.h>
 
-namespace
-{
-	void ApplyTangibleDeltas(ASWGItem& Item, uint8 Slot, FSWGPacket& Packet)
-	{
-		switch (Slot)
-		{
-		case 3:
-			if (Item.TangibleComponent)
-			{
-				//Item.TangibleComponent->ApplyBase3Part1(Packet);
-			}
-			if (Item.ConditionComponent)
-			{
-				//Item.ConditionComponent->ApplyBase3(Packet);
-			}
-			if (Item.TangibleComponent)
-			{
-				//Item.TangibleComponent->ApplyBase3Part2(Packet);
-			}
-			break;
-		case 6:
-			if (Item.DefenderComponent)
-			{
-				//Item.DefenderComponent->ApplyBase6(Packet);
-			}
-			break;
-		default:
-			UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no TANO delta dispatch for slot %d"), Slot);
-			break;
-		}
-	}
-}
-
 void USWGObjectGraphSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Network = Cast<USWGNetworkSubsystem>(Collection.InitializeDependency(USWGNetworkSubsystem::StaticClass()));

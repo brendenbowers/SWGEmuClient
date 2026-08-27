@@ -12,3 +12,10 @@ void USWGGroupComponent::ApplyBase6(const FCreatureObjectBaseline& Baseline)
 	GroupInviteCounter = Baseline.GroupInviteCounter;
 	bHasBase6 = true;
 }
+
+void USWGGroupComponent::ApplyDelta6(const FCreatureObjectDelta& Delta)
+{
+	if (Delta.GroupId.IsSet())            { GroupId = *Delta.GroupId; }
+	if (Delta.GroupInviterId.IsSet())     { GroupInviterId = *Delta.GroupInviterId; }
+	if (Delta.GroupInviteCounter.IsSet()) { GroupInviteCounter = *Delta.GroupInviteCounter; }
+}

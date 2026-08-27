@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
+#include "Network/Objects/Zone/Creature/CreatureObjectDelta.h"
 #include "SWGMovementComponent.generated.h"
 
 struct FSWGPacket;
@@ -58,4 +59,8 @@ public:
 	// UCharacterMovementComponent properties per the class comment's mapping,
 	// once all raw fields are known.
 	void ApplyBase4(const FCreatureObjectBaseline& Baseline);
+	void ApplyDelta4(const FCreatureObjectDelta& Delta);
+
+private:
+	void RecomputeMovementLimits();
 };
