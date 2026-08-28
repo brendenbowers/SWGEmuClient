@@ -26,6 +26,7 @@ enum class ESWGListChangeOperation : uint8
 	Add,
 	Remove,
 	Set,
+	ResetAll,
 	ClearAll,
 };
 
@@ -45,6 +46,9 @@ struct TSWGListChange
 	ESWGListChangeOperation Operation = ESWGListChangeOperation::Add;
 	int32 Index = INDEX_NONE;
 	T Value{};
+
+	/** ResetAll only: the collection's entire new contents. */
+	TArray<T> Values;
 };
 
 template<typename T>
@@ -90,10 +94,14 @@ TSWGListChanges<T> ReadListChanges(FSWGPacket& Packet, FReadChange ReadChange)
 }
 
 /**
- * Position-addressed changes, for fields the server keeps in a DeltaVector<E>.
+ * Position-addressed changes, for fields the server keeps in a DeltaVector<E>
+ * (DeltaBitArray included) and for the hand-rolled lists the player packets
+ * build with the same ops.
  *
- * Ops per DeltaVector::remove/add/set/removeAll:
- *   0 remove(index)  1 add(index, item)  2 set(index, item)  4 removeAll()
+ * Ops per DeltaVector::remove/add/set/removeAll, plus the resetAll the player
+ * packets emit directly:
+ *   0 remove(index)  1 add(index, item)  2 set(index, item)
+ *   3 resetAll(int16 count, items)  4 removeAll()
  */
 template<typename T, typename FReadItem>
 TSWGListChanges<T> ReadDeltaVectorChanges(FSWGPacket& Packet, FReadItem ReadItem)
@@ -119,6 +127,17 @@ TSWGListChanges<T> ReadDeltaVectorChanges(FSWGPacket& Packet, FReadItem ReadItem
 				Change.Index = P.ReadInt16();
 				Change.Value = ReadItem(P);
 				break;
+			case 0x03:
+			{
+				Change.Operation = ESWGListChangeOperation::ResetAll;
+				const int16 Count = P.ReadInt16();
+				Change.Values.Reserve(Count);
+				for (int16 i = 0; i < Count; ++i)
+				{
+					Change.Values.Add(ReadItem(P));
+				}
+				break;
+			}
 			case 0x04:
 				Change.Operation = ESWGListChangeOperation::ClearAll;
 				break;
@@ -274,6 +293,10 @@ void ApplyIndexedListChanges(const TSWGListChanges<T>& Changes, TSWGBaselineList
 				}
 				break;
 
+			case ESWGListChangeOperation::ResetAll:
+				List.Items = Change.Values;
+				break;
+
 			case ESWGListChangeOperation::ClearAll:
 				List.Items.Empty();
 				break;
@@ -318,6 +341,10 @@ void ApplyKeyedListChanges(const TSWGListChanges<T>& Changes, TSWGBaselineList<T
 				{
 					List.Items.RemoveAt(Existing);
 				}
+				break;
+
+			case ESWGListChangeOperation::ResetAll:
+				List.Items = Change.Values;
 				break;
 
 			case ESWGListChangeOperation::ClearAll:
