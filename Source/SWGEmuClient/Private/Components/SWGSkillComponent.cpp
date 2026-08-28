@@ -29,3 +29,14 @@ void USWGSkillComponent::ApplyDelta4(const FCreatureObjectDelta& Delta)
 		return A.SkillModString == B.SkillModString;
 	});
 }
+
+void USWGSkillComponent::ApplyBase9(const FPlayerObjectBaseline& Baseline)
+{
+	AbilityList = Baseline.AbilityList;
+	bHasPlayerBase9 = true;
+}
+
+void USWGSkillComponent::ApplyDelta9(const FPlayerObjectDelta& Delta)
+{
+	ApplyIndexedListChanges(Delta.AbilityList, AbilityList);
+}

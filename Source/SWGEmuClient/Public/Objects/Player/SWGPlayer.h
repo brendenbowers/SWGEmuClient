@@ -5,6 +5,13 @@
 #include "SWGPlayer.generated.h"
 
 class UCameraComponent;
+class USWGPlayerProfileComponent;
+class USWGExperienceComponent;
+class USWGJournalComponent;
+class USWGForceComponent;
+class USWGCraftingComponent;
+class USWGSocialComponent;
+class USWGStomachComponent;
 class USpringArmComponent;
 class UInputAction;
 class UInputMappingContext;
@@ -116,6 +123,30 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
 	TObjectPtr<UCameraComponent> FollowCamera;
+
+	// PLAY object state. The player object is a separate network object from the
+	// creature and never spawns an actor of its own, so its baselines land on
+	// these components — see FSWGPlayerBaselineHandler.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGPlayerProfileComponent> PlayerProfileComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGExperienceComponent> ExperienceComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGJournalComponent> JournalComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGForceComponent> ForceComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGCraftingComponent> CraftingComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGSocialComponent> SocialComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGStomachComponent> StomachComponent;
 
 	// IA_Move is mapped to both WASD and the left gamepad stick by IMC_Default.
 	UPROPERTY(EditDefaultsOnly, Category = "Input")

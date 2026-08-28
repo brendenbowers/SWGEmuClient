@@ -21,6 +21,7 @@ struct FSceneCreateObjectMessage;
 struct FBaselinesMessage;
 struct FSceneEndBaselinesMessage;
 struct FSceneDestroyObjectMessage;
+enum class ESWGObjectType : uint32;
 struct FDeltasMessage;
 struct FCmdStartSceneMessage;
 struct FUpdateContainmentMessage;
@@ -158,6 +159,12 @@ private:
 	void HandleBaselines(const FBaselinesMessage& Msg);
 	void HandleSceneEndBaselines(const FSceneEndBaselinesMessage& Msg);
 	void HandleSceneDestroyObject(const FSceneDestroyObjectMessage& Msg);
+
+	/** The actor a baseline/delta applies to. Most types own their actor; the player object doesn't. */
+	AActor* ResolveMessageActor(int64 ObjectId, ESWGObjectType ObjectType);
+
+	/** Resolves the player object to the creature holding it, registering it on first sight. */
+	AActor* ResolvePlayerObjectActor(int64 ObjectId);
 	void HandleDeltas(const FDeltasMessage& Msg);
 	void HandleUpdateContainment(const FUpdateContainmentMessage& Msg);
 	void HandleUpdateTransform(const FUpdateTransformMessage& Msg);
@@ -195,6 +202,9 @@ private:
 	TObjectPtr<USWGTerrainSubsystem> TerrainSubsystem;
 
 	int64 LocalPlayerObjectId = 0;
+
+	/** The PLAY object's id once seen — shares the local player's actor, so its destroy must not tear that down. */
+	int64 PlayerObjectId = 0;
 
 	/**
 	 * False from the moment a CmdStartScene starts a new zone load until

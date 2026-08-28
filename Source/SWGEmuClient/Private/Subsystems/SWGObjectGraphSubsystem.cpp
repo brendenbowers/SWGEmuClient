@@ -375,7 +375,7 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 
 void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 {
-	AActor* Actor = FindActor(Msg.ObjectId);
+	AActor* Actor = ResolveMessageActor(Msg.ObjectId, Msg.GetObjectType());
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: baseline for unknown object %lld (FourCC %s, slot %d)"),
@@ -597,6 +597,39 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ContainerId
 	}
 }
 
+AActor* USWGObjectGraphSubsystem::ResolveMessageActor(int64 ObjectId, ESWGObjectType ObjectType)
+{
+	return ObjectType == ESWGObjectType::PLAY ? ResolvePlayerObjectActor(ObjectId) : FindActor(ObjectId);
+}
+
+AActor* USWGObjectGraphSubsystem::ResolvePlayerObjectActor(int64 ObjectId)
+{
+	if (AActor* Registered = FindActor(ObjectId))
+	{
+		return Registered;
+	}
+
+	const int64* ContainerId = ContainerByObjectId.Find(ObjectId);
+	AActor* OwningActor = ContainerId ? FindActor(*ContainerId) : nullptr;
+	if (!OwningActor)
+	{
+		return nullptr;
+	}
+
+	// Registered so later messages for it resolve through the normal lookup.
+	ActorRegistry.Add(ObjectId, OwningActor);
+
+	// Only the local player's own shares an actor that must survive a destroy.
+	if (LocalPlayerObjectId != 0 && *ContainerId == LocalPlayerObjectId)
+	{
+		PlayerObjectId = ObjectId;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: routing player object %lld to %s (container %lld)"),
+		ObjectId, *OwningActor->GetName(), *ContainerId);
+	return OwningActor;
+}
+
 void USWGObjectGraphSubsystem::HandleSceneDestroyObject(const FSceneDestroyObjectMessage& Msg)
 {
 	RemoveObject(Msg.ObjectId);
@@ -629,7 +662,9 @@ void USWGObjectGraphSubsystem::RemoveObject(int64 ObjectId)
 	// The local player's actor is possessed by the player controller; tearing it
 	// out from under the controller mid-session leaves the client with no pawn.
 	// Logout and zone changes destroy it through the level teardown instead.
-	if (ObjectId != 0 && ObjectId == LocalPlayerObjectId)
+	// The player object shares that actor, so a destroy for it must not take the
+	// actor with it either.
+	if (ObjectId != 0 && (ObjectId == LocalPlayerObjectId || ObjectId == PlayerObjectId))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGObjectGraphSubsystem: destroy for the local player object %lld — unregistered, actor left alone"), ObjectId);
 		return;
@@ -670,7 +705,7 @@ void USWGObjectGraphSubsystem::RemoveObject(int64 ObjectId)
 
 void USWGObjectGraphSubsystem::HandleDeltas(const FDeltasMessage& Msg)
 {
-	AActor* Actor = FindActor(Msg.ObjectId);
+	AActor* Actor = ResolveMessageActor(Msg.ObjectId, Msg.GetObjectType());
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: delta for unknown object %lld (FourCC %s, slot %d)"),

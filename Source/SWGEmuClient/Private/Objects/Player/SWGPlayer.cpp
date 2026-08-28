@@ -19,6 +19,13 @@
 #include "Network/Messages/Zone/Object/DataTransformWithParent.h"
 #include "Objects/World/SWGCell.h"
 #include "Objects/World/SWGBuilding.h"
+#include "Components/SWGPlayerProfileComponent.h"
+#include "Components/SWGExperienceComponent.h"
+#include "Components/SWGJournalComponent.h"
+#include "Components/SWGForceComponent.h"
+#include "Components/SWGCraftingComponent.h"
+#include "Components/SWGSocialComponent.h"
+#include "Components/SWGStomachComponent.h"
 
 ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -34,6 +41,14 @@ ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	bUseControllerRotationRoll = false;
 	GetCharacterMovement()->bOrientRotationToMovement = true;
 	GetCharacterMovement()->RotationRate = FRotator(0.0f, 500.0f, 0.0f);
+
+	PlayerProfileComponent = CreateDefaultSubobject<USWGPlayerProfileComponent>(TEXT("PlayerProfileComponent"));
+	ExperienceComponent = CreateDefaultSubobject<USWGExperienceComponent>(TEXT("ExperienceComponent"));
+	JournalComponent = CreateDefaultSubobject<USWGJournalComponent>(TEXT("JournalComponent"));
+	ForceComponent = CreateDefaultSubobject<USWGForceComponent>(TEXT("ForceComponent"));
+	CraftingComponent = CreateDefaultSubobject<USWGCraftingComponent>(TEXT("CraftingComponent"));
+	SocialComponent = CreateDefaultSubobject<USWGSocialComponent>(TEXT("SocialComponent"));
+	StomachComponent = CreateDefaultSubobject<USWGStomachComponent>(TEXT("StomachComponent"));
 
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(GetCapsuleComponent());
