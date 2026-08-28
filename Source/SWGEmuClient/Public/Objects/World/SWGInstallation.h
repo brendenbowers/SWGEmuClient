@@ -7,11 +7,12 @@
 class USWGTangibleComponent;
 class USWGConditionComponent;
 class USWGDefenderComponent;
+class USWGInstallationComponent;
+class USWGHarvesterComponent;
 
 /**
- * INSO — harvesters, turrets, factories. Confirmed (InstallationObjectMessage3)
- * to be a full Tangible3 payload plus 3 extra scalars — no new component
- * needed, just USWGTangibleComponent + these loose fields.
+ * INSO — harvesters, turrets, factories. Base3 is a full Tangible3 payload plus
+ * an active flag and two power scalars, which USWGInstallationComponent holds.
  */
 UCLASS()
 class SWGEMUCLIENT_API ASWGInstallation : public ASWGObject
@@ -30,8 +31,9 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	TObjectPtr<USWGDefenderComponent> DefenderComponent;
 
-	// Installation-specific base3 tail (InstallationObjectMessage3.h:39-41)
-	uint8 bActive         = 0;
-	float SurplusPower    = 0.f;
-	float BasePowerRate   = 0.f;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGInstallationComponent> InstallationComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGHarvesterComponent> HarvesterComponent;
 };

@@ -8,13 +8,14 @@
 class ASWGCell;
 class ASWGDoor;
 class UPrimitiveComponent;
+class USWGTangibleComponent;
+class USWGConditionComponent;
+class USWGDefenderComponent;
 
 /**
- * BUIO. Placeholder only — the live baseline construction path wasn't found
- * in the Core3 survey (BuildingObjectMessage3/6.h are stale/commented-out
- * reference files, FourCC confirmed as 0x4255494F). Needs a follow-up grep
- * in BuildingObjectImplementation.cpp before this gets real baseline fields.
- * See world-object-plan.html "Buildings (BUIO) & Cells (TLCS)".
+ * Buildings. The BUIO FourCC exists but isn't what arrives: live traffic sends
+ * buildings as TANO, which is why these are plain tangible components rather
+ * than anything building-specific.
  */
 UCLASS()
 class SWGEMUCLIENT_API ASWGBuilding : public ASWGObject
@@ -22,7 +23,18 @@ class SWGEMUCLIENT_API ASWGBuilding : public ASWGObject
 	GENERATED_BODY()
 
 public:
-	ASWGBuilding() = default;
+	ASWGBuilding();
+
+	// Buildings arrive on the wire as TANO, not BUIO, so they carry the same
+	// name/condition/defender state as any other tangible.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGTangibleComponent> TangibleComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGConditionComponent> ConditionComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGDefenderComponent> DefenderComponent;
 
 	/** Populated via CellObject's "parent building" reference once cells spawn (createCellObjects()). */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")

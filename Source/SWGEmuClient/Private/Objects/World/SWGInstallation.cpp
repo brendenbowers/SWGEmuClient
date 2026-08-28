@@ -2,6 +2,7 @@
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
 #include "Components/SWGDefenderComponent.h"
+#include "Components/SWGInstallationComponent.h"
 
 ASWGInstallation::ASWGInstallation()
 {
@@ -10,4 +11,6 @@ ASWGInstallation::ASWGInstallation()
 	TangibleComponent = CreateDefaultSubobject<USWGTangibleComponent>(TEXT("TangibleComponent"));
 	ConditionComponent = CreateDefaultSubobject<USWGConditionComponent>(TEXT("ConditionComponent"));
 	DefenderComponent = CreateDefaultSubobject<USWGDefenderComponent>(TEXT("DefenderComponent"));
+	InstallationComponent = CreateDefaultSubobject<USWGInstallationComponent>(TEXT("InstallationComponent"));
+	HarvesterComponent = CreateDefaultSubobject<USWGHarvesterComponent>(TEXT("HarvesterComponent"));
 }

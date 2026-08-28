@@ -2,6 +2,18 @@
 #include "Objects/World/SWGCell.h"
 #include "Objects/Player/SWGPlayer.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/SWGTangibleComponent.h"
+#include "Components/SWGConditionComponent.h"
+#include "Components/SWGDefenderComponent.h"
+
+ASWGBuilding::ASWGBuilding()
+{
+	PrimaryActorTick.bCanEverTick = false;
+
+	TangibleComponent = CreateDefaultSubobject<USWGTangibleComponent>(TEXT("TangibleComponent"));
+	ConditionComponent = CreateDefaultSubobject<USWGConditionComponent>(TEXT("ConditionComponent"));
+	DefenderComponent = CreateDefaultSubobject<USWGDefenderComponent>(TEXT("DefenderComponent"));
+}
 
 void ASWGBuilding::RegisterCellTrigger(ASWGCell* Cell, bool bCanSeeParent)
 {
