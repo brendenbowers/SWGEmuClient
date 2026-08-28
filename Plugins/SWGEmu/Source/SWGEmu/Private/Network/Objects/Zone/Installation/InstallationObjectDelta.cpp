@@ -38,7 +38,7 @@ namespace SWGInstallationDeltaParser
 				case 0x00: Out.HopperUpdateFlag = P.ReadByte(); return true;
 				case 0x01:
 				case 0x02:
-					Out.ResourceIds = ReadInt64DeltaVectorChanges(P);
+					Out.ResourceIds = ReadDeltaVectorChanges<uint64>(P, [](FSWGPacket& Q) { return Q.ReadUInt64(); });
 					return true;
 				case 0x03:
 					Out.ResourceNames = ReadDeltaVectorChanges<FString>(P, [](FSWGPacket& Q) { return Q.ReadAsciiString(); });
