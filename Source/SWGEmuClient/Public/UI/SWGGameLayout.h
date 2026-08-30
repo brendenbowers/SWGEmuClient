@@ -25,6 +25,7 @@ public:
 	static const FGameplayTag TAG_Layer_Menu;
 	static const FGameplayTag TAG_Layer_Loading;
 	static const FGameplayTag TAG_Layer_Modal;
+	static const FGameplayTag TAG_Layer_Hud;
 
 	/**
 	 * Gets the active layout, or creates one from LayoutClass, adds it to the
@@ -48,6 +49,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI")
 	UCommonActivatableWidget* SetModalWidget(TSubclassOf<UCommonActivatableWidget> WidgetClass);
 
+	/** Replace the HUD layer with WidgetClass (pass nullptr to clear). */
+	UFUNCTION(BlueprintCallable, Category = "UI")
+	UCommonActivatableWidget* SetHudWidget(TSubclassOf<UCommonActivatableWidget> WidgetClass);
+
 	/** Tag-driven entry point used by the flow subsystem. */
 	UFUNCTION(BlueprintCallable, Category = "UI")
 	UCommonActivatableWidget* PushWidgetToLayerStack(FGameplayTag LayerTag, TSubclassOf<UCommonActivatableWidget> WidgetClass);
@@ -64,6 +69,11 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UCommonActivatableWidgetStack> ModalLayer;
+
+	// The in-world HUD. Unlike the other three this stays up for the whole
+	// session, underneath anything the menu or modal layers push over it.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UCommonActivatableWidgetStack> HudLayer;
 
 private:
 	static TWeakObjectPtr<USWGGameLayout> ActiveLayout;

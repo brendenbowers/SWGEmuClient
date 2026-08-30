@@ -20,11 +20,13 @@ namespace SWGGameLayoutTags
 	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Layer_Menu, "UI.Layer.Menu");
 	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Layer_Loading, "UI.Layer.Loading");
 	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Layer_Modal, "UI.Layer.Modal");
+	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Layer_Hud, "UI.Layer.Hud");
 }
 
 const FGameplayTag USWGGameLayout::TAG_Layer_Menu    = SWGGameLayoutTags::TAG_Layer_Menu.GetTag();
 const FGameplayTag USWGGameLayout::TAG_Layer_Loading = SWGGameLayoutTags::TAG_Layer_Loading.GetTag();
 const FGameplayTag USWGGameLayout::TAG_Layer_Modal   = SWGGameLayoutTags::TAG_Layer_Modal.GetTag();
+const FGameplayTag USWGGameLayout::TAG_Layer_Hud     = SWGGameLayoutTags::TAG_Layer_Hud.GetTag();
 
 USWGGameLayout* USWGGameLayout::GetOrCreate(APlayerController* PlayerController, TSubclassOf<USWGGameLayout> LayoutClass, bool& bCreated)
 {
@@ -96,6 +98,24 @@ UCommonActivatableWidget* USWGGameLayout::SetModalWidget(TSubclassOf<UCommonActi
 	return ModalLayer->AddWidget(WidgetClass);
 }
 
+UCommonActivatableWidget* USWGGameLayout::SetHudWidget(TSubclassOf<UCommonActivatableWidget> WidgetClass)
+{
+	if (!HudLayer)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGGameLayout: no HudLayer bound — the layout Blueprint needs a stack named HudLayer"));
+		return nullptr;
+	}
+
+	HudLayer->ClearWidgets();
+
+	if (!WidgetClass)
+	{
+		return nullptr;
+	}
+
+	return HudLayer->AddWidget(WidgetClass);
+}
+
 UCommonActivatableWidget* USWGGameLayout::PushWidgetToLayerStack(FGameplayTag LayerTag, TSubclassOf<UCommonActivatableWidget> WidgetClass)
 {
 	if (LayerTag == TAG_Layer_Menu)
@@ -109,6 +129,10 @@ UCommonActivatableWidget* USWGGameLayout::PushWidgetToLayerStack(FGameplayTag La
 	if (LayerTag == TAG_Layer_Modal)
 	{
 		return SetModalWidget(WidgetClass);
+	}
+	if (LayerTag == TAG_Layer_Hud)
+	{
+		return SetHudWidget(WidgetClass);
 	}
 
 	UE_LOG(LogTemp, Warning, TEXT("USWGGameLayout: Unknown layer tag %s"), *LayerTag.ToString());
@@ -128,5 +152,9 @@ void USWGGameLayout::ClearLayer(FGameplayTag LayerTag)
 	if (LayerTag == TAG_Layer_Modal && ModalLayer)
 	{
 		ModalLayer->ClearWidgets();
+	}
+	if (LayerTag == TAG_Layer_Hud && HudLayer)
+	{
+		HudLayer->ClearWidgets();
 	}
 }

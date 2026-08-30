@@ -26,6 +26,7 @@
 #include "Components/SWGCraftingComponent.h"
 #include "Components/SWGSocialComponent.h"
 #include "Components/SWGStomachComponent.h"
+#include "UI/SWGHudWidget.h"
 
 ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -173,6 +174,27 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	// axis key like MouseX/MouseY, so it's bound the same way rather than
 	// risking the same zero-events problem through an Enhanced Input action.
 	PlayerInputComponent->BindAxisKey(EKeys::MouseWheelAxis, this, &ASWGPlayer::OnMouseWheel);
+
+	// Action bar hotkeys: 1-9, 0, then hyphen and equals — SWG's twelve-slot
+	// bank. Bound the same legacy way as the mouse keys above rather than
+	// through Enhanced Input, so the HUD needs no input assets of its own.
+	static const FKey SlotKeys[] = {
+		EKeys::One, EKeys::Two, EKeys::Three, EKeys::Four, EKeys::Five, EKeys::Six,
+		EKeys::Seven, EKeys::Eight, EKeys::Nine, EKeys::Zero, EKeys::Hyphen, EKeys::Equals
+	};
+
+	for (int32 SlotIndex = 0; SlotIndex < UE_ARRAY_COUNT(SlotKeys); ++SlotIndex)
+	{
+		FInputKeyBinding Binding(FInputChord(SlotKeys[SlotIndex], false, false, false, false), IE_Pressed);
+		Binding.KeyDelegate.GetDelegateForManualSet().BindLambda([SlotIndex]()
+		{
+			if (USWGHudWidget* Hud = USWGHudWidget::GetActiveHud())
+			{
+				Hud->TriggerActionSlot(SlotIndex);
+			}
+		});
+		PlayerInputComponent->KeyBindings.Emplace(MoveTemp(Binding));
+	}
 }
 
 void ASWGPlayer::LookMouseX(float Value)

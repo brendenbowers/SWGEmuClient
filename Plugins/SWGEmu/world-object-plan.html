@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SWGEmu Plugin — World Object &amp; Baseline Plan</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3347;
+    --accent: #4f8ef7;
+    --accent2: #7c5cbf;
+    --green: #3ecf8e;
+    --yellow: #f5a623;
+    --red: #e05252;
+    --text: #d4d8f0;
+    --muted: #7a7f9a;
+    --code-bg: #0d1117;
+    --sidebar-w: 280px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.65; font-size: 15px; }
+
+  #sidebar {
+    position: fixed; top: 0; left: 0; width: var(--sidebar-w);
+    height: 100vh; overflow-y: auto; background: var(--surface);
+    border-right: 1px solid var(--border); padding: 0 0 40px 0; z-index: 100;
+  }
+  #sidebar-header {
+    padding: 20px 16px 16px; background: var(--surface2);
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 1;
+  }
+  #sidebar-header h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .12em; color: var(--accent); }
+  #sidebar-header p { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  #sidebar nav a {
+    display: block; padding: 7px 16px; font-size: 13px; color: var(--muted);
+    text-decoration: none; border-left: 2px solid transparent; transition: all .15s;
+  }
+  #sidebar nav a:hover { color: var(--text); background: var(--surface2); }
+  #sidebar nav a.active { color: var(--accent); border-left-color: var(--accent); background: var(--surface2); }
+  #sidebar nav .phase-label {
+    display: block; padding: 14px 16px 4px; font-size: 10px; text-transform: uppercase;
+    letter-spacing: .15em; color: var(--accent2); font-weight: 700;
+  }
+  #sidebar nav .sub { padding-left: 28px; font-size: 12px; }
+
+  #content { margin-left: var(--sidebar-w); padding: 48px 60px 80px; max-width: 960px; }
+
+  h1 { font-size: 32px; font-weight: 700; color: #fff; line-height: 1.2; margin-bottom: 12px; }
+  h2 { font-size: 22px; font-weight: 700; color: #fff; margin: 52px 0 16px; padding-top: 8px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+  h3 { font-size: 17px; font-weight: 600; color: var(--accent); margin: 32px 0 10px; }
+  h4 { font-size: 14px; font-weight: 600; color: var(--yellow); margin: 22px 0 8px; text-transform: uppercase; letter-spacing: .06em; }
+  p { margin-bottom: 14px; }
+  ul, ol { margin: 10px 0 14px 22px; }
+  li { margin-bottom: 5px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { color: #fff; font-weight: 600; }
+  code { font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace; font-size: 13px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: #e2b96f; }
+
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 20px; overflow-x: auto; margin: 16px 0 20px; position: relative;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: 13px; color: var(--text); }
+  .lang-tag {
+    position: absolute; top: 0; right: 0;
+    font-size: 10px; color: var(--muted); padding: 4px 10px;
+    text-transform: uppercase; letter-spacing: .1em;
+    border-bottom-left-radius: 6px; background: var(--surface2);
+    border: 1px solid var(--border); border-top: none; border-right: none;
+  }
+  .kw  { color: #c792ea; }
+  .ty  { color: #82aaff; }
+  .fn  { color: #82cfff; }
+  .st  { color: #c3e88d; }
+  .cm  { color: #546e7a; font-style: italic; }
+  .nu  { color: #f78c6c; }
+  .pp  { color: #89ddff; }
+  .mc  { color: #ffcb6b; }
+
+  .box { border-radius: 8px; padding: 16px 18px; margin: 20px 0; border-left: 4px solid; }
+  .box p:last-child { margin-bottom: 0; }
+  .box-ue   { background: #0e1f3a; border-color: var(--accent); }
+  .box-warn { background: #2a1a00; border-color: var(--yellow); }
+  .box-tip  { background: #0a2a1a; border-color: var(--green); }
+  .box-danger { background: #2a0a0a; border-color: var(--red); }
+  .box-pending { background: #241a2e; border-color: var(--accent2); }
+  .box-label { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; font-weight: 700; margin-bottom: 6px; }
+  .box-ue   .box-label { color: var(--accent); }
+  .box-warn .box-label { color: var(--yellow); }
+  .box-tip  .box-label { color: var(--green); }
+  .box-danger .box-label { color: var(--red); }
+  .box-pending .box-label { color: var(--accent2); }
+
+  .step { display: flex; gap: 16px; margin: 18px 0; }
+  .step-num {
+    flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent2); color: #fff; font-weight: 700; font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .step-body { flex: 1; }
+  .step-body p:first-child { margin-top: 4px; }
+  .step-body h3 { margin-top: 2px; }
+
+  table { width: 100%; border-collapse: collapse; margin: 16px 0 20px; font-size: 13px; }
+  th { background: var(--surface2); text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); border-bottom: 1px solid var(--border); }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: var(--surface2); }
+
+  .hero { padding: 12px 0 40px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+  .hero-tags { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .tag { font-size: 11px; padding: 3px 10px; border-radius: 12px; background: var(--surface2); border: 1px solid var(--border); color: var(--muted); }
+
+  .tree { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; font-family: 'Cascadia Code', monospace; font-size: 13px; line-height: 1.8; }
+  .tree .dir { color: var(--accent); }
+  .tree .file { color: var(--text); }
+  .tree .new { color: var(--green); }
+  .tree .chg { color: var(--yellow); }
+  .tree .cm { color: var(--muted); font-style: italic; }
+
+  .checklist { list-style: none; margin: 0; }
+  .checklist li { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; display: flex; align-items: flex-start; gap: 10px; }
+  .checklist li::before { content: '☐'; color: var(--accent2); font-size: 14px; flex-shrink: 0; }
+
+  @media (max-width: 900px) {
+    #sidebar { display: none; }
+    #content { margin-left: 0; padding: 24px 20px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h2>SWGEmu Plugin</h2>
+    <p>World Object &amp; Baseline Plan</p>
+  </div>
+  <nav>
+    <a href="#overview">Overview</a>
+    <a href="#done">Already built</a>
+
+    <span class="phase-label">Architecture</span>
+    <a href="#hierarchy" class="sub">Actor hierarchy</a>
+    <a href="#components" class="sub">Component breakdown</a>
+    <a href="#dispatch" class="sub">Message dispatch model</a>
+    <a href="#deltas" class="sub">Delta application</a>
+    <a href="#lifecycle" class="sub">Session lifecycle</a>
+    <a href="#registry" class="sub">Object ID registry</a>
+
+    <span class="phase-label">TRE data</span>
+    <a href="#crc-format" class="sub">CRC table format</a>
+    <a href="#template-forms" class="sub">Template FORM types</a>
+    <a href="#crc-categories" class="sub">Category breakdown</a>
+
+    <span class="phase-label">Core3 findings</span>
+    <a href="#core3" class="sub">Server source survey</a>
+
+    <span class="phase-label">Mesh rendering</span>
+    <a href="#mesh-constraint" class="sub">Runtime-only constraint</a>
+    <a href="#mesh-msh" class="sub">.msh format (static)</a>
+    <a href="#mesh-mgn" class="sub">.mgn format (skeletal)</a>
+    <a href="#mesh-pipeline" class="sub">Parser &amp; runtime plan</a>
+
+    <span class="phase-label">Terrain rendering</span>
+    <a href="#terrain-format" class="sub">.trn format (Core3-confirmed)</a>
+    <a href="#terrain-gap" class="sub">Shader/flora gap</a>
+    <a href="#terrain-landscape" class="sub">ALandscape runtime risk</a>
+    <a href="#terrain-pipeline" class="sub">Parser &amp; render plan</a>
+    <a href="#terrain-integration" class="sub">Message → visible-in-level</a>
+
+    <span class="phase-label">Tomorrow</span>
+    <a href="#phases" class="sub">Basics milestone phases</a>
+    <a href="#checklist" class="sub">Checklist</a>
+  </nav>
+</div>
+
+<div id="content">
+
+<div class="hero" id="overview">
+  <h1>World Object &amp; Baseline Architecture Plan</h1>
+  <p>Goal: get a <strong>character standing in a world with visible terrain and buildings/decorations</strong> — the "basics" milestone — built on the component-based actor architecture we've settled on, using the retail TRE CRC table to pick actor classes at spawn time.</p>
+  <div class="hero-tags">
+    <span class="tag">CREO/PLAY/TANO</span>
+    <span class="tag">Components over inheritance</span>
+    <span class="tag">object_template_crc_string_table</span>
+    <span class="tag">Core3 cross-reference</span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ ALREADY BUILT ═══════════════════════════ -->
+<h2 id="done">Already built (compiled, working)</h2>
+<ul class="checklist" style="list-style:none;">
+  <li style="border:none;">✅ <code>SceneCreateObjectMessage</code>, <code>BaselinesMessage</code>, <code>SceneEndBaselinesMessage</code>, <code>DeltasMessage</code>, <code>ParametersMessage</code>, <code>UnkByteFlagMessage</code> — full envelope decode</li>
+  <li style="border:none;">✅ <code>SWGBaselineListHelpers.h</code> — generic <code>ReadBaselineVector</code>/<code>ReadBaselineMap</code> decoders (DeltaVector / DeltaVectorMap wire shapes)</li>
+  <li style="border:none;">✅ <code>FTangibleObjectBaseline</code>, <code>FCreatureObjectBaseline</code>, <code>FPlayerObjectBaseline</code> structs + parsers, verified field-by-field against Core3 packet sources</li>
+  <li style="border:none;">✅ 7 sub-object structs fixed (Equipment, SkillModifier, GroupMissionCriticalObject, DraftSchematic, Experience, QuestJournalItem, Waypoint) — were using broken <code>operator&lt;&lt;</code>, now use proper Ascii/Unicode string reads</li>
+  <li style="border:none;">✅ <code>USWGObjectStoreSubsystem</code> — accumulates per-object baseline state today (struct-based; superseded by the component plan below)</li>
+  <li style="border:none;">✅ TRE reader (<code>TreTool2.ps1</code>) + CRC table parser (<code>ParseCrcTable.ps1</code>) — 15,792 template entries parsed</li>
+</ul>
+
+<div class="box box-pending">
+  <div class="box-label">Not yet started</div>
+  <p>Delta field-<em>application</em> (currently logged only), the actor/component classes themselves, the CRC→actor-class spawn table, terrain extraction, and static/building placement. This doc scopes all of that.</p>
+</div>
+
+<!-- ═══════════════════════════ HIERARCHY ═══════════════════════════ -->
+<h2 id="hierarchy">Actor hierarchy</h2>
+
+<p>UE doesn't allow multi-inheriting actor classes, so <code>ASWGCreature</code> can't extend both a tangible base <em>and</em> <code>ACharacter</code>. Shared TANO fields move into a component instead of a common actor base:</p>
+
+<div class="tree">
+AActor<br>
+└── <span class="file">ASWGItem</span> <span class="cm">— plain actor: props, resources, static items, weapons</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;+ <span class="new">USWGTangibleComponent</span><br>
+<br>
+ACharacter<br>
+└── <span class="file">ASWGCreature</span> <span class="cm">— pawn: NPCs, player bodies</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;+ <span class="new">USWGTangibleComponent</span> <span class="cm">(same component type, composed in)</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;+ <span class="new">USWGMovementComponent</span> <span class="cm">: UCharacterMovementComponent</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;+ <span class="new">USWGHealthComponent</span>, <span class="new">USWGSkillComponent</span>, <span class="new">USWGEquipmentComponent</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="new">USWGCombatStateComponent</span>, <span class="new">USWGGroupComponent</span>, <span class="new">USWGPerformanceComponent</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;+ (if player-controlled) <span class="new">USWGQuestComponent</span>, <span class="new">USWGExperienceComponent</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="new">USWGAbilityComponent</span>, <span class="new">USWGVitalsComponent</span>, <span class="new">USWGProfileComponent</span><br>
+<br>
+AActor <span class="cm">(new — building/static/installation branch, confirmed via Core3)</span><br>
+├── <span class="file">ASWGStaticProp</span> <span class="cm">— STAO, near-trivial: ObjectName/CustomName only</span><br>
+├── <span class="file">ASWGBuilding</span> <span class="cm">— BUIO, owns child cells</span><br>
+├── <span class="file">ASWGCell</span> <span class="cm">— TLCS, keyed by cellNumber not object id, spawned by owning Building</span><br>
+└── <span class="file">ASWGInstallation</span> <span class="cm">— INSO: USWGTangibleComponent + Active/SurplusPower/BasePowerRate</span>
+</div>
+
+<div class="box box-tip">
+  <div class="box-label">Why no shared interface needed for dispatch</div>
+  <p>The message router already knows the object's FourCC (<code>CREO</code>/<code>TANO</code>/<code>PLAY</code>/...) before it touches the actor, so the sequence of components to call for a given (FourCC, slot) pair is fixed at the call site — no virtual <code>ApplyBaselineSlot()</code> on the actor is needed. See <a href="#dispatch">Message dispatch model</a>.</p>
+</div>
+
+<!-- ═══════════════════════════ COMPONENTS ═══════════════════════════ -->
+<h2 id="components">Component breakdown</h2>
+
+<div class="box box-tip">
+  <div class="box-label">Refined after delta field-index survey</div>
+  <p>Splitting further where a baseline slot bundles fields that are independent <em>concerns</em> (not just "sent together") — durability vs. naming, combat-target-tracking vs. identity, space-only fields vs. ground combat. Each component below now maps to exactly one coherent piece of gameplay/UI logic, and — since delta field indices restart per slot (confirmed) — a component whose fields all live in one slot needs exactly one <code>ApplyDeltaBaseN</code> method.</p>
+</div>
+
+<h3>Shared — attached to both ASWGItem and ASWGCreature</h3>
+<table>
+  <tr><th>Component</th><th>Fields</th><th>Source baseline</th></tr>
+  <tr><td><code>USWGTangibleComponent</code></td><td>Complexity, ObjectName, CustomName, Volume, CustomizationString, VisibleComponents, OptionsBitmask, ObjectVisible</td><td>TANO base3</td></tr>
+  <tr><td><code>USWGConditionComponent</code></td><td>ConditionDamage, MaxCondition, UseCount</td><td>TANO base3 — split out: durability is a combat/repair concern, orthogonal to naming/appearance</td></tr>
+  <tr><td><code>USWGDefenderComponent</code></td><td>DefenderList</td><td>TANO base6 — split out: arrives in a different slot than identity, purely combat-target-tracking; base6 confirmed to generate <strong>no scalar deltas at all</strong></td></tr>
+</table>
+
+<h3>Creature-only</h3>
+<table>
+  <tr><th>Component</th><th>Fields</th><th>Notes</th></tr>
+  <tr><td><code>USWGHealthComponent</code></td><td>BaseHAM, HAM, MaxHAM, Wounds, ShockWounds, ConditionDamage/MaxCondition (creature base3 — separate index space from TANO's)</td><td>CREO base1/base3/base6</td></tr>
+  <tr><td><code>USWGSkillComponent</code></td><td>SkillList, SkillMods</td><td>CREO base1/base4</td></tr>
+  <tr><td><code>USWGEncumbranceComponent</code></td><td>Encumbrances</td><td><strong>new</strong> — CREO base4, previously unassigned. Kept separate from Health so Health stays pure current-state; encumbrance is equipment-weight-derived</td></tr>
+  <tr><td><code>USWGMovementComponent</code></td><td>RunSpeed→MaxWalkSpeed, WalkSpeed, TurnScale→RotationRate, SlopeModAngle→WalkableFloorAngle, SlopeModPercent, AccelerationMultiplier*→MaxAcceleration, SpeedMultiplier*, WaterModPercent→MaxSwimSpeed</td><td>extends <code>UCharacterMovementComponent</code> directly; CREO base4</td></tr>
+  <tr><td><code>USWGSpaceMissionComponent</code></td><td>ListenId, SpaceMissionObjects</td><td><strong>new</strong> — CREO base4, split from "loose actor fields": space-combat-only, no reason for every ground NPC to carry it</td></tr>
+  <tr><td><code>USWGEquipmentComponent</code></td><td>EquipmentList, AlternateAppearance</td><td>CREO base6</td></tr>
+  <tr><td><code>USWGCombatStateComponent</code></td><td>Posture, FactionRank, StateBitmask, TargetId, WeaponId, Frozen</td><td>CREO base3/base6</td></tr>
+  <tr><td><code>USWGGroupComponent</code></td><td>GroupId, GroupInviterId, GroupInviteCounter</td><td>CREO base6 — note GroupInviterId+Counter are sent as <strong>one combined delta update</strong>, not two independent field indices</td></tr>
+  <tr><td><code>USWGPerformanceComponent</code></td><td>PerformanceAnimation, MoodString, MoodId, PerformanceStartTime, PerformanceType</td><td>CREO base6</td></tr>
+  <tr><td><em>loose on actor</em></td><td>BankCredits, CashCredits, CreatureLinkId (mount), Height, Level, GuildId</td><td>too small to warrant a component</td></tr>
+</table>
+
+<h3>Player layer — attaches to the player's ASWGCreature</h3>
+<table>
+  <tr><th>Component</th><th>Fields</th><th>Notes</th></tr>
+  <tr><td><code>USWGQuestComponent</code></td><td>CompletedQuests, ActiveQuests, Quests, WaypointList</td><td>PLAY base8 — delta code for these is <strong>dead/commented</strong> in the header we found; live path unconfirmed</td></tr>
+  <tr><td><code>USWGExperienceComponent</code></td><td>ExperienceList</td><td>PLAY base8 — same caveat</td></tr>
+  <tr><td><code>USWGAbilityComponent</code></td><td>AbilityList, Schematics</td><td>PLAY base9 — delta code dead/commented</td></tr>
+  <tr><td><code>USWGVitalsComponent</code></td><td>ForcePower/Max, FoodFilling/Max, DrinkFilling/Max, JediState</td><td>PLAY base8/base9 — these <em>are</em> confirmed live as scalar deltas</td></tr>
+  <tr><td><code>USWGPresenceComponent</code></td><td>Status</td><td><strong>new</strong> — split from Profile: presence (online/linkdead/afk) changes far more often via delta than the profile scalars around it</td></tr>
+  <tr><td><em>loose / small</em></td><td>Title, BirthDate, TotalPlayedTime, PlayerBitmasks, PrivilegeFlag, LanguageId</td><td>PLAY base3/base6/base9</td></tr>
+</table>
+
+<div class="box box-warn">
+  <div class="box-label">GAS considered, deferred</div>
+  <p>Gameplay Ability System (<code>UAttributeSet</code> + <code>UAbilitySystemComponent</code>) is a strong long-term fit for Health/Vitals/Abilities — free UMG attribute-change delegates, gameplay tags instead of raw bitmasks. Deferred because the server (SOE, not UE networking) is fully authoritative — GAS's replication/prediction machinery would be unused overhead if adopted now. Revisit once basics are working.</p>
+</div>
+
+<!-- ═══════════════════════════ DISPATCH ═══════════════════════════ -->
+<h2 id="dispatch">Message dispatch model</h2>
+
+<p>Baseline slots are <strong>one continuous byte stream</strong> shared across components — <code>CreatureObjectMessage3</code> is literally <code>TangibleObjectMessage3</code>'s bytes followed immediately by creature-specific bytes on the same packet cursor. So apply order matters and must be explicit per (FourCC, slot):</p>
+
+<pre><span class="lang-tag">C++</span><code><span class="kw">namespace</span> SWGCreatureBaselineApply
+{
+    <span class="kw">void</span> <span class="fn">ApplyBase3</span>(AActor* Actor, FSWGPacket&amp; Packet)
+    {
+        Actor-&gt;FindComponentByClass&lt;USWGTangibleComponent&gt;()-&gt;ApplyBase3(Packet);
+        Actor-&gt;FindComponentByClass&lt;USWGCombatStateComponent&gt;()-&gt;ApplyBase3Tail(Packet);
+    }
+}</code></pre>
+
+<p>The subsystem's job shrinks to: spawn-on-Create, ID registry, and calling these free functions — no virtual dispatch on the actor needed, since the FourCC is already known at the call site.</p>
+
+<pre><span class="lang-tag">C++ — subsystem routing</span><code><span class="kw">if</span> (FourCC == <span class="st">TEXT("CREO")</span>)
+{
+    AActor* Actor = FindActor(Baseline-&gt;ObjectId);
+    <span class="kw">switch</span> (Baseline-&gt;BaselineType)
+    {
+        <span class="kw">case</span> <span class="nu">1</span>: SWGCreatureBaselineApply::ApplyBase1(Actor, Sub); <span class="kw">break</span>;
+        <span class="kw">case</span> <span class="nu">3</span>: SWGCreatureBaselineApply::ApplyBase3(Actor, Sub); <span class="kw">break</span>;
+        <span class="kw">case</span> <span class="nu">4</span>: SWGCreatureBaselineApply::ApplyBase4(Actor, Sub); <span class="kw">break</span>;
+        <span class="kw">case</span> <span class="nu">6</span>: SWGCreatureBaselineApply::ApplyBase6(Actor, Sub); <span class="kw">break</span>;
+    }
+}</code></pre>
+
+<div class="box box-tip">
+  <div class="box-label">Spawn timing</div>
+  <p>Spawn the actor immediately (hidden) on <code>SceneCreateObjectByCrc</code> instead of buffering into an intermediate struct. Baselines/deltas then apply straight onto live components. <code>SceneEndBaselines</code> just un-hides it. This removes the <code>FSWGObjectRecord</code> accumulator and the <code>TOptional&lt;FXxxBaseline&gt;</code> struct fields entirely — the components <em>are</em> the decoded state.</p>
+</div>
+
+<!-- ═══════════════════════════ DELTAS ═══════════════════════════ -->
+<h2 id="deltas">Delta application (confirmed field indices)</h2>
+
+<p>Wire shape, confirmed against Core3's <code>DeltaMessage.h:29-160</code> and the per-type <code>*ObjectDeltaMessageN.h</code> headers: each entry in <code>RawUpdates</code> is <code>[fieldIndex:uint16][value]</code>, one entry per server-side <code>startUpdate()</code> call. <strong>Field index restarts at 0 for every slot</strong> — <code>CreatureObjectDeltaMessage6</code> uses 0x02–0x10 independently of <code>CreatureObjectDeltaMessage3</code>'s 0x00–0x11 and <code>...4</code>'s 0x00–0x0C. This means our existing per-slot <code>ApplyBaseX</code> component methods get a same-slot <code>ApplyDeltaBaseX(uint16 FieldIndex, FSWGPacket&amp;)</code> sibling — no new dispatch mechanism, just a <code>switch(FieldIndex)</code> mirroring baseline declaration order.</p>
+
+<h3>Confirmed field-index tables</h3>
+<table>
+  <tr><th>Slot</th><th>Index → field (type)</th></tr>
+  <tr><td>Tangible base3</td><td>0=Complexity(float), 1=ObjectName(StringId), 2=CustomName(unicode), 4=CustomizationString(ascii), 6=OptionsBitmask(int), 7=UseCount(int), 8=ConditionDamage(int), 9=MaxCondition(int). <em>3,5 unused.</em></td></tr>
+  <tr><td>Tangible base6</td><td><strong>No fields at all</strong> — DefenderList/Unknown076 never generate scalar deltas.</td></tr>
+  <tr><td>Creature base1</td><td>0=BankCredits(int), 1=CashCredits(int). BaseHAM/SkillList not exposed via scalar deltas here — DeltaVector path only (see below).</td></tr>
+  <tr><td>Creature base3</td><td>4=CustomizationString(ascii), 6=CreatureBitmask(int), 7=IncapacitationRecoveryTime(int) <strong>— not in our baseline struct, gap to fix</strong>, 8=ConditionDamage(int), 9=MaxCondition(int), 0xA=unconfirmed, 0xB=Posture(byte), 0xC=FactionRank(byte), 0xD=CreatureLinkID(long), 0xE=Height(float), 0xF=ShockWounds(int), 0x10=StateBitmask(long), 0x11=Wounds(list, handled separately).</td></tr>
+  <tr><td>Creature base4</td><td>0=AccelMultBase(float), 1=AccelMultMod(float), 4=SpeedMultBase(float), 5=SpeedMultMod(float), 6=ListenToID(long), 7=RunSpeed(float), 8=SlopeModAngle(float), 9=SlopeModPercent(float), 0xA=TurnScale(float), 0xB=WalkSpeed(float), 0xC=WaterModPercent(float). <em>2,3 unused.</em></td></tr>
+  <tr><td>Creature base6</td><td>0x02=Level(short), 0x03=PerformanceAnimation(ascii), 0x04=MoodString(ascii), 0x05=WeaponID(long), 0x06=GroupID(long), 0x07=GroupInviterID(long)+GroupInviteCounter(long) <strong>one combined update</strong>, 0x08=GuildID(int), 0x09=TargetID(long), 0x0A=MoodID(byte), 0x0B=PerformanceStartTime(int), 0x0C=PerformanceType(int), 0x10=AlternateAppearance(ascii). HAM/MaxHAM/EquipmentList indices <strong>not confirmed</strong> — likely 0x00/0x01/0x0D–0x0F by baseline order, needs follow-up.</td></tr>
+  <tr><td>Player base3</td><td>5=PlayerBitmasks (int count=4 + 4×int, raw not list-wrapped), 6=ProfileBitmasks (same shape, always zero), 7=Title(ascii), 8=BirthDate(int), 9=TotalPlayedTime(int).</td></tr>
+  <tr><td>Player base6</td><td>1=PrivilegeFlag(byte).</td></tr>
+  <tr><td>Player base8</td><td>2=ForcePower(int), 3=ForcePowerMax(int). Waypoint/Experience delta code is <strong>commented out</strong> in the header — live path unconfirmed.</td></tr>
+  <tr><td>Player base9</td><td>1=ExperimentationEnabled(int), 2=CraftingState(int), 3=ClosestCraftingStation(long), 5=ExperimentationPoints(int), 9=LanguageID(int), 0xA=FoodFilling(int), 0xB=FoodFillingMax(int), 0xC=DrinkFilling(int), 0xD=DrinkFillingMax(int), 0x11=JediState(int). Ability/Schematic/Friends/Ignore delta code is <strong>commented out</strong> — live path unconfirmed.</td></tr>
+</table>
+
+<h3>DeltaVector / DeltaVectorMap command bytes — two different schemes</h3>
+<table>
+  <tr><th>Type</th><th>Command byte values</th><th>Used by</th></tr>
+  <tr><td><code>DeltaVector</code> (<code>DeltaVector.h:136-217</code>)</td><td>REMOVE=0, ADD=1, SET=2, REMOVE_ALL=4 — byte + uint16 index, then value for SET/ADD</td><td>BaseHAM, Wounds, SkillList, Encumbrances, HAM/MaxHAM, EquipmentList</td></tr>
+  <tr><td><code>DeltaVectorMap</code> (<code>DeltaVectorMap.h:15-22,75-138</code>)</td><td>ADD=0, DROP=1, SET=2 — byte + key + value (DROP includes value too)</td><td>SkillMods, ExperienceList, WaypointList, Quests</td></tr>
+</table>
+<p>Both wrap the item stream in <code>startList(count, updateCounter)</code> — two leading int32s — matching the framing our <code>ReadBaselineVector</code>/<code>ReadBaselineMap</code> helpers already use for baselines. A delta list update reuses that same framing per update, just with a command byte per item instead of a flat count.</p>
+
+<div class="box box-warn">
+  <div class="box-label">Gaps flagged for follow-up (not blocking, but noted)</div>
+  <ul style="margin-bottom:0;">
+    <li>Add <code>IncapacitationRecoveryTime</code> to <code>FCreatureObjectBaseline</code> base3 — confirmed live field we don't currently decode</li>
+    <li>Creature base6 HAM/MaxHAM/EquipmentList delta indices unconfirmed — grep <code>CreatureObjectImplementation.cpp</code> for the actual <code>startUpdate</code> call sites</li>
+    <li>Player Waypoint/Experience/Ability/Schematic/Skill deltas: header code is dead/commented — need the live call sites in <code>PlayerObjectImplementation.cpp</code> before wiring these four components' delta paths (baselines for these are unaffected, already working)</li>
+  </ul>
+</div>
+
+<!-- ═══════════════════════════ LIFECYCLE ═══════════════════════════ -->
+<h2 id="lifecycle">Object graph subsystem — session lifecycle</h2>
+
+<p><code>USWGObjectStoreSubsystem</code> is a <code>UGameInstanceSubsystem</code>, so it survives level transitions — <code>Deinitialize()</code> only fires at game-instance shutdown, never on a plain level change. That means "start on scene create, run until we leave the level" has to be an <strong>explicit session state the subsystem tracks itself</strong>, not something inferred purely from <code>Initialize()</code>/<code>Deinitialize()</code>.</p>
+
+<h3>Zone session states</h3>
+<div class="tree">
+Idle&nbsp;&nbsp;──BeginZoneSession()──▶&nbsp;&nbsp;Active&nbsp;&nbsp;──EndZoneSession()──▶&nbsp;&nbsp;Idle<br>
+<span class="cm">(no zone loaded,          (processing Create/Baselines/       (torn down, registry</span><br>
+<span class="cm"> registry empty)           Deltas/EndBaselines for            cleared, back to</span><br>
+<span class="cm">                           every object in range)             character select / next zone)</span>
+</div>
+
+<table>
+  <tr><th>Trigger</th><th>Calls</th><th>Notes</th></tr>
+  <tr><td>Flow code requests <code>OpenLevel</code> into the generic zone level (same call site as the earlier "passing data to a level" design)</td><td><code>BeginZoneSession()</code></td><td>Called explicitly by the layer that already controls zoning-in — <strong>not</strong> inferred from the first network message arriving, since we control that call site directly</td></tr>
+  <tr><td>Player returns to character select, a zone transfer completes, or the connection drops/logs out</td><td><code>EndZoneSession()</code></td><td>A planet-to-planet transfer likely just triggers a new <code>CmdStartScene</code> for the destination zone — treat that as <code>EndZoneSession()</code> immediately followed by a fresh <code>BeginZoneSession()</code>, rather than assuming a distinct "you are leaving" message exists</td></tr>
+</table>
+
+<h3>Per-object state machine</h3>
+<div class="tree">
+(unknown) ──SceneCreateObjectByCrc──▶ <span class="new">Pending</span> ──first BaselinesMessage──▶ <span class="new">Spawned</span> ──SceneEndBaselines──▶ <span class="new">Ready</span> ──??? (gap)──▶ <span class="new">Destroyed</span>
+</div>
+<ul>
+  <li><strong>Pending</strong> — <code>SceneCreateObjectByCrc</code> received; no actor exists yet. Transform/CRC/hyperspacing held in a small <code>PendingSpawns</code> buffer keyed by ObjectId.</li>
+  <li><strong>Spawned</strong> — first <code>BaselinesMessage</code> for that ObjectId arrived, its FourCC picked the actor class, the actor was spawned hidden at the buffered transform and registered. Every baseline slot after this (including this first one) dispatches straight to <code>ApplyBaseX</code> on the live actor's components.</li>
+  <li><strong>Ready</strong> — <code>SceneEndBaselines</code> received: un-hide, enable collision, broadcast <code>OnObjectReady(ObjectId)</code>.</li>
+  <li><strong>Destroyed</strong> — <span class="cm">gap, see below</span>.</li>
+</ul>
+
+<h3>Message → action table</h3>
+<table>
+  <tr><th>Message</th><th>Precondition</th><th>Action</th></tr>
+  <tr><td><code>SceneCreateObjectByCrc</code></td><td>Session Active</td><td><strong>Phase A (this pass, messages only):</strong> store <code>PendingSpawn{ObjectId, Crc, Pos, Orientation, Hyperspacing}</code>; no actor yet — we can't pick a class without knowing the object type, and we don't have the CRC table wired in yet. <strong>Phase B (once the TRE CRC table is loaded):</strong> resolve <code>Crc</code>→category immediately and spawn the actor hidden right here, skipping the Pending state entirely.</td></tr>
+  <tr><td><code>BaselinesMessage</code></td><td>Session Active</td><td>If no actor is registered for this ObjectId yet: pop its <code>PendingSpawn</code>, pick the actor class from the FourCC (CREO→<code>ASWGCreature</code>, TANO→<code>ASWGItem</code>, STAO→<code>ASWGStaticProp</code>, etc.), spawn at the buffered transform, register in <code>ActorRegistry</code>. Then — always — dispatch <code>(FourCC, slot)</code> to the matching <code>ApplyBaseX</code> free function against the actor's components, per the <a href="#dispatch">dispatch model</a>.</td></tr>
+  <tr><td><code>SceneEndBaselines</code></td><td>Actor exists in registry</td><td>Un-hide, enable collision, broadcast <code>OnObjectReady(ObjectId)</code>.</td></tr>
+  <tr><td><code>DeltasMessage</code></td><td>Actor exists in registry</td><td>Dispatch <code>(FourCC, slot, fieldIndex)</code> to <code>ApplyDeltaBaseX</code> per the <a href="#deltas">confirmed field-index tables</a>. If no actor exists yet: log and drop — shouldn't happen given in-order reliable delivery (the <code>SWGReliabilityComponent</code> out-of-order fix already guarantees ordering per connection).</td></tr>
+  <tr><td><em>despawn / out-of-range removal</em></td><td>Actor exists</td><td><strong>Gap — message not yet identified.</strong> No <code>SceneCreateObjectByCrc</code> counterpart for "this object left your awareness range" has been located in Core3 yet. Until found, there's no cleanup path for individual objects leaving range short of a full <code>EndZoneSession()</code>. Needs a follow-up grep (likely something like a scene/object-destroy message near <code>CmdSceneReady</code> in <code>packets/zone/</code>).</td></tr>
+  <tr><td><code>BaselinesMessage</code> with FourCC <code>PLAY</code></td><td>Session Active</td><td>Per current milestone scope (PLAY layer deferred), recognize and no-op at Verbose log — PLAY is the local player's own ghost data, not a separate world object, and isn't needed for "moveable player with health."</td></tr>
+</table>
+
+<h3>Phase A vs. Phase B</h3>
+<p><strong>Phase A (this pass — messages only):</strong> every object is invisible for one extra round trip (its own Create, then its first Baseline) before its class is known and it can spawn. Correctness over latency for this first pass.</p>
+<p><strong>Phase B (later — once the CRC table from the earlier phase is wired in):</strong> resolve class immediately from <code>Crc</code> on <code>SceneCreateObjectByCrc</code>, spawn hidden right away, apply baselines onto an already-existing actor — removing the <code>PendingSpawns</code> buffering step entirely. Dispatch should key off the resolved template's <strong>outer FORM tag</strong> (<code>SCOT</code>/<code>STOT</code>/<code>STAT</code>/<code>SBOT</code>/<code>SIOT</code>/<code>CCLT</code>/...), not the CRC path prefix — see <a href="#template-forms">Template FORM types</a>. The path prefix and template class don't always line up 1:1 (e.g. <code>object/tangible/component</code> and <code>object/weapon</code> are both "tangible-ish" paths but resolve to different FORM tags), and the FORM tag is authoritative since it's the actual class discriminator baked into the file.</p>
+
+<h3>Data structures</h3>
+<pre><span class="lang-tag">Sketch, not final code</span><code><span class="kw">enum class</span> EZoneSessionState { Idle, Active };
+
+<span class="kw">struct</span> FPendingSpawn
+{
+    uint32 Crc;
+    <span class="ty">FVector</span> Position;
+    <span class="ty">FQuat</span>   Orientation;
+    <span class="kw">bool</span>   bHyperspacing;
+};
+
+TMap&lt;int64, FPendingSpawn&gt;             PendingSpawns; <span class="cm">// cleared once an actor spawns for that id</span>
+TMap&lt;int64, TWeakObjectPtr&lt;AActor&gt;&gt;    ActorRegistry; <span class="cm">// unchanged from the earlier registry design</span>
+EZoneSessionState                       SessionState = EZoneSessionState::Idle;</code></pre>
+
+<div class="box box-warn">
+  <div class="box-label">Known gaps to resolve before this is "complete"</div>
+  <ul style="margin-bottom:0;">
+    <li>No despawn/out-of-range removal message identified yet — needs a Core3 grep before <strong>Destroyed</strong> state has any trigger at all</li>
+    <li>No confirmed server-side signal distinguishing "zone transfer" from "full logout" — currently assumed the flow/<code>OpenLevel</code> call site is authoritative for session boundaries, not inferred from network traffic</li>
+    <li><del>Whether <code>object/mobile/vehicle/*</code> shares FourCC <code>CREO</code> with biped NPCs</del> — <strong>resolved:</strong> confirmed at the template level, both are <code>FORM SCOT</code> (e.g. <code>shared_speederbike_flash.iff</code>, <code>shared_landspeeder_base.iff</code>). Ground vehicles are <code>ASWGCreature</code>, no separate actor needed. See <a href="#template-forms">Template FORM types</a>.</li>
+    <li><strong>New gap:</strong> starships (<code>object/ship/*</code>, 368 templates, <code>FORM SSHP</code>) are a wholly separate template hierarchy from <code>SCOT</code> ground vehicles — extends <code>STOT</code> directly, not creature-derived. No actor class exists for this yet; out of scope for the current milestone but worth tracking separately from "vehicle."</li>
+  </ul>
+</div>
+
+<!-- ═══════════════════════════ REGISTRY ═══════════════════════════ -->
+<h2 id="registry">Object ID registry</h2>
+
+<p><code>FindComponentByClass</code> filters by type only — for "give me the actor for object ID X" you need your own index:</p>
+
+<pre><span class="lang-tag">C++</span><code><span class="kw">UCLASS</span>()
+<span class="kw">class</span> SWGEMU_API USWGObjectStoreSubsystem : <span class="kw">public</span> UGameInstanceSubsystem
+{
+    <span class="kw">void</span> <span class="fn">RegisterActor</span>(int64 ObjectId, AActor* Actor);
+    <span class="kw">void</span> <span class="fn">UnregisterActor</span>(int64 ObjectId);
+    AActor* <span class="fn">FindActor</span>(int64 ObjectId) <span class="kw">const</span>;
+
+    <span class="kw">template</span>&lt;<span class="kw">typename</span> T&gt;
+    T* <span class="fn">FindComponent</span>(int64 ObjectId) <span class="kw">const</span>
+    {
+        AActor* Actor = FindActor(ObjectId);
+        <span class="kw">return</span> Actor ? Actor-&gt;FindComponentByClass&lt;T&gt;() : <span class="kw">nullptr</span>;
+    }
+
+    TMap&lt;int64, TWeakObjectPtr&lt;AActor&gt;&gt; ActorRegistry;
+};</code></pre>
+<p><code>TWeakObjectPtr</code> auto-nulls on actor destroy, so despawn cleanup is free even if <code>UnregisterActor</code> isn't called explicitly.</p>
+
+<!-- ═══════════════════════════ CRC FORMAT ═══════════════════════════ -->
+<h2 id="crc-format">CRC table format</h2>
+
+<p><code>misc/object_template_crc_string_table.iff</code> (found in <code>data_other_00.tre</code>, superseded by later patch archives — latest wins). Parsed with <code>F:\Projects\Scripts\ParseCrcTable.ps1</code>:</p>
+
+<div class="tree">
+FORM CSTB<br>
+&nbsp;&nbsp;FORM 0000<br>
+&nbsp;&nbsp;&nbsp;&nbsp;DATA (4 bytes)&nbsp;&nbsp;&nbsp;— record count, uint32 LE (15,792 in patch_14_00.tre)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;CRCT (count×4)&nbsp;&nbsp;&nbsp;— array of uint32 CRCs, index-aligned with STRT<br>
+&nbsp;&nbsp;&nbsp;&nbsp;STRT (count×4)&nbsp;&nbsp;&nbsp;— array of uint32 offsets into STNG<br>
+&nbsp;&nbsp;&nbsp;&nbsp;STNG (blob)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— concatenated null-terminated template path strings
+</div>
+<p>Row <em>i</em>: <code>CRC = CRCT[i]</code>, path = null-terminated string at <code>STNG + STRT[i]</code> (e.g. <code>object/tangible/ship/components/droid_interface/...</code>). This is the same CRC carried in <code>SceneCreateObjectMessage::ObjectCrc</code> — so a lookup at spawn time gives the template path <strong>before any baseline arrives</strong>.</p>
+
+<!-- ═══════════════════════════ TEMPLATE FORMS ═══════════════════════════ -->
+<h2 id="template-forms">Template FORM types — the real dispatch key</h2>
+
+<p>The CRC table gives a template <em>path</em>, but the path prefix is only a naming convention — the file's own outer <code>FORM</code> tag is the actual class discriminator, and it's authoritative in a way the path isn't. Confirmed by extracting one sample template per category (via <code>USWGTreSubsystem::ExtractFile</code> + <code>FSWGIffReader</code>, same tools already built) and reading just its first chunk:</p>
+
+<table>
+  <tr><th>FORM tag</th><th>Template class (inferred)</th><th>Extends</th><th>Our actor</th></tr>
+  <tr><td><code>SHOT</code></td><td>SharedObjectTemplate</td><td>— (root)</td><td>n/a — always nested at the bottom of a chain, never a top-level tag on its own</td></tr>
+  <tr><td><code>STOT</code></td><td>SharedTangibleObjectTemplate</td><td>SHOT</td><td><code>ASWGItem</code></td></tr>
+  <tr><td><code>SCOT</code></td><td>SharedCreatureObjectTemplate</td><td>STOT</td><td><code>ASWGCreature</code> — confirmed to cover <strong>both bipeds and ground vehicles</strong> (speederbike/landspeeder samples are SCOT too)</td></tr>
+  <tr><td><code>SWOT</code></td><td>SharedWeaponObjectTemplate</td><td>STOT</td><td><code>ASWGItem</code></td></tr>
+  <tr><td><code>RCCT</code></td><td>SharedResourceContainerObjectTemplate</td><td>STOT</td><td><code>ASWGItem</code></td></tr>
+  <tr><td><code>STAT</code></td><td>SharedStaticObjectTemplate</td><td>SHOT (not STOT)</td><td><code>ASWGStaticProp</code></td></tr>
+  <tr><td><code>SBOT</code></td><td>SharedBuildingObjectTemplate</td><td>STOT</td><td><code>ASWGBuilding</code></td></tr>
+  <tr><td><code>SIOT</code></td><td>SharedInstallationObjectTemplate</td><td>STOT</td><td><code>ASWGInstallation</code></td></tr>
+  <tr><td><code>CCLT</code></td><td>SharedCellObjectTemplate</td><td>SHOT (not STOT)</td><td><code>ASWGCell</code></td></tr>
+  <tr><td><code>SSHP</code></td><td>SharedShipObjectTemplate</td><td>STOT</td><td><strong>no actor yet — gap.</strong> A separate hierarchy from SCOT ground vehicles, out of scope for this milestone.</td></tr>
+  <tr><td><code>SITN</code></td><td>SharedIntangibleObjectTemplate</td><td>SHOT</td><td>no visual actor (matches the "no world presence" note in the category breakdown below)</td></tr>
+  <tr><td><code>SDSC</code></td><td>SharedDraftSchematicObjectTemplate</td><td>SITN</td><td>data-only, no actor</td></tr>
+  <tr><td><code>SPLY</code></td><td>SharedPlayerObjectTemplate</td><td>SITN</td><td>no separate actor — confirms at the template level (not just the baseline level) that PLAY attaches to the player's <code>ASWGCreature</code> rather than spawning its own actor</td></tr>
+</table>
+
+<div class="box box-tip">
+  <div class="box-label">Why this beats path-prefix dispatch</div>
+  <p><code>object/tangible/component</code> and <code>object/weapon</code> both live under tangible-ish paths but resolve to different FORM tags (<code>STOT</code> vs. <code>SWOT</code>); <code>object/mobile</code> covers both bipeds and ground vehicles under one prefix, but that's fine here since both resolve to the same FORM tag (<code>SCOT</code>) anyway. Reading the FORM tag costs nothing extra — these templates are ~1-3KB, and the existing <code>USWGTreSubsystem::ExtractFile()</code> + <code>FSWGIffReader</code> already read the whole file; the dispatch check is just "look at chunk 0's tag," no deep parse needed.</p>
+</div>
+
+<!-- ═══════════════════════════ CATEGORIES ═══════════════════════════ -->
+<h2 id="crc-categories">Category breakdown (15,792 entries)</h2>
+<table>
+  <tr><th>Path prefix</th><th>Count</th><th>Spawn as</th></tr>
+  <tr><td><code>object/tangible</code></td><td>6868</td><td><code>ASWGItem</code></td></tr>
+  <tr><td><code>object/mobile</code></td><td>2728</td><td><code>ASWGCreature</code></td></tr>
+  <tr><td><code>object/draft_schematic</code></td><td>2130</td><td>data-only, no world actor</td></tr>
+  <tr><td><code>object/static</code></td><td>1605</td><td><code>ASWGStaticProp</code> — networked, minimal baseline (FourCC <code>STAO</code>)</td></tr>
+  <tr><td><code>object/building</code></td><td>1013</td><td><code>ASWGBuilding</code></td></tr>
+  <tr><td><code>object/ship</code></td><td>368</td><td><code>ASWGVehicle</code>/ship</td></tr>
+  <tr><td><code>object/weapon</code></td><td>347</td><td><code>ASWGItem</code> subtype (equippable)</td></tr>
+  <tr><td><code>object/intangible</code></td><td>231</td><td>no world presence</td></tr>
+  <tr><td><code>object/creature</code></td><td>206</td><td><code>ASWGCreature</code> (non-mobile creature templates?)</td></tr>
+  <tr><td><code>object/installation</code></td><td>121</td><td><code>ASWGInstallation</code></td></tr>
+  <tr><td><code>object/soundobject</code></td><td>66</td><td>audio emitter, no visual actor</td></tr>
+  <tr><td><code>object/resource_container</code></td><td>41</td><td><code>ASWGItem</code> subtype</td></tr>
+  <tr><td><code>object/cell</code></td><td>3</td><td><code>ASWGCell</code> — building interior container</td></tr>
+  <tr><td><code>object/player</code></td><td>3</td><td>PLAY ghost template itself, no separate actor</td></tr>
+</table>
+
+<!-- ═══════════════════════════ CORE3 ═══════════════════════════ -->
+<h2 id="core3">Core3 server source survey</h2>
+
+<div class="box box-tip">
+  <div class="box-label">Terrain — confirmed zero network geometry</div>
+  <p><code>CmdStartScene.h:28</code>: the server sends only a <strong>terrain file path string</strong> — <code>"terrain/" + zoneName + ".trn"</code> — plus spawn position/CRC/galactic time. No heightmap or mesh data crosses the wire. Terrain is a pure TRE-extraction task: pick the local <code>.trn</code> by name, no baseline/delta code involved at all.</p>
+</div>
+
+<h3>Statics (STAO) — networked, not TRE-baked</h3>
+<p><code>StaticObject extends SceneObject</code> (<code>staticobject/StaticObject.idl:12</code>) with a native <code>sendBaselinesTo()</code> (line 31). Wire baseline <code>StaticObjectMessage3.h:14-22</code>, FourCC <code>0x4F415453</code> ("STAO"): <code>int(0)</code>, <code>StringId(ObjectName)</code>, <code>CustomName</code>, <code>int(0xFF)</code>. So every static prop gets its own <code>SceneCreateObjectByCrc</code> + a single lightweight baseline slot (3) — no condition/HAM/etc. This is the simplest baseline in the game; <code>ASWGStaticProp</code> can be a near-trivial actor.</p>
+
+<h3>Buildings (BUIO) &amp; Cells (TLCS)</h3>
+<p><code>BuildingObject extends StructureObject</code> (<code>building/BuildingObject.idl:32</code>), FourCC <code>0x4255494F</code> ("BUIO") per <code>BuildingObjectMessage3.h:14</code> / <code>BuildingObjectMessage6.h:13</code>.</p>
+<div class="box box-warn">
+  <div class="box-label">Stale reference files</div>
+  <p>Both <code>BuildingObjectMessage3.h</code> and <code>BuildingObjectMessage6.h</code> are entirely commented out (dead/legacy code) — the live baseline construction path wasn't located in this pass. Treat these two files as historical reference for FourCC/field layout only; a follow-up grep in <code>BuildingObjectImplementation.cpp</code> is needed before implementing <code>ASWGBuilding</code>'s baseline parser.</p>
+</div>
+<p><code>CellObject extends SceneObject</code> (<code>cell/CellObject.idl:18</code>), FourCC <code>0x53434C54</code> → wire bytes read as ASCII "TLCS" (<code>CellObjectMessage3.h:13</code>, cross-checked against a captured packet in that file's comments). Cells are <strong>separate baseline objects</strong>, keyed by <code>cellNumber</code> (int, not object id) — <code>CellObjectMessage3.h:21</code>. <code>BuildingObject.addCell()</code>/<code>getCell()</code> (<code>BuildingObject.idl:232,244</code>) confirm cells are children enumerated by index, created via <code>createCellObjects()</code> (line 96) — i.e. a building spawns its own set of cell objects rather than cells being independently discovered.</p>
+
+<h3>Installations (INSO)</h3>
+<p>Extend <code>StructureObject</code>, but the baseline wraps <code>TangibleObjectMessage3</code> directly — <code>InstallationObjectMessage3.h:11,14</code>, FourCC <code>0x494E534F</code> ("INSO"). Base3 appends only <strong>3</strong> installation-specific fields after the full tangible payload (<code>InstallationObjectMessage3.h:39-41</code>): <code>Active</code> (byte), <code>SurplusPower</code> (float), <code>BasePowerRate</code> (float). No hopper/resource-contents fields in base3 — this means <code>ASWGInstallation</code> is just <code>USWGTangibleComponent</code> + 3 scalars, no new component needed.</p>
+
+<h3>Minimal zone-in sequence</h3>
+<p>From <code>CreatureObjectImplementation.cpp</code> call sites (lines 355/382/407, all calling <code>sendBaselinesTo(player)</code>):</p>
+<pre><code>CmdStartScene (terrain path + spawn pos)
+  → [SceneCreateObjectByCrc + BaselinesMessage(slots) + SceneEndBaselines] for own CREO + PLAY
+  → same triple repeated for each nearby STAO / TANO / BUIO / CellObject / other CREO in range
+  → CmdSceneReady / CmdSceneReadyCallback  (packets/zone/CmdSceneReady.h, CmdSceneReadyCallback.h)
+    — signals the client finished loading; gameplay (combat/chat/trade) starts only after this</code></pre>
+<p>This is the exact traffic shape the "basics" milestone needs to handle — everything after <code>CmdSceneReadyCallback</code> is out of scope for now.</p>
+
+<!-- ═══════════════════════════ MESH RENDERING ═══════════════════════════ -->
+<h2 id="mesh-constraint">Mesh rendering — runtime-only constraint</h2>
+
+<p>To actually render spawned objects (not just track them in the object graph), we need real geometry from the TRE archives. This can't be a build-time/offline conversion baked into the project — <strong>everything must be parsed from the user's own TRE files at runtime</strong>, never redistributed. So the target is an on-the-fly parser + converter, with a local (gitignored, per-machine) cache of the converted result to avoid re-parsing on every launch — never a cache of pre-converted assets shipped with the project.</p>
+
+<div class="box box-warn">
+  <div class="box-label">Must work in a packaged/shipping build, not just PIE</div>
+  <p>Unreal's normal mesh <em>build</em> pipeline (<code>MeshUtilities::BuildSkeletalMesh</code>, <code>FSkeletalMeshImportData</code>) is editor-only and unavailable in a packaged game. For <strong>static, unskinned</strong> meshes this doesn't matter — <code>UDynamicMeshComponent</code> (Geometry Script's runtime mesh type, its own runtime module, not editor-only) is designed exactly for this: hand it vertex/normal/UV/triangle data and it renders in a shipping build with optional collision. (<code>UProceduralMeshComponent</code> is an older alternative that does the same job.)</p>
+</div>
+
+<div class="box box-tip">
+  <div class="box-label">Decision: bind-pose-only creatures/players for now, real animation deferred</div>
+  <p>Real bone-animated skeletal meshes need <code>USkeletalMeshComponent</code>, and there's no well-supported runtime-safe way to build one in a packaged build — it means hand-populating <code>FSkeletalMeshLODRenderData</code>/skin-weight buffers directly, bypassing the (editor-only) import pipeline entirely. Rather than take that on now, <strong>phase 1 renders <code>.mgn</code> creatures/players in their bind pose only</strong> — same <code>UDynamicMeshComponent</code> pipeline as static meshes, just baking the un-animated <code>POSN</code>/<code>NORM</code> vertex positions in directly, no skinning applied. No animation, IK, or Anim Blueprint support in this phase; that's a distinct, larger follow-up project once bind-pose rendering works end to end.</p>
+</div>
+
+<p>Materials are a separate problem from geometry either way: a <code>.sht</code> shader reference can't be compiled to HLSL at runtime, so the plan is pre-authored master material(s) in the project with texture-parameter slots, populated at runtime via <code>UMaterialInstanceDynamic</code> with textures decoded from the TRE's <code>.dds</code> files. Not yet started — geometry comes first.</p>
+
+<!-- ═══════════════════════════ MSH FORMAT ═══════════════════════════ -->
+<h2 id="mesh-msh">.msh format (static mesh) — confirmed</h2>
+
+<p>Extracted and decoded directly from real TRE samples (<code>DecodeMshVertex.ps1</code>), cross-checked against each mesh's own bounding box (<code>EXBX</code>/<code>BOX</code>) and normal unit-length as an objective sanity check — not guessed.</p>
+
+<div class="tree">
+FORM MESH<br>
+&nbsp;&nbsp;FORM 0004<br>
+&nbsp;&nbsp;&nbsp;&nbsp;FORM APPR &nbsp;&nbsp;— bounding box/sphere (EXBX&gt;BOX, EXSP&gt;SPHR), hardpoints (HPTS)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;FORM SPS &nbsp;&nbsp;&nbsp;&nbsp;— sub-primitive-sets<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FORM 0001<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CNT &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— submesh count<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FORM 0001, 0002, ... &nbsp;— one per submesh (numbered sequentially)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NAME &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— shader reference, e.g. <span class="cm">shader/corl_window_black_aes17.sht</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FORM 0001<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FORM VTXA &gt; FORM 0003<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;INFO (8) &nbsp;&nbsp;— [VertexFormatFlags:uint32][VertexCount:uint32]<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DATA &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— raw per-vertex buffer, stride = DataSize / VertexCount<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;INDX &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— [TriangleIndexCount:uint32][uint16 × count], flat triangle list
+</div>
+
+<h3>Vertex layout — derived from stride, not a guessed bit table</h3>
+<p>The key simplification: we don't need to fully decode what every flag bit <em>means</em> — <code>stride = DataSize / VertexCount</code> is directly measurable, and only one bit matters for byte layout:</p>
+<ul>
+  <li><code>position</code> (3×float, 12 bytes) — always present, offset 0</li>
+  <li><code>normal</code> (3×float, 12 bytes) — always present, offset 12</li>
+  <li><code>color</code> (packed RGBA8, 4 bytes) — present only if <code>flags &amp; 0x08</code>, offset 24</li>
+  <li><code>UV channels</code> (2×float each, 8 bytes) — count <code>N = (stride - 24 - color) / 8</code></li>
+</ul>
+<p>Confirmed across every real sample pulled: <code>0x1105</code>→stride 32 (1 UV, no color), <code>0x110D</code>→stride 36 (1 UV + color, isolates bit <code>0x08</code> exactly), <code>0xD205</code>/<code>0x015305</code>→stride 48 (3 UV), <code>0x055405</code>→stride 56 (4 UV). Positions land exactly on bounding-box corners, normals are unit-length cardinal vectors, UVs fall in sane ranges and correlate correctly between adjacent vertices.</p>
+
+<div class="box box-tip">
+  <div class="box-label">No weld/reindex step needed</div>
+  <p>Unlike <code>.mgn</code> below, <code>.msh</code> stores one combined vertex per <code>DATA</code> entry and <code>INDX</code> is a single flat triangle-index buffer referencing those combined vertices directly — feeds straight into <code>UProceduralMeshComponent::CreateMeshSection()</code> with no OBJ-style per-attribute reindexing.</p>
+</div>
+
+<!-- ═══════════════════════════ MGN FORMAT ═══════════════════════════ -->
+<h2 id="mesh-mgn">.mgn format (skeletal mesh) — confirmed</h2>
+
+<p>Different scheme from <code>.msh</code>: positions/normals are shared flat arrays across the whole mesh, and per-submesh indexing needs one extra indirection layer (decoded and verified via <code>DecodeMgn.ps1</code> against real samples, including a full end-to-end vertex reconstruction check).</p>
+
+<div class="tree">
+FORM SKMG &gt; FORM 0004<br>
+&nbsp;&nbsp;SKTM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— skeleton reference path (e.g. <span class="cm">appearance/skeleton/all_b.skt</span>)<br>
+&nbsp;&nbsp;XFNM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— bone/transform names used by this mesh<br>
+&nbsp;&nbsp;POSN &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— shared position array (3×float per vertex)<br>
+&nbsp;&nbsp;NORM &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— shared normal array (3×float per vertex)<br>
+&nbsp;&nbsp;TWHD / TWDT — per-vertex bone-weight count / (bone-index, weight) pairs, indexed by POSN index<br>
+&nbsp;&nbsp;OZN / OZC &nbsp;&nbsp;— named hit-location zones (chest, l_arm, r_foot, ...) for combat<br>
+&nbsp;&nbsp;FORM PSDT &nbsp;&nbsp;— one per shader submesh<br>
+&nbsp;&nbsp;&nbsp;&nbsp;NAME &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— shader reference<br>
+&nbsp;&nbsp;&nbsp;&nbsp;PIDX &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— [count:uint32][count × uint32 positionIndex] — corner-index → POSN index<br>
+&nbsp;&nbsp;&nbsp;&nbsp;NIDX &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— [count × uint32 normalIndex], <em>no</em> leading count (matches PIDX's) — corner-index → NORM index<br>
+&nbsp;&nbsp;&nbsp;&nbsp;FORM TCSF &gt; TCSD &nbsp;— [count × (float U, float V)], directly corner-indexed, same count as PIDX/NIDX<br>
+&nbsp;&nbsp;&nbsp;&nbsp;FORM PRIM &gt; OITL &nbsp;— [TriCount:uint32][TriCount × (uint16 flag, uint32 corner0, uint32 corner1, uint32 corner2)]
+</div>
+
+<div class="box box-warn">
+  <div class="box-label">Parsing gotcha hit while decoding this</div>
+  <p><code>PIDX</code> carries its own leading <code>uint32</code> count prefix; <code>NIDX</code> does not (its count is implied to equal PIDX's). Missing this produced a bogus off-by-one entry-count mismatch and out-of-range index values that looked like a real format anomaly until the prefix was accounted for. Once corrected, <code>PIDX</code>/<code>NIDX</code> both range cleanly <code>[0, POSN.Count-1]</code>.</p>
+</div>
+
+<p>Reconstructing a real vertex from a corner index <code>c</code>: <code>Position = POSN[PIDX[c]]</code>, <code>Normal = NORM[NIDX[c]]</code>, <code>UV = TCSD[c]</code> (UV needs no extra lookup — it's already 1:1 with the corner-index space). <code>OITL</code>'s three corner fields per triangle reference these corner indices directly.</p>
+
+<div class="box box-tip">
+  <div class="box-label">The file already did the "weld" for us</div>
+  <p>Originally assumed this format needed an OBJ-style re-indexing pass (separate per-attribute indices → explode into unique per-corner vertices → dedupe). In practice it's simpler: build one "corner vertex" array of exactly <code>count</code> entries (<code>Vertex[c] = (POSN[PIDX[c]], NORM[NIDX[c]], TCSD[c])</code>), and <code>OITL</code>'s corner-index triples become the UE triangle index buffer <strong>unchanged</strong> — no further deduplication needed. Skinning (<code>TWHD</code>/<code>TWDT</code>) is looked up via the same <code>PIDX[c]</code> position index.</p>
+</div>
+
+<!-- ═══════════════════════════ PIPELINE PLAN ═══════════════════════════ -->
+<h2 id="mesh-pipeline">Parser &amp; runtime construction plan</h2>
+
+<div class="step" id="mp1">
+  <div class="step-num">1</div>
+  <div class="step-body">
+    <h3><code>FSWGMeshReader</code> (extends <code>FSWGIffReader</code>)</h3>
+    <p>Walk <code>.msh</code>'s chunk tree per submesh, extract shader name + flags/count/raw <code>DATA</code> + raw <code>INDX</code>. Also handles <code>.mgn</code> in this same phase (bind-pose only, no skinning applied): read <code>POSN</code>/<code>NORM</code> directly and resolve each <code>PSDT</code> submesh's corner array via <code>PIDX</code>/<code>NIDX</code>/<code>TCSD</code>, feeding <code>OITL</code>'s corner-index triples straight through as the triangle list — see <a href="#mesh-mgn">.mgn format</a>.</p>
+  </div>
+</div>
+
+<div class="step" id="mp2">
+  <div class="step-num">2</div>
+  <div class="step-body">
+    <h3>Vertex decode</h3>
+    <p>Apply the confirmed stride-derived layout rule above — no further research needed, this is a mechanical decode now.</p>
+  </div>
+</div>
+
+<div class="step" id="mp3">
+  <div class="step-num">3</div>
+  <div class="step-body">
+    <h3>Runtime construction</h3>
+    <p><code>UDynamicMeshComponent</code>, one per actor, built from the decoded per-submesh vertex/normal/UV/triangle arrays (both <code>.msh</code> and bind-pose <code>.mgn</code> feed the same construction path). Works in packaged builds, no editor-only dependency, with optional collision.</p>
+  </div>
+</div>
+
+<div class="step" id="mp4">
+  <div class="step-num">4</div>
+  <div class="step-body">
+    <h3>Materials (separate sub-task, deferred)</h3>
+    <p>Pre-authored master material(s) in the project + <code>UMaterialInstanceDynamic</code> keyed by <code>.sht</code> shader name, textures decoded from <code>.dds</code> pulled via <code>USWGTreSubsystem</code>. First milestone can render with a flat default material and add this after geometry works.</p>
+  </div>
+</div>
+
+<div class="step" id="mp5">
+  <div class="step-num">5</div>
+  <div class="step-body">
+    <h3>Local cache</h3>
+    <p>Serialize decoded position/normal/UV/index arrays per CRC to <code>Saved/MeshCache/</code> (gitignored, per-machine, never shipped) — skip the IFF-parse + vertex-decode step on repeat loads, still 100% sourced from the user's own TRE install.</p>
+  </div>
+</div>
+
+<div class="step" id="mp6">
+  <div class="step-num">6</div>
+  <div class="step-body">
+    <h3>Actor wiring</h3>
+    <p>Add <code>UDynamicMeshComponent</code> to <code>ASWGItem</code>/<code>ASWGStaticProp</code>/<code>ASWGBuilding</code>/<code>ASWGInstallation</code>/<code>ASWGCreature</code>/<code>ASWGPlayer</code> (none of them have a mesh component today). New mesh-resolution step in <code>USWGObjectGraphSubsystem::HandleSceneCreateObject</code>: CRC → template → appearance (<code>.apt</code>→<code>.lod</code>, or <code>.sat</code>→<code>.lmg</code>/<code>.mgn</code>) → mesh file → parse → decode → build the dynamic mesh.</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ TERRAIN FORMAT ═══════════════════════════ -->
+<h2 id="terrain-format">.trn format — procedural terrain generator (Core3-confirmed)</h2>
+
+<p><code>.trn</code> is <strong>not a heightmap</strong> — confirmed via a real sample (<code>terrain/character_farm.trn</code>) and cross-referenced against Core3's own reference implementation at <code>MMOCoreORB/src/terrain/</code> (<code>TerrainGenerator.cpp</code>, <code>Layer.cpp</code>, <code>ProceduralTerrainAppearance.cpp</code>, plus ~20 <code>layer/affectors/*</code> and 5 <code>layer/boundaries/*</code> classes). It's a procedural node graph — shader/flora/river/environment "groups" plus a recursive <code>Layer</code> tree, each layer containing <code>Boundary</code> shapes and <code>Affector</code> rules that must be <em>evaluated</em> at query time, not just decoded.</p>
+
+<div class="tree">
+FORM PTAT &gt; FORM 0013<br>
+&nbsp;&nbsp;DATA &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— dev build path string, irrelevant to rendering<br>
+&nbsp;&nbsp;FORM TGEN &gt; FORM 0000<br>
+&nbsp;&nbsp;&nbsp;&nbsp;FORM SGRP &nbsp;&nbsp;— shader families (SFAM entries: name, id, weight)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;FORM FGRP &nbsp;&nbsp;— flora groups<br>
+&nbsp;&nbsp;&nbsp;&nbsp;FORM RGRP &nbsp;&nbsp;— river groups<br>
+&nbsp;&nbsp;&nbsp;&nbsp;FORM EGRP &nbsp;&nbsp;— environment groups<br>
+&nbsp;&nbsp;&nbsp;&nbsp;FORM MGRP &nbsp;&nbsp;— map/fractal groups (MFAM* &gt; MFRC noise generators — <strong>confirmed &amp; implemented</strong>, see below)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;FORM LYRS &gt; FORM LAYR &gt; FORM 0003 &nbsp;&nbsp;— the actual procedural graph, recursive<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FORM IHDR &gt; ... &gt; DATA &nbsp;&nbsp;— layer name string<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ADTA &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— boundariesFlag / filterFlag / invert flags<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FORM AHCN, ASCN, BCIR, ... &nbsp;— boundary/affector nodes, one child FORM per rule<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FORM LAYR (nested) &nbsp;&nbsp;— child layers, arbitrary depth<br>
+&nbsp;&nbsp;FORM 0000 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;— water map (WMAP) / seed map (SMAP), empty in small test files
+</div>
+
+<div class="box box-tip">
+  <div class="box-label">Parse dispatch — 4-char FORM tag switch, same pattern as our IFF reader</div>
+  <p>Core3's <code>Layer::parse</code> (<code>Layer.cpp:36-118, 120-303</code>) reads each subchunk's 4-byte FORM tag and dispatches via <code>switch</code> — <code>'AHCN'</code>→<code>AffectorHeightConstant</code>, <code>'BCIR'</code>→<code>BoundaryCircle</code>, etc. — trying boundary, then filter, then affector, then nested child <code>Layer</code>. A <code>Layer</code> owns <code>Vector&lt;Boundary*&gt;</code>, <code>Vector&lt;AffectorProceduralRule*&gt;</code>, <code>Vector&lt;FilterProceduralRule*&gt;</code>, <code>Vector&lt;Layer*&gt;</code> children (<code>Layer.h:22-38</code>) — this maps directly onto <code>FSWGIffReader</code>'s existing chunk-walk API, same as every other format we've decoded.</p>
+</div>
+
+<div class="box box-tip">
+  <div class="box-label">Height evaluation algorithm — confirmed exactly, read directly from source (not summarized)</div>
+  <p><code>ProceduralTerrainAppearance::getHeight(x,y)</code> (<code>.cpp:430-457</code>): for each <em>enabled top-level layer independently</em> (they do <strong>not</strong> chain a shared transform to each other — only nested children do), call <code>processTerrain(layer, x, y, height&amp;, parentTransform=1.0, HEIGHTTYPE)</code>, accumulating into one shared <code>height</code> passed by reference. Exact recursive body (<code>.cpp:287-399</code>):</p>
+<pre><code>transformValue = 0
+if layer has enabled boundaries:
+    for each: transformValue = max(transformValue, calculateFeathering(boundary.process(x,y), boundary.FeatheringType))
+              if transformValue >= 1: break
+else:
+    transformValue = 1.0   // no boundaries = unconditional
+if layer.bInvertBoundaries: transformValue = 1 - transformValue
+
+if transformValue != 0:
+    # (filters: none in MVP scope — can only lower transformValue, invertFilters() applies after)
+    for each enabled affector matching requestedType:
+        affector.process(x, y, transformValue * parentTransform, height&amp;)
+    for each enabled child layer:
+        processTerrain(child, x, y, height&amp;, parentTransform * transformValue, requestedType)
+return transformValue</code></pre>
+  <p>Note the two different multiplications: affectors use <code>transformValue * parentTransform</code> (this layer's own gate times everything above it); the recursive call passes <code>parentTransform * transformValue</code> onward as the new accumulated chain for descendants. Same framework serves <code>getEnvironmentID()</code>.</p>
+</div>
+
+<div class="box box-tip">
+  <div class="box-label"><code>calculateFeathering(value, featheringType)</code> — confirmed exact (<code>ProceduralTerrainAppearance.cpp:257-285</code>)</div>
+  <pre><code>0: passthrough
+1: value²
+2: sqrt(value)
+3: value² × (3 - 2×value)   // smoothstep-like
+default: 0</code></pre>
+</div>
+
+<table>
+  <tr><th>Type</th><th>Name</th><th>What it does</th></tr>
+  <tr><td rowspan="3">Affector (MVP subset)</td><td><code>AffectorHeightConstant</code></td><td>Add/subtract/scale/zero/lerp a constant height, blended by the boundary value (<code>AffectorHeightConstant.h:52-76</code>)</td></tr>
+  <tr><td><code>AffectorHeightFractal</code></td><td>Same operationType blend as above, but <code>height × MapFractal::getNoise(x,y)</code> instead of a flat constant — <strong>fully confirmed and implemented</strong> (<code>SWGTerrainNoise.h/.cpp</code>): exact port of Core3's <code>Random</code> (Park-Miller LCG + Bays-Durham shuffle), <code>PerlinNoise</code> (2D case), and all 5 <code>MapFractal</code> combination formulas + bias/gain reshaping</td></tr>
+  <tr><td><code>AffectorHeightTerrace</code></td><td>Flattens height into steps (<code>flatRatio</code> controls flat-vs-slope portion per step) — plateau/terracing effect (<code>AffectorHeightTerrace.h:51-74</code>)</td></tr>
+  <tr><td rowspan="3">Boundary (MVP subset)</td><td><code>BoundaryCircle</code></td><td>Feathered squared-distance test against a radius (<code>BoundaryCircle.h:64-85</code>)</td></tr>
+  <tr><td><code>BoundaryRectangle</code></td><td>Feathered AABB test; needs <code>initialize()</code> ported too (derives <code>newX0/newX1/newY0/newY1</code> inset by <code>featheringAmount × min(w,h) × 0.5</code>) — our reader doesn't compute these yet (<code>BoundaryRectangle.h:159-246</code>)</td></tr>
+  <tr><td><code>BoundaryPolygon</code></td><td>Ray-casting point-in-polygon + feathered nearest-edge-distance for smooth blending — the most involved of the three (<code>BoundaryPolygon.h:102-198</code>)</td></tr>
+</table>
+
+<div class="box box-tip">
+  <div class="box-label">Per-layer bounding box — for area-limited rendering, not just the whole planet</div>
+  <p>The client only needs to render terrain in a bounded area around the player, not a whole planet at once. Core3 already demonstrates the exact computation needed for a query area — <code>TerrainGenerator::getFullBoundaryCircle()</code> (<code>.cpp:19-91</code>) recursively unions enabled layers'/children's boundary min/max X/Y into one aggregate box (there just for a "whole terrain" bounding circle). Each MVP boundary type already carries what's needed to compute its own box trivially: Circle is <code>center ± radius</code>; Rectangle is <code>min/max(X0,X1)</code>/<code>min/max(Y0,Y1)</code> (not pre-sorted in our reader, unlike Core3's <code>initialize()</code>); Polygon is min/max over <code>Vertices</code>. A per-layer aggregate (own boundaries ∪ enabled children, recursively) lets heightmap baking (step 3 below) skip any layer whose box doesn't overlap the region being baked — a real win, since large planets likely have many small localized layers (individual buildings/POIs) irrelevant outside their own area. One caveat: a layer with <strong>zero boundaries</strong> always evaluates to <code>1.0</code> everywhere and has no finite box — rare (typically global/base layers), so it doesn't undermine the approach.</p>
+</div>
+
+<div class="box box-tip">
+  <div class="box-label">This MVP subset is not a corner-cut — it's the real coverage</div>
+  <p>~20 affector types and 5 boundary types exist total, but two boundary types (<code>BoundaryPolyline</code>-adjacent stubs) are confirmed dead code even in the real client. The 3+3 subset above covers height-shaping for the large majority of real terrain; rarer affector types (roads, rivers, procedural rules) can be added later without restructuring the evaluator, same as how <code>.msh</code>'s materials were deferred without blocking geometry.</p>
+</div>
+
+<div class="box box-warn">
+  <div class="box-label">No baked heightmap anywhere — must bake and cache it ourselves</div>
+  <p><code>getHeight()</code> has <strong>no memoization</strong> in Core3 either — every call does a full recursive layer/boundary/affector walk. <code>TerrainMaps</code> (<code>WMAP</code>/<code>SMAP</code>) are just water/seed maps, not a cached heightmap. For a UE terrain grid we'll need to evaluate this per-vertex ourselves and bake the result into a local (gitignored, per-machine) cache, same pattern as the mesh reader's <code>Saved/MeshCache/</code> — never a pre-baked asset shipped with the project.</p>
+</div>
+
+<!-- ═══════════════════════════ TERRAIN GAP ═══════════════════════════ -->
+<h2 id="terrain-gap">Shader/flora — no server-side ground truth</h2>
+
+<div class="box box-warn">
+  <div class="box-label">Confirmed gap: Core3 parses this data but never evaluates it</div>
+  <p><code>AffectorShaderConstant</code> parses its fields (<code>familyId</code>, feathering) but never overrides <code>process()</code>/<code>isEnabled()</code> — it inherits the base class's no-op. <code>AffectorProceduralRule</code>'s type constants (<code>AffectorProceduralRule.h:21-26</code>) only define <code>HEIGHT*</code>/<code>ENVIRONMENT</code> — there's no shader or flora type at all. This makes sense: the server has no reason to render grass or splat textures. But it means <strong>we have solid, tested ground truth for height and environment only</strong> — texture splatting and flora density/placement will need their meaning inferred from the parsed field layout ourselves (same empirical approach as the <code>.msh</code> vertex-flags decode), or deferred entirely for an initial flat-shaded/no-flora terrain milestone.</p>
+</div>
+
+<!-- ═══════════════════════════ LANDSCAPE RISK ═══════════════════════════ -->
+<h2 id="terrain-landscape">ALandscape runtime creation — real risk, chosen anyway</h2>
+
+<p>Verified directly against UE 5.8 engine source (<code>Engine/Source/Runtime/Landscape/</code> vs the editor-only <code>Engine/Source/Editor/LandscapeEditor/</code>) before committing to an approach — same category of concern as skeletal meshes, checked rather than assumed.</p>
+
+<div class="box box-tip">
+  <div class="box-label">Confirmed runtime-safe</div>
+  <p><code>ALandscape</code> (<code>Landscape.h:276</code>), <code>ALandscapeProxy</code> (<code>LandscapeProxy.h:450</code>), <code>ULandscapeComponent</code> (<code>LandscapeComponent.h:431</code>) are all unconditionally compiled — spawning the actor itself isn't editor-gated. <code>HeightmapTexture</code>/<code>GetHeightmap()</code> (<code>LandscapeComponent.h:572,810</code>) are plain runtime members — a heightmap <code>UTexture2D</code> can be created and uploaded at runtime via ordinary (non-Landscape-specific) texture APIs.</p>
+</div>
+
+<div class="box box-danger">
+  <div class="box-label">Confirmed risk — real, not hypothetical</div>
+  <ul>
+    <li><code>UpdateCollisionHeightData</code> — the function that turns a heightmap into landscape collision — is confirmed inside <code>#if WITH_EDITOR</code> (<code>LandscapeComponent.h:1116-1283</code>).</li>
+    <li><code>ULandscapeHeightfieldCollisionComponent::CollisionHeightData</code> (an <code>FWordBulkData</code>, <code>LandscapeHeightfieldCollisionComponent.h:133</code>) and <code>CreateCollisionObject()</code> (line 309/312) are <strong>not</strong> editor-gated — runtime code can build the actual Chaos collision object from this bulk data — but nothing runtime-safe <em>computes</em> its contents. We'd have to read <code>UpdateCollisionHeightData</code>'s editor-only implementation to understand the exact byte layout it produces, then replicate that computation ourselves and write directly into the field (which is not gated for writes) before calling <code>CreateCollisionObject()</code>.</li>
+    <li><code>ALandscapeProxy</code> extends <code>APartitionActor</code> (World Partition) — whether ad-hoc runtime spawning outside the normal streaming-proxy flow behaves cleanly is unconfirmed, not just untested.</li>
+    <li>No precedent found anywhere in engine source for "create a brand-new landscape and upload brand-new heightmap data the game has never seen, at runtime, in a shipping build."</li>
+  </ul>
+</div>
+
+<div class="box box-pending">
+  <div class="box-label">Decision: attempt real ALandscape, accept the risk</div>
+  <p>Chosen deliberately over the safer fallback, in order to get native Landscape LOD streaming/collision/tooling if it works. The fallback below is documented as a real contingency, not a hedge — if the collision-data reverse-engineering proves impractical, switching to it doesn't require redoing the format parser or heightmap baking, only the final render/collision step.</p>
+</div>
+
+<div class="box box-tip">
+  <div class="box-label">Fallback, if the collision-data wall proves real: <code>UDynamicMeshComponent</code> + <code>Chaos::FHeightField</code></div>
+  <p><code>Chaos::FHeightField</code> (<code>Chaos/HeightField.h:41-42</code>) has a plain <code>CHAOS_API</code> constructor taking raw height data directly — confirmed fully runtime-constructible, zero editor gating. Paired with a <code>UDynamicMeshComponent</code> render mesh (the same component family already chosen for regular meshes), this is a fully confirmed-safe path with no unknowns, just without Landscape's native LOD streaming.</p>
+</div>
+
+<!-- ═══════════════════════════ TERRAIN PIPELINE ═══════════════════════════ -->
+<h2 id="terrain-pipeline">Parser &amp; render plan</h2>
+
+<div class="step" id="tp1">
+  <div class="step-num">1</div>
+  <div class="step-body">
+    <h3><code>FSWGTerrainReader</code> (extends <code>FSWGIffReader</code>) — <strong>done</strong></h3>
+    <p>Parses <code>PTAT &gt; TGEN &gt; 0000 &gt; LYRS &gt; LAYR</code> into a client-side <code>Layer</code>/<code>Boundary</code>/<code>Affector</code> tree mirroring Core3's directly (<code>SWGTerrainReader.h/.cpp</code>). MVP subset: <code>AffectorHeightConstant</code>/<code>HeightFractal</code>/<code>HeightTerrace</code>, <code>BoundaryCircle</code>/<code>Rectangle</code>/<code>Polygon</code>; other affector/boundary/filter tags are parsed-and-skipped, matching Core3's own graceful fallback. Also parses the first <code>MGRP</code> into <code>FSWGTerrainData::MapGroup</code> (<code>FractalId → FSWGMapFractal</code>), resolving <code>AffectorHeightFractal</code>'s noise generator via <code>SWGTerrainNoise.h/.cpp</code> — an exact port of Core3's <code>Random</code>/<code>PerlinNoise</code>/<code>MapFractal</code>, confirmed field-for-field and formula-for-formula, not reverse-engineered.</p>
+  </div>
+</div>
+
+<div class="step" id="tp2">
+  <div class="step-num">2</div>
+  <div class="step-body">
+    <h3>Boundary bounds + culling helper — not yet implemented</h3>
+    <p><code>ComputeBounds()</code> per boundary type (formulas confirmed above) plus a recursive per-layer aggregate mirroring <code>getFullBoundaryCircle</code>. Used by step 4 to skip layers outside the region currently being baked.</p>
+  </div>
+</div>
+
+<div class="step" id="tp3">
+  <div class="step-num">3</div>
+  <div class="step-body">
+    <h3>Height evaluation port — algorithm fully confirmed, ready to implement</h3>
+    <p>Port the exact <code>processTerrain</code>/<code>calculateFeathering</code>/<code>getHeight</code> algorithm above 1:1, plus boundary <code>process()</code> (Circle/Rectangle/Polygon, including Rectangle's <code>initialize()</code>) and affector <code>process()</code> (HeightConstant/HeightTerrace exact; HeightFractal now calls the already-implemented <code>FSWGMapFractal::GetNoise</code>). No remaining research gaps — every formula involved has been read directly from source, not summarized or guessed.</p>
+  </div>
+</div>
+
+<div class="step" id="tp4">
+  <div class="step-num">4</div>
+  <div class="step-body">
+    <h3>Heightmap baking + local cache</h3>
+    <p>Evaluate the ported <code>getHeight(x,y)</code> across a grid (resolution TBD against Landscape's expected sizing) for the region around the player, using step 2's bounds to skip irrelevant layers, and cache the resulting heightmap locally (gitignored, per-machine, never shipped) — same reasoning as the mesh cache: expensive to compute, cheap to reuse, always re-derivable from the user's own TRE files.</p>
+  </div>
+</div>
+
+<div class="step" id="tp5">
+  <div class="step-num">5</div>
+  <div class="step-body">
+    <h3>Collision-data research pass (do this before writing any Landscape-population code)</h3>
+    <p>Dedicated investigation, same treatment as the <code>.mgn</code> <code>PIDX</code>/<code>NIDX</code> puzzle: read <code>UpdateCollisionHeightData</code>'s actual (editor-only) implementation to understand the exact <code>CollisionHeightData</code> byte layout it produces, then replicate that computation in our own runtime-safe code and write it directly — we don't need to <em>call</em> the editor-only function, only reproduce its output format.</p>
+  </div>
+</div>
+
+<div class="step" id="tp6">
+  <div class="step-num">6</div>
+  <div class="step-body">
+    <h3>ALandscape runtime population</h3>
+    <p>Spawn <code>ALandscape</code>/<code>ULandscapeProxy</code> at runtime, create + upload the heightmap <code>UTexture2D</code> (confirmed runtime-safe), populate <code>CollisionHeightData</code> from step 5 and call <code>CreateCollisionObject()</code> (confirmed not editor-gated). Also verify the <code>APartitionActor</code>/World Partition implications directly (may need World Partition disabled for the zone level, or another workaround) rather than assuming it's fine.</p>
+  </div>
+</div>
+
+<div class="step" id="tp7">
+  <div class="step-num">7</div>
+  <div class="step-body">
+    <h3>Shader/flora (deferred)</h3>
+    <p>No server ground truth exists for this (see <a href="#terrain-gap">gap</a> above) — infer texture-splat and flora-placement meaning from the parsed shader/flora affector fields empirically, once height rendering works end to end. Reasonable to ship an initial flat-shaded, flora-free terrain milestone first.</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ TERRAIN INTEGRATION ═══════════════════════════ -->
+<h2 id="terrain-integration">Message → visible-in-level: end-to-end integration</h2>
+
+<p>The steps above (<a href="#terrain-pipeline">Parser &amp; render plan</a>) cover the format/algorithm side in isolation. This is the orchestration side — how that pipeline actually gets triggered by network traffic and ends up as terrain the player can stand on, wired into the flow/subsystem architecture already built this session.</p>
+
+<div class="box box-tip">
+  <div class="box-label">The trigger already exists — <code>CmdStartScene.TerrainName</code></div>
+  <p>Confirmed directly in our own <code>FCmdStartSceneMessage</code> (<code>CmdStartSceneMessage.h/.cpp</code>): the wire carries an ASCII <code>terrain</code> field, deserialized into <code>TerrainName</code>, right alongside <code>PosX</code>/<code>PosY</code>/<code>PosZ</code> (the player's spawn position — exactly the point terrain needs to be centered on). Per Core3's <code>CmdStartScene.h:28</code> this is sent as the full virtual path (<code>"terrain/" + zoneName + ".trn"</code>) — worth a one-line log confirmation of the live value before relying on it, but not expected to need any transformation. This message is already fully plumbed through <code>FSWGSceneStartPayload</code> into <code>FSWGZoneLoadingState::Enter()</code> — no new message handling needed, just a new consumer of data we already have.</p>
+</div>
+
+<div class="step" id="ti1">
+  <div class="step-num">1</div>
+  <div class="step-body">
+    <h3>New <code>USWGTerrainSubsystem</code> (game instance subsystem)</h3>
+    <p>Same shape as <code>USWGTreSubsystem</code>/<code>USWGObjectGraphSubsystem</code>. Owns the whole pipeline behind one entry point: <code>BeginLoadTerrain(FString TerrainVirtualPath, FVector SpawnPosition)</code>. Exposes an <code>OnTerrainReady</code> delegate (broadcast once the region around <code>SpawnPosition</code> has a spawned, collidable landscape) — same pattern as <code>USWGObjectGraphSubsystem::OnZoneLevelRevealed</code>.</p>
+  </div>
+</div>
+
+<div class="step" id="ti2">
+  <div class="step-num">2</div>
+  <div class="step-body">
+    <h3>Wire the trigger — <code>FSWGZoneLoadingState::Enter()</code></h3>
+    <p>Alongside the existing level-load call, add: resolve <code>USWGTerrainSubsystem</code> from the <code>GameInstance</code> (same pattern already used for <code>USWGObjectGraphSubsystem</code> there) and call <code>BeginLoadTerrain(Scene.TerrainName, FVector(Scene.PosX, Scene.PosY, Scene.PosZ))</code>. No new payload plumbing — <code>FSWGSceneStartPayload::Scene</code> already carries everything needed.</p>
+  </div>
+</div>
+
+<div class="step" id="ti3">
+  <div class="step-num">3</div>
+  <div class="step-body">
+    <h3><code>BeginLoadTerrain</code> — cache check first</h3>
+    <p>Compute a cache key from <code>(TerrainVirtualPath, region-around-SpawnPosition)</code> and check <code>Saved/TerrainCache/</code> before doing anything else. Cache hit → skip straight to step 6 with the cached heightmap grid. Cache miss → continue to step 4.</p>
+  </div>
+</div>
+
+<div class="step" id="ti4">
+  <div class="step-num">4</div>
+  <div class="step-body">
+    <h3>Parse — synchronous, on the game thread</h3>
+    <p><code>USWGTreSubsystem::CreateIffReader(TerrainVirtualPath)</code> → <code>FSWGTerrainReader::ReadTerrain()</code> → <code>FSWGTerrainData</code>. This is fast (it's just the graph + resolved fractal noise generators, not evaluation) — no threading needed here.</p>
+  </div>
+</div>
+
+<div class="step" id="ti5">
+  <div class="step-num">5</div>
+  <div class="step-body">
+    <h3>Bake — asynchronous, background thread</h3>
+    <p>Determine the bake region: a box centered on <code>SpawnPosition</code>, sized to a configurable render radius (this is the actual answer to "only render terrain in a certain area" — never the whole planet). Dispatch heightmap evaluation (the ported <code>GetHeight(x,y)</code> per grid vertex, using per-layer bounds culling from <a href="#terrain-pipeline">step 2</a> of the render plan) onto a background thread (<code>Async(EAsyncExecution::ThreadPool, ...)</code> or a Task Graph task) — this is the part expensive enough to justify not blocking the game thread, unlike step 4. On completion, write the result to the local cache (step 3) and continue on the game thread.</p>
+  </div>
+</div>
+
+<div class="step" id="ti6">
+  <div class="step-num">6</div>
+  <div class="step-body">
+    <h3>Spawn — <code>ALandscape</code> population, game thread</h3>
+    <p>Spawn/populate the <code>ALandscape</code> for the baked region (<a href="#terrain-pipeline">render plan steps 5-6</a>): heightmap texture upload, <code>CollisionHeightData</code> population, <code>CreateCollisionObject()</code>. Position it under <code>SpawnPosition</code>. Broadcast <code>OnTerrainReady</code>.</p>
+  </div>
+</div>
+
+<div class="step" id="ti7">
+  <div class="step-num">7</div>
+  <div class="step-body">
+    <h3>Gate the zone reveal on <em>both</em> signals</h3>
+    <p><code>FSWGZoneLoadingState</code> currently transitions to <code>InWorld</code> as soon as <code>USWGObjectGraphSubsystem::OnZoneLevelRevealed</code> fires (tied to the player's own <code>SceneEndBaselines</code>). Extend this to track both that signal <em>and</em> <code>USWGTerrainSubsystem::OnTerrainReady</code>, transitioning only once both have fired — otherwise the player can be revealed standing over an empty void if terrain baking is still in flight. Order isn't guaranteed either way (object baselines vs. terrain baking could finish first), so this needs to be a two-flag join, not a simple chain.</p>
+  </div>
+</div>
+
+<div class="box box-warn">
+  <div class="box-label">Explicitly out of scope for this milestone: re-baking as the player moves</div>
+  <p>This plan gets one region visible around the player's spawn point. As the player walks toward the edge of the baked/spawned area, a real client would need to bake and spawn adjacent regions and unload distant ones — a streaming/chunking scheme. That's a natural, larger follow-up (and would reuse everything here — the reader, evaluator, and baking step are all already region-parameterized), but isn't required to get the "basics" milestone's stationary spawn-in working end to end.</p>
+</div>
+
+<!-- ═══════════════════════════ PHASES ═══════════════════════════ -->
+<h2 id="phases">Basics milestone — phased plan</h2>
+<div class="box box-tip">
+  <div class="box-label">Confirmed order, based on Core3 findings</div>
+  <p>Terrain needs zero network code (pure TRE). Statics/buildings/cells/installations all ride the same <code>SceneCreateObjectByCrc</code> + <code>BaselinesMessage</code> + <code>SceneEndBaselines</code> triple already built for CREO/PLAY/TANO — so the spawn dispatcher, not new protocol handling, is the main remaining gap.</p>
+</div>
+
+<div class="step" id="p1">
+  <div class="step-num">1</div>
+  <div class="step-body">
+    <h3>Terrain (TRE-only, no network code)</h3>
+    <p>Confirmed: <code>CmdStartScene</code> sends only the terrain path string (<code>"terrain/" + zoneName + ".trn"</code>) plus spawn position/CRC/galactic time — no geometry over the wire. Extract <code>.trn</code> for the target planet via the existing TRE reader; feed heightmap + texture layers into the procedural terrain generator. Zero baseline/delta involvement.</p>
+  </div>
+</div>
+
+<div class="step" id="p2">
+  <div class="step-num">2</div>
+  <div class="step-body">
+    <h3>CRC → actor-class spawn table</h3>
+    <p><code>USWGTreSubsystem</code> already loads <code>object_template_crc_string_table.iff</code> at startup and resolves CRC→path via <code>ResolveTemplatePath()</code>. On <code>SceneCreateObjectByCrc</code>: resolve the path, extract the template file, read its outer <code>FORM</code> tag (<a href="#template-forms">see mapping</a>), and dispatch on <em>that</em> — not the path prefix — to pick the actor class (<code>SCOT</code>→Creature, <code>STOT</code>/<code>SWOT</code>/<code>RCCT</code>→Item, <code>STAT</code>→StaticProp, <code>SBOT</code>→Building, <code>SIOT</code>→Installation, <code>CCLT</code>→Cell). Spawn hidden, register in the ID registry.</p>
+  </div>
+</div>
+
+<div class="step" id="p3">
+  <div class="step-num">3</div>
+  <div class="step-body">
+    <h3>Component scaffolding</h3>
+    <p>Create <code>USWGTangibleComponent</code>, <code>ASWGItem</code>, <code>ASWGCreature</code> + the creature-only components listed above. Replace the struct/parser files (<code>FTangibleObjectBaseline</code> etc.) with <code>ApplyBaseX</code> methods directly on components, per the dispatch model above.</p>
+  </div>
+</div>
+
+<div class="step" id="p4">
+  <div class="step-num">4</div>
+  <div class="step-body">
+    <h3>Character spawn-in</h3>
+    <p>Verify CmdStartScene → SceneCreateObjectByCrc → Baselines(1/3/4/6) → SceneEndBaselines produces a visible, correctly-placed <code>ASWGCreature</code> with working <code>USWGMovementComponent</code> speeds.</p>
+  </div>
+</div>
+
+<div class="step" id="p5">
+  <div class="step-num">5</div>
+  <div class="step-body">
+    <h3>Statics — simplest win, do first among world objects</h3>
+    <p>Add <code>FStaticObjectBaseline</code> parser (FourCC <code>STAO</code>: <code>int(0)</code>, <code>ObjectName</code>, <code>CustomName</code>, <code>int(0xFF)</code>) and a near-trivial <code>ASWGStaticProp</code> actor (mesh from template path + <code>USWGTangibleComponent</code>-lite naming only, no condition/HAM). This is the bulk of "decorations" (1,605 templates) for minimal effort.</p>
+  </div>
+</div>
+
+<div class="step" id="p6">
+  <div class="step-num">6</div>
+  <div class="step-body">
+    <h3>Installations</h3>
+    <p><code>ASWGInstallation</code> = <code>USWGTangibleComponent</code> + 3 scalars (<code>Active</code> byte, <code>SurplusPower</code> float, <code>BasePowerRate</code> float) appended after the standard Tangible3 payload, FourCC <code>INSO</code>. No new component class needed.</p>
+  </div>
+</div>
+
+<div class="step" id="p7">
+  <div class="step-num">7</div>
+  <div class="step-body">
+    <h3>Buildings + Cells</h3>
+    <p><strong>Needs a follow-up source pass first</strong> — <code>BuildingObjectMessage3/6.h</code> are stale/commented-out; the live baseline construction path must be found in <code>BuildingObjectImplementation.cpp</code> before writing <code>ASWGBuilding</code>'s parser. Cells (FourCC <code>TLCS</code>) are confirmed as separate baseline objects keyed by <code>cellNumber</code> (not object id), spawned by their owning building via <code>createCellObjects()</code> — <code>ASWGCell</code> needs a "parent building" reference rather than going through the normal object-id registry alone.</p>
+  </div>
+</div>
+
+<div class="step" id="p8">
+  <div class="step-num">8</div>
+  <div class="step-body">
+    <h3>Delta application</h3>
+    <p>Wire <code>DeltasMessage::RawUpdates</code> into per-field-index apply calls using the confirmed tables in <a href="#deltas">Delta application</a> — start with Tangible base3, Creature base1/3/4, and Player base6/8/9 scalars (all confirmed live), then close the three flagged gaps (IncapacitationRecoveryTime, Creature base6 list indices, Player list-field delta call sites) before considering delta coverage complete.</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ CHECKLIST ═══════════════════════════ -->
+<h2 id="checklist">Checklist for tomorrow</h2>
+<ul class="checklist">
+  <li>Load CRC table into the plugin (UDataTable or startup parse) and wire spawn-by-CRC on <code>SceneCreateObjectByCrc</code></li>
+  <li>Scaffold <code>USWGTangibleComponent</code>, <code>ASWGItem</code>, <code>ASWGCreature</code></li>
+  <li>Port <code>USWGMovementComponent</code> onto <code>UCharacterMovementComponent</code></li>
+  <li>Replace baseline structs/parsers with component <code>ApplyBaseX</code> methods</li>
+  <li>Add <code>RegisterActor</code>/<code>FindActor</code> ID registry to <code>USWGObjectStoreSubsystem</code></li>
+  <li>Re-test character selection → zone-in end to end for CREO/PLAY</li>
+  <li>Terrain: extract target planet's <code>.trn</code> via existing TRE reader, feed procedural generator</li>
+  <li>Add <code>FStaticObjectBaseline</code> (FourCC STAO) + <code>ASWGStaticProp</code> — simplest world-object win</li>
+  <li>Add <code>ASWGInstallation</code> (INSO: Tangible3 + Active/SurplusPower/BasePowerRate)</li>
+  <li>Follow-up grep: find live BuildingObject baseline construction in <code>BuildingObjectImplementation.cpp</code> before scoping <code>ASWGBuilding</code>/<code>ASWGCell</code></li>
+  <li>Split components per <a href="#components">refined breakdown</a>: pull Condition/Defender out of Tangible, add Encumbrance/SpaceMission/Presence components</li>
+  <li>Add <code>IncapacitationRecoveryTime</code> field to <code>FCreatureObjectBaseline</code> (confirmed live, currently missing)</li>
+  <li>Implement scalar delta application for the confirmed field-index tables (Tangible base3, Creature base1/3/4, Player base6/8/9)</li>
+  <li>Follow-up grep for the 3 flagged delta gaps (Creature base6 lists, Player base8/9 list fields) in the Implementation.cpp files before closing out delta coverage</li>
+  <li>Implement <a href="#lifecycle">session lifecycle</a>: <code>BeginZoneSession()</code>/<code>EndZoneSession()</code>, <code>PendingSpawns</code> buffer, per-object state machine (Pending→Spawned→Ready)</li>
+  <li>Wire <code>BeginZoneSession()</code>/<code>EndZoneSession()</code> calls into the actual zone-flow/<code>OpenLevel</code> call site</li>
+  <li>Core3 grep: find the despawn/out-of-range object removal message (currently a gap — no <strong>Destroyed</strong> state trigger exists)</li>
+  <li><del>Core3 grep: confirm whether <code>object/mobile/vehicle/*</code> shares FourCC <code>CREO</code> with biped NPCs</del> — resolved via template FORM tags, both are <code>SCOT</code></li>
+  <li>Implement FORM-tag dispatch (<a href="#template-forms">Template FORM types</a>) on top of <code>USWGTreSubsystem::ResolveTemplatePath()</code> for the CRC → actor-class spawn table</li>
+</ul>
+
+</div>
+</body>
+</html>
