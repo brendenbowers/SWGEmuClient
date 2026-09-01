@@ -32,6 +32,7 @@ ASWGCreature::ASWGCreature(const FObjectInitializer& ObjectInitializer)
 	GroupComponent = CreateDefaultSubobject<USWGGroupComponent>(TEXT("GroupComponent"));
 	PerformanceComponent = CreateDefaultSubobject<USWGPerformanceComponent>(TEXT("PerformanceComponent"));
 	GetCapsuleComponent()->SetCollisionResponseToChannel(
+		USWGTargetSubsystem::SelectionChannel, ECR_Block);
 }
 
 USWGMovementComponent* ASWGCreature::GetSWGMovementComponent() const
