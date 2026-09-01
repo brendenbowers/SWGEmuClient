@@ -27,6 +27,9 @@
 #include "Components/SWGSocialComponent.h"
 #include "Components/SWGStomachComponent.h"
 #include "UI/SWGHudWidget.h"
+#include "Subsystems/SWGTargetSubsystem.h"
+#include "Materials/MaterialInterface.h"
+#include "Objects/SWGNetworkObjectInterface.h"
 
 ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -62,6 +65,22 @@ ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 	FollowCamera->bUsePawnControlRotation = false;
+
+	// The target outline lives on the camera rather than in a post-process
+	// volume, so it follows the player into every zone without each level
+	// needing a volume placed in it. It reads the custom-depth stencil that
+	// USWGTargetSubsystem writes on the targeted actor — see
+	// r.CustomDepth=3 in DefaultEngine.ini.
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> OutlineMaterialFinder(
+		TEXT("/Game/SWGEmu/UI/HUD/M_TargetOutline.M_TargetOutline"));
+	if (OutlineMaterialFinder.Succeeded())
+	{
+		FollowCamera->PostProcessSettings.WeightedBlendables.Array.Emplace(1.0f, OutlineMaterialFinder.Object);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ASWGPlayer: M_TargetOutline not found — the target will have no outline"));
+	}
 
 	// Capsule starts at ACharacter's default size (88 half-height) here, before
 	// any real mesh exists — USWGMeshGeneratorSubsystem resizes it to the
@@ -170,6 +189,8 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	PlayerInputComponent->BindKey(EKeys::RightMouseButton, IE_Pressed, this, &ASWGPlayer::OnRightMouseButtonPressed);
 	PlayerInputComponent->BindKey(EKeys::RightMouseButton, IE_Released, this, &ASWGPlayer::OnRightMouseButtonReleased);
 
+	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ASWGPlayer::OnLeftMouseButtonPressed);
+
 	// Same legacy-axis approach as mouse-look — MouseWheelAxis is a mouse
 	// axis key like MouseX/MouseY, so it's bound the same way rather than
 	// risking the same zero-events problem through an Enhanced Input action.
@@ -199,11 +220,21 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 
 void ASWGPlayer::LookMouseX(float Value)
 {
+	if (!bIsMouseLooking)
+	{
+		return;
+	}
+
 	AddControllerYawInput(Value);
 }
 
 void ASWGPlayer::LookMouseY(float Value)
 {
+	if (!bIsMouseLooking)
+	{
+		return;
+	}
+
 	AddControllerPitchInput(Value);
 }
 
@@ -222,15 +253,67 @@ void ASWGPlayer::OnMouseWheel(float Value)
 		CameraBoom->TargetArmLength - Value * ZoomStep, MinArmLength, MaxArmLength);
 }
 
+void ASWGPlayer::OnLeftMouseButtonPressed()
+{
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	UGameInstance* GameInstance = GetGameInstance();
+	USWGTargetSubsystem* TargetSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGTargetSubsystem>() : nullptr;
+
+	if (!PlayerController || !TargetSubsystem)
+	{
+		return;
+	}
+
+	FVector2D AimPoint;
+	if (!PlayerController->bShowMouseCursor || !PlayerController->GetMousePosition(AimPoint.X, AimPoint.Y))
+	{
+		int32 ViewportX = 0;
+		int32 ViewportY = 0;
+		PlayerController->GetViewportSize(ViewportX, ViewportY);
+		AimPoint = FVector2D(ViewportX * 0.5f, ViewportY * 0.5f);
+	}
+
+	FVector TraceStart;
+	FVector TraceDirection;
+	if (!PlayerController->DeprojectScreenPositionToWorld(AimPoint.X, AimPoint.Y, TraceStart, TraceDirection))
+	{
+		return;
+	}
+
+	// bTraceComplex so generated item meshes are picked per-triangle: their
+	// collision is complex-as-simple (see USWGTargetSubsystem::HandleMeshReady),
+	// which means the render triangles *are* the query geometry.
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SWGClickToTarget), /*bTraceComplex*/ true, this);
+
+	FHitResult Hit;
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+		Hit, TraceStart, TraceStart + TraceDirection * TargetTraceDistance,
+		USWGTargetSubsystem::SelectionChannel, QueryParams);
+
+	// Walk up from whatever primitive was hit: a creature's mesh can sit on a
+	// child actor, and only the owning network object carries an ObjectId.
+	// IsSelectable is what enforces "anything with a tangible component" —
+	// creatures, items, buildings and installations qualify; cells, doors and
+	// static props are scenery and fall through to a miss.
+	AActor* HitActor = bHit ? Hit.GetActor() : nullptr;
+	while (HitActor && !USWGTargetSubsystem::IsSelectable(HitActor))
+	{
+		HitActor = HitActor->GetParentActor();
+	}
+
+	// A miss clears the target, matching the retail client's click-off-to-deselect.
+	TargetSubsystem->SetTargetActor(HitActor);
+}
+
 void ASWGPlayer::OnRightMouseButtonPressed()
 {
-	bIsTurningToCamera = true;
+	bIsMouseLooking = true;
 	GetCharacterMovement()->bOrientRotationToMovement = false;
 }
 
 void ASWGPlayer::OnRightMouseButtonReleased()
 {
-	bIsTurningToCamera = false;
+	bIsMouseLooking = false;
 	GetCharacterMovement()->bOrientRotationToMovement = true;
 }
 
@@ -260,7 +343,7 @@ void ASWGPlayer::Tick(float DeltaTime)
 		return;
 	}
 
-	if (bIsTurningToCamera && Controller)
+	if (bIsMouseLooking && Controller)
 	{
 		// With the mesh now facing actor +X (see the PoseableMesh -90 yaw in
 		// USWGMeshGeneratorSubsystem), facing the camera direction is simply

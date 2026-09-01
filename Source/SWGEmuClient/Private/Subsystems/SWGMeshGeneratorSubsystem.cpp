@@ -1,6 +1,7 @@
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
 #include "TRE/SWGIffTags.h"
 #include "Subsystems/SWGTreSubsystem.h"
+#include "Common/SWGWorldScale.h"
 #include "Components/DynamicMeshComponent.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
@@ -1550,6 +1551,12 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 
 	for (const FString& MeshGroupPath : MeshGroupPaths)
 	{
+		if (MeshGroupPath.EndsWith(TEXT(".mgn")) || MeshGroupPath.EndsWith(TEXT(".msh")))
+		{
+			OutMeshVirtualPaths.Add(MeshGroupPath);
+			continue;
+		}
+
 		FSWGIffReader GroupReader = TreSubsystem->CreateIffReader(MeshGroupPath);
 		if (!GroupReader.IsValid())
 		{
@@ -3109,7 +3116,7 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 			const FBox MeshBounds = StaticMesh->GetBoundingBox();
 			MeshComponent->RegisterComponent();
 			MeshComponent->AttachToComponent(Capsule, FAttachmentTransformRules::KeepRelativeTransform);
-			MeshComponent->SetRelativeRotation(FRotator(0.0f, YawCorrectionDegrees, 0.0f));
+			MeshComponent->SetRelativeRotation(FRotator(0.0f, YawCorrectionDegrees + SWGCharacterMeshYaw, 0.0f));
 
 			if (MeshBounds.IsValid)
 			{
@@ -3123,11 +3130,11 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 
 				const FVector Extent = MeshBounds.GetExtent();
 				const float NewHalfHeight = FMath::Max(Extent.Z, 1.0f);
-				const float NewRadius = FMath::Max(FMath::Max(Extent.X, Extent.Y), 1.0f);
+				const float NewRadius = FMath::Clamp(FMath::Min(Extent.X, Extent.Y), 1.0f, NewHalfHeight);
 				Capsule->SetCapsuleSize(NewRadius, NewHalfHeight);
 
 				FVector CorrectedLocation = Actor.GetActorLocation();
-				CorrectedLocation.Z = NetworkZ + NewHalfHeight;
+				CorrectedLocation.Z = NetworkZ + Capsule->GetScaledCapsuleHalfHeight();
 				Actor.SetActorLocation(CorrectedLocation);
 
 				MeshComponent->SetRelativeLocation(FVector(0.0f, 0.0f, -MeshBounds.GetCenter().Z));

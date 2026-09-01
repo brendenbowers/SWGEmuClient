@@ -315,7 +315,7 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 	FQuat SpawnRotation = Rotation;
 	if (ActorClass->IsChildOf(ACharacter::StaticClass()))
 	{
-		SpawnRotation = FRotator(0.0f, Rotation.Rotator().Yaw, 0.0f).Quaternion();
+		SpawnRotation = FRotator(0.0f, Rotation.Rotator().Yaw - SWGCharacterMeshYaw, 0.0f).Quaternion();
 	}
 
 	FActorSpawnParameters SpawnParams;
@@ -533,15 +533,14 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 		}
 	}
 
-	// DirectionAngle is a single byte (0-255) mapping to a full 0-360 degree
-	// yaw — cheap per-tick facing without transmitting a full quaternion like
-	// the initial spawn does. Pitch/Roll aren't part of this message (walking
-	// creatures don't need them), so only Yaw changes here. Same left-handed
-	// to right-handed conversion as the initial spawn quaternion (see
-	// SceneCreateObjectByCrc's FQuat(Msg.DirX, Msg.DirZ, -Msg.DirY, Msg.DirW))
-	// — for a pure yaw rotation that swap-with-negation reduces to simple
-	// negation of the angle, not an additive offset.
-	const float YawDegrees = -((Msg.DirectionAngle / 256.0f) * 360.0f);
+	// DirectionAngle is Quaternion::getSpecialDegrees() — a full turn is 100,
+	// not 256. Pitch/Roll aren't part of this message, so only Yaw changes
+	// here. Same left-handed to right-handed conversion as the initial spawn
+	// quaternion (see SceneCreateObjectByCrc's FQuat(Msg.DirX, Msg.DirZ,
+	// -Msg.DirY, Msg.DirW)) — for a pure yaw that reduces to negating the
+	// angle — plus the same character mesh quarter turn the spawn path applies.
+	const float HeadingDegrees = (Msg.DirectionAngle / 100.0f) * 360.0f;
+	const float YawDegrees = -HeadingDegrees + (Cast<ACharacter>(Actor) ? -SWGCharacterMeshYaw : 0.0f);
 	FRotator NewRotation = Actor->GetActorRotation();
 	NewRotation.Yaw = YawDegrees;
 	Actor->SetActorRotation(NewRotation);

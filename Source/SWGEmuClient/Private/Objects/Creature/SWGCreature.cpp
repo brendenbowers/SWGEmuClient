@@ -11,6 +11,8 @@
 #include "Components/SWGGroupComponent.h"
 #include "Components/SWGPerformanceComponent.h"
 #include "Components/SWGMovementComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Subsystems/SWGTargetSubsystem.h"
 
 ASWGCreature::ASWGCreature(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer.SetDefaultSubobjectClass<USWGMovementComponent>(ACharacter::CharacterMovementComponentName))
@@ -29,6 +31,7 @@ ASWGCreature::ASWGCreature(const FObjectInitializer& ObjectInitializer)
 	CombatStateComponent = CreateDefaultSubobject<USWGCombatStateComponent>(TEXT("CombatStateComponent"));
 	GroupComponent = CreateDefaultSubobject<USWGGroupComponent>(TEXT("GroupComponent"));
 	PerformanceComponent = CreateDefaultSubobject<USWGPerformanceComponent>(TEXT("PerformanceComponent"));
+	GetCapsuleComponent()->SetCollisionResponseToChannel(
 }
 
 USWGMovementComponent* ASWGCreature::GetSWGMovementComponent() const

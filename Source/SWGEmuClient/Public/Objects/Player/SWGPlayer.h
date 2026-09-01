@@ -106,6 +106,10 @@ protected:
 	// clamped so it can't zoom through the character or out to absurd range.
 	void OnMouseWheel(float Value);
 
+	void OnLeftMouseButtonPressed();
+	// How far click-to-target reaches, in Unreal units.
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Targeting")
+	float TargetTraceDistance = 20000.0f;
 	// Sends the current position/orientation to the server as a
 	// FDataTransformMessage, throttled by Tick — see the .cpp for the
 	// send-rate/stop-detection reasoning.
@@ -161,5 +165,5 @@ private:
 	float TimeSinceLastTransformSend = 0.0f;
 	int32 TransformMovementCounter = 0;
 	bool bWasMovingLastSend = false;
-	bool bIsTurningToCamera = false;
+	bool bIsMouseLooking = false;
 };

@@ -1,6 +1,7 @@
 #include "Subsystems/SWGSkeletalAnimationPipeline.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
 #include "Subsystems/SWGTreSubsystem.h"
+#include "Common/SWGWorldScale.h"
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGIFFChunkReader.h"
 #include "TRE/SWGAnimationReader.h"
@@ -800,7 +801,7 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 				// SWG's forward axis is 90 degrees off from Unreal's — the same quirk
 				// ASWGPlayer's camera/control rotation already corrects for. That fix
 				// doesn't touch the mesh itself, so rotate the whole mesh rigidly here.
-				CharacterMesh->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
+				CharacterMesh->SetRelativeRotation(FRotator(0.0f, SWGCharacterMeshYaw, 0.0f));
 
 				// The importer creates material slots named after each submesh's shader
 				// path but leaves the actual material null — build/assign the same real

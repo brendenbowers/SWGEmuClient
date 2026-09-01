@@ -15,6 +15,15 @@
  */
 constexpr float SWGWorldScale = 100.0f;
 
+/**
+ * SWG models face +Z, which ReadVectorLE's swg(x,y,z) -> ue(x,z,y) swap lands
+ * on UE +Y; UE characters face actor +X. Every character mesh applies this
+ * turn, whichever path built it, and server headings add the opposite sign
+ * back (see USWGObjectGraphSubsystem). Non-character meshes keep the
+ * unrotated +Y forward and take no offset at either end.
+ */
+constexpr float SWGCharacterMeshYaw = -90.0f;
+
 FORCEINLINE FVector SWGToUnrealSpace(const FVector& RawPos)
 {
 	return RawPos * SWGWorldScale;

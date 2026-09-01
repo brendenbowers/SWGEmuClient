@@ -145,8 +145,11 @@ void USWGClientFlowSubsystem::HandleStateChanged(ESWGClientState OldState, ESWGC
 
 	if (NewState == ESWGClientState::InWorld)
 	{
-		PlayerController->SetInputMode(FInputModeGameOnly());
-		PlayerController->bShowMouseCursor = false;
+		FInputModeGameAndUI InputMode;
+		InputMode.SetHideCursorDuringCapture(true);
+		InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::LockOnCapture);
+		PlayerController->SetInputMode(InputMode);
+		PlayerController->bShowMouseCursor = true;
 		PlayerController->ResetIgnoreLookInput();
 		PlayerController->ResetIgnoreMoveInput();
 		PlayerController->FlushPressedKeys();

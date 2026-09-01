@@ -22,6 +22,7 @@ void USWGConditionWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
 
+	SetVisibility(ESlateVisibility::HitTestInvisible);
 	RefreshCondition();
 
 	if (UWorld* World = GetWorld())

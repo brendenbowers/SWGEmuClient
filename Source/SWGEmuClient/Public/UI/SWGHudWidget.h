@@ -6,6 +6,7 @@
 
 class USWGConditionWidget;
 class USWGActionBarWidget;
+class USWGTargetBoxWidget;
 
 /**
  * In-world HUD root, pushed onto the layout's HUD layer once the player is in
@@ -25,6 +26,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|HUD")
 	USWGActionBarWidget* GetActionBar() const { return ActionBar; }
 
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|HUD")
+	USWGTargetBoxWidget* GetTargetBox() const { return TargetBox; }
+
 	/** The HUD showing for the current session, or null if none is up. */
 	static USWGHudWidget* GetActiveHud();
 
@@ -37,6 +41,9 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<USWGActionBarWidget> ActionBar;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<USWGTargetBoxWidget> TargetBox;
 
 private:
 	static TWeakObjectPtr<USWGHudWidget> ActiveHud;
