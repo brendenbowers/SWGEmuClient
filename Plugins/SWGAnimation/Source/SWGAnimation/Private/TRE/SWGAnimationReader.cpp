@@ -3,10 +3,6 @@
 #include "TRE/SWGIFFChunkReader.h"
 #include "Common/SWGWorldScale.h"
 
-// Comma-separated bone-name substrings; set via swg.DumpAnsAnimation
-// (USWGMeshGeneratorSubsystem) to log per-axis scale/swing for those bones. Empty = no logging.
-SWGANIMATION_API FString GSWGDebugAnsBoneFilter;
-
 namespace
 {
 	struct FSWGQuatFormatInfo
@@ -129,43 +125,12 @@ void FSWGAnimationReader::DecodeQchnChunkCompressed(const FSWGIffReader& Reader,
 	const uint8 RawScaleY = QchnReader.ReadValueLE<uint8>();
 	const uint8 RawScaleZ = QchnReader.ReadValueLE<uint8>();
 
-	bool bDump = false;
-	if (!GSWGDebugAnsBoneFilter.IsEmpty())
-	{
-		TArray<FString> Filters;
-		GSWGDebugAnsBoneFilter.ParseIntoArray(Filters, TEXT(","), true);
-		for (const FString& F : Filters)
-		{
-			if (OutTrack.BoneName.Contains(F))
-			{
-				bDump = true;
-				break;
-			}
-		}
-	}
-
-	if (bDump)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: raw scale bytes X=%d Y=%d Z=%d"),
-			*OutTrack.BoneName, RawScaleX, RawScaleY, RawScaleZ);
-	}
-
 	if (!QchnReader.CanRead(6)) return;
 
 	auto DecodeSample = [&](int32 FrameIndex)
 	{
 		const uint32 Packed = QchnReader.ReadValueLE<uint32>();
-		const FQuat Decoded = DecodeCompressedQuaternion(
-			Packed, RawScaleX, RawScaleY, RawScaleZ);
-		OutTrack.Keyframes.Add(FrameIndex, Decoded);
-		if (bDump)
-		{
-			FVector Axis; float AngleRad;
-			Decoded.ToAxisAndAngle(Axis, AngleRad);
-			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP %s: frame %d raw=(%d,%d,%d,%d) swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
-				*OutTrack.BoneName, FrameIndex, Packed & 0xFF, (Packed >> 8) & 0xFF, (Packed >> 16) & 0xFF, (Packed >> 24) & 0xFF,
-				FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
-		}
+		OutTrack.Keyframes.Add(FrameIndex, DecodeCompressedQuaternion(Packed, RawScaleX, RawScaleY, RawScaleZ));
 	};
 
 	QchnReader.Skip<uint16>(); // frame-0's explicit frame index (always 0)
@@ -188,21 +153,6 @@ void FSWGAnimationReader::DecodeQchnChunkRaw(const FSWGIffReader& Reader, const 
 	if (!QchnReader.CanRead(8 + 16)) return;
 	QchnReader.Skip(8);
 
-	bool bDump = false;
-	if (!GSWGDebugAnsBoneFilter.IsEmpty())
-	{
-		TArray<FString> Filters;
-		GSWGDebugAnsBoneFilter.ParseIntoArray(Filters, TEXT(","), true);
-		for (const FString& F : Filters)
-		{
-			if (OutTrack.BoneName.Contains(F))
-			{
-				bDump = true;
-				break;
-			}
-		}
-	}
-
 	auto DecodeSample = [&](int32 FrameIndex)
 	{
 		const float W = QchnReader.ReadValueLE<float>();
@@ -210,15 +160,7 @@ void FSWGAnimationReader::DecodeQchnChunkRaw(const FSWGIffReader& Reader, const 
 		const float Y = QchnReader.ReadValueLE<float>();
 		const float Z = QchnReader.ReadValueLE<float>();
 		// Y/Z swap + conjugate — see DecodeCompressedQuaternion's comment.
-		const FQuat Decoded(-X, -Z, -Y, W);
-		OutTrack.Keyframes.Add(FrameIndex, Decoded);
-		if (bDump)
-		{
-			FVector Axis; float AngleRad;
-			Decoded.ToAxisAndAngle(Axis, AngleRad);
-			UE_LOG(LogTemp, Warning, TEXT("ANSDUMP-KFAT %s: frame %d swing=%.2f deg axis=(%.2f,%.2f,%.2f)"),
-				*OutTrack.BoneName, FrameIndex, FMath::RadiansToDegrees(AngleRad), Axis.X, Axis.Y, Axis.Z);
-		}
+		OutTrack.Keyframes.Add(FrameIndex, FQuat(-X, -Z, -Y, W));
 	};
 
 	DecodeSample(0);
@@ -271,17 +213,22 @@ TMap<int32, float> FSWGAnimationReader::DecodeChnlChunk(const FSWGIffReader& Rea
 	TMap<int32, float> Result;
 	FSWGIFFChunkReader ChnlReader(Chnl, Reader);
 
-	// [count:uint32][frame-0 value:float] header (8 bytes), then repeating
-	// 8-byte [value:float][frame:uint32] records — value before frame, and
-	// frame is a full uint32, not uint16.
-	if (!ChnlReader.CanRead(8)) return Result;
-	ChnlReader.Skip<uint32>(); // count — unused, frame indices below are explicit
-	Result.Add(0, ChnlReader.ReadValueLE<float>());
+	// [count:uint16], then count repeating 6-byte [frame:uint16][value:float]
+	// records. The chunk size confirms the layout exactly: every CHNL is
+	// count*6 + 2 bytes.
+	//
+	// Misreading the record stride here is quietly catastrophic rather than
+	// merely wrong: garbage values survive into SWGBuildDenseTranslationTrack,
+	// which interpolates toward them, and a root translation of ~1e31 pushes
+	// the mesh's bounds past what FDFMatrix can convert for the GPU scene, so
+	// the primitive is dropped and the character stops rendering entirely.
+	if (!ChnlReader.CanRead(2)) return Result;
+	const uint16 Count = ChnlReader.ReadValueLE<uint16>();
 
-	while (ChnlReader.CanRead(8))
+	for (uint16 Sample = 0; Sample < Count && ChnlReader.CanRead(6); ++Sample)
 	{
+		const int32 FrameIndex = (int32)ChnlReader.ReadValueLE<uint16>();
 		const float Value = ChnlReader.ReadValueLE<float>();
-		const int32 FrameIndex = (int32)ChnlReader.ReadValueLE<uint32>();
 		Result.Add(FrameIndex, Value);
 	}
 	return Result;
@@ -372,26 +319,6 @@ void FSWGAnimationReader::DecodeRootTranslation(const FSWGIffReader& Reader, con
 		return BestFrame >= 0 ? Best : Map.CreateConstIterator()->Value;
 	};
 
-	// Diagnostic (swg.DumpAnsAnimation): the horizontal channels encode the
-	// clip's authored travel direction in file space — logging first/last per
-	// channel answers WHICH file axis the character walks along, which pins
-	// down the animation frame vs. the mesh's visual forward independently of
-	// any bone-rotation decoding.
-	if (!GSWGDebugAnsBoneFilter.IsEmpty())
-	{
-		auto NetOf = [](const TMap<int32, float>& Map) -> FVector2D
-		{
-			if (Map.Num() == 0) return FVector2D::ZeroVector;
-			int32 MinF = TNumericLimits<int32>::Max(), MaxF = TNumericLimits<int32>::Min();
-			for (const auto& Pair : Map) { MinF = FMath::Min(MinF, Pair.Key); MaxF = FMath::Max(MaxF, Pair.Key); }
-			return FVector2D(Map[MinF], Map[MaxF]);
-		};
-		const FVector2D NX = NetOf(HorizontalX), NZ = NetOf(HorizontalY), NV = NetOf(Vertical);
-		UE_LOG(LogTemp, Warning, TEXT("ANSDUMP-LOCT: hasLOCT=%d samples X=%d Z=%d V=%d | fileX first=%.4f last=%.4f net=%.4f | fileZ first=%.4f last=%.4f net=%.4f | fileY(up) first=%.4f last=%.4f net=%.4f"),
-			bHasLoct ? 1 : 0, HorizontalX.Num(), HorizontalY.Num(), Vertical.Num(),
-			NX.X, NX.Y, NX.Y - NX.X, NZ.X, NZ.Y, NZ.Y - NZ.X, NV.X, NV.Y, NV.Y - NV.X);
-	}
-
 	for (int32 Frame : AllFrames)
 	{
 		const float RawY = SampleHold(Vertical, Frame); // file's Y (up) axis
@@ -475,8 +402,14 @@ bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimati
 	if (!Reader.FindChildForm(InnerForm, SWG_IFF_TAG('A','R','O','T'), ArotForm)) return false;
 
 	const TArray<FSWGIffChunk> QchnChunks = Reader.FindAllChildChunks(ArotForm, SWG_IFF_TAG('Q','C','H','N'));
+	// SROT sits beside FORM AROT under the version form, not inside it — the
+	// file order is XFRM, AROT, SROT, ATRN, STRN, all siblings. Searching AROT
+	// for it silently yields nothing, leaving every hasTrack=0 bone on its bind
+	// rotation; postures whose orientation is authored as a static rotation
+	// rather than a keyframe track (prone stores the body's whole lie-down that
+	// way) then play with the limbs posed but the body upright.
 	const bool bHasSrot =
-		Reader.FindChildChunk(ArotForm, SWG_IFF_TAG('S','R','O','T'), SrotChunk);
+		Reader.FindChildChunk(InnerForm, SWG_IFF_TAG('S','R','O','T'), SrotChunk);
 
 	const TArray<FQuat> StaticRotations = bHasSrot
 		? DecodeStaticRotations(Reader, SrotChunk, bIsCompressed)

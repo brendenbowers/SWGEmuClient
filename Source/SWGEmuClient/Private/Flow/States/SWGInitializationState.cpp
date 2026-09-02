@@ -9,6 +9,7 @@
 #include "TRE/SWGDataTableReader.h"
 #include "TRE/SWGDoorStyleRow.h"
 #include "TRE/SWGResourceClassRow.h"
+#include "Common/SWGMovementTables.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/StaticMeshActor.h"
 #include "Camera/CameraActor.h"
@@ -157,6 +158,15 @@ void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 					{
 						UE_LOG(LogTemp, Warning, TEXT("SWGInitializationState: failed to load datatables/resource/resource_tree.iff — resource containers will show the shader's placeholder decal"));
 						ResourceTreeData = FSWGDataTableData();
+					}
+
+					StateMachine->Status(TEXT("Loading movement tables"));
+					if (!SWGMovementTables::Load(*TreSubsystem))
+					{
+						// Non-fatal: the getters fall back to neutral scales, so
+						// creatures still move — just without posture/state
+						// speed shaping.
+						UE_LOG(LogTemp, Warning, TEXT("SWGInitializationState: one or more datatables/movement tables failed to load — postures/states won't scale movement"));
 					}
 
 					AsyncTask(ENamedThreads::GameThread, [this, StateMachine, ObjectGraph, CrcToSubclass = MoveTemp(CrcToSubclass), DoorStyleData = MoveTemp(DoorStyleData), ResourceTreeData = MoveTemp(ResourceTreeData), Epoch]()

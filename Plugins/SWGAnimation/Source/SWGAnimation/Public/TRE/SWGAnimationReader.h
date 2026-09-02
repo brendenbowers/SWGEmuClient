@@ -3,9 +3,6 @@
 #include "CoreMinimal.h"
 #include "TRE/SWGIffReader.h"
 
-// Temporary/diagnostic — see SWGAnimationReader.cpp's definition.
-extern SWGANIMATION_API FString GSWGDebugAnsBoneFilter;
-
 /** One bone's decoded rotation keyframes — sparse (only frames actually present in the file). */
 struct FSWGAnimationBoneTrack
 {
@@ -36,9 +33,15 @@ struct FSWGAnimationData
  * Two top-level encodings, same outer shape (INFO/XFRM/AROT+QCHN/SROT/ATRN+
  * CHNL/STRN/MSGS): FORM CKAT (compressed quats, 4 bytes/key) and FORM KFAT
  * (raw 4×float32 quats, 16 bytes/key). XFIN bone descriptors are
- * [name, null-terminated][hasTrack:uint8]; hasTrack=0 keeps bind pose. One
- * QCHN per hasTrack=1 bone, in XFRM order. SROT (non-hasTrack rotation) and
- * ATRN/CHNL/STRN (translation) and MSGS (named events) are not decoded.
+ * [name, null-terminated][hasTrack:uint8][channelIndex:uint16 (CKAT) or
+ * uint32 (KFAT)]. One QCHN per hasTrack=1 bone, in XFRM order; a hasTrack=0
+ * bone's index instead selects a constant rotation from SROT, and only falls
+ * back to the bind pose when SROT has no such entry.
+ *
+ * Sibling order under the version form is XFRM, AROT, SROT, ATRN, STRN — SROT
+ * is NOT inside FORM AROT. Root translation comes from ATRN/CHNL (+ LOCT when
+ * present); STRN (per-bone static translation) and MSGS (named events) are
+ * still not decoded.
  *
  * CKAT QCHN: [uint16 sample-count][3 per-axis scale bytes], then
  * sample-count 6-byte records [frame:uint16][quat:uint32]. The quat stores

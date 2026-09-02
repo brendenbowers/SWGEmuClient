@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Common/SWGPostureTypes.h"
 #include "Network/Objects/Zone/Creature/CreatureObjectBaseline.h"
 #include "Network/Objects/Zone/Creature/CreatureObjectDelta.h"
 #include "SWGMovementComponent.generated.h"
@@ -19,6 +20,12 @@ struct FSWGPacket;
  *
  * Attach via ACharacter's ObjectInitializer (SetDefaultSubobjectClass) so this
  * class IS the character's movement component, not a second component alongside it.
+ *
+ * On top of those raw fields, the creature's current posture and states shape
+ * the result: datatables/movement/movement_human.iff scales speed/acceleration/
+ * turn rate per posture (a prone creature moves at a quarter speed), while
+ * movementstates.iff and state_rate_modifiers.iff cap and scale it per active
+ * state (Immobilized pins it to zero, Swimming to 70%). See SWGMovementTables.
  */
 UCLASS()
 class SWGEMUCLIENT_API USWGMovementComponent : public UCharacterMovementComponent
@@ -61,6 +68,30 @@ public:
 	void ApplyBase4(const FCreatureObjectBaseline& Baseline);
 	void ApplyDelta4(const FCreatureObjectDelta& Delta);
 
+	/**
+	 * Bound to USWGCombatStateComponent::OnPostureOrStateChanged (see
+	 * ASWGCreature::PostInitializeComponents) — re-derives the movement limits
+	 * against the new posture/states.
+	 */
+	void ApplyPostureAndStates(ESWGPosture NewPosture, int64 NewStateBitmask);
+
+	ESWGPosture GetPosture() const { return Posture; }
+	int64 GetStateBitmask() const { return StateBitmask; }
+
+	/**
+	 * Posture-scaled walk/run speeds in Unreal units — what the animation side
+	 * should bucket an observed speed against, since the raw CREO WalkSpeed/
+	 * RunSpeed ignore the posture's movementScale entirely.
+	 */
+	float GetPostureWalkSpeed() const;
+	float GetPostureRunSpeed() const;
+
+	/** The locomotion this creature is currently presenting, from its posture and how fast it's actually moving. */
+	ESWGLocomotion GetCurrentLocomotion() const;
+
 private:
 	void RecomputeMovementLimits();
+
+	ESWGPosture Posture = ESWGPosture::Upright;
+	int64 StateBitmask = 0;
 };

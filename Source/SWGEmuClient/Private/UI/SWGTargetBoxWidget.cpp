@@ -6,20 +6,8 @@
 #include "Objects/Creature/SWGCreature.h"
 #include "Engine/GameInstance.h"
 #include "TimerManager.h"
+#include "UI/SWGHamPoolDisplay.h"
 
-namespace
-{
-	int32 PoolValue(const TSWGBaselineList<int32>& Pools, ESWGHamPool Pool)
-	{
-		const int32 Index = static_cast<int32>(Pool);
-		return Pools.Items.IsValidIndex(Index) ? Pools.Items[Index] : 0;
-	}
-
-	FText FormatPool(int32 Current, int32 Max)
-	{
-		return FText::FromString(FString::Printf(TEXT("%d / %d"), Current, Max));
-	}
-}
 
 void USWGTargetBoxWidget::NativeConstruct()
 {
@@ -184,12 +172,12 @@ void USWGTargetBoxWidget::RefreshTarget()
 		return;
 	}
 
-	const int32 NewHealth = PoolValue(HealthComponent->HAM, ESWGHamPool::Health);
-	const int32 NewMaxHealth = PoolValue(HealthComponent->MaxHAM, ESWGHamPool::Health);
-	const int32 NewAction = PoolValue(HealthComponent->HAM, ESWGHamPool::Action);
-	const int32 NewMaxAction = PoolValue(HealthComponent->MaxHAM, ESWGHamPool::Action);
-	const int32 NewMind = PoolValue(HealthComponent->HAM, ESWGHamPool::Mind);
-	const int32 NewMaxMind = PoolValue(HealthComponent->MaxHAM, ESWGHamPool::Mind);
+	const int32 NewHealth = SWGHamPoolDisplay::PoolValue(HealthComponent->HAM, ESWGHamPool::Health);
+	const int32 NewMaxHealth = SWGHamPoolDisplay::PoolValue(HealthComponent->MaxHAM, ESWGHamPool::Health);
+	const int32 NewAction = SWGHamPoolDisplay::PoolValue(HealthComponent->HAM, ESWGHamPool::Action);
+	const int32 NewMaxAction = SWGHamPoolDisplay::PoolValue(HealthComponent->MaxHAM, ESWGHamPool::Action);
+	const int32 NewMind = SWGHamPoolDisplay::PoolValue(HealthComponent->HAM, ESWGHamPool::Mind);
+	const int32 NewMaxMind = SWGHamPoolDisplay::PoolValue(HealthComponent->MaxHAM, ESWGHamPool::Mind);
 
 	const bool bChanged =
 		NewHealth != Health || NewMaxHealth != MaxHealth ||
@@ -212,9 +200,9 @@ void USWGTargetBoxWidget::RefreshTarget()
 	if (ActionBar) { ActionBar->SetPercent(GetPoolFraction(ESWGHamPool::Action)); }
 	if (MindBar)   { MindBar->SetPercent(GetPoolFraction(ESWGHamPool::Mind)); }
 
-	if (HealthText) { HealthText->SetText(FormatPool(Health, MaxHealth)); }
-	if (ActionText) { ActionText->SetText(FormatPool(Action, MaxAction)); }
-	if (MindText)   { MindText->SetText(FormatPool(Mind, MaxMind)); }
+	if (HealthText) { HealthText->SetText(SWGHamPoolDisplay::FormatPool(Health, MaxHealth)); }
+	if (ActionText) { ActionText->SetText(SWGHamPoolDisplay::FormatPool(Action, MaxAction)); }
+	if (MindText)   { MindText->SetText(SWGHamPoolDisplay::FormatPool(Mind, MaxMind)); }
 
 	OnTargetUpdated();
 }

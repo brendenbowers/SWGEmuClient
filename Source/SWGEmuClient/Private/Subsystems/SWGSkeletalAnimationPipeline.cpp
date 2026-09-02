@@ -3,7 +3,6 @@
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Common/SWGWorldScale.h"
 #include "TRE/SWGIffReader.h"
-#include "TRE/SWGIFFChunkReader.h"
 #include "TRE/SWGAnimationReader.h"
 #include "TRE/SWGSlotDefinitionReader.h"
 #include "Animation/Skeleton.h"
@@ -16,6 +15,10 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SWGMovementComponent.h"
+#include "Components/SWGCombatStateComponent.h"
+#include "Common/SWGLocomotionResolver.h"
+#include "TRE/SWGAshReader.h"
+#include "TRE/SWGLatReader.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -42,40 +45,44 @@ namespace
 		return FString();
 	}
 
-	bool ReadDefaultLocomotionPaths(const FSWGIffReader& Reader, TArray<FString>& OutPaths)
+	/**
+	 * The posture and states the animation side should be showing for this
+	 * actor. Read off USWGCombatStateComponent rather than passed in, because
+	 * the pipeline re-checks them every tick — see UpdatePostureDrivenAnimations.
+	 */
+	void ReadPostureAndStates(const AActor& Actor, ESWGPosture& OutPosture, int64& OutStateBitmask)
 	{
-		TArray<FString> Clips;
-		auto Visit = [&Reader, &Clips](auto&& Self, const FSWGIffChunk& Node) -> void
+		OutPosture = ESWGPosture::Upright;
+		OutStateBitmask = 0;
+
+		if (const USWGCombatStateComponent* CombatState = Actor.FindComponentByClass<USWGCombatStateComponent>())
 		{
-			if (Node.IsForm())
-			{
-				for (const FSWGIffChunk& Child : Reader.ReadChildren(Node)) Self(Self, Child);
-				return;
-			}
+			OutPosture = CombatState->GetPosture();
+			OutStateBitmask = CombatState->StateBitmask;
+		}
+	}
 
-			FSWGIFFChunkReader ChunkReader(Node, Reader);
-			const FString Value = ChunkReader.ReadTerminiatedString();
+	/**
+	 * Speeds the blend space's samples are placed at. These are the *posture-
+	 * scaled* walk/run speeds, not the raw CREO ones: a prone creature's
+	 * observed velocity tops out at a quarter of its run speed, so placing the
+	 * crawl sample at the unscaled run speed would leave it permanently
+	 * blended toward the idle end.
+	 */
+	void ReadBlendSpeeds(const ACharacter& Character, float& OutWalkSpeed, float& OutRunSpeed)
+	{
+		const USWGMovementComponent* Movement = Cast<USWGMovementComponent>(Character.GetCharacterMovement());
+		OutWalkSpeed = Movement ? Movement->GetPostureWalkSpeed() : 0.0f;
+		OutRunSpeed = Movement ? Movement->GetPostureRunSpeed() : 0.0f;
 
-			if (Value.EndsWith(TEXT(".ans"), ESearchCase::IgnoreCase))
-			{
-				Clips.AddUnique(Value);
-			}
-		};
-
-		for (const FSWGIffChunk& Root : Reader.ReadChunks()) Visit(Visit, Root);
-		auto FindClip = [&Clips](const TCHAR* Needle) -> FString
+		if (OutWalkSpeed <= KINDA_SMALL_NUMBER)
 		{
-			const FString* Found = Clips.FindByPredicate([Needle](const FString& Path) { return Path.Contains(Needle, ESearchCase::IgnoreCase); });
-			return Found ? *Found : FString();
-		};
-
-		const FString Idle = FindClip(TEXT("_idl_breathe_normally."));
-		const FString Walk = FindClip(TEXT("_loc_walk"));
-		const FString Run = FindClip(TEXT("_loc_run."));
-		if (Idle.IsEmpty() || Walk.IsEmpty() || Run.IsEmpty()) return false;
-
-		OutPaths = { Idle, Walk, Walk, Run }; // LAT provides a parametric walk/run pair, not a distinct jog clip.
-		return true;
+			OutWalkSpeed = 155.0f;
+		}
+		if (OutRunSpeed <= OutWalkSpeed)
+		{
+			OutRunSpeed = FMath::Max(OutWalkSpeed * 2.0f, Movement ? Movement->MaxWalkSpeed : 310.0f);
+		}
 	}
 }
 
@@ -116,6 +123,13 @@ void FSWGSkeletalAnimationPipeline::Tick(float DeltaTime)
 			continue;
 		}
 
+		// While a posture-change transition is playing the instance holds a
+		// plain sequence, not a blend space, so there's no speed axis to feed.
+		if (Playing.PendingBlendSpace.IsValid())
+		{
+			continue;
+		}
+
 		const ACharacter* Character = Cast<ACharacter>(MeshComponent->GetOwner());
 		float HorizontalSpeed = Character ? Character->GetVelocity().Size2D() : 0.0f;
 		if (const USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr)
@@ -131,6 +145,10 @@ void FSWGSkeletalAnimationPipeline::Tick(float DeltaTime)
 		}
 		AnimInstance->SetBlendSpacePosition(FVector(HorizontalSpeed, 0.0f, 0.0f));
 	}
+
+	UpdatePostureDrivenAnimations();
+	UpdatePendingTransitions();
+	UpdateMeshPlacement(DeltaTime);
 
 	// Drain a budgeted number of finished builds (game-thread finalize work)
 	// before re-arming the pumps, so a pump that was paused on backpressure
@@ -151,6 +169,351 @@ void FSWGSkeletalAnimationPipeline::Tick(float DeltaTime)
 		++NumActiveWorkerTasks;
 		Async(EAsyncExecution::ThreadPool, [this]() { PumpAnimSequenceWork(); });
 	}
+}
+
+void FSWGSkeletalAnimationPipeline::UpdateMeshPlacement(float DeltaTime)
+{
+	for (FSWGPlayingAnimation& Playing : PlayingAnimations)
+	{
+		USkeletalMeshComponent* MeshComponent = Playing.MeshComponent.Get();
+		ACharacter* Character = MeshComponent ? Cast<ACharacter>(MeshComponent->GetOwner()) : nullptr;
+		UWorld* World = MeshComponent ? MeshComponent->GetWorld() : nullptr;
+		if (!Character || !World)
+		{
+			continue;
+		}
+
+		// Trace from inside the capsule downward past its feet. Starting at
+		// the actor origin rather than above it keeps the trace from catching
+		// a ceiling or an overhanging mesh in an interior.
+		const FVector Start = Character->GetActorLocation();
+		float TraceDown = 200.0f;
+		if (const UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+		{
+			TraceDown = Capsule->GetScaledCapsuleHalfHeight() + TerrainAlignmentTraceDepth;
+		}
+
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(SWGTerrainAlignment), /*bTraceComplex=*/true, Character);
+		FHitResult Hit;
+		FQuat TargetAlignment = FQuat::Identity;
+
+		if (World->LineTraceSingleByChannel(Hit, Start, Start - FVector(0.0f, 0.0f, TraceDown), ECC_WorldStatic, Params)
+			&& Hit.ImpactNormal.SizeSquared() > KINDA_SMALL_NUMBER)
+		{
+			// The normal is world space but the tilt is applied to a component
+			// whose parent (the capsule) carries the actor's yaw, so it has to
+			// be expressed in the actor's frame or the character would lean the
+			// wrong way as it turned.
+			const FVector LocalNormal = Character->GetActorTransform().InverseTransformVectorNoScale(Hit.ImpactNormal).GetSafeNormal();
+
+			FQuat Alignment = FQuat::FindBetweenNormals(FVector::UpVector, LocalNormal);
+
+			// Full alignment reads badly on anything steep — a biped ends up
+			// visibly leaning out of the hill. Clamp to a believable lean and
+			// let the rest of the slope go unmatched, which is what the retail
+			// client's creatures do too.
+			FVector Axis;
+			float Angle = 0.0f;
+			Alignment.ToAxisAndAngle(Axis, Angle);
+			if (Angle > MaxTerrainAlignmentAngleRadians)
+			{
+				Alignment = FQuat(Axis, MaxTerrainAlignmentAngleRadians);
+			}
+			TargetAlignment = Alignment;
+		}
+
+		// Interpolated rather than snapped: the trace result jumps between
+		// triangles as the creature walks, and applying that directly makes
+		// the mesh visibly twitch on tessellated terrain.
+		Playing.TerrainAlignment = FQuat::Slerp(Playing.TerrainAlignment, TargetAlignment,
+			FMath::Clamp(DeltaTime * TerrainAlignmentInterpSpeed, 0.0f, 1.0f)).GetNormalized();
+
+		// SWG's forward axis offset first, then the tilt — see the same yaw
+		// correction applied at attach time in TryApplyGeneratedAnimatedMesh.
+		const FQuat BaseRotation = FRotator(0.0f, SWGCharacterMeshYaw, 0.0f).Quaternion();
+		MeshComponent->SetRelativeRotation(BaseRotation * Playing.TerrainAlignment);
+
+		// Grounding, measured from the joints rather than the component's
+		// bounds — those are reference-pose bounds (their extents are
+		// identical across standing, kneeling, prone and sitting) and say
+		// nothing about where the current pose sits.
+		const TArray<FTransform>& BoneTransforms = MeshComponent->GetComponentSpaceTransforms();
+		if (BoneTransforms.Num() == 0)
+		{
+			continue;
+		}
+
+		float LowestBoneZ = TNumericLimits<float>::Max();
+		for (const FTransform& BoneTransform : BoneTransforms)
+		{
+			LowestBoneZ = FMath::Min(LowestBoneZ, (float)BoneTransform.GetTranslation().Z);
+		}
+		if (!FMath::IsFinite(LowestBoneZ))
+		{
+			continue;
+		}
+
+		// The first evaluated pose is the standing one, and its lowest joint
+		// is the zero point — joints sit inside the body, so an ankle is
+		// already well above the sole it rests on. Only the *change* from
+		// there is hover worth correcting.
+		if (!Playing.BaselineLowestBoneZ.IsSet())
+		{
+			Playing.BaselineLowestBoneZ = LowestBoneZ;
+		}
+
+		// Clamped at zero so this can only ever push the mesh down onto the
+		// ground, never lift it: a pose that legitimately reaches below the
+		// standing baseline (a deep crouch, a stumble) is left alone.
+		const float TargetDrop = FMath::Clamp(LowestBoneZ - *Playing.BaselineLowestBoneZ, 0.0f, MaxGroundingDrop);
+		Playing.GroundingOffset = FMath::FInterpTo(Playing.GroundingOffset, TargetDrop, DeltaTime, TerrainAlignmentInterpSpeed);
+
+		const float CapsuleHalfHeight = Character->GetCapsuleComponent()
+			? Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()
+			: 0.0f;
+		MeshComponent->SetRelativeLocation(FVector(0.0f, 0.0f, -CapsuleHalfHeight - Playing.GroundingOffset));
+	}
+}
+
+void FSWGSkeletalAnimationPipeline::UpdatePostureDrivenAnimations()
+{
+	for (int32 i = 0; i < PlayingAnimations.Num(); ++i)
+	{
+		FSWGPlayingAnimation& Playing = PlayingAnimations[i];
+		USkeletalMeshComponent* MeshComponent = Playing.MeshComponent.Get();
+		ACharacter* Character = MeshComponent ? Cast<ACharacter>(MeshComponent->GetOwner()) : nullptr;
+		USkeleton* TargetSkeleton = Playing.TargetSkeleton.Get();
+		if (!Character || !TargetSkeleton || Playing.bSwapInFlight)
+		{
+			continue;
+		}
+
+		ESWGPosture Posture = ESWGPosture::Upright;
+		int64 StateBitmask = 0;
+		ReadPostureAndStates(*Character, Posture, StateBitmask);
+		if (Posture == Playing.Posture && StateBitmask == Playing.StateBitmask)
+		{
+			continue;
+		}
+
+		// Recorded before the resolve so a posture whose loop is unchanged (or
+		// whose clips fail to resolve) doesn't re-walk the hierarchy every
+		// single tick from here on.
+		const ESWGPosture PreviousPosture = Playing.Posture;
+		Playing.Posture = Posture;
+		Playing.StateBitmask = StateBitmask;
+
+		const FSWGLocomotionSource* Source = GetOrLoadLocomotionSource(Playing.LatPath);
+		if (!Source)
+		{
+			continue;
+		}
+
+		FSWGLocomotionClipSet ClipSet;
+		if (!SWGLocomotion::ResolveClipSet(Source->Hierarchy, Source->Lat, Posture, StateBitmask, ClipSet))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalAnimationPipeline: %s has no usable clips for posture %d — keeping '%s'"),
+				*Character->GetName(), (int32)Posture, *Playing.ClipSet.IdleLoopName);
+			continue;
+		}
+
+		if (ClipSet == Playing.ClipSet)
+		{
+			continue;
+		}
+
+		float WalkSpeed = 0.0f;
+		float RunSpeed = 0.0f;
+		ReadBlendSpeeds(*Character, WalkSpeed, RunSpeed);
+
+		Playing.bSwapInFlight = true;
+
+		// Abandon any transition still queued from an earlier change —
+		// changing posture again mid-transition would otherwise let the
+		// superseded loop start once its timer elapsed, showing the wrong
+		// posture until the new blend space landed.
+		Playing.PendingBlendSpace.Reset();
+
+		// The clip the .ash authors for this particular posture change, if it
+		// has one — see UpdatePendingTransitions for how it's sequenced ahead
+		// of the destination loop.
+		const FString TransitionClipPath = SWGLocomotion::ResolveTransitionClip(
+			Source->Hierarchy, Source->Lat, PreviousPosture, Posture, StateBitmask);
+		const FString SkeletonPathCopy = Playing.SkeletonPath;
+		const TArray<FString> MeshPathsCopy = Playing.MeshVirtualPaths;
+		const FSWGSkeletonData SkeletonCopy = Playing.Skeleton;
+
+		// The completion re-finds the record by mesh component rather than
+		// capturing &Playing: PlayingAnimations is a TArray that Tick's own
+		// RemoveAtSwap can reorder while the sequence builds are in flight.
+		TWeakObjectPtr<USkeletalMeshComponent> MeshComponentWeak(MeshComponent);
+		RequestLocomotionBlendSpace(Playing.SkeletonPath, Playing.MeshVirtualPaths, Playing.Skeleton, TargetSkeleton, ClipSet, WalkSpeed, RunSpeed,
+			[this, MeshComponentWeak, ClipSet, TransitionClipPath, SkeletonPathCopy, MeshPathsCopy, SkeletonCopy, TargetSkeleton](UBlendSpace* BlendSpace)
+			{
+				FSWGPlayingAnimation* Record = PlayingAnimations.FindByPredicate(
+					[&MeshComponentWeak](const FSWGPlayingAnimation& Candidate) { return Candidate.MeshComponent == MeshComponentWeak; });
+				if (!Record)
+				{
+					return;
+				}
+				Record->bSwapInFlight = false;
+
+				USkeletalMeshComponent* MeshComponent = MeshComponentWeak.Get();
+				if (!BlendSpace || !MeshComponent)
+				{
+					return;
+				}
+
+				// No authored transition for this posture pair (most pairs have
+				// none) — go straight to the destination loop.
+				if (TransitionClipPath.IsEmpty())
+				{
+					BeginLoopPlayback(*MeshComponent, *BlendSpace, ClipSet);
+					return;
+				}
+
+				// Otherwise play the transition clip once, unlooped, and let
+				// UpdatePendingTransitions start the loop when it finishes.
+				RequestLocomotionAnimSequence(SkeletonPathCopy, MeshPathsCopy, TransitionClipPath, SkeletonCopy, TargetSkeleton)
+					.Next([this, MeshComponentWeak, ClipSet, BlendSpace](UAnimSequence* TransitionSequence)
+					{
+						FSWGPlayingAnimation* Record = PlayingAnimations.FindByPredicate(
+							[&MeshComponentWeak](const FSWGPlayingAnimation& Candidate) { return Candidate.MeshComponent == MeshComponentWeak; });
+						USkeletalMeshComponent* MeshComponent = MeshComponentWeak.Get();
+						if (!Record || !MeshComponent || !IsValid(BlendSpace))
+						{
+							return;
+						}
+
+						// The clip failed to decode — the destination pose is
+						// still correct, just reached without the motion.
+						if (!TransitionSequence || TransitionSequence->GetPlayLength() <= 0.0f)
+						{
+							BeginLoopPlayback(*MeshComponent, *BlendSpace, ClipSet);
+							return;
+						}
+
+						MeshComponent->PlayAnimation(TransitionSequence, false);
+						if (UAnimSingleNodeInstance* AnimInstance = Cast<UAnimSingleNodeInstance>(MeshComponent->GetAnimInstance()))
+						{
+							Record->AnimInstance = AnimInstance;
+						}
+						Record->ClipSet = ClipSet;
+						Record->PendingBlendSpace = BlendSpace;
+						Record->PendingBlendSpaceStartTime = MeshComponent->GetWorld()
+							? MeshComponent->GetWorld()->GetTimeSeconds() + TransitionSequence->GetPlayLength()
+							: 0.0f;
+					});
+			});
+	}
+}
+
+void FSWGSkeletalAnimationPipeline::BeginLoopPlayback(USkeletalMeshComponent& MeshComponent, UBlendSpace& BlendSpace, const FSWGLocomotionClipSet& ClipSet)
+{
+	MeshComponent.PlayAnimation(&BlendSpace, true);
+
+	FSWGPlayingAnimation* Record = PlayingAnimations.FindByPredicate(
+		[&MeshComponent](const FSWGPlayingAnimation& Candidate) { return Candidate.MeshComponent.Get() == &MeshComponent; });
+	if (!Record)
+	{
+		return;
+	}
+
+	Record->PendingBlendSpace.Reset();
+	if (UAnimSingleNodeInstance* AnimInstance = Cast<UAnimSingleNodeInstance>(MeshComponent.GetAnimInstance()))
+	{
+		Record->AnimInstance = AnimInstance;
+	}
+	Record->ClipSet = ClipSet;
+}
+
+void FSWGSkeletalAnimationPipeline::UpdatePendingTransitions()
+{
+	for (FSWGPlayingAnimation& Playing : PlayingAnimations)
+	{
+		UBlendSpace* PendingBlendSpace = Playing.PendingBlendSpace.Get();
+		USkeletalMeshComponent* MeshComponent = Playing.MeshComponent.Get();
+		UWorld* World = MeshComponent ? MeshComponent->GetWorld() : nullptr;
+		if (!PendingBlendSpace || !MeshComponent || !World)
+		{
+			continue;
+		}
+
+		// Driven off elapsed world time rather than the anim instance's own
+		// position: a non-looping single-node animation simply holds its last
+		// frame when it ends, so there's no completion event to hook, and
+		// polling GetCurrentTime would need the same clock comparison anyway.
+		if (World->GetTimeSeconds() >= Playing.PendingBlendSpaceStartTime)
+		{
+			BeginLoopPlayback(*MeshComponent, *PendingBlendSpace, Playing.ClipSet);
+		}
+	}
+}
+
+const FSWGLocomotionSource* FSWGSkeletalAnimationPipeline::GetOrLoadLocomotionSource(const FString& LatPath)
+{
+	if (LatPath.IsEmpty() || !Owner.TreSubsystem)
+	{
+		return nullptr;
+	}
+
+	if (const TSharedPtr<FSWGLocomotionSource>* Existing = LocomotionSources.Find(LatPath))
+	{
+		return Existing->Get();
+	}
+
+	TSharedPtr<FSWGLocomotionSource> Source = MakeShared<FSWGLocomotionSource>();
+	if (!FSWGLatReader::ReadLat(Owner.TreSubsystem->CreateIffReader(LatPath), Source->Lat))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalAnimationPipeline: failed to parse LAT '%s'"), *LatPath);
+		// Cached as null so a species with a broken LAT isn't re-read every
+		// tick by UpdatePostureDrivenAnimations.
+		LocomotionSources.Add(LatPath, nullptr);
+		return nullptr;
+	}
+
+	if (!FSWGAshReader::ReadHierarchy(Owner.TreSubsystem->CreateIffReader(Source->Lat.AshPath), Source->Hierarchy))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalAnimationPipeline: LAT '%s' names ASH '%s', which failed to parse"), *LatPath, *Source->Lat.AshPath);
+		LocomotionSources.Add(LatPath, nullptr);
+		return nullptr;
+	}
+
+	return LocomotionSources.Add(LatPath, Source).Get();
+}
+
+void FSWGSkeletalAnimationPipeline::RequestLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton, USkeleton* TargetSkeleton, const FSWGLocomotionClipSet& ClipSet, float WalkSpeed, float RunSpeed, TFunction<void(UBlendSpace*)> OnReady)
+{
+	// Idle/Walk/Run each build independently and asynchronously — this join
+	// runs OnReady exactly once, after all three land, regardless of which
+	// order they actually complete in. All three futures resolve on the game
+	// thread (see RequestLocomotionAnimSequence), so NumCompleted needs no
+	// synchronization.
+	struct FSWGLocomotionJoinState
+	{
+		UAnimSequence* IdleSequence = nullptr;
+		UAnimSequence* WalkSequence = nullptr;
+		UAnimSequence* RunSequence = nullptr;
+		int32 NumCompleted = 0;
+	};
+	TSharedRef<FSWGLocomotionJoinState> JoinState = MakeShared<FSWGLocomotionJoinState>();
+
+	auto OnOneAnimSequenceReady = [this, JoinState, SkeletonPath, MeshVirtualPaths, ClipSet, WalkSpeed, RunSpeed, TargetSkeleton, OnReady]()
+	{
+		if (JoinState->NumCompleted < 3)
+		{
+			return;
+		}
+
+		OnReady(GetOrBuildLocomotionBlendSpace(SkeletonPath, MeshVirtualPaths, ClipSet, JoinState->IdleSequence, JoinState->WalkSequence, JoinState->RunSequence, WalkSpeed, RunSpeed, TargetSkeleton));
+	};
+
+	RequestLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, ClipSet.IdlePath, Skeleton, TargetSkeleton)
+		.Next([JoinState, OnOneAnimSequenceReady](UAnimSequence* Seq) { JoinState->IdleSequence = Seq; ++JoinState->NumCompleted; OnOneAnimSequenceReady(); });
+	RequestLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, ClipSet.WalkPath, Skeleton, TargetSkeleton)
+		.Next([JoinState, OnOneAnimSequenceReady](UAnimSequence* Seq) { JoinState->WalkSequence = Seq; ++JoinState->NumCompleted; OnOneAnimSequenceReady(); });
+	RequestLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, ClipSet.RunPath, Skeleton, TargetSkeleton)
+		.Next([JoinState, OnOneAnimSequenceReady](UAnimSequence* Seq) { JoinState->RunSequence = Seq; ++JoinState->NumCompleted; OnOneAnimSequenceReady(); });
 }
 
 const TMap<FString, FString>& FSWGSkeletalAnimationPipeline::GetSlotHardpoints()
@@ -182,7 +545,7 @@ const TMap<FString, FString>& FSWGSkeletalAnimationPipeline::GetSlotHardpoints()
 
 TFuture<USkeletalMesh*> FSWGSkeletalAnimationPipeline::RequestGeneratedSkeletalMesh(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton)
 {
-	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths);
+	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GeneratedAssetVersion;
 	const FString AssetName = FString::Printf(TEXT("SK_%u"), PathsHash);
 	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
 
@@ -421,7 +784,7 @@ void FSWGSkeletalAnimationPipeline::DrainCompletedSkeletalMeshBuilds(int32 MaxTo
 
 TFuture<UAnimSequence*> FSWGSkeletalAnimationPipeline::RequestLocomotionAnimSequence(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FString& ClipPath, const FSWGSkeletonData& Skeleton, USkeleton* TargetSkeleton)
 {
-	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GetTypeHash(ClipPath);
+	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GetTypeHash(ClipPath) ^ GeneratedAssetVersion;
 	const FString AssetName = FString::Printf(TEXT("AS_%u"), PathsHash);
 	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
 
@@ -555,9 +918,14 @@ void FSWGSkeletalAnimationPipeline::DrainCompletedAnimSequenceBuilds(int32 MaxTo
 	}
 }
 
-UBlendSpace* FSWGSkeletalAnimationPipeline::GetOrBuildLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const TArray<FString>& LocomotionPaths, UAnimSequence* IdleSequence, UAnimSequence* WalkSequence, UAnimSequence* RunSequence, float WalkSpeed, float RunSpeed, USkeleton* TargetSkeleton)
+UBlendSpace* FSWGSkeletalAnimationPipeline::GetOrBuildLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGLocomotionClipSet& ClipSet, UAnimSequence* IdleSequence, UAnimSequence* WalkSequence, UAnimSequence* RunSequence, float WalkSpeed, float RunSpeed, USkeleton* TargetSkeleton)
 {
-	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GetTypeHash(LocomotionPaths);
+	// The clip paths rather than the loop animation name: two postures can
+	// resolve to different names over the same three clips (a species whose
+	// .ash gives sneaking and crouched the same loop), and that should share
+	// one built asset.
+	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths)
+		^ GetTypeHash(ClipSet.IdlePath) ^ GetTypeHash(ClipSet.WalkPath) ^ GetTypeHash(ClipSet.RunPath) ^ GeneratedAssetVersion;
 	const FString AssetName = FString::Printf(TEXT("BS_%u"), PathsHash);
 	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
 
@@ -663,11 +1031,27 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 		return;
 	}
 
-	const FString* LatPath = AnimationLatPaths.Find(SkeletonPath);
-	TArray<FString> LocomotionPaths;
-	if (!LatPath || !ReadDefaultLocomotionPaths(Owner.TreSubsystem->CreateIffReader(*LatPath), LocomotionPaths))
+	const FString* LatPathPtr = AnimationLatPaths.Find(SkeletonPath);
+	const FSWGLocomotionSource* Source = LatPathPtr ? GetOrLoadLocomotionSource(*LatPathPtr) : nullptr;
+	if (!Source)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalAnimationPipeline: no usable LATX locomotion LAT for skeleton '%s'"), *SkeletonPath);
+		return;
+	}
+	const FString LatPath = *LatPathPtr;
+
+	// The creature's baselines normally land before its mesh finishes
+	// building, so this is usually its real posture already; if not, Tick's
+	// UpdatePostureDrivenAnimations swaps to the right one as soon as base3
+	// arrives.
+	ESWGPosture Posture = ESWGPosture::Upright;
+	int64 StateBitmask = 0;
+	ReadPostureAndStates(Actor, Posture, StateBitmask);
+
+	FSWGLocomotionClipSet ClipSet;
+	if (!SWGLocomotion::ResolveClipSet(Source->Hierarchy, Source->Lat, Posture, StateBitmask, ClipSet))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalAnimationPipeline: LAT '%s' has no usable clips for posture %d"), *LatPath, (int32)Posture);
 		return;
 	}
 
@@ -699,7 +1083,7 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 	TMap<FString, int32> TextureIndexOverridesCopy = TextureIndexOverrides ? *TextureIndexOverrides : TMap<FString, int32>();
 
 	RequestGeneratedSkeletalMesh(SkeletonPath, MeshVirtualPaths, Skeleton)
-		.Next([this, ActorWeak, MeshVirtualPaths, SkeletonPath, Skeleton, LocomotionPaths, ProceduralMeshComponentWeak,
+		.Next([this, ActorWeak, MeshVirtualPaths, SkeletonPath, Skeleton, LatPath, ClipSet, Posture, StateBitmask, ProceduralMeshComponentWeak,
 		 PaletteTintOverridesCopy, MorphWeightsCopy, TextureIndexOverridesCopy,
 		 bHasPaletteTintOverrides, bHasMorphWeights, bHasTextureIndexOverrides](USkeletalMesh* GeneratedMesh)
 		{
@@ -727,38 +1111,14 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 			// animated tracks themselves get built from.
 			USkeleton* TargetSkeleton = GeneratedMesh->GetSkeleton();
 
-			const USWGMovementComponent* Movement = Cast<USWGMovementComponent>(Character->GetCharacterMovement());
-			const float WalkSpeed = Movement && Movement->WalkSpeed > KINDA_SMALL_NUMBER
-				? Movement->WalkSpeed * 100.0f
-				: 155.0f;
-			const float RunSpeed = Movement && Movement->RunSpeed > Movement->WalkSpeed
-				? Movement->RunSpeed * 100.0f
-				: FMath::Max(WalkSpeed * 2.0f, Movement ? Movement->MaxWalkSpeed : 310.0f);
+			float WalkSpeed = 0.0f;
+			float RunSpeed = 0.0f;
+			ReadBlendSpeeds(*Character, WalkSpeed, RunSpeed);
 
-			// Idle/Walk/Run each build independently and asynchronously — this
-			// join runs the rest of the function (blend space + attach)
-			// exactly once, after all three land, regardless of which order
-			// they actually complete in. All three futures resolve on the
-			// game thread (see this function's own header comment), so
-			// NumCompleted needs no synchronization.
-			struct FSWGLocomotionJoinState
-			{
-				UAnimSequence* IdleSequence = nullptr;
-				UAnimSequence* WalkSequence = nullptr;
-				UAnimSequence* RunSequence = nullptr;
-				int32 NumCompleted = 0;
-			};
-			TSharedRef<FSWGLocomotionJoinState> JoinState = MakeShared<FSWGLocomotionJoinState>();
-
-			auto OnOneAnimSequenceReady = [this, JoinState, ActorWeak, GeneratedMesh, TargetSkeleton, MeshVirtualPaths, SkeletonPath, LocomotionPaths,
+			auto OnBlendSpaceReady = [this, ActorWeak, GeneratedMesh, TargetSkeleton, MeshVirtualPaths, SkeletonPath, Skeleton, LatPath, ClipSet, Posture, StateBitmask,
 				ProceduralMeshComponentWeak, PaletteTintOverridesCopy, MorphWeightsCopy, TextureIndexOverridesCopy,
-				bHasPaletteTintOverrides, bHasMorphWeights, bHasTextureIndexOverrides, WalkSpeed, RunSpeed]()
+				bHasPaletteTintOverrides, bHasMorphWeights, bHasTextureIndexOverrides](UBlendSpace* LocomotionBlendSpace)
 			{
-				if (JoinState->NumCompleted < 3)
-				{
-					return;
-				}
-
 				AActor* Actor = ActorWeak.Get();
 				if (!Actor)
 				{
@@ -776,7 +1136,6 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 				const TMap<FString, int32>* TextureIndexOverrides = bHasTextureIndexOverrides ? &TextureIndexOverridesCopy : nullptr;
 				UMeshComponent* ProceduralMeshComponent = ProceduralMeshComponentWeak.Get();
 
-				UBlendSpace* LocomotionBlendSpace = GetOrBuildLocomotionBlendSpace(SkeletonPath, MeshVirtualPaths, LocomotionPaths, JoinState->IdleSequence, JoinState->WalkSequence, JoinState->RunSequence, WalkSpeed, RunSpeed, TargetSkeleton);
 				if (!LocomotionBlendSpace)
 				{
 					UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalAnimationPipeline: %s has no usable locomotion blend space; leaving the procedural mesh visible instead of showing a T-pose"), *Actor->GetName());
@@ -856,6 +1215,14 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 				FSWGPlayingAnimation Playing;
 				Playing.MeshComponent = CharacterMesh;
 				Playing.AnimInstance = AnimInstance;
+				Playing.TargetSkeleton = TargetSkeleton;
+				Playing.SkeletonPath = SkeletonPath;
+				Playing.MeshVirtualPaths = MeshVirtualPaths;
+				Playing.LatPath = LatPath;
+				Playing.Skeleton = Skeleton;
+				Playing.ClipSet = ClipSet;
+				Playing.Posture = Posture;
+				Playing.StateBitmask = StateBitmask;
 				PlayingAnimations.Add(MoveTemp(Playing));
 
 				// A player can receive more than one asynchronous mesh request (and a
@@ -878,11 +1245,6 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 				UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalAnimationPipeline: %s resolved to the generated skeletal mesh for skeleton '%s'"), *Actor->GetName(), *SkeletonPath);
 			};
 
-			RequestLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, LocomotionPaths[0], Skeleton, TargetSkeleton)
-				.Next([JoinState, OnOneAnimSequenceReady](UAnimSequence* Seq) { JoinState->IdleSequence = Seq; ++JoinState->NumCompleted; OnOneAnimSequenceReady(); });
-			RequestLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, LocomotionPaths[1], Skeleton, TargetSkeleton)
-				.Next([JoinState, OnOneAnimSequenceReady](UAnimSequence* Seq) { JoinState->WalkSequence = Seq; ++JoinState->NumCompleted; OnOneAnimSequenceReady(); });
-			RequestLocomotionAnimSequence(SkeletonPath, MeshVirtualPaths, LocomotionPaths[3], Skeleton, TargetSkeleton)
-				.Next([JoinState, OnOneAnimSequenceReady](UAnimSequence* Seq) { JoinState->RunSequence = Seq; ++JoinState->NumCompleted; OnOneAnimSequenceReady(); });
+			RequestLocomotionBlendSpace(SkeletonPath, MeshVirtualPaths, Skeleton, TargetSkeleton, ClipSet, WalkSpeed, RunSpeed, OnBlendSpaceReady);
 		});
 }

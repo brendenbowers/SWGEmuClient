@@ -4,8 +4,12 @@
 #include "TRE/SWGSkeletonReader.h"
 #include "TRE/SWGMeshReader.h"
 #include "TRE/SWGAnimationReader.h"
+#include "TRE/SWGAshReader.h"
+#include "TRE/SWGLatReader.h"
 #include "Import/SWGSkeletalMeshImporter.h"
 #include "Import/SWGAnimationImporter.h"
+#include "Common/SWGLocomotionResolver.h"
+#include "Common/SWGPostureTypes.h"
 #include "Containers/Queue.h"
 #include "Async/Future.h"
 #include <atomic>
@@ -20,15 +24,79 @@ class USkeletalMeshComponent;
 class UAnimSingleNodeInstance;
 
 /**
+ * One species' animation data: the .lat that maps logical animation names to
+ * .ans clips, and the .ash state hierarchy those names are written against.
+ * Loaded once per LAT path and shared by every creature using it.
+ */
+struct FSWGLocomotionSource
+{
+	FSWGLatData Lat;
+	FSWGAnimationStateHierarchy Hierarchy;
+};
+
+/**
  * One actor's live animation playback — a real UBlendSpace played on
  * Character->GetMesh() via UAnimSingleNodeInstance, driven every tick by the
  * actor's current horizontal speed. See FSWGSkeletalAnimationPipeline::
  * TryApplyGeneratedAnimatedMesh.
+ *
+ * The rest of the fields are what Tick needs to swap the blend space when the
+ * creature's posture or states change (prone, sitting, swimming, ...) —
+ * rebuilding one is the same work as building the first, so everything that
+ * went into it is kept here rather than re-derived from the actor.
  */
 struct FSWGPlayingAnimation
 {
 	TWeakObjectPtr<USkeletalMeshComponent> MeshComponent;
 	TWeakObjectPtr<UAnimSingleNodeInstance> AnimInstance;
+	TWeakObjectPtr<USkeleton> TargetSkeleton;
+
+	FString SkeletonPath;
+	TArray<FString> MeshVirtualPaths;
+	FString LatPath;
+	FSWGSkeletonData Skeleton;
+
+	/** The clips currently playing — a swap is needed exactly when the posture/state resolve to a different set. */
+	FSWGLocomotionClipSet ClipSet;
+
+	/** Posture/states the current LoopAnimationName was resolved from, so Tick can skip the hierarchy walk while they're unchanged. */
+	ESWGPosture Posture = ESWGPosture::Invalid;
+	int64 StateBitmask = 0;
+
+	/** Set while a replacement blend space is being built, so Tick doesn't queue a second one for the same change. */
+	bool bSwapInFlight = false;
+
+	/**
+	 * Destination loop waiting behind a posture-change transition clip, and
+	 * the world time that clip finishes at. While this is set the component is
+	 * playing a one-shot transition; Tick starts the blend space once the
+	 * clip has run its length. Null blend space means nothing is pending.
+	 */
+	TWeakObjectPtr<UBlendSpace> PendingBlendSpace;
+	float PendingBlendSpaceStartTime = 0.0f;
+
+	/**
+	 * Current terrain-alignment tilt, in the actor's local space, interpolated
+	 * toward the ground normal every tick — see
+	 * FSWGSkeletalAnimationPipeline::UpdateTerrainAlignment. Identity means
+	 * "standing straight up relative to the capsule", which is the correct
+	 * resting value on flat ground and the fallback whenever the ground trace
+	 * misses.
+	 */
+	FQuat TerrainAlignment = FQuat::Identity;
+
+	/**
+	 * Lowest joint height (component space) in this actor's first observed
+	 * pose, which is its standing one. Used as the zero point for grounding:
+	 * the skeleton's joints sit inside the body, so the lowest *joint* is
+	 * already some way above the sole of the foot, and that constant offset
+	 * must be subtracted out rather than treated as float. Unset until the
+	 * first tick with an evaluated pose.
+	 */
+	TOptional<float> BaselineLowestBoneZ;
+
+	/** How far the mesh is currently pushed down to keep a lying/seated pose on the ground — see UpdateMeshPlacement. */
+	float GroundingOffset = 0.0f;
 };
 
 /** One queued skeletal-mesh build request — everything the worker pump needs
@@ -143,13 +211,61 @@ private:
 	TFuture<UAnimSequence*> RequestLocomotionAnimSequence(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FString& ClipPath, const FSWGSkeletonData& Skeleton, USkeleton* TargetSkeleton);
 
 	/**
+	 * Builds (or fetches) the idle/walk/run sequences of one clip set and then
+	 * the blend space over them, calling OnReady with the result — null if any
+	 * of the three failed to decode. The three sequence builds run
+	 * independently and asynchronously; OnReady fires once, on the game
+	 * thread, after all of them land.
+	 *
+	 * Shared by the first-time attach in TryApplyGeneratedAnimatedMesh and by
+	 * Tick's posture swap, which need the same work for different follow-ups.
+	 */
+	void RequestLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton, USkeleton* TargetSkeleton, const FSWGLocomotionClipSet& ClipSet, float WalkSpeed, float RunSpeed, TFunction<void(UBlendSpace*)> OnReady);
+
+	/**
+	 * Loads and caches one species' .lat plus the .ash it names, keyed by LAT
+	 * path. Null if either file is missing or unparseable. The returned
+	 * pointer stays valid for the pipeline's lifetime (the map holds shared
+	 * pointers, so growth doesn't invalidate it).
+	 */
+	const FSWGLocomotionSource* GetOrLoadLocomotionSource(const FString& LatPath);
+
+	/** Re-resolves each playing animation's loop against its actor's current posture/states and swaps the blend space where it changed. Called from Tick. */
+	void UpdatePostureDrivenAnimations();
+
+	/** Starts the destination loop of any record whose posture-change transition clip has finished playing. Called from Tick. */
+	void UpdatePendingTransitions();
+
+	/** Starts a looping blend space on MeshComponent and records it against that component's playing-animation entry. */
+	void BeginLoopPlayback(USkeletalMeshComponent& MeshComponent, UBlendSpace& BlendSpace, const FSWGLocomotionClipSet& ClipSet);
+
+	/**
+	 * Tilts each playing animation's mesh to follow the ground it's standing
+	 * on, so a prone or sitting creature lies along a slope instead of
+	 * intersecting it on one side and floating on the other.
+	 *
+	 * The tilt is applied to the mesh component rather than the actor because
+	 * UCharacterMovementComponent requires its capsule to stay upright —
+	 * rotating the actor would break ground checks and stepping.
+	 *
+	 * Also keeps the pose *on* that ground. The mesh hangs at
+	 * -CapsuleHalfHeight so a standing pose's feet meet the capsule bottom,
+	 * but a posture that lies the body down does it by rotating about the
+	 * skeleton's root joint — which sits near the hips, not the feet — so the
+	 * body swings up and hovers. The capsule can't simply be shrunk to
+	 * compensate: it stays centred on the actor, so that moves the pivot
+	 * without changing where the body ends up relative to it.
+	 */
+	void UpdateMeshPlacement(float DeltaTime);
+
+	/**
 	 * Loads the once-built UBlendSpace for this skeleton+mesh-parts+locomotion-clips
 	 * combination, or builds and saves it if missing and this is an
 	 * editor/PIE build: a single horizontal-speed axis with idle/walk/run
 	 * samples at 0/WalkSpeed/RunSpeed. Synchronous — building a UBlendSpace
 	 * is cheap UObject/package work only, no CPU-heavy pass worth threading.
 	 */
-	UBlendSpace* GetOrBuildLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const TArray<FString>& LocomotionPaths, UAnimSequence* IdleSequence, UAnimSequence* WalkSequence, UAnimSequence* RunSequence, float WalkSpeed, float RunSpeed, USkeleton* TargetSkeleton);
+	UBlendSpace* GetOrBuildLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGLocomotionClipSet& ClipSet, UAnimSequence* IdleSequence, UAnimSequence* WalkSequence, UAnimSequence* RunSequence, float WalkSpeed, float RunSpeed, USkeleton* TargetSkeleton);
 
 	/** Slot name -> hardpoint socket name, parsed once on first use from
 	 *  abstract/slot/slot_definition/slot_definitions.iff — a small,
@@ -202,6 +318,25 @@ private:
 	 *  returning, since a pump mid-loop still touches *this*. */
 	std::atomic<int32> NumActiveWorkerTasks{0};
 
+	/**
+	 * Mixed into every generated asset's package-name hash. The saved .uasset
+	 * on disk *is* the cache, and its name derives from source paths only, so
+	 * without this a decoder or importer fix keeps loading assets built by the
+	 * superseded code and appears to do nothing. Bump it whenever a change
+	 * alters what a given source file should produce: every generated asset is
+	 * renamed and rebuilt.
+	 */
+	static constexpr uint32 GeneratedAssetVersion = 3;
+
+	/** How far below the capsule's feet the ground trace reaches — enough to keep contact over small steps and terrain tessellation without finding the floor below a bridge. */
+	static constexpr float TerrainAlignmentTraceDepth = 100.0f;
+	/** Largest lean the terrain can induce. Beyond this the mesh keeps the clamped tilt rather than matching the slope outright. */
+	static constexpr float MaxTerrainAlignmentAngleRadians = 0.6109f; // 35 degrees
+	/** Higher converges on the ground normal faster; low enough that walking across tessellated terrain doesn't twitch. */
+	static constexpr float TerrainAlignmentInterpSpeed = 8.0f;
+	/** Ceiling on the grounding drop — a humanoid never needs more than about a hip's height, and this stops one bad pose from burying the mesh. */
+	static constexpr float MaxGroundingDrop = 150.0f;
+
 	/** Above this many already-finished-but-not-yet-finalized builds, the
 	 *  worker pump stops pulling new requests until Tick catches up. */
 	static constexpr int32 MaxPendingFinalize = 8;
@@ -212,6 +347,9 @@ private:
 
 	bool bSlotHardpointsLoaded = false;
 	TMap<FString, FString> SlotHardpoints;
+
+	/** LAT path -> that species' parsed .lat + .ash, see GetOrLoadLocomotionSource. */
+	TMap<FString, TSharedPtr<FSWGLocomotionSource>> LocomotionSources;
 
 	/** Actors whose blend space's speed input needs updating every tick —
 	 *  see TryApplyGeneratedAnimatedMesh and Tick. */

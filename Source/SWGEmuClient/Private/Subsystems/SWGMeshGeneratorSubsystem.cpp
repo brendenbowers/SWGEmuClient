@@ -16,17 +16,18 @@
 #include "TRE/SWGShaderReader.h"
 #include "TRE/SWGResourceClassRow.h"
 #include "TRE/SWGCustomizationIdManager.h"
-#include "TRE/SWGAssetCustomizationManager.h"
 #include "TRE/SWGCrc32.h"
 #include "TRE/SWGSkeletonReader.h"
 #include "TRE/SWGSlotDefinitionReader.h"
 #include "TRE/SWGArrangementDescriptorReader.h"
-#include "TRE/SWGAnimationReader.h"
 #include "Network/Objects/Zone/Object/SWGContainmentType.h"
 #include "TRE/SWGIFFChunkReader.h"
 #include "Import/SWGSkeletalMeshImporter.h"
 #include "Import/SWGAnimationImporter.h"
 #include "Subsystems/SWGSkeletalAnimationPipeline.h"
+#include "Components/SWGCombatStateComponent.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
 #include "MeshUtilities.h"
 #include "Animation/Skeleton.h"
 #include "Animation/AnimSequence.h"
@@ -486,468 +487,45 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 	 // documents the dependency).
 	 SkeletalAnimationPipeline = new FSWGSkeletalAnimationPipeline(*this);
 
-	// Temporary diagnostic for the Wookiee UV-mapping investigation ("face
-	// appears near the hip") — dumps Position.Z alongside UV for vertices
-	// spanning the WHOLE submesh (evenly spaced by index, not just the first
-	// few), to check whether UV.V correlates sanely with body height or
-	// whether there's a scrambled/discontinuous region partway through.
-	static FAutoConsoleCommand DumpMgnUvSpreadCmd(
-		TEXT("swg.DumpMgnUvSpread"),
-		TEXT("swg.DumpMgnUvSpread <virtualPath> <submeshIndex> — logs Position.Z vs UV for vertices spread evenly across the submesh."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 1)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpMgnUvSpread <virtualPath> <submeshIndex>"));
-					return;
-				}
-				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				USWGTreSubsystem* TreSubsystem = Self ? Self->TreSubsystem.Get() : nullptr;
-				if (!TreSubsystem)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpMgnUvSpread: no TreSubsystem"));
-					return;
-				}
-
-				const int32 SubmeshIndex = Args.Num() > 1 ? FCString::Atoi(*Args[1]) : 0;
-
-				FSWGIffReader Reader = TreSubsystem->CreateIffReader(Args[0]);
-				FSWGMeshData MeshData;
-				if (!FSWGMeshReader::ReadSkeletalMeshBindPose(Reader, MeshData))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpMgnUvSpread: failed to parse '%s'"), *Args[0]);
-					return;
-				}
-
-				if (!MeshData.Submeshes.IsValidIndex(SubmeshIndex))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpMgnUvSpread: submesh index %d out of range (%d submesh(es))"), SubmeshIndex, MeshData.Submeshes.Num());
-					return;
-				}
-
-				const FSWGMeshSubmesh& Submesh = MeshData.Submeshes[SubmeshIndex];
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpMgnUvSpread: submesh[%d] ('%s'), %d vertices"), SubmeshIndex, *Submesh.ShaderName, Submesh.Vertices.Num());
-
-				const int32 SampleCount = 24;
-				const int32 Total = Submesh.Vertices.Num();
-				for (int32 i = 0; i < SampleCount; ++i)
-				{
-					const int32 Idx = Total > 1 ? (i * (Total - 1)) / (SampleCount - 1) : 0;
-					const FSWGMeshVertex& V = Submesh.Vertices[Idx];
-					const FVector2D UV = V.UVs.Num() > 0 ? V.UVs[0] : FVector2D::ZeroVector;
-					UE_LOG(LogTemp, Warning, TEXT("  vertex[%d] Z=%.2f UV=(%.4f,%.4f)"), Idx, V.Position.Z, UV.X, UV.Y);
-				}
-			}));
-
 #if WITH_EDITOR
-	// Temporary diagnostic for the Wookiee flat-white/palette-tint
-	// investigation — logs exactly what ResolveShaderTintPalettePath and
-	// LoadPaletteAverageTint resolve for a given shader, without needing a
-	// full PIE session. Remove once the tint pipeline is confirmed working.
-	static FAutoConsoleCommand DumpShaderTintCmd(
-		TEXT("swg.DumpShaderTint"),
-		TEXT("swg.DumpShaderTint <shaderVirtualPath> — resolves the shader's TFAC palette path and its averaged tint color."),
+
+	// Diagnostic — forces the local player's CREO posture without waiting for
+	// the server to send a delta, so a posture-specific animation bug can be
+	// reproduced on demand. Writes the field directly rather than going
+	// through ApplyDelta3, which means OnPostureOrStateChanged does NOT fire
+	// and the movement component's speed shaping won't follow — the animation
+	// pipeline polls posture every tick, so the clip swap still happens, which
+	// is the part worth reproducing.
+	static FAutoConsoleCommand SetPostureCmd(
+		TEXT("swg.SetPosture"),
+		TEXT("swg.SetPosture <postureValue> [stateBitmask] — forces the local player's posture (0=Upright, 1=Crouched, 2=Prone, 8=Sitting, ...) for animation debugging."),
 		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 			{
 				if (Args.Num() < 1)
 				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpShaderTint <shaderVirtualPath>"));
+					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.SetPosture <postureValue> [stateBitmask]"));
 					return;
 				}
+
 				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				if (!Self)
+				UWorld* World = Self ? Self->GetWorld() : nullptr;
+				APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
+				APawn* Pawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+				USWGCombatStateComponent* CombatState = Pawn ? Pawn->FindComponentByClass<USWGCombatStateComponent>() : nullptr;
+				if (!CombatState)
 				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTint: no live USWGMeshGeneratorSubsystem"));
+					UE_LOG(LogTemp, Warning, TEXT("swg.SetPosture: no local player with a USWGCombatStateComponent"));
 					return;
 				}
 
-				const FString PalettePath = Self->ResolveShaderTintPalettePath(Args[0]);
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTint: shader='%s' palettePath='%s'"), *Args[0], *PalettePath);
-
-				if (!PalettePath.IsEmpty())
+				CombatState->Posture = (uint8)FCString::Atoi(*Args[0]);
+				if (Args.Num() >= 2)
 				{
-					const FLinearColor Tint = Self->LoadPaletteAverageTint(PalettePath);
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTint: tint=(%.3f,%.3f,%.3f)"), Tint.R, Tint.G, Tint.B);
-				}
-			}));
-
-	static FAutoConsoleCommand FindArchivesContainingCmd(
-		TEXT("swg.FindArchivesContaining"),
-		TEXT("swg.FindArchivesContaining <virtualPath> — lists every loaded .tre archive containing this exact path, in load order (last wins)."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 1)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.FindArchivesContaining <virtualPath>"));
-					return;
-				}
-				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				if (!Self || !Self->TreSubsystem)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.FindArchivesContaining: no live TreSubsystem"));
-					return;
-				}
-				const TArray<FString> Archives = Self->TreSubsystem->FindArchivesContaining(Args[0]);
-				UE_LOG(LogTemp, Warning, TEXT("swg.FindArchivesContaining: %d archive(s) contain '%s' (load order, last wins)"), Archives.Num(), *Args[0]);
-				for (const FString& ArchiveName : Archives)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("  %s"), *ArchiveName);
-				}
-			}));
-
-	static FAutoConsoleCommand FindVirtualPathsCmd(
-		TEXT("swg.FindVirtualPaths"),
-		TEXT("swg.FindVirtualPaths <substring> — lists TRE virtual paths containing the substring."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 1)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.FindVirtualPaths <substring>"));
-					return;
-				}
-				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				if (!Self || !Self->TreSubsystem)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.FindVirtualPaths: no live TreSubsystem"));
-					return;
-				}
-				const TArray<FString> Paths = Self->TreSubsystem->FindVirtualPaths(Args[0]);
-				UE_LOG(LogTemp, Warning, TEXT("swg.FindVirtualPaths: %d match(es) for '%s'"), Paths.Num(), *Args[0]);
-				for (const FString& Path : Paths)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("  %s"), *Path);
-				}
-			}));
-
-	// Temporary diagnostic for the Wookiee checkerboard-body investigation —
-	// resolves a shader's diffuse texture the exact same way
-	// GetOrBuildObjectMaterial does, then renders it into a render target and
-	// exports a PNG to Saved/ so it can be inspected directly, bypassing any
-	// question of whether the *material assignment* (vs the decoded texture
-	// content itself) is at fault.
-	// Root-cause diagnostic for the creature customization pipeline: dumps the
-	// two data structures that actually drive it, rather than the heuristics
-	// GetOrBuildObjectMaterial currently approximates them with.
-	//   FORM TFAC > CHUNK PAL (repeated): [varName\0][\0][4-byte reversed
-	//     factor tag][palette path\0] — the factor tag ("MAIN", "HUEB", ...,
-	//     declared in FORM TFNS) is the real binding between a customization
-	//     color variable and the shader constant it feeds; the variable NAMES
-	//     differ per species (index_color_1/index_color_3 vs
-	//     index_color_skin/index_color_pattern) but the tags do not.
-	//   FORM TXTR > CHUNK DATA: [uint16 count][count * texture path\0] — an
-	//     explicit ordered list of selectable texture variants, and
-	//     FORM CUST > CHUNK TX1D: [4-byte reversed slot tag][uint16][uint16
-	//     count][varName\0] binds a customization variable to index into it.
-	static FAutoConsoleCommand DumpShaderCustomizationCmd(
-		TEXT("swg.DumpShaderCustomization"),
-		TEXT("swg.DumpShaderCustomization <shaderVirtualPath> — dumps TFAC color-factor bindings and the TXTR texture-variant list + CUST binding."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 1)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpShaderCustomization <shaderVirtualPath>"));
-					return;
-				}
-				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				if (!Self || !Self->TreSubsystem)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderCustomization: no live TreSubsystem"));
-					return;
-				}
-				FSWGIffReader Reader = Self->TreSubsystem->CreateIffReader(Args[0]);
-				if (!Reader.IsValid())
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderCustomization: failed to open '%s'"), *Args[0]);
-					return;
+					CombatState->StateBitmask = FCString::Atoi64(*Args[1]);
 				}
 
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderCustomization: '%s'"), *Args[0]);
-
-				FSWGIffChunk TfacForm;
-				if (Reader.FindForm(SWG_IFF_TAG('T','F','A','C'), TfacForm))
-				{
-					for (const FSWGIffChunk& PalChunk : Reader.ReadChildren(TfacForm))
-					{
-						if (PalChunk.IsForm() || PalChunk.Tag != SWG_IFF_TAG('P','A','L',' ')) continue;
-						const uint8* D = Reader.GetChunkData(PalChunk);
-						const int32 Size = Reader.GetChunkSize(PalChunk);
-						int32 O = 0;
-						while (O < Size && D[O] != 0) ++O;
-						const FString Key(O, (const ANSICHAR*)D);
-						O += 2;
-						FString FactorTag, PalettePath;
-						if (O + 4 <= Size)
-						{
-							FactorTag = FString::Printf(TEXT("%c%c%c%c"), (TCHAR)D[O+3], (TCHAR)D[O+2], (TCHAR)D[O+1], (TCHAR)D[O]);
-							O += 4;
-							const int32 PathStart = O;
-							while (O < Size && D[O] != 0) ++O;
-							PalettePath = FString::ConstructFromPtrSize((const ANSICHAR*)(D + PathStart), O - PathStart);
-						}
-						FString Hex;
-						for (int32 i = 0; i < Size; ++i)
-						{
-							Hex += FString::Printf(TEXT("%02X "), D[i]);
-						}
-						UE_LOG(LogTemp, Warning, TEXT("  TFAC PAL: var='%s' factorTag='%s' palette='%s'"), *Key, *FactorTag, *PalettePath);
-						UE_LOG(LogTemp, Warning, TEXT("    raw(%d): %s"), Size, *Hex);
-					}
-				}
-				else
-				{
-					UE_LOG(LogTemp, Warning, TEXT("  (no FORM TFAC)"));
-				}
-
-				FSWGIffChunk TxtrForm;
-				if (Reader.FindForm(SWG_IFF_TAG('T','X','T','R'), TxtrForm))
-				{
-					FSWGIffChunk DataChunk;
-					if (Reader.FindChildChunk(TxtrForm, SWGIffTags::Data, DataChunk))
-					{
-						const uint8* D = Reader.GetChunkData(DataChunk);
-						const int32 Size = Reader.GetChunkSize(DataChunk);
-						const int32 Count = Size >= 2 ? ((int32)D[0] | ((int32)D[1] << 8)) : 0;
-						UE_LOG(LogTemp, Warning, TEXT("  TXTR variant list: %d entr(ies)"), Count);
-						int32 O = 2;
-						for (int32 i = 0; i < Count && O < Size; ++i)
-						{
-							const int32 S = O;
-							while (O < Size && D[O] != 0) ++O;
-							const FString Path = FString::ConstructFromPtrSize((const ANSICHAR*)(D + S), O - S);
-							UE_LOG(LogTemp, Warning, TEXT("    [%d] %s"), i, *Path);
-							++O;
-						}
-					}
-
-					FSWGIffChunk CustForm;
-					if (Reader.FindChildForm(TxtrForm, SWG_IFF_TAG('C','U','S','T'), CustForm))
-					{
-						for (const FSWGIffChunk& Child : Reader.ReadChildren(CustForm))
-						{
-							if (Child.IsForm()) continue;
-							const uint8* D = Reader.GetChunkData(Child);
-							const int32 Size = Reader.GetChunkSize(Child);
-							if (Size < 8) continue;
-							const FString SlotTag = FString::Printf(TEXT("%c%c%c%c"), (TCHAR)D[3], (TCHAR)D[2], (TCHAR)D[1], (TCHAR)D[0]);
-							const int32 Count = (int32)D[6] | ((int32)D[7] << 8);
-							int32 O = 8;
-							const int32 S = O;
-							while (O < Size && D[O] != 0) ++O;
-							const FString Var = FString::ConstructFromPtrSize((const ANSICHAR*)(D + S), O - S);
-							UE_LOG(LogTemp, Warning, TEXT("  CUST %s: slotTag='%s' count=%d var='%s'"),
-								*Child.Tag.ToString(), *SlotTag, Count, *Var);
-						}
-					}
-				}
-				else
-				{
-					UE_LOG(LogTemp, Warning, TEXT("  (no FORM TXTR)"));
-				}
-			}));
-
-	static FAutoConsoleCommand DumpTextureCmd(
-		TEXT("swg.DumpTexture"),
-		TEXT("swg.DumpTexture <textureVirtualPath> — decodes an arbitrary texture (not resolved via a shader) and saves it to Saved/DumpedTexture.png."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 1)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpTexture <textureVirtualPath>"));
-					return;
-				}
-				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				if (!Self || !Self->TreSubsystem)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpTexture: no live USWGMeshGeneratorSubsystem"));
-					return;
-				}
-
-				UTexture2D* Texture = Self->GetOrLoadObjectTexture(Args[0], /*bSRGB=*/true);
-				if (!Texture)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpTexture: failed to load texture"));
-					return;
-				}
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpTexture: loaded %dx%d, format=%d"),
-					Texture->GetSizeX(), Texture->GetSizeY(), (int32)Texture->GetPixelFormat());
-
-				UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>();
-				RT->InitAutoFormat(Texture->GetSizeX(), Texture->GetSizeY());
-				RT->UpdateResourceImmediate(true);
-
-				UWorld* World = Self->GetGameInstance() ? Self->GetGameInstance()->GetWorld() : nullptr;
-				UCanvas* Canvas = nullptr;
-				FVector2D CanvasSize;
-				FDrawToRenderTargetContext DrawContext;
-				UKismetRenderingLibrary::BeginDrawCanvasToRenderTarget(World, RT, Canvas, CanvasSize, DrawContext);
-				if (Canvas)
-				{
-					Canvas->K2_DrawTexture(Texture, FVector2D::ZeroVector, CanvasSize, FVector2D::ZeroVector);
-				}
-				UKismetRenderingLibrary::EndDrawCanvasToRenderTarget(World, DrawContext);
-
-				const FString OutPath = FPaths::ProjectSavedDir() / TEXT("DumpedTexture.png");
-				TUniquePtr<FArchive> Archive(IFileManager::Get().CreateFileWriter(*OutPath));
-				if (Archive)
-				{
-					FImageUtils::ExportRenderTarget2DAsPNG(RT, *Archive);
-					Archive->Close();
-				}
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpTexture: saved to '%s'"), *OutPath);
-			}));
-
-	static FAutoConsoleCommand DumpShaderTextureCmd(
-		TEXT("swg.DumpShaderTexture"),
-		TEXT("swg.DumpShaderTexture <shaderVirtualPath> — decodes the shader's diffuse texture and saves it to Saved/DumpedTexture.png."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 1)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpShaderTexture <shaderVirtualPath>"));
-					return;
-				}
-				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				if (!Self || !Self->TreSubsystem)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTexture: no live USWGMeshGeneratorSubsystem"));
-					return;
-				}
-
-				FSWGShaderData ShaderData;
-				FSWGShaderReader::ReadShader(Self->TreSubsystem->CreateIffReader(Args[0]), ShaderData);
-				const FSWGShaderTexture* DiffuseDef = ShaderData.FindTexture(ESWGShaderTextureUsage::Diffuse);
-				const FString TexturePath = DiffuseDef ? DiffuseDef->VirtualPath : Self->ResolveShaderDiffuseTexturePath(Args[0]);
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTexture: shader='%s' texturePath='%s'"), *Args[0], *TexturePath);
-
-				UTexture2D* Texture = Self->GetOrLoadObjectTexture(TexturePath, /*bSRGB=*/true);
-				if (!Texture)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTexture: failed to load texture"));
-					return;
-				}
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTexture: loaded %dx%d, format=%d"),
-					Texture->GetSizeX(), Texture->GetSizeY(), (int32)Texture->GetPixelFormat());
-
-				UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>();
-				RT->InitAutoFormat(Texture->GetSizeX(), Texture->GetSizeY());
-				RT->UpdateResourceImmediate(true);
-
-				UWorld* World = Self->GetGameInstance() ? Self->GetGameInstance()->GetWorld() : nullptr;
-				UCanvas* Canvas = nullptr;
-				FVector2D CanvasSize;
-				FDrawToRenderTargetContext DrawContext;
-				UKismetRenderingLibrary::BeginDrawCanvasToRenderTarget(World, RT, Canvas, CanvasSize, DrawContext);
-				if (Canvas)
-				{
-					Canvas->K2_DrawTexture(Texture, FVector2D::ZeroVector, CanvasSize, FVector2D::ZeroVector);
-				}
-				UKismetRenderingLibrary::EndDrawCanvasToRenderTarget(World, DrawContext);
-
-				const FString OutPath = FPaths::ProjectSavedDir() / TEXT("DumpedTexture.png");
-				TUniquePtr<FArchive> Archive(IFileManager::Get().CreateFileWriter(*OutPath));
-				if (Archive)
-				{
-					FImageUtils::ExportRenderTarget2DAsPNG(RT, *Archive);
-					Archive->Close();
-				}
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpShaderTexture: saved to '%s'"), *OutPath);
-			}));
-
-	// Temporary diagnostic for the customization-variable investigation —
-	// loads both customization IFF tables fresh each call (not cached; this
-	// is a manual dev command, not the runtime path) and dumps what
-	// AppearancePath resolves to, to confirm the ACST reader against real
-	// TRE data and find the actual string convention "appearanceFilename"
-	// uses before wiring this into the runtime mesh pipeline.
-	static FAutoConsoleCommand DumpCustomizationCmd(
-		TEXT("swg.DumpCustomization"),
-		TEXT("swg.DumpCustomization <appearancePath> — resolves customization variables for the given appearance file path."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 1)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpCustomization <appearancePath>"));
-					return;
-				}
-				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				USWGTreSubsystem* TreSubsystem = Self ? Self->TreSubsystem.Get() : nullptr;
-				if (!TreSubsystem)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: no live TreSubsystem"));
-					return;
-				}
-
-				FSWGCustomizationIdManager IdManager;
-				if (!FSWGCustomizationIdManager::Read(TreSubsystem->CreateIffReader(TEXT("customization/customization_id_manager.iff")), IdManager))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: failed to read customization_id_manager.iff"));
-					return;
-				}
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: loaded %d id<->name mapping(s)"), IdManager.IdToName.Num());
-
-				FSWGAssetCustomizationManager AssetManager;
-				if (!AssetManager.Read(TreSubsystem->CreateIffReader(TEXT("customization/asset_customization_manager.iff"))))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: failed to read asset_customization_manager.iff"));
-					return;
-				}
-
-				const uint32 Crc = FSWGCrc32::HashString(Args[0]);
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: '%s' -> crc=0x%08X"), *Args[0], Crc);
-
-				TMap<FString, FSWGCustomizationVariableDef> Variables;
-				AssetManager.GetCustomizationVariables(Args[0], false, Variables);
-				UE_LOG(LogTemp, Warning, TEXT("swg.DumpCustomization: resolved %d variable(s)"), Variables.Num());
-				for (const TPair<FString, FSWGCustomizationVariableDef>& Pair : Variables)
-				{
-					const FSWGCustomizationVariableDef& Def = Pair.Value;
-					const uint8* TypeId = IdManager.NameToId.Find(Def.Name);
-					if (Def.bIsPalette)
-					{
-						UE_LOG(LogTemp, Warning, TEXT("  [%s] %s = PALETTE default=%d file='%s'"),
-							TypeId ? *FString::Printf(TEXT("%d"), *TypeId) : TEXT("?"), *Def.Name, Def.DefaultValue, *Def.PaletteFileName);
-					}
-					else
-					{
-						UE_LOG(LogTemp, Warning, TEXT("  [%s] %s = RANGE default=%d min=%d max=%d"),
-							TypeId ? *FString::Printf(TEXT("%d"), *TypeId) : TEXT("?"), *Def.Name, Def.DefaultValue, Def.MinValue, Def.MaxValue);
-					}
-				}
-			}));
-
-	// Diagnostic — see GSWGDebugAnsBoneFilter's comment (SWGAnimationReader.cpp)
-	// and WOOKIEE_ANIMATION_POSE_BUG.md. Re-parses the given .ans and logs raw
-	// QCHN scale bytes + every decoded keyframe's swing angle/axis for bones
-	// whose name contains any of the comma-separated filter terms, e.g.
-	// "swg.DumpAnsAnimation appearance/animation/all_b_loc_walk_male.ans root,thigh,elbow".
-	static FAutoConsoleCommand DumpAnsAnimationCmd(
-		TEXT("swg.DumpAnsAnimation"),
-		TEXT("swg.DumpAnsAnimation <virtualPath> <comma,separated,boneNameFilters> — logs raw CKAT scale bytes and per-keyframe swing angle/axis for matching bones."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 2)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.DumpAnsAnimation <virtualPath> <comma,separated,boneNameFilters>"));
-					return;
-				}
-				USWGMeshGeneratorSubsystem* Self = FindLiveMeshGeneratorSubsystem();
-				USWGTreSubsystem* TreSubsystem = Self ? Self->TreSubsystem.Get() : nullptr;
-				if (!TreSubsystem)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpAnsAnimation: no TreSubsystem"));
-					return;
-				}
-
-				GSWGDebugAnsBoneFilter = Args[1];
-
-				FSWGIffReader Reader = TreSubsystem->CreateIffReader(Args[0]);
-				FSWGAnimationData Animation;
-				if (!FSWGAnimationReader::ReadAnimation(Reader, Animation))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.DumpAnsAnimation: failed to parse '%s'"), *Args[0]);
-				}
-
-				GSWGDebugAnsBoneFilter.Empty();
+				UE_LOG(LogTemp, Warning, TEXT("swg.SetPosture: %s posture=%d states=0x%llx"),
+					*Pawn->GetName(), CombatState->Posture, CombatState->StateBitmask);
 			}));
 
 #endif

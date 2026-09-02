@@ -36,6 +36,9 @@ class SWGEMUCLIENT_API ASWGCreature : public ACharacter, public ISWGNetworkObjec
 public:
 	ASWGCreature(const FObjectInitializer& ObjectInitializer);
 
+	/** Bridges CombatStateComponent's posture/state changes into the movement component, which owns the speed/turn shaping those imply. */
+	virtual void PostInitializeComponents() override;
+
 	int64  SWGObjectId  = 0;
 	uint32 SWGObjectCRC = 0;
 	bool   bBaselinesComplete = false;

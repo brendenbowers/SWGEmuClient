@@ -35,6 +35,20 @@ ASWGCreature::ASWGCreature(const FObjectInitializer& ObjectInitializer)
 		USWGTargetSubsystem::SelectionChannel, ECR_Block);
 }
 
+void ASWGCreature::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+
+	// Both are default subobjects of this actor, so neither can be missing
+	// here — but ASWGPlayer and any future subclass share this path, so bind
+	// defensively rather than assuming the subobject set never changes.
+	if (CombatStateComponent && GetSWGMovementComponent())
+	{
+		CombatStateComponent->OnPostureOrStateChanged.AddUObject(
+			GetSWGMovementComponent(), &USWGMovementComponent::ApplyPostureAndStates);
+	}
+}
+
 USWGMovementComponent* ASWGCreature::GetSWGMovementComponent() const
 {
 	return Cast<USWGMovementComponent>(GetCharacterMovement());
