@@ -130,19 +130,11 @@ void FSWGSkeletalAnimationPipeline::Tick(float DeltaTime)
 			continue;
 		}
 
+		// Velocity is continuous for network-driven actors now that the
+		// movement component walks them toward each server position and zeroes
+		// it on arrival, so it can be read directly — no staleness clamp.
 		const ACharacter* Character = Cast<ACharacter>(MeshComponent->GetOwner());
-		float HorizontalSpeed = Character ? Character->GetVelocity().Size2D() : 0.0f;
-		if (const USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr)
-		{
-			if (Movement->LastNetworkUpdateTime > 0.0f && MeshComponent->GetWorld())
-			{
-				const float TimeSinceUpdate = MeshComponent->GetWorld()->GetTimeSeconds() - Movement->LastNetworkUpdateTime;
-				if (TimeSinceUpdate > 0.5f)
-				{
-					HorizontalSpeed = 0.0f;
-				}
-			}
-		}
+		const float HorizontalSpeed = Character ? Character->GetVelocity().Size2D() : 0.0f;
 		AnimInstance->SetBlendSpacePosition(FVector(HorizontalSpeed, 0.0f, 0.0f));
 	}
 
@@ -253,19 +245,30 @@ void FSWGSkeletalAnimationPipeline::UpdateMeshPlacement(float DeltaTime)
 			continue;
 		}
 
-		// The first evaluated pose is the standing one, and its lowest joint
-		// is the zero point — joints sit inside the body, so an ankle is
-		// already well above the sole it rests on. Only the *change* from
-		// there is hover worth correcting.
-		if (!Playing.BaselineLowestBoneZ.IsSet())
+		// Upright is the zero point: joints sit inside the body, so a standing
+		// ankle is already well above the sole it rests on, and only the
+		// *change* from there is hover worth correcting. Re-sampled every
+		// upright tick rather than latched once — the record is created from an
+		// async build completion, so latching can capture the unposed reference
+		// skeleton, whose lowest joint sits ~80 units low and sinks every
+		// posture by that much.
+		if (Playing.Posture == ESWGPosture::Upright)
 		{
 			Playing.BaselineLowestBoneZ = LowestBoneZ;
+		}
+
+		// Never been upright (spawned prone or dead): nothing to measure
+		// against, so leave it where the animation puts it.
+		if (!Playing.BaselineLowestBoneZ.IsSet())
+		{
+			continue;
 		}
 
 		// Clamped at zero so this can only ever push the mesh down onto the
 		// ground, never lift it: a pose that legitimately reaches below the
 		// standing baseline (a deep crouch, a stumble) is left alone.
 		const float TargetDrop = FMath::Clamp(LowestBoneZ - *Playing.BaselineLowestBoneZ, 0.0f, MaxGroundingDrop);
+
 		Playing.GroundingOffset = FMath::FInterpTo(Playing.GroundingOffset, TargetDrop, DeltaTime, TerrainAlignmentInterpSpeed);
 
 		const float CapsuleHalfHeight = Character->GetCapsuleComponent()
@@ -448,6 +451,32 @@ void FSWGSkeletalAnimationPipeline::UpdatePendingTransitions()
 			BeginLoopPlayback(*MeshComponent, *PendingBlendSpace, Playing.ClipSet);
 		}
 	}
+}
+
+float FSWGSkeletalAnimationPipeline::GetAuthoredClipSpeed(const FString& ClipPath)
+{
+	if (const float* Cached = AuthoredClipSpeeds.Find(ClipPath))
+	{
+		return *Cached;
+	}
+
+	float AuthoredSpeed = 0.0f;
+	FSWGAnimationData Animation;
+	if (Owner.TreSubsystem && FSWGAnimationReader::ReadAnimation(Owner.TreSubsystem->CreateIffReader(ClipPath), Animation))
+	{
+		const float Duration = Animation.FrameRate > KINDA_SMALL_NUMBER
+			? (float)Animation.FrameCount / Animation.FrameRate
+			: 0.0f;
+		if (Duration > KINDA_SMALL_NUMBER)
+		{
+			AuthoredSpeed = Animation.RootTravelDistance / Duration;
+		}
+	}
+
+	// Cached either way, including the zero: a clip with no LOCT will never
+	// gain one, and re-decoding it per blend space build is pure waste.
+	AuthoredClipSpeeds.Add(ClipPath, AuthoredSpeed);
+	return AuthoredSpeed;
 }
 
 const FSWGLocomotionSource* FSWGSkeletalAnimationPipeline::GetOrLoadLocomotionSource(const FString& LatPath)
@@ -941,6 +970,27 @@ UBlendSpace* FSWGSkeletalAnimationPipeline::GetOrBuildLocomotionBlendSpace(const
 		return nullptr;
 	}
 
+	// Samples go at the speed each clip was *authored* to travel at, not this
+	// creature's walk/run speeds. bScaleAnimation scales playback rate by the
+	// live input's distance from the sample, so a sample placed at the
+	// creature's speed plays at rate 1.0 there — cycling the authored gait
+	// regardless of how fast the ground actually moves. all_b_loc_run is
+	// authored at ~700 uu/s against a human's ~540 run, which is why running
+	// looked a third too quick (worse on slower species sharing those clips).
+	// It also makes sample positions depend only on the clips, so the generated
+	// asset (keyed on clip paths) is shareable across creature speeds.
+	const float AuthoredWalkSpeed = GetAuthoredClipSpeed(ClipSet.WalkPath);
+	const float AuthoredRunSpeed = GetAuthoredClipSpeed(ClipSet.RunPath);
+
+	// Fall back to the creature's own speeds for clips authored in place (no
+	// LOCT), which is every posture whose walk/run collapse onto the idle.
+	float WalkSampleSpeed = AuthoredWalkSpeed > KINDA_SMALL_NUMBER ? AuthoredWalkSpeed : WalkSpeed;
+	float RunSampleSpeed = AuthoredRunSpeed > KINDA_SMALL_NUMBER ? AuthoredRunSpeed : RunSpeed;
+
+	// Samples must stay ordered and distinct or the 1D triangulation collapses.
+	WalkSampleSpeed = FMath::Max(WalkSampleSpeed, 1.0f);
+	RunSampleSpeed = FMath::Max(RunSampleSpeed, WalkSampleSpeed + 1.0f);
+
 	UPackage* Package = CreatePackage(*PackagePath);
 	Package->FullyLoad();
 	// UBlendSpace1D rather than the generic 3-axis UBlendSpace: all our
@@ -964,13 +1014,13 @@ UBlendSpace* FSWGSkeletalAnimationPipeline::GetOrBuildLocomotionBlendSpace(const
 		FBlendParameter* BlendParameters = BlendParametersProp->ContainerPtrToValuePtr<FBlendParameter>(Result);
 		BlendParameters[0].DisplayName = TEXT("Speed");
 		BlendParameters[0].Min = 0.0f;
-		BlendParameters[0].Max = RunSpeed;
+		BlendParameters[0].Max = RunSampleSpeed;
 		BlendParameters[0].GridNum = 4;
 	}
 
 	Result->AddSample(IdleSequence, FVector(0.0f, 0.0f, 0.0f));
-	Result->AddSample(WalkSequence, FVector(WalkSpeed, 0.0f, 0.0f));
-	Result->AddSample(RunSequence, FVector(RunSpeed, 0.0f, 0.0f));
+	Result->AddSample(WalkSequence, FVector(WalkSampleSpeed, 0.0f, 0.0f));
+	Result->AddSample(RunSequence, FVector(RunSampleSpeed, 0.0f, 0.0f));
 
 	// ResampleData(), not just ValidateSampleData(): adding samples only fills
 	// SampleData (the authored sample list). The *runtime* structure the

@@ -191,6 +191,9 @@ private:
 
 	TMap<int64, TWeakObjectPtr<AActor>> ActorRegistry;
 
+	/** Above this horizontal jump an update is applied directly instead of walked to. Sized so a sprint between sparse updates still smooths, but a zone-in doesn't get strolled to. */
+	static constexpr float MaxSmoothedMoveDistance = 1500.0f;
+
 	/** ObjectId -> ContainerId (0 = no container / placed in the world) from the most recent UpdateContainmentMessage — checked by
 	 *  HandleSceneEndBaselines so a contained object doesn't get revealed as a free-floating world actor at its raw (usually (0,0,0)) position. */
 	TMap<int64, int64> ContainerByObjectId;

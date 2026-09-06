@@ -86,12 +86,12 @@ struct FSWGPlayingAnimation
 	FQuat TerrainAlignment = FQuat::Identity;
 
 	/**
-	 * Lowest joint height (component space) in this actor's first observed
-	 * pose, which is its standing one. Used as the zero point for grounding:
-	 * the skeleton's joints sit inside the body, so the lowest *joint* is
-	 * already some way above the sole of the foot, and that constant offset
-	 * must be subtracted out rather than treated as float. Unset until the
-	 * first tick with an evaluated pose.
+	 * Lowest joint height (component space) while this actor is upright,
+	 * re-sampled every tick it spends in that posture. The zero point for
+	 * grounding: the skeleton's joints sit inside the body, so the lowest
+	 * *joint* is already some way above the sole of the foot, and that
+	 * constant has to be subtracted out rather than mistaken for hover.
+	 * Unset until the actor has been seen upright at least once.
 	 */
 	TOptional<float> BaselineLowestBoneZ;
 
@@ -230,6 +230,17 @@ private:
 	 */
 	const FSWGLocomotionSource* GetOrLoadLocomotionSource(const FString& LatPath);
 
+	/**
+	 * The speed one .ans was authored to travel at, in UE units/sec — its LOCT
+	 * ground distance over its duration — cached per clip path. 0 for a clip
+	 * with no LOCT (authored in place) or one that fails to decode.
+	 *
+	 * Separate from RequestLocomotionAnimSequence, which returns early on a
+	 * generated-asset cache hit without decoding the source clip; the blend
+	 * space needs this whether or not the sequence was rebuilt this session.
+	 */
+	float GetAuthoredClipSpeed(const FString& ClipPath);
+
 	/** Re-resolves each playing animation's loop against its actor's current posture/states and swaps the blend space where it changed. Called from Tick. */
 	void UpdatePostureDrivenAnimations();
 
@@ -326,7 +337,7 @@ private:
 	 * alters what a given source file should produce: every generated asset is
 	 * renamed and rebuilt.
 	 */
-	static constexpr uint32 GeneratedAssetVersion = 3;
+	static constexpr uint32 GeneratedAssetVersion = 4;
 
 	/** How far below the capsule's feet the ground trace reaches — enough to keep contact over small steps and terrain tessellation without finding the floor below a bridge. */
 	static constexpr float TerrainAlignmentTraceDepth = 100.0f;
@@ -350,6 +361,9 @@ private:
 
 	/** LAT path -> that species' parsed .lat + .ash, see GetOrLoadLocomotionSource. */
 	TMap<FString, TSharedPtr<FSWGLocomotionSource>> LocomotionSources;
+
+	/** Clip path -> the speed it was authored to travel at, in UE units/sec. See GetAuthoredClipSpeed. */
+	TMap<FString, float> AuthoredClipSpeeds;
 
 	/** Actors whose blend space's speed input needs updating every tick —
 	 *  see TryApplyGeneratedAnimatedMesh and Tick. */

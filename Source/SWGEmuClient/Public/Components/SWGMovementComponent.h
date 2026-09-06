@@ -35,6 +35,15 @@ class SWGEMUCLIENT_API USWGMovementComponent : public UCharacterMovementComponen
 public:
 	USWGMovementComponent();
 
+	/**
+	 * Walks the actor toward NetworkTargetLocation when one is set, skipping
+	 * Super: network-driven creatures still default to MOVE_Walking, so
+	 * PerformMovement would simulate them anyway and fight both the position
+	 * set here and the Velocity the blend space reads. With no target the
+	 * inherited tick runs as normal, keeping idle creatures on the floor.
+	 */
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+
 	float AccelerationMultiplierBase = 0.f;
 	float AccelerationMultiplierMod  = 0.f;
 	float SpeedMultiplierBase = 0.f;
@@ -53,12 +62,30 @@ public:
 	// since this timestamp (network-driven actors bypass this movement
 	// component's own physics simulation entirely, going straight through
 	// SetActorLocation, so Velocity is never otherwise touched for them).
-	// -1 means no network update has arrived yet. USWGMeshGeneratorSubsystem::
-	// Tick() also reads this to zero out Velocity once updates go stale
-	// (the creature stopped and the server simply stops sending updates,
-	// rather than sending an explicit zero-speed one), so Velocity doesn't
-	// stay frozen mid-stride forever.
+	// -1 means no network update has arrived yet.
 	float LastNetworkUpdateTime = -1.0f;
+
+	/**
+	 * Server-authoritative pose this actor is easing toward. Set by
+	 * USWGObjectGraphSubsystem::HandleUpdateTransform, consumed by this tick.
+	 * Unset means arrived, or the update was a teleport and got applied
+	 * directly. Never set for the locally controlled pawn, whose corrections
+	 * must land immediately.
+	 */
+	TOptional<FVector> NetworkTargetLocation;
+	TOptional<float> NetworkTargetYaw;
+
+	void SetNetworkTarget(const FVector& Location, float Yaw)
+	{
+		NetworkTargetLocation = Location;
+		NetworkTargetYaw = Yaw;
+	}
+
+	void ClearNetworkTarget()
+	{
+		NetworkTargetLocation.Reset();
+		NetworkTargetYaw.Reset();
+	}
 
 	// Split in three: CREO base4 interleaves these with USWGEncumbranceComponent/
 	// USWGSkillComponent/USWGSpaceMissionComponent fields mid-stream — see
@@ -91,6 +118,20 @@ public:
 
 private:
 	void RecomputeMovementLimits();
+
+	/** One frame of easing toward NetworkTargetLocation/Yaw. Sets Velocity from the step actually taken, so the blend space animates the movement. */
+	void TickNetworkSmoothing(float DeltaTime);
+
+	/** Roughly one server update interval — the gap is spread over this long, so the actor arrives as the next update lands. */
+	static constexpr float NetworkSmoothingTime = 0.3f;
+	/** Headroom over the creature's run speed, to make up a gap after a network hitch. */
+	static constexpr float NetworkCatchUpSpeedTolerance = 1.5f;
+	/** Within this horizontal distance the actor snaps to the target and stops, so it idles instead of creeping. */
+	static constexpr float NetworkArrivalTolerance = 2.0f;
+	/** Height chases faster than the horizontal walk — terrain can climb faster than a creature crosses it. */
+	static constexpr float NetworkHeightInterpSpeed = 10.0f;
+	/** Turn rate toward the server's heading. */
+	static constexpr float NetworkYawInterpSpeed = 8.0f;
 
 	ESWGPosture Posture = ESWGPosture::Upright;
 	int64 StateBitmask = 0;

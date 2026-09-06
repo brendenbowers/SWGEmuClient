@@ -1,6 +1,7 @@
 #include "TRE/SWGLatReader.h"
 
 #include "TRE/SWGIffReader.h"
+#include "TRE/SWGIffTags.h"
 #include "TRE/SWGIFFChunkReader.h"
 
 namespace
@@ -9,7 +10,6 @@ namespace
 	constexpr FSWGIffTag TagAnim = SWG_IFF_TAG('A', 'N', 'I', 'M');
 	constexpr FSWGIffTag TagPxat = SWG_IFF_TAG('P', 'X', 'A', 'T');
 	constexpr FSWGIffTag TagSpat = SWG_IFF_TAG('S', 'P', 'A', 'T');
-	constexpr FSWGIffTag TagInfo = SWG_IFF_TAG('I', 'N', 'F', 'O');
 	constexpr FSWGIffTag TagPunf = SWG_IFF_TAG('P', 'U', 'N', 'F');
 	constexpr FSWGIffTag TagPptr = SWG_IFF_TAG('P', 'P', 'T', 'R');
 	constexpr FSWGIffTag TagAnms = SWG_IFF_TAG('A', 'N', 'M', 'S');
@@ -25,7 +25,7 @@ namespace
 		}
 
 		FSWGIffChunk InfoChunk;
-		if (!Reader.FindChildChunk(VersionForms[0], TagInfo, InfoChunk))
+		if (!Reader.FindChildChunk(VersionForms[0], SWGIffTags::Info, InfoChunk))
 		{
 			return false;
 		}
@@ -148,7 +148,7 @@ bool FSWGLatReader::ReadLat(const FSWGIffReader& Reader, FSWGLatData& OutData)
 	// bytes after the terminator (a gender/skeleton discriminator, not needed
 	// here) — reading just the first string is deliberate.
 	FSWGIffChunk InfoChunk;
-	if (Reader.FindChildChunk(VersionForm, TagInfo, InfoChunk))
+	if (Reader.FindChildChunk(VersionForm, SWGIffTags::Info, InfoChunk))
 	{
 		FSWGIFFChunkReader InfoReader(InfoChunk, Reader);
 		InfoReader.ReadTerminiatedString(OutData.AshPath);
@@ -162,7 +162,7 @@ bool FSWGLatReader::ReadLat(const FSWGIffReader& Reader, FSWGLatData& OutData)
 		}
 
 		FSWGIffChunk AnimInfo;
-		if (!Reader.FindChildChunk(Child, TagInfo, AnimInfo))
+		if (!Reader.FindChildChunk(Child, SWGIffTags::Info, AnimInfo))
 		{
 			continue;
 		}

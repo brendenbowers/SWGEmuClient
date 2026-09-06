@@ -23,6 +23,16 @@ struct FSWGAnimationData
 	// See this file's class comment for the two source encodings this comes
 	// from (CHNL-only vs CHNL+LOCT).
 	TMap<int32, FVector> RootTranslationDeltas;
+
+	/**
+	 * Ground distance the root travels over the clip's full length, in UE
+	 * units, from the LOCT header. Over the clip's duration this gives the
+	 * speed it was *authored* to move at, which is where its sample belongs in
+	 * a locomotion blend space — otherwise the legs cycle at the authored gait
+	 * while the creature travels at a different speed. 0 for a clip with no
+	 * LOCT, i.e. one authored in place.
+	 */
+	float RootTravelDistance = 0.0f;
 };
 
 /**

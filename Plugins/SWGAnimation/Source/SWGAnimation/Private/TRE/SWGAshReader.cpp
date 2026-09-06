@@ -1,6 +1,7 @@
 #include "TRE/SWGAshReader.h"
 
 #include "TRE/SWGIffReader.h"
+#include "TRE/SWGIffTags.h"
 #include "TRE/SWGIFFChunkReader.h"
 
 namespace
@@ -10,13 +11,12 @@ namespace
 	constexpr FSWGIffTag TagChld = SWG_IFF_TAG('C', 'H', 'L', 'D');
 	constexpr FSWGIffTag TagLnks = SWG_IFF_TAG('L', 'N', 'K', 'S');
 	constexpr FSWGIffTag TagLink = SWG_IFF_TAG('L', 'I', 'N', 'K');
-	constexpr FSWGIffTag TagInfo = SWG_IFF_TAG('I', 'N', 'F', 'O');
 
 	/** Adds StatForm and everything beneath it to OutHierarchy.States, returning the new node's index (INDEX_NONE if the STAT has no readable INFO). */
 	int32 ReadState(const FSWGIffReader& Reader, const FSWGIffChunk& StatForm, int32 ParentIndex, FSWGAnimationStateHierarchy& OutHierarchy)
 	{
 		FSWGIffChunk InfoChunk;
-		if (!Reader.FindChildChunk(StatForm, TagInfo, InfoChunk))
+		if (!Reader.FindChildChunk(StatForm, SWGIffTags::Info, InfoChunk))
 		{
 			return INDEX_NONE;
 		}

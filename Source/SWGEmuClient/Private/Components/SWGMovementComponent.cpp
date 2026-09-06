@@ -1,5 +1,7 @@
 #include "Components/SWGMovementComponent.h"
 #include "Common/SWGMovementTables.h"
+// CharacterMovementComponent.h only forward-declares ACharacter.
+#include "GameFramework/Character.h"
 #include "Network/SWGPacket.h"
 
 namespace
@@ -53,6 +55,73 @@ void USWGMovementComponent::ApplyDelta4(const FCreatureObjectDelta& Delta)
 	RecomputeMovementLimits();
 }
 
+void USWGMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	if (NetworkTargetLocation.IsSet() && CharacterOwner && DeltaTime > KINDA_SMALL_NUMBER)
+	{
+		TickNetworkSmoothing(DeltaTime);
+		return;
+	}
+
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+}
+
+void USWGMovementComponent::TickNetworkSmoothing(float DeltaTime)
+{
+	const FVector Current = CharacterOwner->GetActorLocation();
+	const FVector Target = *NetworkTargetLocation;
+	const FVector ToTarget = Target - Current;
+	const float HorizontalDistance = ToTarget.Size2D();
+
+	// Close enough: settle on the target and stop, so a creature that has
+	// finished moving idles rather than creeping the last fraction of a unit.
+	if (HorizontalDistance <= NetworkArrivalTolerance)
+	{
+		CharacterOwner->SetActorLocation(Target);
+		Velocity = FVector::ZeroVector;
+		ClearNetworkTarget();
+		return;
+	}
+
+	// Spread the gap over one update interval, so motion stays continuous
+	// instead of stop-start.
+	float Speed = HorizontalDistance / NetworkSmoothingTime;
+
+	// Cap at the posture-scaled run speed (plus catch-up headroom) so nothing
+	// outruns its animation — but only once that speed is known: a creature
+	// whose CREO base4 hasn't arrived reports zero, and capping to that would
+	// leave it crawling. The rate above is self-limiting, so uncapped is the
+	// safe direction to fail.
+	const float PostureRunSpeed = GetPostureRunSpeed();
+	if (PostureRunSpeed > KINDA_SMALL_NUMBER)
+	{
+		Speed = FMath::Min(Speed, PostureRunSpeed * NetworkCatchUpSpeedTolerance);
+	}
+
+	const float Step = FMath::Min(Speed * DeltaTime, HorizontalDistance);
+
+	const FVector HorizontalDirection = FVector(ToTarget.X, ToTarget.Y, 0.0f).GetSafeNormal();
+	FVector NewLocation = Current + HorizontalDirection * Step;
+
+	// Height tracks on its own clock: terrain can rise faster than the creature
+	// walks, and easing Z at the horizontal rate leaves it wading through slopes.
+	NewLocation.Z = FMath::FInterpTo(Current.Z, Target.Z, DeltaTime, NetworkHeightInterpSpeed);
+	CharacterOwner->SetActorLocation(NewLocation);
+
+	// The blend space reads Velocity to pick walk vs. run; deriving it from the
+	// step actually taken keeps the animation honest about the speed travelled.
+	Velocity = HorizontalDirection * (Step / DeltaTime);
+
+	if (NetworkTargetYaw.IsSet())
+	{
+		// RInterpTo rather than interpolating the yaw scalar: it normalizes the
+		// delta, so a heading crossing the 0/360 seam turns the short way.
+		const FRotator Rotation = CharacterOwner->GetActorRotation();
+		const FRotator TargetRotation(Rotation.Pitch, *NetworkTargetYaw, Rotation.Roll);
+		CharacterOwner->SetActorRotation(FMath::RInterpTo(Rotation, TargetRotation, DeltaTime, NetworkYawInterpSpeed));
+	}
+}
+
 void USWGMovementComponent::ApplyPostureAndStates(ESWGPosture NewPosture, int64 NewStateBitmask)
 {
 	Posture = NewPosture;
@@ -90,6 +159,15 @@ ESWGLocomotion USWGMovementComponent::GetCurrentLocomotion() const
 
 void USWGMovementComponent::RecomputeMovementLimits()
 {
+	// Posture/state changes can land before base4 (base3 precedes it in the
+	// baseline sequence), and deriving MaxWalkSpeed from still-zero speeds
+	// leaves the creature unable to move at all. ApplyBase4 calls this again
+	// with the posture cached by then, so nothing is lost by skipping early.
+	if (!bHasBase4)
+	{
+		return;
+	}
+
 	// Unreal uses MaxWalkSpeed as the top ground speed for both digital and
 	// analog movement. Use SWG's run speed as that ceiling; analog magnitude
 	// naturally produces the walk/jog ranges below it, while a full keyboard

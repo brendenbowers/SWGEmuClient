@@ -265,6 +265,19 @@ void FSWGAnimationReader::DecodeRootTranslation(const FSWGIffReader& Reader, con
 	FSWGIffChunk LoctChunk;
 	const bool bHasLoct = Reader.FindChildChunk(InnerForm, SWG_IFF_TAG('L','O','C','T'), LoctChunk);
 
+	// LOCT leads with the clip's total ground travel, which DecodeLoctChunk
+	// skips past — the only record of the authored gait speed, so pull it out
+	// before the per-sample decode.
+	if (bHasLoct)
+	{
+		FSWGIFFChunkReader DistanceReader(LoctChunk, Reader);
+		float TravelDistance = 0.0f;
+		if (DistanceReader.ReadValueLE(TravelDistance) && FMath::IsFinite(TravelDistance))
+		{
+			OutAnimation.RootTravelDistance = FMath::Abs(TravelDistance) * SWGWorldScale;
+		}
+	}
+
 	TMap<int32, float> HorizontalX, HorizontalY, Vertical;
 	if (bHasLoct)
 	{

@@ -505,33 +505,6 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	// Raw wire position -> UE space at this boundary, same as the initial spawn.
 	const FVector OldLocation = Actor->GetActorLocation();
 	const FVector NewLocation = GroundedLocationFor(Actor, SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ)));
-	Actor->SetActorLocation(NewLocation);
-
-	// This is a raw position teleport, not movement driven through the
-	// character's own CharacterMovementComponent simulation (no
-	// AddMovementInput, no physics step) — Velocity is never otherwise
-	// touched for a network-driven actor, which left USWGMeshGeneratorSubsystem::
-	// Tick()'s Character->GetVelocity() read (used to feed the locomotion
-	// blend space) permanently zero even while visibly moving. Derive it
-	// from the position delta since the last update instead; see
-	// USWGMovementComponent::LastNetworkUpdateTime's comment for how
-	// staleness (the creature stopped) gets handled on the read side.
-	if (ACharacter* Character = Cast<ACharacter>(Actor))
-	{
-		if (USWGMovementComponent* Movement = Cast<USWGMovementComponent>(Character->GetCharacterMovement()))
-		{
-			const float CurrentTime = Actor->GetWorld()->GetTimeSeconds();
-			if (Movement->LastNetworkUpdateTime > 0.0f)
-			{
-				const float DeltaTime = CurrentTime - Movement->LastNetworkUpdateTime;
-				if (DeltaTime > KINDA_SMALL_NUMBER)
-				{
-					Movement->Velocity = (NewLocation - OldLocation) / DeltaTime;
-				}
-			}
-			Movement->LastNetworkUpdateTime = CurrentTime;
-		}
-	}
 
 	// DirectionAngle is Quaternion::getSpecialDegrees() — a full turn is 100,
 	// not 256. Pitch/Roll aren't part of this message, so only Yaw changes
@@ -541,9 +514,43 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	// angle — plus the same character mesh quarter turn the spawn path applies.
 	const float HeadingDegrees = (Msg.DirectionAngle / 100.0f) * 360.0f;
 	const float YawDegrees = -HeadingDegrees + (Cast<ACharacter>(Actor) ? -SWGCharacterMeshYaw : 0.0f);
-	FRotator NewRotation = Actor->GetActorRotation();
-	NewRotation.Yaw = YawDegrees;
-	Actor->SetActorRotation(NewRotation);
+
+	ACharacter* Character = Cast<ACharacter>(Actor);
+	USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr;
+
+	// Updates arrive a few times a second, so applying them directly makes
+	// creatures jump between positions. Hand the destination to the movement
+	// component to walk toward instead (USWGMovementComponent::
+	// TickNetworkSmoothing), which also gives the blend space a real Velocity
+	// to read. Three cases still land immediately: static objects with no
+	// movement component, the client-authoritative local pawn, and a jump too
+	// far to walk — a teleport or zone-in rather than locomotion.
+	const bool bIsLocalPlayer = Msg.ObjectId == LocalPlayerObjectId;
+	const bool bTeleport = FVector::Dist2D(OldLocation, NewLocation) > MaxSmoothedMoveDistance;
+
+	if (Movement && !bIsLocalPlayer && !bTeleport)
+	{
+		Movement->SetNetworkTarget(NewLocation, YawDegrees);
+	}
+	else
+	{
+		Actor->SetActorLocation(NewLocation);
+
+		FRotator NewRotation = Actor->GetActorRotation();
+		NewRotation.Yaw = YawDegrees;
+		Actor->SetActorRotation(NewRotation);
+
+		if (Movement)
+		{
+			Movement->ClearNetworkTarget();
+			Movement->Velocity = FVector::ZeroVector;
+		}
+	}
+
+	if (Movement)
+	{
+		Movement->LastNetworkUpdateTime = Actor->GetWorld()->GetTimeSeconds();
+	}
 }
 
 void USWGObjectGraphSubsystem::HandleObjControllerMessage(const FObjControllerMessageIn& Msg)
