@@ -11,6 +11,8 @@ namespace
 	constexpr FSWGIffTag TagChld = SWG_IFF_TAG('C', 'H', 'L', 'D');
 	constexpr FSWGIffTag TagLnks = SWG_IFF_TAG('L', 'N', 'K', 'S');
 	constexpr FSWGIffTag TagLink = SWG_IFF_TAG('L', 'I', 'N', 'K');
+	constexpr FSWGIffTag TagActs = SWG_IFF_TAG('A', 'C', 'T', 'S');
+	constexpr FSWGIffTag TagActn = SWG_IFF_TAG('A', 'C', 'T', 'N');
 
 	/** Adds StatForm and everything beneath it to OutHierarchy.States, returning the new node's index (INDEX_NONE if the STAT has no readable INFO). */
 	int32 ReadState(const FSWGIffReader& Reader, const FSWGIffChunk& StatForm, int32 ParentIndex, FSWGAnimationStateHierarchy& OutHierarchy)
@@ -31,6 +33,45 @@ namespace
 		// parent's), so an empty second string isn't a parse failure.
 		InfoReader.ReadTerminiatedString(State.LoopAnimationName);
 		State.ParentIndex = ParentIndex;
+
+		// ACTS entries come in two shapes: a bare ACTN, or a FORM MVAC wrapping
+		// the ACTN plus a second one naming an additive overlay (unplayed here).
+		// Combat states put nearly all their actions in MVACs, so reading only
+		// direct ACTN children returns 4 of root/combat's 124 and looks fine.
+		FSWGIffChunk ActionsForm;
+		if (Reader.FindChildForm(StatForm, TagActs, ActionsForm))
+		{
+			auto ReadActionChunk = [&Reader, &State](const FSWGIffChunk& Action)
+			{
+				FSWGIFFChunkReader ActionReader(Action, Reader);
+
+				FString ActionName;
+				FString LogicalAnimationName;
+				if (!ActionReader.ReadTerminiatedString(ActionName) || ActionName.IsEmpty())
+				{
+					return;
+				}
+				ActionReader.ReadTerminiatedString(LogicalAnimationName);
+
+				State.Actions.Add(MoveTemp(ActionName), MoveTemp(LogicalAnimationName));
+			};
+
+			for (const FSWGIffChunk& Child : Reader.ReadChildren(ActionsForm))
+			{
+				if (Child.Tag == TagActn)
+				{
+					ReadActionChunk(Child);
+				}
+				else if (Child.IsForm())
+				{
+					FSWGIffChunk WrappedAction;
+					if (Reader.FindChildChunk(Child, TagActn, WrappedAction))
+					{
+						ReadActionChunk(WrappedAction);
+					}
+				}
+			}
+		}
 
 		// LNKS: an INFO holding the count, then one LINK chunk per transition.
 		// Each LINK is [pathDepth:uint16][pathDepth null-terminated names]

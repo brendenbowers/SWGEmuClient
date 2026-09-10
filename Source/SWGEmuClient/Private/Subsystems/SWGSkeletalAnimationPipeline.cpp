@@ -453,6 +453,131 @@ void FSWGSkeletalAnimationPipeline::UpdatePendingTransitions()
 	}
 }
 
+FString FSWGSkeletalAnimationPipeline::ResolveCombatActionClip(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace)
+{
+	const USkeletalMeshComponent* MeshComponent = Actor.FindComponentByClass<USkeletalMeshComponent>();
+	const FSWGPlayingAnimation* Playing = PlayingAnimations.FindByPredicate(
+		[MeshComponent](const FSWGPlayingAnimation& Candidate) { return Candidate.MeshComponent.Get() == MeshComponent; });
+
+	if (!Playing)
+	{
+		if (OutTrace) { *OutTrace = TEXT("no generated animation is playing on this actor"); }
+		return FString();
+	}
+
+	const FSWGLocomotionSource* Source = GetOrLoadLocomotionSource(Playing->LatPath);
+	if (!Source)
+	{
+		if (OutTrace) { *OutTrace = FString::Printf(TEXT("no locomotion source for LAT '%s'"), *Playing->LatPath); }
+		return FString();
+	}
+
+	ESWGPosture Posture = ESWGPosture::Upright;
+	int64 StateBitmask = 0;
+	ReadPostureAndStates(Actor, Posture, StateBitmask);
+
+	const FSWGAnimationState* State = SWGLocomotion::ResolveState(Source->Hierarchy, Posture, StateBitmask, WeaponStateName);
+	if (!State)
+	{
+		if (OutTrace) { *OutTrace = TEXT("the .ash hierarchy is empty"); }
+		return FString();
+	}
+
+	const FString LogicalName = Source->Hierarchy.ResolveAction(*State, ActionName);
+	const FString ClipPath = SWGLocomotion::ResolveActionClip(Source->Hierarchy, Source->Lat, *State, ActionName);
+
+	if (OutTrace)
+	{
+		*OutTrace = FString::Printf(
+			TEXT("lat='%s' weaponNode='%s' posture=%d states=0x%llx -> state='%s' -> logical='%s' -> clip='%s'"),
+			*Playing->LatPath,
+			WeaponStateName.IsEmpty() ? TEXT("(unarmed)") : *WeaponStateName,
+			(int32)Posture, StateBitmask,
+			*FString::Join(Source->Hierarchy.PathTo(*State), TEXT("/")),
+			LogicalName.IsEmpty() ? TEXT("(unresolved)") : *LogicalName,
+			ClipPath.IsEmpty() ? TEXT("(unresolved)") : *ClipPath);
+	}
+
+	return ClipPath;
+}
+
+bool FSWGSkeletalAnimationPipeline::PlayCombatAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName)
+{
+	USkeletalMeshComponent* MeshComponent = Actor.FindComponentByClass<USkeletalMeshComponent>();
+	FSWGPlayingAnimation* Playing = PlayingAnimations.FindByPredicate(
+		[MeshComponent](const FSWGPlayingAnimation& Candidate) { return Candidate.MeshComponent.Get() == MeshComponent; });
+
+	if (!Playing || !MeshComponent)
+	{
+		return false;
+	}
+
+	// A posture change is already sequencing a clip and a loop behind it.
+	// Cutting in would leave that loop pending against the wrong clip length.
+	if (Playing->PendingBlendSpace.IsValid() || Playing->bSwapInFlight)
+	{
+		return false;
+	}
+
+	// Taken from what is actually playing, not rebuilt from the clip set, so
+	// the resume matches what was interrupted. Its absence means this actor
+	// is in some state a one-shot shouldn't interrupt.
+	UAnimSingleNodeInstance* AnimInstance = Cast<UAnimSingleNodeInstance>(MeshComponent->GetAnimInstance());
+	UBlendSpace* ResumeBlendSpace = AnimInstance ? Cast<UBlendSpace>(AnimInstance->GetAnimationAsset()) : nullptr;
+	if (!ResumeBlendSpace)
+	{
+		return false;
+	}
+
+	const FString ClipPath = ResolveCombatActionClip(Actor, ActionName, WeaponStateName);
+	if (ClipPath.IsEmpty())
+	{
+		return false;
+	}
+
+	const TWeakObjectPtr<USkeletalMeshComponent> MeshComponentWeak = MeshComponent;
+	const TWeakObjectPtr<UBlendSpace> ResumeBlendSpaceWeak = ResumeBlendSpace;
+
+	RequestLocomotionAnimSequence(Playing->SkeletonPath, Playing->MeshVirtualPaths, ClipPath, Playing->Skeleton, Playing->TargetSkeleton.Get())
+		.Next([this, MeshComponentWeak, ResumeBlendSpaceWeak](UAnimSequence* ActionSequence)
+			{
+				USkeletalMeshComponent* Component = MeshComponentWeak.Get();
+				UBlendSpace* ResumeTo = ResumeBlendSpaceWeak.Get();
+
+				// Re-found, not captured: PlayingAnimations can reallocate
+				// across the async build.
+				FSWGPlayingAnimation* Record = PlayingAnimations.FindByPredicate(
+					[&MeshComponentWeak](const FSWGPlayingAnimation& Candidate) { return Candidate.MeshComponent == MeshComponentWeak; });
+
+				if (!Record || !Component || !ResumeTo || !ActionSequence || ActionSequence->GetPlayLength() <= 0.0f)
+				{
+					return;
+				}
+
+				// The posture swap may have started while the clip was
+				// building; it owns the component now.
+				if (Record->PendingBlendSpace.IsValid() || Record->bSwapInFlight)
+				{
+					return;
+				}
+
+				Component->PlayAnimation(ActionSequence, false);
+				if (UAnimSingleNodeInstance* PlayingInstance = Cast<UAnimSingleNodeInstance>(Component->GetAnimInstance()))
+				{
+					Record->AnimInstance = PlayingInstance;
+				}
+
+				// Same mechanism the posture transition uses: Tick restarts
+				// the loop once the clip's length has elapsed.
+				Record->PendingBlendSpace = ResumeTo;
+				Record->PendingBlendSpaceStartTime = Component->GetWorld()
+					? Component->GetWorld()->GetTimeSeconds() + ActionSequence->GetPlayLength()
+					: 0.0f;
+			});
+
+	return true;
+}
+
 float FSWGSkeletalAnimationPipeline::GetAuthoredClipSpeed(const FString& ClipPath)
 {
 	if (const float* Cached = AuthoredClipSpeeds.Find(ClipPath))

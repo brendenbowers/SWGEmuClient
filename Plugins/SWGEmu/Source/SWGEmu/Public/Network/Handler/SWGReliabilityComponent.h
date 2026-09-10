@@ -107,6 +107,9 @@ private:
 
 	/** Process an in-order DataChannel payload (everything after the op/seq header). */
 	void ProcessDataChannelPayload(const uint8* Data, int32 NumBytes);
+
+	/** Queues one decrypted game message, unbundling it first if it is a multi-message. */
+	void DeliverPayload(const uint8* Payload, int32 PayloadLen);
 	/** Process an in-order DataFrag payload (everything after the op/seq header). */
 	void ProcessDataFragPayload(const uint8* Data, int32 NumBytes);
 	/** After advancing InSeqNext, replay any buffered packets that are now next in line. */

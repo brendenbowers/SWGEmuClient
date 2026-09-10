@@ -35,6 +35,14 @@ struct FSWGAnimationState
 
 	/** Authored transitions out of this state, from its FORM LNKS. */
 	TArray<FSWGAnimationStateLink> Links;
+
+	/**
+	 * FORM ACTS: action name -> logical animation. The indirection that makes
+	 * one combat action mean different clips per weapon — "attack_mid_center_0"
+	 * is "pole_standing_ready_thrust_high" under polearm. A value of "default"
+	 * means no override here; see ResolveAction.
+	 */
+	TMap<FString, FString> Actions;
 };
 
 /**
@@ -78,6 +86,27 @@ struct FSWGAnimationStateHierarchy
 		return nullptr;
 	}
 
+	/**
+	 * The logical animation ActionName means in State, or empty if undefined.
+	 * Walks up to the root so the most specific context wins, skipping
+	 * "default" — returning it would shadow the parent's real clip with a name
+	 * no .lat can resolve.
+	 */
+	FString ResolveAction(const FSWGAnimationState& State, const FString& ActionName) const
+	{
+		for (const FSWGAnimationState* Node = &State; Node; Node = States.IsValidIndex(Node->ParentIndex) ? &States[Node->ParentIndex] : nullptr)
+		{
+			if (const FString* Found = Node->Actions.Find(ActionName))
+			{
+				if (!Found->IsEmpty() && *Found != TEXT("default"))
+				{
+					return *Found;
+				}
+			}
+		}
+		return FString();
+	}
+
 	/** Path from the root down to State, as the names FSWGAnimationStateLink::DestinationPath is written in. */
 	TArray<FString> PathTo(const FSWGAnimationState& State) const
 	{
@@ -96,9 +125,11 @@ struct FSWGAnimationStateHierarchy
  * optional FORM ACTS (named one-shot actions), FORM LNKS (transition
  * animations between states) and FORM CHLD (nested STATs).
  *
- * Only the state tree and its loop animations are decoded — ACTS and LNKS are
- * skipped, since nothing drives one-shot actions or plays transition clips
- * yet.
+ * ACTS is an INFO holding a uint16 count, then one entry per action. An entry
+ * is either a bare ACTN chunk — [actionName][logicalAnimationName] as two
+ * null-terminated strings plus two trailing flag bytes — or a FORM MVAC
+ * wrapping that ACTN together with a second one naming an additive overlay
+ * clip. Combat states put nearly all of their actions in MVACs.
  */
 class SWGANIMATION_API FSWGAshReader
 {

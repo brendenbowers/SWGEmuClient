@@ -201,6 +201,26 @@ public:
 	 */
 	TFuture<USkeletalMesh*> RequestGeneratedSkeletalMesh(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton);
 
+	/**
+	 * Plays a one-shot combat action on Actor's generated mesh, resuming the
+	 * interrupted loop after — same mechanics as a posture transition.
+	 *
+	 * ActionName is a combat_manager.iff action ("attack_mid_center_0"), not a
+	 * logical animation; it resolves through the actor's .ash FORM ACTS, with
+	 * WeaponStateName selecting the weapon subtree.
+	 *
+	 * False, and no change, if the action doesn't resolve or the actor is
+	 * mid-transition — interrupting one would strand it on a held pose.
+	 */
+	bool PlayCombatAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName);
+
+	/**
+	 * The clip PlayCombatAction would use, without playing it — every hop of
+	 * the resolution is written to OutTrace for the swg.DumpCombatAnim
+	 * console command. Empty when the action doesn't resolve.
+	 */
+	FString ResolveCombatActionClip(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace = nullptr);
+
 private:
 	/**
 	 * Same cache-hit/queue/backpressure shape as RequestGeneratedSkeletalMesh,

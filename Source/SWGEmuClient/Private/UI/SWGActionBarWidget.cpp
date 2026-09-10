@@ -2,6 +2,7 @@
 #include "Components/SWGCombatStateComponent.h"
 #include "Components/SWGSkillComponent.h"
 #include "Subsystems/SWGCommandSubsystem.h"
+#include "Subsystems/SWGCombatSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Engine/GameInstance.h"
 
@@ -18,6 +19,12 @@ namespace
 		UGameInstance* GameInstance = Widget ? Widget->GetGameInstance() : nullptr;
 		return GameInstance ? GameInstance->GetSubsystem<USWGCommandSubsystem>() : nullptr;
 	}
+
+	USWGCombatSubsystem* GetCombat(const UWidget* Widget)
+	{
+		UGameInstance* GameInstance = Widget ? Widget->GetGameInstance() : nullptr;
+		return GameInstance ? GameInstance->GetSubsystem<USWGCombatSubsystem>() : nullptr;
+	}
 }
 
 void USWGActionBarWidget::NativeConstruct()
@@ -26,12 +33,38 @@ void USWGActionBarWidget::NativeConstruct()
 
 	BuildSlotWidgets();
 
+	// Before the ability fill, so attack keeps slot 0 rather than being
+	// pushed along by whatever the player happens to know.
+	if (bSeedDefaultAttackSlot)
+	{
+		SeedDefaultAttackSlot();
+	}
+
 	if (bFillEmptySlotsFromAbilities)
 	{
 		FillEmptySlotsFromAbilities();
 	}
 
 	RefreshSlotVisuals();
+}
+
+void USWGActionBarWidget::SeedDefaultAttackSlot()
+{
+	const USWGCombatSubsystem* Combat = GetCombat(this);
+	const FString AttackCommand = Combat ? Combat->AttackCommandName : TEXT("attack");
+
+	if (Slots.Num() < SlotCount)
+	{
+		Slots.SetNum(SlotCount);
+	}
+
+	if (Slots.IsEmpty() || !Slots[0].IsEmpty())
+	{
+		return;
+	}
+
+	Slots[0].CommandName = AttackCommand;
+	Slots[0].Label = NSLOCTEXT("SWGEmu", "ActionBarAttack", "Attack");
 }
 
 int32 USWGActionBarWidget::FillEmptySlotsFromAbilities()
@@ -165,8 +198,7 @@ bool USWGActionBarWidget::TriggerSlot(int32 SlotIndex)
 		return false;
 	}
 
-	USWGCommandSubsystem* Commands = GetCommands(this);
-	if (!Commands || Commands->SendCommand(Slots[SlotIndex].CommandName, ResolveTargetId()) == 0)
+	if (!SendCommand(Slots[SlotIndex].CommandName, FString()))
 	{
 		return false;
 	}
@@ -177,6 +209,21 @@ bool USWGActionBarWidget::TriggerSlot(int32 SlotIndex)
 
 bool USWGActionBarWidget::SendCommand(const FString& CommandName, const FString& Arguments)
 {
+	// The basic attack is the one command with client-side repeat semantics —
+	// the server runs a queued command once and drains its queue, so sustained
+	// combat is the client re-sending. Route it through the combat subsystem,
+	// which owns that loop, and let the press toggle it the way SWG's toolbar
+	// does. Everything else is a plain one-shot.
+	USWGCombatSubsystem* Combat = GetCombat(this);
+	if (Combat && Arguments.IsEmpty() && CommandName.Equals(Combat->AttackCommandName, ESearchCase::IgnoreCase))
+	{
+		// True means "the press did something", not "an attack started" —
+		// stopping one is just as much a handled press, and the slot should
+		// still flash for it.
+		const bool bWasAttacking = Combat->IsAttacking();
+		return Combat->ToggleAttack(ResolveTargetId()) || bWasAttacking;
+	}
+
 	USWGCommandSubsystem* Commands = GetCommands(this);
 	return Commands && Commands->SendCommand(CommandName, ResolveTargetId(), Arguments) != 0;
 }
@@ -210,5 +257,19 @@ TArray<FString> USWGActionBarWidget::GetAvailableAbilities() const
 	const USWGSkillComponent* Skills =
 		ObjectGraph->FindComponent<USWGSkillComponent>(ObjectGraph->GetLocalPlayerObjectId());
 
-	return Skills ? Skills->AbilityList.Items : TArray<FString>();
+	if (!Skills)
+	{
+		return {};
+	}
+
+	// The ability list also carries skill markers like "private_brawler_novice",
+	// which aren't commands — a slot holding one is a button that does nothing.
+	const USWGCommandSubsystem* Commands = GetCommands(this);
+	if (!Commands)
+	{
+		return Skills->AbilityList.Items;
+	}
+
+	return Skills->AbilityList.Items.FilterByPredicate(
+		[Commands](const FString& Ability) { return Commands->IsKnownCommand(Ability); });
 }

@@ -85,6 +85,9 @@ protected:
 	/** Builds SlotCount slot widgets into SlotBox. */
 	void BuildSlotWidgets();
 
+	/** Puts the basic attack in slot 0 if it is empty. See bSeedDefaultAttackSlot. */
+	void SeedDefaultAttackSlot();
+
 	/** SWG's toolbar bank is twelve slots wide. */
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
 	int32 SlotCount = 12;
@@ -92,6 +95,17 @@ protected:
 	/** Fill leftover slots with whatever abilities the player has, on construct. */
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
 	bool bFillEmptySlotsFromAbilities = true;
+
+	/**
+	 * Put the basic attack in the first slot on construct, if that slot is
+	 * empty. It never arrives through GetAvailableAbilities — "attack" is not
+	 * a character ability, it is the one combat command the server lets every
+	 * player use unconditionally (ObjectController::activateCommand exempts it
+	 * by name from its command-group check) — so without this there is no way
+	 * to reach it from the bar at all.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
+	bool bSeedDefaultAttackSlot = true;
 
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
 	TSubclassOf<USWGActionSlotWidget> SlotWidgetClass;

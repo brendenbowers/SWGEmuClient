@@ -293,6 +293,18 @@ public:
 		TFunction<void(UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnStaticComplete,
 		TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnSkeletalComplete);
 
+	/**
+	 * Plays a one-shot combat action on Actor's generated skeletal mesh,
+	 * resuming its loop afterwards. ActionName is a combat_manager.iff action
+	 * ("attack_mid_center_0"), resolved through the actor's own .ash; see
+	 * FSWGSkeletalAnimationPipeline::PlayCombatAction. False if the actor has
+	 * no generated animation yet or the action doesn't resolve.
+	 */
+	bool PlayCombatAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName);
+
+	/** The clip PlayCombatAction would use, plus a description of every resolution hop. Diagnostics for swg.DumpCombatAnim. */
+	FString ResolveCombatActionClip(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace = nullptr);
+
 	/** Broadcast once RequestMesh's actor has a built, attached mesh component. */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMeshReady, AActor* /*Actor*/, UMeshComponent* /*MeshComponent*/);
 	FOnMeshReady OnMeshReady;

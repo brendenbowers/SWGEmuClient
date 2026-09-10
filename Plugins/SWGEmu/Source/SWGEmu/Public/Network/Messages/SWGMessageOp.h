@@ -48,6 +48,7 @@ enum class ESWGMessageOp : uint32
 	ConnectPlayerResponseMessage = 0x6137556Fu,
 
 	ErrorMessage = 0xb5abf91au,
+	ChatSystemMessage = 0x6D2A6413u, // Server-side explanations, including why a command was refused
 
 	// Object type FourCCs (the ObjectType field of Baseline/Delta messages)
 	// live in ESWGObjectType — see Network/Messages/SWGFourCC.h.

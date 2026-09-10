@@ -56,8 +56,19 @@ void FSWGReliabilityComponent::Incoming(FBitReader& Packet)
 
 	const uint8* Data = Packet.GetData();
 
+	// Unsequenced ("fastpath") traffic. Core3 sends every StandaloneBaseMessage
+	// this way — BaseClient::sendUnreliablePacket encrypts and CRCs it but adds
+	// no session or DataChannel wrapper — so the datagram is the game message
+	// itself, and by this stage the earlier components have already stripped
+	// the CRC and decrypted it. CombatAction and CombatSpam arrive only here.
+	//
+	// There is no sequence to track and nothing to acknowledge, which is the
+	// point of the channel: it carries what is worth dropping under load.
 	if (!SWGIsSessionPacket(Data, NumBytes))
+	{
+		DeliverPayload(Data, NumBytes);
 		return;
+	}
 
 	const ESWGSessionOp Op = SWGGetSessionOp(Data);
 
@@ -176,22 +187,27 @@ void FSWGReliabilityComponent::ProcessDataChannelPayload(const uint8* Data, int3
 	}
 
 	const int32 PayloadOffset = 4; // op(2) + seq(2)
-	const int32 PayloadLen    = NumBytes - PayloadOffset;
-	if (PayloadLen <= 0)
+	DeliverPayload(Data + PayloadOffset, NumBytes - PayloadOffset);
+}
+
+void FSWGReliabilityComponent::DeliverPayload(const uint8* Payload, int32 PayloadLen)
+{
+	TSharedPtr<FSWGSession> Session = SessionPtr.Pin();
+	if (!Session.IsValid() || PayloadLen <= 0)
 		return;
 
 	const uint16 BundleCheck = (PayloadLen >= 2)
-		? (((uint16)Data[PayloadOffset] << 8) | (uint16)Data[PayloadOffset + 1])
+		? (((uint16)Payload[0] << 8) | (uint16)Payload[1])
 		: 0u;
 
 	if (BundleCheck == SWGMultiMessageBundleMarker)
 	{
-		UnbundleMessages(Data + PayloadOffset + 2, PayloadLen - 2);
+		UnbundleMessages(Payload + 2, PayloadLen - 2);
 	}
 	else
 	{
 		FSWGPacket Msg;
-		Msg.Data.Append(Data + PayloadOffset, PayloadLen);
+		Msg.Data.Append(Payload, PayloadLen);
 		Session->IncomingMessages.Enqueue(MoveTemp(Msg));
 	}
 }

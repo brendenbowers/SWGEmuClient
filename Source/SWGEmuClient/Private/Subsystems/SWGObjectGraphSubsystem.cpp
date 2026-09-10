@@ -555,14 +555,21 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 
 void USWGObjectGraphSubsystem::HandleObjControllerMessage(const FObjControllerMessageIn& Msg)
 {
-	// This ObjectController-wrapped envelope is what GroundZoneComponent::teleport
-	// pushes for zone-in and bounce-back corrections, both of which re-arm
-	// PlayerObject::isTeleporting server-side. Acking unconditionally is a
-	// harmless no-op when it wasn't actually re-armed.
+	// A server-pushed DataTransform is zone-in or a bounce-back correction,
+	// both of which re-arm PlayerObject::isTeleporting; acking one that didn't
+	// is a harmless no-op. The sub-op test matters because CombatAction,
+	// CombatSpam and CommandQueueRemove all arrive in this envelope addressed
+	// to us, and acking those floods the wire once combat starts.
+	if (Msg.GetSubOp() != ESWGObjControllerOp::DataTransform)
+	{
+		return;
+	}
+
 	if (LocalPlayerObjectId != 0 && Msg.ObjectId == LocalPlayerObjectId && Network)
 	{
 		FTeleportAck Ack(LocalPlayerObjectId);
-		Ack.MoveCount = 1;
+		// TeleportAckCallback discards this, but echoing beats inventing.
+		Ack.MoveCount = Msg.TickCount;
 		Network->SendMessage(Ack.Serialize());
 	}
 }

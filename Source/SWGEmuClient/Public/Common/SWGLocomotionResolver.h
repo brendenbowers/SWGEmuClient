@@ -53,8 +53,30 @@ struct FSWGLocomotionClipSet
  */
 namespace SWGLocomotion
 {
-	/** The deepest state matching Posture/StateBitmask, never null for a non-empty hierarchy (worst case, the root). */
-	SWGEMUCLIENT_API const FSWGAnimationState* ResolveState(const FSWGAnimationStateHierarchy& Hierarchy, ESWGPosture Posture, int64 StateBitmask);
+	/**
+	 * The deepest state matching Posture/StateBitmask, never null for a
+	 * non-empty hierarchy (worst case, the root). WeaponStateName is the
+	 * weapon subtree to descend into first; empty means unarmed or unknown.
+	 */
+	SWGEMUCLIENT_API const FSWGAnimationState* ResolveState(const FSWGAnimationStateHierarchy& Hierarchy, ESWGPosture Posture, int64 StateBitmask, const FString& WeaponStateName = FString());
+
+	/**
+	 * The .ash node holding a weapon's animation set, from its template path —
+	 * "sword_2h" for object/weapon/melee/2h_sword/*. Empty for unarmed or
+	 * unrecognised, which resolves to the generic "combat" subtree.
+	 *
+	 * Like the posture table above, this is not in the game data — no weapon
+	 * template or datatable names an animation set. The original client
+	 * hard-codes it too.
+	 */
+	SWGEMUCLIENT_API FString WeaponStateNameForTemplate(const FString& WeaponTemplatePath);
+
+	/**
+	 * The .ans clip a one-shot action name resolves to in State, or empty if
+	 * unresolved. The second half of the combat chain: combat_manager.iff says
+	 * what to perform, the .ash what that means here, the .lat which clip.
+	 */
+	SWGEMUCLIENT_API FString ResolveActionClip(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, const FSWGAnimationState& State, const FString& ActionName);
 
 	/**
 	 * Full posture -> clips resolution.

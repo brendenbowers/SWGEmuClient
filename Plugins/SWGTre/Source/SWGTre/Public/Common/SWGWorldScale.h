@@ -24,6 +24,16 @@ constexpr float SWGWorldScale = 100.0f;
  */
 constexpr float SWGCharacterMeshYaw = -90.0f;
 
+/**
+ * Inverse of USWGObjectGraphSubsystem's incoming heading conversion: characters
+ * are yaw-only on the wire, and the mesh turn above has to come back off before
+ * the DataTransform serializers swap the quaternion into SWG axes.
+ */
+FORCEINLINE FQuat SWGCharacterHeadingToRawSpace(const FRotator& UnrealRotation)
+{
+	return FRotator(0.0f, UnrealRotation.Yaw + SWGCharacterMeshYaw, 0.0f).Quaternion();
+}
+
 FORCEINLINE FVector SWGToUnrealSpace(const FVector& RawPos)
 {
 	return RawPos * SWGWorldScale;

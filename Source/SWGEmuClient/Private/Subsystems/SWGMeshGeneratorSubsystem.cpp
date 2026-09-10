@@ -531,6 +531,22 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 #endif
 }
 
+bool USWGMeshGeneratorSubsystem::PlayCombatAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName)
+{
+	return SkeletalAnimationPipeline && SkeletalAnimationPipeline->PlayCombatAction(Actor, ActionName, WeaponStateName);
+}
+
+FString USWGMeshGeneratorSubsystem::ResolveCombatActionClip(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace)
+{
+	if (!SkeletalAnimationPipeline)
+	{
+		if (OutTrace) { *OutTrace = TEXT("the skeletal animation pipeline has not been created yet"); }
+		return FString();
+	}
+
+	return SkeletalAnimationPipeline->ResolveCombatActionClip(Actor, ActionName, WeaponStateName, OutTrace);
+}
+
 void USWGMeshGeneratorSubsystem::Deinitialize()
 {
 	PendingRequests.Reset();

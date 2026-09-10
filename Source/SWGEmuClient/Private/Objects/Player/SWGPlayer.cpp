@@ -390,7 +390,7 @@ void ASWGPlayer::SendDataTransformUpdate()
 	}
 
 	const FVector RawPosition = SWGToRawSpace(GetActorLocation());
-	const FQuat RawDirection = GetActorQuat();
+	const FQuat RawDirection = SWGCharacterHeadingToRawSpace(GetActorRotation());
 	const uint32 RawTimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
 	const int32 RawMoveCount = ++TransformMovementCounter;
 	// Same raw/pre-scale conversion as Position — server compares this against

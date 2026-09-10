@@ -134,7 +134,52 @@ namespace
 	}
 }
 
-const FSWGAnimationState* SWGLocomotion::ResolveState(const FSWGAnimationStateHierarchy& Hierarchy, ESWGPosture Posture, int64 StateBitmask)
+FString SWGLocomotion::WeaponStateNameForTemplate(const FString& WeaponTemplatePath)
+{
+	// Matched on directory, not file name: the directory is the weapon class,
+	// which is what the .ash branches on. It offers only five armed sets, so
+	// the smaller melee classes share the one-handed one and every long gun
+	// shares the rifle set — as the original animations are authored.
+	struct FWeaponStateMapping
+	{
+		const TCHAR* PathFragment;
+		const TCHAR* StateName;
+	};
+
+	static const FWeaponStateMapping Mappings[] =
+	{
+		{ TEXT("/melee/2h_sword/"), TEXT("sword_2h") },
+		{ TEXT("/melee/polearm/"),  TEXT("polearm")  },
+		{ TEXT("/melee/1h_sword/"), TEXT("sword_1h") },
+		{ TEXT("/melee/knife/"),    TEXT("sword_1h") },
+		{ TEXT("/melee/axe/"),      TEXT("sword_1h") },
+		{ TEXT("/melee/baton/"),    TEXT("sword_1h") },
+		{ TEXT("/ranged/pistol/"),  TEXT("pistol")   },
+		{ TEXT("/ranged/rifle/"),   TEXT("rifle")    },
+		{ TEXT("/ranged/carbine/"), TEXT("rifle")    },
+		{ TEXT("/ranged/heavy/"),   TEXT("rifle")    },
+	};
+
+	if (WeaponTemplatePath.IsEmpty())
+	{
+		return FString();
+	}
+
+	const FString Normalised = WeaponTemplatePath.Replace(TEXT("\\"), TEXT("/"));
+	for (const FWeaponStateMapping& Mapping : Mappings)
+	{
+		if (Normalised.Contains(Mapping.PathFragment))
+		{
+			return Mapping.StateName;
+		}
+	}
+
+	// Unarmed weapons, thrown, mines and anything unrecognised: the generic
+	// combat subtree, which is also what an empty name selects.
+	return FString();
+}
+
+const FSWGAnimationState* SWGLocomotion::ResolveState(const FSWGAnimationStateHierarchy& Hierarchy, ESWGPosture Posture, int64 StateBitmask, const FString& WeaponStateName)
 {
 	const FSWGAnimationState* Node = Hierarchy.GetRoot();
 	if (!Node)
@@ -142,9 +187,14 @@ const FSWGAnimationState* SWGLocomotion::ResolveState(const FSWGAnimationStateHi
 		return nullptr;
 	}
 
-	// Combat is a whole parallel subtree that repeats the posture nodes with
-	// weapon-ready loops, so it has to be entered before the posture step —
-	// otherwise a creature fighting prone would get the peaceful prone loop.
+	// The tree is root/<weapon>/combat/<posture>, with root's own "combat"
+	// child being the unarmed set — so the weapon step comes first, and an
+	// unknown weapon stays at root and picks up unarmed below.
+	TryDescend(Hierarchy, Node, WeaponStateName);
+
+	// Combat repeats the posture nodes with weapon-ready loops, so it has to
+	// be entered before the posture step — otherwise a creature fighting
+	// prone would get the peaceful prone loop.
 	if (SWGHasState(StateBitmask, ESWGState::Combat))
 	{
 		TryDescend(Hierarchy, Node, TEXT("combat"));
@@ -162,6 +212,25 @@ const FSWGAnimationState* SWGLocomotion::ResolveState(const FSWGAnimationStateHi
 
 	TryDescend(Hierarchy, Node, PostureStateName(Posture, StateBitmask));
 	return Node;
+}
+
+FString SWGLocomotion::ResolveActionClip(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, const FSWGAnimationState& State, const FString& ActionName)
+{
+	if (ActionName.IsEmpty())
+	{
+		return FString();
+	}
+
+	const FString LogicalName = Hierarchy.ResolveAction(State, ActionName);
+	if (LogicalName.IsEmpty())
+	{
+		return FString();
+	}
+
+	// One-shot, so the entry's idle slot is the clip — same reasoning as
+	// ResolveTransitionClip: a single-PXAT entry is just the clip itself.
+	const FSWGLatEntry* Entry = Lat.Find(LogicalName);
+	return Entry ? IdlePathOf(*Entry) : FString();
 }
 
 FString SWGLocomotion::ResolveTransitionClip(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, ESWGPosture FromPosture, ESWGPosture ToPosture, int64 StateBitmask)
