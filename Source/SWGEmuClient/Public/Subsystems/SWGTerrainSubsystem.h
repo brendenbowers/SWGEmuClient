@@ -13,6 +13,8 @@ class UTexture2D;
 class UMaterialInterface;
 class UDynamicMeshComponent;
 
+namespace UE::Geometry { class FDynamicMesh3; }
+
 /**
  * One static world-snapshot object (building, wall, pillar, item, etc.)
  * resolved and ready to spawn — see USWGTerrainSubsystem::LoadWorldSnapshotObjects.
@@ -49,6 +51,39 @@ struct FSWGBakedHeightmap
 
 	/** Row-major, same layout as Heights — VertexColors[i].X/Y/Z are family [1]/[2]/[3]'s paint weight at that vertex. */
 	TArray<FVector3f> ShaderWeightColors;
+};
+
+/**
+ * One tile, baked and triangulated on a worker, ready for the game thread to
+ * move straight into a component. Triangulating there instead cost 250-375 ms a
+ * tile against the bake's ~13 ms, which is what capped terrain density.
+ */
+struct FSWGTerrainTileBuild
+{
+	FSWGBakedHeightmap Heightmap;
+
+	/** Shared only so the async plumbing can copy the handle; nothing shares the mesh itself. */
+	TSharedPtr<UE::Geometry::FDynamicMesh3, ESPMode::ThreadSafe> Mesh;
+};
+
+/**
+ * Ground the terrain mesh is not generated over, so a room whose floor sits
+ * below the surrounding terrain isn't intruded on. Oriented, since rooms are
+ * rectangular in the building's frame and buildings carry a yaw. Raw space.
+ */
+struct FSWGTerrainHole
+{
+	FVector2D Center = FVector2D::ZeroVector;
+
+	/** Half-size along the hole's own local axes, before yaw. */
+	FVector2D Extents = FVector2D::ZeroVector;
+
+	float YawRadians = 0.0f;
+
+	bool Contains(const FVector2D& Point) const;
+
+	/** Axis-aligned world bounds of the rotated rectangle. */
+	FBox2D GetWorldBounds() const;
 };
 
 /**
@@ -121,6 +156,13 @@ public:
 	 */
 	bool ApplyObjectTerrainModification(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians);
 
+	/**
+	 * Registers areas the terrain must not cover — see FSWGTerrainHole. Safe
+	 * before the terrain loads; FlushPendingTerrainHoles picks those up.
+	 * Game thread only. Raw/native space.
+	 */
+	void AddTerrainHoles(const TArray<FSWGTerrainHole>& Holes);
+
 private:
 	/**
 	 * A terrain modification requested before the terrain existed. Buildings
@@ -139,6 +181,13 @@ private:
 	/** Replays everything queued while the terrain was still loading. Game thread, called once the tiles exist. */
 	void FlushPendingObjectTerrainModifications();
 
+	/**
+	 * Re-bakes the tiles holding any hole registered during the terrain load.
+	 * Buildings land while LoadTerrain's worker is already running, so the
+	 * initial bake never sees their holes. Game thread, called once the tiles exist.
+	 */
+	void FlushPendingTerrainHoles();
+
 	/** Resolves TemplatePath's .lay / .sfp into world-space layers ready to append to CachedTerrainData. Off-thread safe. */
 	bool BuildObjectTerrainLayers(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians, TArray<FSWGTerrainLayer>& OutLayers);
 
@@ -148,11 +197,22 @@ private:
 	/** Starts the worker-thread re-bake for PendingDirtyTiles, if any and if none is already running. Game thread. */
 	void ProcessPendingTerrainRegeneration();
 
-	/** Rewrites one already-registered tile component's mesh + material from a (re-)baked heightmap. Game thread. */
-	void RebuildTerrainTileMesh(UDynamicMeshComponent* MeshComponent, const FSWGBakedHeightmap& Heightmap, const FVector& GridOrigin);
+	/**
+	 * Bakes and triangulates one tile end to end. Worker thread — it touches no
+	 * UObject, and Holes is passed in rather than read off the member so the
+	 * game thread can keep appending. See FSWGTerrainTileBuild.
+	 */
+	FSWGTerrainTileBuild BakeTerrainTile(const FSWGTerrainData& TerrainData, const FVector& RegionOrigin,
+		const FVector& GridOrigin, const TArray<FSWGTerrainHole>& Holes) const;
+
+	/** Hands a finished build to its component — a mesh move, a material, and an async collision request. Game thread. */
+	void ApplyTerrainTileBuild(int32 TileIndex, FSWGTerrainTileBuild& Build);
 
 	/** World-space XY extent one baked tile covers. */
 	static FBox2D GetTileBounds(const FSWGBakedHeightmap& Heightmap);
+
+	/** Queues a re-bake of every live tile overlapping Bounds. Game thread. */
+	void InvalidateTilesOverlapping(const FBox2D& Bounds);
 
 	void Error(const FString& ErrorMessage);
 
@@ -176,7 +236,7 @@ private:
 	 * their shared edge, since GetHeight is a deterministic pure function of world
 	 * (x,y) — no separate seam-stitching needed for grid tiling.
 	 */
-	FSWGBakedHeightmap BakeHeightmap(const FSWGTerrainData& TerrainData, const FVector& RegionOrigin);
+	FSWGBakedHeightmap BakeHeightmap(const FSWGTerrainData& TerrainData, const FVector& RegionOrigin) const;
 
 	/**
 	 * Companion bake, same region/resolution as BakeHeightmap: evaluates
@@ -185,7 +245,7 @@ private:
 	 * per-vertex weights into Heightmap.ShaderWeightColors — see
 	 * FSWGBakedHeightmap's own comment for the exact channel layout.
 	 */
-	void BakeShaderWeights(const FSWGTerrainData& TerrainData, FSWGBakedHeightmap& Heightmap);
+	void BakeShaderWeights(const FSWGTerrainData& TerrainData, FSWGBakedHeightmap& Heightmap) const;
 
 	/**
 	 * Builds (or returns an already-built) UMaterialInstanceDynamic for this
@@ -220,7 +280,7 @@ private:
 	 * scale-encoding indirection that caused the "terrain ~1000 units below the
 	 * buildings" bug.
 	 */
-	void SpawnDynamicMeshTerrainGrid(const TArray<FSWGBakedHeightmap>& Grid, const FVector& GridOrigin, float Spacing);
+	void SpawnDynamicMeshTerrainGrid(TArray<FSWGTerrainTileBuild>& Grid, const FVector& GridOrigin, float Spacing);
 
 	/**
 	 * Parses snapshot/<zone>.ws (the client-side counterpart to Core3's own
@@ -281,6 +341,10 @@ private:
 	TArray<TObjectPtr<UDynamicMeshComponent>> TerrainTileComponents;
 
 	TArray<FSWGBakedHeightmap> TerrainTileHeightmaps;
+
+	/** Areas no terrain is generated over — see AddTerrainHoles. Dropped per zone alongside the tile grid. */
+	TArray<FSWGTerrainHole> TerrainHoles;
+
 	FVector TerrainGridOrigin = FVector::ZeroVector;
 	FString ActiveTerrainVirtualPath;
 
@@ -308,17 +372,17 @@ private:
 	// subsection (SubsectionSizeQuads=127, NumSubsections=1).
 	static constexpr int32 HeightmapResolution = 128; // samples per axis
 
-	// 12700 (the original placeholder) looked "way too large" in-game — confirmed
-	// against real terrain data why: decoded BoundaryRectangle/BoundaryCircle sizes
-	// from tatooine.trn show local content features (flora patches, shader-blend
-	// zones) mostly sized 600-4600 units across, with only the large *regional*
-	// shaping rectangles reaching ~17000 — i.e. 12700 was sized like a whole region,
-	// not a single local feature. 2032 (=127*16, a clean 16 units/quad spacing)
-	// matches one typical local feature's scale instead.
-	static constexpr float HeightmapWorldExtent = 2032.0f; // world units per axis, centered on the spawn position
+	// With 128 samples this is 4 units a quad, down from 2032 (16 a quad) once
+	// meshing stopped being a game-thread cost that scaled with density. This
+	// and ComponentGridSize are the dial; 254 with a 5x5 grid gets 2 a quad.
+	static constexpr float HeightmapWorldExtent = 508.0f; // world units per axis
 
-	// Tile ComponentGridSize x ComponentGridSize components under one ALandscape
-	// actor, centered on the spawn point. 1 (not 3x3) since that's already more
-	// world than the player can meaningfully see and far cheaper to bake.
-	static constexpr int32 ComponentGridSize = 1;
+	// 5x5 x 508 = 2540 units, past the 2032 one coarse tile used to cover. Small
+	// tiles also re-bake better: a building dirties its own tile, not the world.
+	static constexpr int32 ComponentGridSize = 5;
+
+	// Hole-edge quads are split this many ways per axis — 0.5 units at the
+	// current spacing. Sub-quads are kept by their centre, which is what
+	// FSWGBuildingSpawnHandler's hole margin compensates for.
+	static constexpr int32 TerrainQuadSubdivisions = 8;
 };

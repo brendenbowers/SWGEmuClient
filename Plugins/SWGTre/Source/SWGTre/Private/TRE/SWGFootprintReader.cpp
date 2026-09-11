@@ -156,6 +156,8 @@ bool FSWGFootprintReader::BuildFlattenLayer(const FSWGStructureFootprint& Footpr
 
 	// See FSWGFootprintFlattenParams::FeatheringDistance — this is a polygon, so
 	// FeatheringAmount is an absolute distance in metres here, not a fraction.
+	// The .sfp carries no feather of its own — its INFO chunk's six fields are
+	// all accounted for — so half a cell is an unvalidated guess.
 	float FeatheringDistance = Params.FeatheringDistance;
 	if (FeatheringDistance <= 0.0f)
 	{
@@ -167,18 +169,9 @@ bool FSWGFootprintReader::BuildFlattenLayer(const FSWGStructureFootprint& Footpr
 	const FVector2D PadSize = LocalBounds.GetSize();
 	FeatheringDistance = FMath::Clamp(FeatheringDistance, 0.0f, (float)FMath::Min(PadSize.X, PadSize.Y) * 0.5f);
 
-	// EvaluateBoundaryPolygon feathers INWARD from the boundary: at the edge the
-	// affector has no effect, reaching full strength only FeatheringDistance
-	// inside. Using the footprint outline directly therefore leaves its outer
-	// ring only partially flattened — and the structure's walls sit exactly on
-	// that ring, so terrain still surfaces inside rooms at the corners.
-	//
-	// Grow the polygon by the feather distance so the ramp lives entirely
-	// outside the footprint and every cell the footprint actually covers gets
-	// the full flatten. The growth stays within the 'H' clearance ring the
-	// footprint already reserves around the structure for exactly this kind of
-	// margin, so it does not encroach on anywhere another structure could be.
-	const FBox2D PaddedBounds = LocalBounds.ExpandBy(FeatheringDistance);
+	// EvaluateBoundaryPolygon feathers INWARD, so grow the boundary by the feather
+	// to give every cell the footprint covers a full flatten.
+	const FBox2D BoundaryBounds = LocalBounds.ExpandBy(FeatheringDistance);
 
 	FSWGTerrainBoundary Boundary;
 	Boundary.Type = ESWGTerrainBoundaryType::Polygon;
@@ -186,10 +179,10 @@ bool FSWGFootprintReader::BuildFlattenLayer(const FSWGStructureFootprint& Footpr
 	Boundary.FeatheringType = Params.FeatheringType;
 	Boundary.FeatheringAmount = FeatheringDistance;
 	Boundary.Vertices = {
-		ToWorld(FVector2D(PaddedBounds.Min.X, PaddedBounds.Min.Y)),
-		ToWorld(FVector2D(PaddedBounds.Max.X, PaddedBounds.Min.Y)),
-		ToWorld(FVector2D(PaddedBounds.Max.X, PaddedBounds.Max.Y)),
-		ToWorld(FVector2D(PaddedBounds.Min.X, PaddedBounds.Max.Y)),
+		ToWorld(FVector2D(BoundaryBounds.Min.X, BoundaryBounds.Min.Y)),
+		ToWorld(FVector2D(BoundaryBounds.Max.X, BoundaryBounds.Min.Y)),
+		ToWorld(FVector2D(BoundaryBounds.Max.X, BoundaryBounds.Max.Y)),
+		ToWorld(FVector2D(BoundaryBounds.Min.X, BoundaryBounds.Max.Y)),
 	};
 
 	FSWGTerrainAffector Affector;

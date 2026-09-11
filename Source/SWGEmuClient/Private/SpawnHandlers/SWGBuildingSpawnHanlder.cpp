@@ -18,88 +18,111 @@
 
 namespace
 {
-	// How far below the lowest interior floor the terrain pad is placed, in raw
-	// units (metres). Enough to keep the ground from z-fighting the floor it sits
-	// directly under, small enough not to leave a visible step at the doorway.
-	// Note this only buys headroom against a *flat* pad being marginally too
-	// high; it does nothing for terrain entering a room through the boundary
-	// feather ramp, which is a horizontal problem solved in BuildFlattenLayer by
-	// growing the pad outward instead.
-	constexpr float TerrainFloorClearance = 0.5f;
+	// How far below the building origin a floor must sit before its terrain is
+	// cut, in raw units. Rooms at entrance height keep theirs — a hole there is
+	// only somewhere to fall through until the cell's floor collision arrives.
+	constexpr float TerrainHoleFloorTolerance = 0.5f;
+
+	// Grown onto every hole, in raw units. Sub-quads are kept by their centre,
+	// so half of one survives inside the edge without this — exactly where a
+	// room's fittings stand. Under any wall's thickness, so it cuts inward.
+	constexpr float TerrainHoleMargin = 0.25f;
 
 	/**
-	 * Lowest walkable floor across every *interior* cell, in building-local UE
-	 * units — what a terrain pad has to stay under so it doesn't surface inside
-	 * a room. Cell 0 is deliberately excluded: it's the exterior shell, whose
-	 * geometry can reach well below the rooms (foundations, skirting), and
-	 * sinking the pad to that would drop the building into a pit.
+	 * One hole per interior cell whose floor sits below the building origin,
+	 * placed in raw world space. Cell 0 is excluded — it's the exterior shell,
+	 * and cutting to its extent would leave a moat around the outside walls.
 	 *
-	 * Prefers the cell's .flr walkable floor; falls back to the embedded CMSH
-	 * collision mesh when the floor is missing or is one of the older FORM 0003
-	 * layouts FSWGFloorReader deliberately refuses to guess at.
-	 *
-	 * Returns false when no interior cell yields usable geometry, in which case
-	 * the caller should leave the pad at the actor origin's height.
+	 * Prefers the .flr walkable floor, falling back to the embedded CMSH when
+	 * that's missing. Floor geometry is building-local UE units, so it converts here.
 	 */
-	bool FindLowestInteriorFloorZ(TObjectPtr<USWGTreSubsystem> TreSubsystem, const FSWGPobData& PortalData, float& OutLowestZ)
+	void GatherInteriorFloorHoles(TObjectPtr<USWGTreSubsystem> TreSubsystem, const FSWGPobData& PortalData,
+		const FVector& ActorRawPosition, float YawRadians, TArray<FSWGTerrainHole>& OutHoles)
 	{
 		if (!TreSubsystem)
 		{
-			return false;
+			return;
 		}
 
-		bool bFound = false;
-		double LowestZ = TNumericLimits<double>::Max();
+		const float SinYaw = FMath::Sin(YawRadians);
+		const float CosYaw = FMath::Cos(YawRadians);
 
 		for (int32 CellIndex = 1; CellIndex < PortalData.Cells.Num(); ++CellIndex)
 		{
 			const FSWGPobCell& Cell = PortalData.Cells[CellIndex];
 
-			bool bUsedFloor = false;
-			double CellLowest = TNumericLimits<double>::Max();
+			const TArray<FVector>* Vertices = nullptr;
 			const TCHAR* Source = TEXT("none");
 
+			FSWGFloorData FloorData;
 			if (!Cell.CollisionFloorPath.IsEmpty())
 			{
 				FSWGIffReader FloorReader = TreSubsystem->CreateIffReader(Cell.CollisionFloorPath);
-				FSWGFloorData FloorData;
 				if (FloorReader.IsValid() && FSWGFloorReader::ReadFloor(FloorReader, FloorData) && !FloorData.Vertices.IsEmpty())
 				{
-					for (const FVector& Vertex : FloorData.Vertices)
-					{
-						CellLowest = FMath::Min(CellLowest, Vertex.Z);
-					}
-					bFound = true;
-					bUsedFloor = true;
+					Vertices = &FloorData.Vertices;
 					Source = TEXT("flr");
 				}
 			}
 
-			if (!bUsedFloor && !Cell.CollisionVertices.IsEmpty())
+			if (!Vertices && !Cell.CollisionVertices.IsEmpty())
 			{
-				for (const FVector& Vertex : Cell.CollisionVertices)
-				{
-					CellLowest = FMath::Min(CellLowest, Vertex.Z);
-				}
-				bFound = true;
+				Vertices = &Cell.CollisionVertices;
 				Source = TEXT("cmsh");
 			}
 
-			UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD   cell[%d] '%s' source=%s lowestZ(UE)=%s floorPath=%s"),
-				CellIndex, *Cell.CellName, Source,
-				CellLowest == TNumericLimits<double>::Max() ? TEXT("<none>") : *FString::Printf(TEXT("%.2f"), CellLowest),
-				*Cell.CollisionFloorPath);
+			if (!Vertices)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("TERRAINHOLE   cell[%d] '%s' has no usable floor geometry (floorPath=%s)"),
+					CellIndex, *Cell.CellName, *Cell.CollisionFloorPath);
+				continue;
+			}
 
-			LowestZ = FMath::Min(LowestZ, CellLowest);
+			FBox LocalBounds(ForceInit);
+			for (const FVector& Vertex : *Vertices)
+			{
+				LocalBounds += Vertex;
+			}
+
+			// Whether to cut is about the walkable floor, so test its Z before
+			// the cell mesh widens the box below.
+			const bool bBelowOrigin = LocalBounds.Min.Z < -SWGToUnrealSpace(TerrainHoleFloorTolerance);
+
+			// How wide to cut is not: a .flr stops at the edge of what a player
+			// can walk on, leaving anything between that and the wall — the
+			// cloning facility's tanks — outside. The cell mesh reaches the walls.
+			if (Vertices != &Cell.CollisionVertices)
+			{
+				for (const FVector& Vertex : Cell.CollisionVertices)
+				{
+					LocalBounds.Min.X = FMath::Min(LocalBounds.Min.X, Vertex.X);
+					LocalBounds.Min.Y = FMath::Min(LocalBounds.Min.Y, Vertex.Y);
+					LocalBounds.Max.X = FMath::Max(LocalBounds.Max.X, Vertex.X);
+					LocalBounds.Max.Y = FMath::Max(LocalBounds.Max.Y, Vertex.Y);
+				}
+			}
+
+			UE_LOG(LogTemp, Warning, TEXT("TERRAINHOLE   cell[%d] '%s' source=%s lowestZ(UE)=%.2f belowOrigin=%d"),
+				CellIndex, *Cell.CellName, Source, LocalBounds.Min.Z, bBelowOrigin ? 1 : 0);
+
+			if (!bBelowOrigin)
+			{
+				continue;
+			}
+
+			// The rectangle stays axis-aligned in the building's frame, so only
+			// its centre rotates — FSWGTerrainModifier's LocalToWorld convention.
+			const FVector LocalCentreRaw = SWGToRawSpace(LocalBounds.GetCenter());
+			const FVector LocalExtentRaw = SWGToRawSpace(LocalBounds.GetExtent());
+
+			FSWGTerrainHole Hole;
+			Hole.Center = FVector2D(
+				ActorRawPosition.X + LocalCentreRaw.X * CosYaw - LocalCentreRaw.Y * SinYaw,
+				ActorRawPosition.Y + LocalCentreRaw.X * SinYaw + LocalCentreRaw.Y * CosYaw);
+			Hole.Extents = FVector2D(LocalExtentRaw.X, LocalExtentRaw.Y) + FVector2D(TerrainHoleMargin, TerrainHoleMargin);
+			Hole.YawRadians = YawRadians;
+			OutHoles.Add(Hole);
 		}
-
-		if (!bFound)
-		{
-			return false;
-		}
-
-		OutLowestZ = (float)LowestZ;
-		return true;
 	}
 
 	// Owned by neither spawn concept — bakes floor collision from FSWGPobCell
@@ -311,13 +334,9 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 	}
 
 	// Now that the portal layout is parsed, stamp this building's terrain edit.
-	// It has to come after ReadPob, not before: the pad's height is driven by
-	// the building's *lowest interior floor*, which only the POB knows. A
-	// building whose rooms sit at different elevations (the cloning facility's
-	// back room is below its entrance) would otherwise get a pad at the actor
-	// origin's height, which cuts straight through every lower room.
-	// No-ops for templates with neither a terrainModificationFileName nor a
-	// structureFootprintFileName.
+	// After ReadPob, not before: only the POB knows which cells to cut under.
+	// Rooms below the entrance are handled by removing terrain under them, not by
+	// sinking the pad, which put the doorway at the bottom of a pit.
 	if (UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr)
 	{
 		if (USWGTerrainSubsystem* TerrainSubsystem = GameInstance->GetSubsystem<USWGTerrainSubsystem>())
@@ -326,30 +345,19 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 			// not final UE actor coordinates. Yaw needs no handedness fix —
 			// SWGWorldScale is a pure scale, with no axis remap.
 			const FVector ActorLocation = Actor.GetActorLocation();
-			FVector RawPosition = SWGToRawSpace(ActorLocation);
-			const float OriginRawZ = (float)RawPosition.Z;
+			const FVector RawPosition = SWGToRawSpace(ActorLocation);
+			const float YawRadians = FMath::DegreesToRadians(Actor.GetActorRotation().Yaw);
 
-			float LowestFloorZ = 0.0f;
-			const bool bFoundFloor = FindLowestInteriorFloorZ(TreSubsystem, BuildingActor->PortalData, LowestFloorZ);
-			if (bFoundFloor)
-			{
-				// Floor geometry is building-local and already in UE units (it
-				// reaches the collision mesh unscaled), so it converts to raw
-				// before being combined with the raw actor Z.
-				RawPosition.Z += SWGToRawSpace(LowestFloorZ) - TerrainFloorClearance;
-			}
-
-			UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD %s cells=%d actorUE=(%.1f,%.1f,%.1f) originRawZ=%.3f foundFloor=%d lowestFloorUE=%.2f lowestFloorRaw=%.3f clearance=%.2f -> padRawZ=%.3f yaw=%.1f"),
+			UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD %s cells=%d actorUE=(%.1f,%.1f,%.1f) padRawZ=%.3f yaw=%.1f"),
 				*TemplateName, BuildingActor->PortalData.Cells.Num(),
 				ActorLocation.X, ActorLocation.Y, ActorLocation.Z,
-				OriginRawZ, bFoundFloor ? 1 : 0,
-				LowestFloorZ, SWGToRawSpace(LowestFloorZ), TerrainFloorClearance,
 				RawPosition.Z, Actor.GetActorRotation().Yaw);
 
-			TerrainSubsystem->ApplyObjectTerrainModification(
-				TemplateName,
-				RawPosition,
-				FMath::DegreesToRadians(Actor.GetActorRotation().Yaw));
+			TerrainSubsystem->ApplyObjectTerrainModification(TemplateName, RawPosition, YawRadians);
+
+			TArray<FSWGTerrainHole> Holes;
+			GatherInteriorFloorHoles(TreSubsystem, BuildingActor->PortalData, RawPosition, YawRadians, Holes);
+			TerrainSubsystem->AddTerrainHoles(Holes);
 		}
 	}
 
@@ -477,6 +485,16 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 		if (PortalRef.DoorStyle.IsEmpty())
 		{
 			continue; // open archway, no door object
+		}
+
+		// Both cells a portal joins reference it and the door is deduped by
+		// PortalNumber, so whichever finishes first places it. A reference with
+		// no hardpoint has nothing to place it by — leave it to the other side.
+		if (!PortalRef.bHasDoorHardpoint)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::FinishCell: cell %s portal %d has door style '%s' but no hardpoint — leaving the door to the connecting cell"),
+				*CellData.CellName, PortalRef.PortalNumber, *PortalRef.DoorStyle);
+			continue;
 		}
 
 		FString DoorMeshPath;
