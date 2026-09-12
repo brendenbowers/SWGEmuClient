@@ -18,8 +18,39 @@ void USWGEquipmentComponent::ApplyBase6(const FCreatureObjectBaseline& Baseline)
 	EquipmentList = Baseline.EquipmentList;
 	AlternateAppearance = Baseline.AlternateAppearance;
 	bHasBase6 = true;
+	// A CREO6 refresh may carry new customization for an already-attached item.
+	RequestedItemIds.Reset();
 
-	BuildEquipmentVisuals(EquipmentList.Items);
+	BuildEquipmentVisuals(GatherCurrentEquipment());
+}
+
+void USWGEquipmentComponent::SetContainedItem(const FEquiptmentItem& Item)
+{
+	ContainedEquipment.Add(Item.ObjectId, Item);
+	RequestedItemIds.Remove(Item.ObjectId);
+	BuildEquipmentVisuals(GatherCurrentEquipment());
+}
+
+void USWGEquipmentComponent::RemoveContainedItem(uint64 ObjectId)
+{
+	if (ContainedEquipment.Remove(ObjectId) > 0)
+	{
+		BuildEquipmentVisuals(GatherCurrentEquipment());
+	}
+}
+
+TArray<FEquiptmentItem> USWGEquipmentComponent::GatherCurrentEquipment() const
+{
+	TArray<FEquiptmentItem> Result = EquipmentList.Items;
+	for (const TPair<uint64, FEquiptmentItem>& Pair : ContainedEquipment)
+	{
+		const uint64 ObjectId = Pair.Key;
+		if (!Result.ContainsByPredicate([ObjectId](const FEquiptmentItem& Existing) { return Existing.ObjectId == ObjectId; }))
+		{
+			Result.Add(Pair.Value);
+		}
+	}
+	return Result;
 }
 
 void USWGEquipmentComponent::ApplyDelta6(const FCreatureObjectDelta& Delta)
@@ -35,17 +66,19 @@ void USWGEquipmentComponent::ApplyDelta6(const FCreatureObjectDelta& Delta)
 	}
 
 	ApplyIndexedListChanges(Delta.EquipmentList, EquipmentList);
+	RequestedItemIds.Reset();
 
 	// Rebuilds against the whole list rather than the changed entries: a removal
 	// carries only an index, so the attached meshes can't be reconciled from the
 	// change set alone.
-	BuildEquipmentVisuals(EquipmentList.Items);
+	BuildEquipmentVisuals(GatherCurrentEquipment());
 }
 
 void USWGEquipmentComponent::SetPreviewEquipment(TArray<FEquiptmentItem> InEquipment, FString InAlternateAppearance)
 {
 	EquipmentList.Items = MoveTemp(InEquipment);
 	AlternateAppearance = MoveTemp(InAlternateAppearance);
+	RequestedItemIds.Reset();
 	BuildEquipmentVisuals(EquipmentList.Items);
 }
 
@@ -89,6 +122,16 @@ void USWGEquipmentComponent::RemoveUnequippedVisuals(const TConstArrayView<FEqui
 		It.RemoveCurrent();
 	}
 
+	// An unequipped item's in-flight request, if any, still completes and
+	// attaches — same as before; a re-equip of that id must request again.
+	for (auto It = RequestedItemIds.CreateIterator(); It; ++It)
+	{
+		if (!EquippedIds.Contains(*It))
+		{
+			It.RemoveCurrent();
+		}
+	}
+
 	// Unequipping the last wearable produces no attach callback, so the body's
 	// hidden sections would otherwise never be re-shown.
 	ReconcileBodyOcclusion();
@@ -113,6 +156,16 @@ void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquipt
 	for (const FEquiptmentItem& Item : CurrentEquipment)
 	{
 		if (!SWGIsSlottedArrangement(Item.ContainmentType))
+		{
+			continue;
+		}
+
+		// Containment-fed gear arrives one item at a time, each pass rebuilding
+		// from the whole list — without this every item would be re-requested
+		// per arrival.
+		bool bAlreadyRequested = false;
+		RequestedItemIds.Add(Item.ObjectId, &bAlreadyRequested);
+		if (bAlreadyRequested)
 		{
 			continue;
 		}

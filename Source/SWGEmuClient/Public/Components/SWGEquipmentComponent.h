@@ -32,7 +32,24 @@ public:
 	/** Hydrates and renders equipment on a client-only character-select actor. */
 	void SetPreviewEquipment(TArray<FEquiptmentItem> InEquipment, FString InAlternateAppearance);
 
+	/**
+	 * Equipment learned from a slotted UpdateContainmentMessage rather than
+	 * CREO6 — the only way an NPC's outfit, weapon and hair ever arrive (see
+	 * USWGObjectGraphSubsystem::SyncSlottedEquipment). A player's gear comes
+	 * both ways; the CREO6 entry wins for the same ObjectId.
+	 */
+	void SetContainedItem(const FEquiptmentItem& Item);
+	void RemoveContainedItem(uint64 ObjectId);
+
 protected:
+	/** EquipmentList merged with ContainedEquipment, one entry per ObjectId. */
+	TArray<FEquiptmentItem> GatherCurrentEquipment() const;
+
+	TMap<uint64, FEquiptmentItem> ContainedEquipment;
+
+	/** Items with a mesh request already issued — see BuildEquipmentVisuals. */
+	TSet<uint64> RequestedItemIds;
+
 	/** Callers pass the full current equipment list: anything attached but absent from it is detached. */
 	void BuildEquipmentVisuals(const TConstArrayView<FEquiptmentItem> CurrentEquipment);
 
