@@ -18,13 +18,27 @@ namespace UE::Geometry { class FDynamicMesh3; }
 /**
  * One static world-snapshot object (building, wall, pillar, item, etc.)
  * resolved and ready to spawn — see USWGTerrainSubsystem::LoadWorldSnapshotObjects.
+ * Mirrors the .ws node tree: a building's Children are its cells, a cell's
+ * Children are the props placed inside it.
  */
 struct FSWGWorldSnapshotSpawnInfo
 {
+	/** The .ws ObjectID. Core3 creates its client objects under this same id,
+	 *  so containment/targeting messages reference it — see
+	 *  USWGObjectGraphSubsystem::RegisterStaticObject. */
+	int64 ObjectId = 0;
+
+	/** The .ws CellID — only meaningful when ActorClass is ASWGCell. */
+	int32 CellNumber = 0;
+
 	TSubclassOf<AActor> ActorClass;
+
+	/** Raw space. World for a top-level node, parent-relative for a child (same convention as SceneCreateObjectByCrc for contained objects). */
 	FVector Position = FVector::ZeroVector;
 	FQuat Rotation = FQuat::Identity;
 	FString TemplateName;
+
+	TArray<FSWGWorldSnapshotSpawnInfo> Children;
 };
 
 /** Result of BakeHeightmap (or a cache hit) — everything SpawnLandscape needs. */
@@ -295,9 +309,23 @@ private:
 	 */
 	TArray<FSWGWorldSnapshotSpawnInfo> LoadWorldSnapshotObjects(const FString& TerrainVirtualPath, const FVector& SpawnPosition);
 
+	/** Resolves one .ws node (and its subtree) into OutInfo. False if the template resolves to no actor class. */
+	bool ResolveWorldSnapshotNode(const struct FSWGWorldSnapshotNode& Node, const struct FSWGWorldSnapshotData& SnapshotData, FSWGWorldSnapshotSpawnInfo& OutInfo) const;
+
 	/** Spawns every resolved object from LoadWorldSnapshotObjects (game thread only). */
 	void SpawnWorldSnapshotObjects(const TArray<FSWGWorldSnapshotSpawnInfo>& Objects);
 
+public:
+	/**
+	 * Spawns one node at WorldTransform (UE space), registers it with the object
+	 * graph under its .ws id, and recurses into its children. Parent is the
+	 * already-spawned owner (a building for a cell, a cell for a prop). A closed
+	 * room is deferred onto its building for USWGInteriorStreamingSubsystem
+	 * unless bForceInterior — ASWGBuilding::LoadRooms's re-entry.
+	 */
+	AActor* SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpawnInfo& Info, const FTransform& WorldTransform, AActor* Parent, class USWGObjectGraphSubsystem* ObjectGraph, bool bForceInterior = false);
+
+private:
 	UPROPERTY()
 	TObjectPtr<USWGTreSubsystem> TreSubsystem;
 

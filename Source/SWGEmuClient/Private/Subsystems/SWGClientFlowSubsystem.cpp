@@ -107,12 +107,18 @@ void USWGClientFlowSubsystem::Status(const FString& Status)
 void USWGClientFlowSubsystem::HandleStateChanged(ESWGClientState OldState, ESWGClientState NewState)
 {
 	USWGGameLayout* Layout = USWGGameLayout::GetLayout(GetWorld());
+
+	// A scene change from in world (teleport, zone travel) wants the same
+	// loading screen as the one from character select.
+	const ESWGClientState RowOldState = (OldState == ESWGClientState::InWorld && NewState == ESWGClientState::ZoneLoading)
+		? ESWGClientState::CharacterSelected : OldState;
+
 	if (StateTransitionTable && Layout)
 	{
 		for (auto& Row : StateTransitionTable->GetRowMap())
 		{
 			FSWGStateTransitionRow* TransitionRow = (FSWGStateTransitionRow*)Row.Value;
-			if (TransitionRow && TransitionRow->OldState == OldState && TransitionRow->NewState == NewState)
+			if (TransitionRow && TransitionRow->OldState == RowOldState && TransitionRow->NewState == NewState)
 			{
 				FGameplayTag Tag = USWGGameLayout::TAG_Layer_Menu;
 				if (TransitionRow->LayerTag != FGameplayTag::EmptyTag)

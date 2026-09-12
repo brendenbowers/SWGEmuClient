@@ -91,6 +91,19 @@ public:
 	/** Records ObjectId's cellNumber — set by FSWGCellBaselineHandler from the TLCS baseline. */
 	void SetCellNumber(int64 ObjectId, int32 CellNumber) { CellNumberByObjectId.Add(ObjectId, CellNumber); }
 
+	/**
+	 * Registers a client-known static object (a world-snapshot building, cell
+	 * or prop) under its .ws ObjectID. The server creates these as client
+	 * objects with that same id and never sends SceneCreateObjectByCrc for
+	 * them, but NPC containment and targeting still reference it. Registering
+	 * a cell also re-applies containment for anything that arrived into it
+	 * before the terrain/snapshot load finished.
+	 */
+	void RegisterStaticObject(int64 ObjectId, AActor* Actor, int64 ContainerId = 0);
+
+	/** Forgets a static object's registry entries without touching its actor — ASWGBuilding::UnloadRooms destroys that itself. */
+	void UnregisterStaticObject(int64 ObjectId);
+
 	/** Fired once SceneEndBaselines confirms an object's baselines are complete. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnObjectReady, int64 /*ObjectId*/);
 	FOnObjectReady OnObjectReady;
@@ -186,6 +199,17 @@ private:
 	/** Hides/shows Actor for a container change, or no-ops if Actor is null (containment can arrive before the actor's SceneCreateObjectByCrc). */
 	void ApplyContainment(AActor* Actor, int64 ContainerId);
 
+	/**
+	 * Hands a slotted item to its container creature's USWGEquipmentComponent,
+	 * and takes it back from the previous one. Core3 only fills CREO6's
+	 * wearables list for players (PlayerContainerComponent); an NPC's outfit,
+	 * weapon and hair arrive solely as child TANOs with a slotted
+	 * UpdateContainmentMessage, which is what the retail client renders from.
+	 * Needs the item's TANO3 (customization), so callers run it at
+	 * SceneEndBaselines, or on a containment change after that.
+	 */
+	void SyncSlottedEquipment(int64 ObjectId, int64 PreviousContainerId);
+
 	TMap<uint32, TSubclassOf<AActor>> CrcToActorClass;
 	bool bCrcMapBuilt = false;
 
@@ -198,6 +222,12 @@ private:
 	 *  HandleSceneEndBaselines so a contained object doesn't get revealed as a free-floating world actor at its raw (usually (0,0,0)) position. */
 	TMap<int64, int64> ContainerByObjectId;
 
+	/** ObjectId -> containmentType from the same message (see ESWGContainmentType); slotted values mean "equipped". */
+	TMap<int64, int32> ContainmentTypeByObjectId;
+
+	/** Objects whose SceneEndBaselines has been seen — a later containment change for one of these is applied immediately. */
+	TSet<int64> ReadyObjects;
+
 	/** ObjectId -> cellNumber */
 	TMap<int64, int32> CellNumberByObjectId;
 
@@ -205,6 +235,9 @@ private:
 	TObjectPtr<USWGTerrainSubsystem> TerrainSubsystem;
 
 	int64 LocalPlayerObjectId = 0;
+
+	/** The local player finished baselines inside a not-yet-loaded cell; RevealCurrentZoneLevel waits for its placement. */
+	bool bRevealPendingPlayerPlacement = false;
 
 	/** The PLAY object's id once seen — shares the local player's actor, so its destroy must not tear that down. */
 	int64 PlayerObjectId = 0;

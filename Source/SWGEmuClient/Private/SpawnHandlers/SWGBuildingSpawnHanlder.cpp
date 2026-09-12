@@ -4,6 +4,8 @@
 #include "Objects/World/SWGBuilding.h"
 #include "Objects/World/SWGCell.h"
 #include "Objects/World/SWGDoor.h"
+#include "Objects/World/SWGStaticProp.h"
+#include "TRE/SWGInteriorLayoutReader.h"
 #include "TRE/SWGPobReader.h"
 #include "TRE/SWGFloorReader.h"
 #include "TRE/SWGDoorStyleRow.h"
@@ -14,6 +16,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/GameInstance.h"
 #include "Subsystems/SWGTerrainSubsystem.h"
+#include "Subsystems/SWGInteriorStreamingSubsystem.h"
 #include "Common/SWGWorldScale.h"
 
 namespace
@@ -204,6 +207,39 @@ namespace
 REGISTER_SWG_ACTOR_SPAWN_HANDLER(FSWGBuildingSpawnHandler, ASWGBuilding)
 REGISTER_SWG_ACTOR_SPAWN_HANDLER(FSWGCellSpawnHandler, ASWGCell)
 
+void FSWGCellSpawnHandler::SpawnInteriorLayout(ASWGCell* CellActor, ASWGBuilding* BuildingActor, const FSWGPobCell& CellData, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem)
+{
+	UWorld* World = CellActor ? CellActor->GetWorld() : nullptr;
+	if (!World || !MeshGeneratorSubsystem)
+	{
+		return;
+	}
+
+	// Cell-relative, composed against the cell as it stands now (just attached
+	// to its building) and left unattached — the cell's root is replaced when
+	// its mesh lands. No server identity, so no object graph registration.
+	const FTransform CellTransform = CellActor->GetActorTransform();
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	for (const FSWGInteriorLayoutNode& Node : BuildingActor->InteriorLayout.Nodes)
+	{
+		if (Node.CellName != CellData.CellName)
+		{
+			continue;
+		}
+
+		AActor* Prop = World->SpawnActor<ASWGStaticProp>(ASWGStaticProp::StaticClass(), Node.Transform * CellTransform, SpawnParams);
+		if (!Prop)
+		{
+			continue;
+		}
+
+		CellActor->InteriorActors.Add(Prop);
+		MeshGeneratorSubsystem->RequestMeshForTemplatePath(Prop, Node.TemplatePath);
+	}
+}
+
 TWeakObjectPtr<UDataTable> FSWGCellSpawnHandler::GetDoorStyleTable()
 {
 	static TWeakObjectPtr<UDataTable> CachedTable;
@@ -333,6 +369,17 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 		return false;
 	}
 
+	// Optional: most housing has none, city buildings have hundreds of pieces.
+	FString IlfPath;
+	if (MeshGeneratorSubsystem->ResolveInteriorLayoutPath(TemplateName, IlfPath))
+	{
+		FSWGIffReader IlfReader = TreSubsystem->CreateIffReader(IlfPath);
+		if (!IlfReader.IsValid() || !FSWGInteriorLayoutReader::ReadInteriorLayout(IlfReader, BuildingActor->InteriorLayout))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: failed to read interior layout %s for %s"), *IlfPath, *TemplateName);
+		}
+	}
+
 	// Now that the portal layout is parsed, stamp this building's terrain edit.
 	// After ReadPob, not before: only the POB knows which cells to cut under.
 	// Rooms below the entrance are handled by removing terrain under them, not by
@@ -382,7 +429,7 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 	return true;
 }
 
-void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* BuildingActor, int32 CellIndex, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem)
+void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* BuildingActor, int32 CellIndex, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem, bool bForceInterior)
 {
 	if (!CellActor || !BuildingActor || CellActor->OwningBuilding.IsValid())
 	{
@@ -398,6 +445,21 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 
 	const FSWGPobCell& CellData = BuildingActor->PortalData.Cells[CellIndex];
 
+	// Every room waits for USWGInteriorStreamingSubsystem, which calls back
+	// through ASWGBuilding::LoadRooms with bForceInterior once the player is
+	// close enough (and, for a room visible from outside, looking this way).
+	if (!bForceInterior)
+	{
+		UGameInstance* GameInstance = CellActor->GetWorld() ? CellActor->GetWorld()->GetGameInstance() : nullptr;
+		USWGInteriorStreamingSubsystem* Streaming = GameInstance ? GameInstance->GetSubsystem<USWGInteriorStreamingSubsystem>() : nullptr;
+		if (Streaming && !Streaming->ShouldLoadRooms(*BuildingActor, !CellData.CanSeeParent))
+		{
+			BuildingActor->DeferredNetworkCells.Add({ CellActor, CellIndex });
+			Streaming->RegisterBuilding(BuildingActor);
+			return;
+		}
+	}
+
 	FString CellMeshPath;
 	if (!MeshGeneratorSubsystem->ResolveLodMeshPath(CellData.MeshPath, CellMeshPath) || CellMeshPath.IsEmpty())
 	{
@@ -408,9 +470,12 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 	CellActor->CellNumber = CellData.CellIndex;
 	CellActor->MeshPath = CellMeshPath;
 	CellActor->OwningBuilding = BuildingActor;
+	CellActor->bCanSeeParent = CellData.CanSeeParent;
 
 	BuildingActor->Cells.Add(CellActor);
 	CellActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
+
+	SpawnInteriorLayout(CellActor, BuildingActor, CellData, MeshGeneratorSubsystem);
 
 	TWeakObjectPtr<ASWGCell> CellActorWeakPtr = CellActor;
 	MeshGeneratorSubsystem->RequestMesh(CellActor, CellMeshPath).Next([CellActorWeakPtr, TreSubsystem, MeshGeneratorSubsystem](const FSWGMeshGenerationResult& Result)

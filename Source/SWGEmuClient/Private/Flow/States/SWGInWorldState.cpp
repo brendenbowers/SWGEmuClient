@@ -1,5 +1,8 @@
 #include "Flow/States/SWGInWorldState.h"
 #include "Flow/SWGFlowStateRegistry.h"
+#include "Flow/States/SWGZoneLoadingState.h"
+#include "Network/Messages/SWGMessageOp.h"
+#include "Network/Messages/Zone/CmdStartSceneMessage.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
@@ -19,6 +22,30 @@
 
 void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
 {
+	// Registered first so a scene change landing mid-Enter is still caught.
+	if (UIStateMachine.Network)
+	{
+		TWeakObjectPtr<USWGClientFlowSubsystem> StateMachineWeak = &UIStateMachine;
+		const int32 Epoch = UIStateMachine.Epoch;
+		MessageHandle = UIStateMachine.Network->OnMessageReceived.AddLambda([StateMachineWeak, Epoch](TSharedPtr<FSWGNetMessage> Msg)
+			{
+				if (!Msg.IsValid() || Msg->Opcode != static_cast<uint32>(ESWGMessageOp::CmdStartScene))
+				{
+					return;
+				}
+
+				USWGClientFlowSubsystem* StateMachine = StateMachineWeak.Get();
+				if (!StateMachine || StateMachine->Epoch != Epoch)
+				{
+					return;
+				}
+
+				UE_LOG(LogTemp, Log, TEXT("FSWGInWorldState: CmdStartScene while in world — reloading the scene"));
+				TSharedPtr<FSWGTransitionPayload> ScenePayload = MakeShared<FSWGSceneStartPayload>(StaticCastSharedPtr<const FCmdStartSceneMessage>(Msg));
+				StateMachine->TransitionTo(ESWGClientState::ZoneLoading, ScenePayload);
+			});
+	}
+
 	// Tells the zone server the client finished loading the scene (CmdStartScene ->
 	// Create/Baselines/EndBaselines for own CREO+PLAY and nearby objects -> here).
 	// Server gates gameplay (combat/chat/trade) on receiving this — see
@@ -94,7 +121,14 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 		}
 	}
 }
-void FSWGInWorldState::Exit (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) {}
+void FSWGInWorldState::Exit(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx)
+{
+	if (UIStateMachine.Network && MessageHandle.IsValid())
+	{
+		UIStateMachine.Network->OnMessageReceived.Remove(MessageHandle);
+	}
+	MessageHandle.Reset();
+}
 
 void FSWGInWorldState::HandleSaveCharacterCache(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, TResult<TSharedPtr<const FSceneEndBaselinesMessage>> Msg)
 {

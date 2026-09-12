@@ -32,4 +32,14 @@ public:
 	// Null until FSWGCellSpawnHandler::FinishCell builds it.
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	TObjectPtr<UPrimitiveComponent> TriggerVolume;
+
+	// POB canSeeParentCell: the room's portal opens onto the exterior. Decides
+	// which streaming tier the room loads in (USWGInteriorStreamingSubsystem).
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	bool bCanSeeParent = false;
+
+	// Client-only props placed in this room (.ws children, interior layout),
+	// destroyed with it by ASWGBuilding::UnloadRooms. Unattached: the cell's
+	// root is replaced when its mesh lands.
+	TArray<TWeakObjectPtr<AActor>> InteriorActors;
 };

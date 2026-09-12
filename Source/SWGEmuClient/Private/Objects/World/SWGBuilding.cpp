@@ -5,6 +5,12 @@
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
 #include "Components/SWGDefenderComponent.h"
+#include "Subsystems/SWGTreSubsystem.h"
+#include "Subsystems/SWGMeshGeneratorSubsystem.h"
+#include "Subsystems/SWGObjectGraphSubsystem.h"
+#include "SpawnHandlers/SWGBuildingSpawnHanlder.h"
+#include "Common/SWGWorldScale.h"
+#include "Engine/GameInstance.h"
 
 ASWGBuilding::ASWGBuilding()
 {
@@ -38,6 +44,8 @@ void ASWGBuilding::OnCellTriggerBeginOverlap(UPrimitiveComponent* OverlappedComp
 		return;
 	}
 
+	++InteriorOverlapCount;
+
 	const bool* bCanSeeParent = CellSeeParentByTrigger.Find(OverlappedComponent);
 	if (bCanSeeParent && !*bCanSeeParent)
 	{
@@ -55,6 +63,8 @@ void ASWGBuilding::OnCellTriggerEndOverlap(UPrimitiveComponent* OverlappedCompon
 		return;
 	}
 
+	InteriorOverlapCount = FMath::Max(0, InteriorOverlapCount - 1);
+
 	const bool* bCanSeeParent = CellSeeParentByTrigger.Find(OverlappedComponent);
 	if (bCanSeeParent && !*bCanSeeParent)
 	{
@@ -64,6 +74,160 @@ void ASWGBuilding::OnCellTriggerEndOverlap(UPrimitiveComponent* OverlappedCompon
 			SetExteriorShellHidden(false);
 		}
 	}
+}
+
+FBox2D ASWGBuilding::GetFootprint() const
+{
+	// Own components only — cells are attached actors, and a starport's
+	// courtyard is inside the shell's box anyway. Before the mesh lands this
+	// is just the root, which degrades to the origin.
+	const FBox Bounds = GetComponentsBoundingBox(/*bNonColliding*/ true);
+	return FBox2D(FVector2D(Bounds.Min.X, Bounds.Min.Y), FVector2D(Bounds.Max.X, Bounds.Max.Y));
+}
+
+bool ASWGBuilding::OwnsCell(int64 CellObjectId) const
+{
+	if (CellObjectId == 0)
+	{
+		return false;
+	}
+	for (const FSWGWorldSnapshotSpawnInfo& Info : DeferredSnapshotCells)
+	{
+		if (Info.ObjectId == CellObjectId)
+		{
+			return true;
+		}
+	}
+	for (const FDeferredNetworkCell& Deferred : DeferredNetworkCells)
+	{
+		if (const ASWGCell* Cell = Deferred.Cell.Get(); Cell && Cell->GetObjectId() == CellObjectId)
+		{
+			return true;
+		}
+	}
+	for (const ASWGCell* Cell : Cells)
+	{
+		if (Cell && Cell->GetObjectId() == CellObjectId)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ASWGBuilding::IsClosedRoom(int32 CellIndex) const
+{
+	return PortalData.Cells.IsValidIndex(CellIndex) && !PortalData.Cells[CellIndex].CanSeeParent;
+}
+
+void ASWGBuilding::LoadRooms(bool bClosed)
+{
+	if (AreRoomsLoaded(bClosed))
+	{
+		return;
+	}
+	(bClosed ? bClosedRoomsLoaded : bVisibleRoomsLoaded) = true;
+
+	UGameInstance* GameInstance = GetGameInstance();
+	if (!GameInstance)
+	{
+		return;
+	}
+
+	USWGTreSubsystem* Tre = GameInstance->GetSubsystem<USWGTreSubsystem>();
+	USWGMeshGeneratorSubsystem* MeshGen = GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>();
+	USWGTerrainSubsystem* Terrain = GameInstance->GetSubsystem<USWGTerrainSubsystem>();
+	USWGObjectGraphSubsystem* ObjectGraph = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>();
+
+	for (auto It = DeferredNetworkCells.CreateIterator(); It; ++It)
+	{
+		if (IsClosedRoom(It->CellIndex) != bClosed)
+		{
+			continue;
+		}
+		if (ASWGCell* Cell = It->Cell.Get())
+		{
+			FSWGCellSpawnHandler::FinishCell(Cell, this, It->CellIndex, Tre, MeshGen, /*bForceInterior*/ true);
+		}
+		It.RemoveCurrent();
+	}
+
+	if (!Terrain)
+	{
+		return;
+	}
+
+	int32 SpawnedCount = 0;
+	for (const FSWGWorldSnapshotSpawnInfo& CellInfo : DeferredSnapshotCells)
+	{
+		if (IsClosedRoom(CellInfo.CellNumber) != bClosed)
+		{
+			continue;
+		}
+		const FTransform CellRelative(CellInfo.Rotation, SWGToUnrealSpace(CellInfo.Position));
+		AActor* CellActor = Terrain->SpawnWorldSnapshotNode(CellInfo, CellRelative * SnapshotTransform, this, ObjectGraph, /*bForceInterior*/ true);
+		if (ASWGCell* Cell = Cast<ASWGCell>(CellActor))
+		{
+			StreamedCells.Add(Cell);
+			++SpawnedCount;
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("ASWGBuilding::LoadRooms: %s — %d %s .ws room(s)"), *GetName(), SpawnedCount, bClosed ? TEXT("closed") : TEXT("visible"));
+}
+
+void ASWGBuilding::UnloadRooms(bool bClosed)
+{
+	if (!AreRoomsLoaded(bClosed))
+	{
+		return;
+	}
+	(bClosed ? bClosedRoomsLoaded : bVisibleRoomsLoaded) = false;
+
+	UGameInstance* GameInstance = GetGameInstance();
+	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+
+	auto Unregister = [ObjectGraph](AActor* Actor)
+	{
+		const ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(Actor);
+		if (ObjectGraph && NetObject)
+		{
+			ObjectGraph->UnregisterStaticObject(NetObject->GetObjectId());
+		}
+	};
+
+	for (auto It = StreamedCells.CreateIterator(); It; ++It)
+	{
+		ASWGCell* Cell = It->Get();
+		if (!Cell)
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+		if (Cell->bCanSeeParent == bClosed)
+		{
+			continue; // the other tier
+		}
+
+		for (const TWeakObjectPtr<AActor>& PropWeak : Cell->InteriorActors)
+		{
+			if (AActor* Prop = PropWeak.Get())
+			{
+				Unregister(Prop);
+				Prop->Destroy();
+			}
+		}
+
+		// Network items attached to the room are the server's; Destroy just
+		// detaches them, and RegisterStaticObject re-attaches on the next load.
+		Cells.Remove(Cell);
+		CellSeeParentByTrigger.Remove(Cell->TriggerVolume);
+		Unregister(Cell);
+		Cell->Destroy();
+		It.RemoveCurrent();
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("ASWGBuilding::UnloadRooms: %s — %s"), *GetName(), bClosed ? TEXT("closed") : TEXT("visible"));
 }
 
 void ASWGBuilding::SetExteriorShellHidden(bool bShouldHide)

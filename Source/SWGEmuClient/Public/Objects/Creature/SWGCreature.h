@@ -17,6 +17,7 @@ class USWGCombatStateComponent;
 class USWGGroupComponent;
 class USWGPerformanceComponent;
 class USWGMovementComponent;
+class ASWGCell;
 
 /**
  * CREO — NPCs and player bodies. An ACharacter (not derived from ASWGObject,
@@ -101,6 +102,16 @@ public:
 	 * before its mesh finishes building.
 	 */
 	float LastNetworkZ = 0.0f;
+
+	/** The cell this creature was composed into world space against (USWGObjectGraphSubsystem::ApplyContainment). */
+	TWeakObjectPtr<ASWGCell> PlacedInCell;
+
+	/**
+	 * True while the transform is still the cell-relative spawn one. Cleared
+	 * by cell placement, by a world-space UpdateTransform, or by finishing
+	 * baselines with no container — after that a containment must not re-place.
+	 */
+	bool bAwaitingCellPlacement = false;
 
 	/** Convenience accessor — this IS the character's movement component (set via ObjectInitializer). */
 	USWGMovementComponent* GetSWGMovementComponent() const;

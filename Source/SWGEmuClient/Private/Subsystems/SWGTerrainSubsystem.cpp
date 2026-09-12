@@ -4,6 +4,12 @@
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
 #include "Subsystems/SWGActorSpawnHandlerRegistry.h"
+#include "Subsystems/SWGObjectGraphSubsystem.h"
+#include "SpawnHandlers/SWGBuildingSpawnHanlder.h"
+#include "Subsystems/SWGInteriorStreamingSubsystem.h"
+#include "Objects/SWGNetworkObjectInterface.h"
+#include "Objects/World/SWGBuilding.h"
+#include "Objects/World/SWGCell.h"
 #include "TRE/SWGTerrainReader.h"
 #include "TRE/SWGTerrainEvaluator.h"
 #include "TRE/SWGWorldSnapshotReader.h"
@@ -334,6 +340,12 @@ void USWGTerrainSubsystem::BeginLoadTerrain(const FString TerrainVirtualPath, co
 	// grid exists, so clearing there would discard the ones from this load.
 	TerrainHoles.Reset();
 
+	// Likewise pads queued by the previous scene's buildings, and the previous
+	// zone's height function — GetHeightAt must not answer for the old planet
+	// while the new one bakes.
+	PendingObjectModifications.Reset();
+	bTerrainDataCached = false;
+
 
 	Async(EAsyncExecution::Thread, [this, TerrainVirtualPath, SpawnPosition]()
 		{
@@ -549,29 +561,11 @@ TArray<FSWGWorldSnapshotSpawnInfo> USWGTerrainSubsystem::LoadWorldSnapshotObject
 
 		++InRangeCount;
 
-		if (!SnapshotData.ObjectTemplateNames.IsValidIndex((int32)Node.NameID))
-			continue;
-
-		const FString& TemplateName = SnapshotData.ObjectTemplateNames[(int32)Node.NameID];
-
-		FSWGIffReader TemplateReader = TreSubsystem->CreateIffReader(TemplateName);
-		if (!TemplateReader.IsValid())
-			continue;
-
-		const FName FormType = TemplateReader.GetRootFormType();
-		if (FormType == NAME_None || !FormTagMappingTable)
-			continue;
-
-		const FSWGFormTagMapping* Mapping = FormTagMappingTable->FindRow<FSWGFormTagMapping>(FormType, TEXT("USWGTerrainSubsystem"), false);
-		if (!Mapping || !Mapping->ActorClass)
-			continue;
-
 		FSWGWorldSnapshotSpawnInfo Info;
-		Info.ActorClass = Mapping->ActorClass;
-		Info.Position = Node.Position;
-		Info.Rotation = Node.Direction;
-		Info.TemplateName = TemplateName;
-		Result.Add(MoveTemp(Info));
+		if (ResolveWorldSnapshotNode(Node, SnapshotData, Info))
+		{
+			Result.Add(MoveTemp(Info));
+		}
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: world snapshot %s — %d/%d node(s) within %.0f units of spawn, %d resolved to an actor class"),
@@ -580,49 +574,181 @@ TArray<FSWGWorldSnapshotSpawnInfo> USWGTerrainSubsystem::LoadWorldSnapshotObject
 	return Result;
 }
 
+bool USWGTerrainSubsystem::ResolveWorldSnapshotNode(const FSWGWorldSnapshotNode& Node, const FSWGWorldSnapshotData& SnapshotData, FSWGWorldSnapshotSpawnInfo& OutInfo) const
+{
+	if (!SnapshotData.ObjectTemplateNames.IsValidIndex((int32)Node.NameID))
+		return false;
+
+	const FString& TemplateName = SnapshotData.ObjectTemplateNames[(int32)Node.NameID];
+
+	FSWGIffReader TemplateReader = TreSubsystem->CreateIffReader(TemplateName);
+	if (!TemplateReader.IsValid())
+		return false;
+
+	const FName FormType = TemplateReader.GetRootFormType();
+	if (FormType == NAME_None || !FormTagMappingTable)
+		return false;
+
+	const FSWGFormTagMapping* Mapping = FormTagMappingTable->FindRow<FSWGFormTagMapping>(FormType, TEXT("USWGTerrainSubsystem"), false);
+	if (!Mapping || !Mapping->ActorClass)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGTerrainSubsystem: .ws node %u template %s (form %s) has no actor class"), Node.ObjectID, *TemplateName, *FormType.ToString());
+		return false;
+	}
+
+	OutInfo.ObjectId = (int64)Node.ObjectID;
+	OutInfo.CellNumber = (int32)Node.CellID;
+	OutInfo.ActorClass = Mapping->ActorClass;
+	OutInfo.Position = Node.Position;
+	OutInfo.Rotation = Node.Direction;
+	OutInfo.TemplateName = TemplateName;
+
+	for (const FSWGWorldSnapshotNode& ChildNode : Node.Children)
+	{
+		FSWGWorldSnapshotSpawnInfo ChildInfo;
+		if (ResolveWorldSnapshotNode(ChildNode, SnapshotData, ChildInfo))
+		{
+			OutInfo.Children.Add(MoveTemp(ChildInfo));
+		}
+	}
+
+	return true;
+}
+
 void USWGTerrainSubsystem::SpawnWorldSnapshotObjects(const TArray<FSWGWorldSnapshotSpawnInfo>& Objects)
 {
 	UWorld* World = GetWorld();
 	if (!World)
 		return;
 
+	UGameInstance* GameInstance = GetGameInstance();
+	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+
 	for (const FSWGWorldSnapshotSpawnInfo& Info : Objects)
 	{
-		FActorSpawnParameters SpawnParams;
-		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
 		// Info.Position is raw/native space (straight from the .ws file, compared
 		// against WorldSnapshotSpawnRadius in that same raw space in
 		// LoadWorldSnapshotObjects) — scale to final UE space right at this
 		// actor-placement boundary.
-		const FTransform SpawnTransform(Info.Rotation, SWGToUnrealSpace(Info.Position));
-		AActor* Actor = World->SpawnActor<AActor>(Info.ActorClass, SpawnTransform, SpawnParams);
-
-		if (!Actor)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: failed to spawn world snapshot object %s"), *Info.TemplateName);
-			continue;
-		}
-
-		if (!MeshGenerator)
-		{
-			continue;
-		}
-
-		// A registered handler (e.g. buildings, once ASWGBuilding registers
-		// one — see FSWGActorSpawnHandlerRegistry) gets first refusal on
-		// continuing this actor's generation; only fall back to the generic
-		// one-mesh-component path when nothing is registered for its class.
-		FSWGActorSpawnArguments SpawnInfo { 0, Info.ActorClass, Info.TemplateName };
-		if (FSWGActorSpawnHandlerRegistry::Get().TryHandle(*Actor, SpawnInfo))
-		{
-			continue;
-		}
-
-		MeshGenerator->RequestMeshForTemplatePath(Actor, Info.TemplateName);
+		SpawnWorldSnapshotNode(Info, FTransform(Info.Rotation, SWGToUnrealSpace(Info.Position)), nullptr, ObjectGraph);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: spawned %d world snapshot object(s)"), Objects.Num());
+}
+
+AActor* USWGTerrainSubsystem::SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpawnInfo& Info, const FTransform& WorldTransform, AActor* Parent, USWGObjectGraphSubsystem* ObjectGraph, bool bForceInterior)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+		return nullptr;
+
+	ASWGBuilding* ParentBuilding = Cast<ASWGBuilding>(Parent);
+	const bool bIsCell = Info.ActorClass->IsChildOf(ASWGCell::StaticClass());
+
+	// Every room (and everything inside it) is handed to the building here
+	// without creating an actor; USWGInteriorStreamingSubsystem brings it back
+	// through this same function once the player is close enough / looking.
+	if (bIsCell && !bForceInterior && ParentBuilding)
+	{
+		ParentBuilding->DeferredSnapshotCells.Add(Info);
+		if (UGameInstance* GameInstance = GetGameInstance())
+		{
+			if (USWGInteriorStreamingSubsystem* Streaming = GameInstance->GetSubsystem<USWGInteriorStreamingSubsystem>())
+			{
+				Streaming->RegisterBuilding(ParentBuilding);
+			}
+		}
+		return nullptr;
+	}
+
+	// A cell spawns building-relative (identity, like the network path's
+	// (0,0,0) SceneCreateObjectByCrc): FSWGCellSpawnHandler::FinishCell attaches
+	// it with KeepRelativeTransform, which would double the building's
+	// transform if the cell already sat at its world placement.
+	const FTransform SpawnTransform = bIsCell ? FTransform(Info.Rotation, SWGToUnrealSpace(Info.Position)) : WorldTransform;
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	AActor* Actor = World->SpawnActor<AActor>(Info.ActorClass, SpawnTransform, SpawnParams);
+	if (!Actor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: failed to spawn world snapshot object %s"), *Info.TemplateName);
+		return nullptr;
+	}
+
+	if (ASWGBuilding* Building = Cast<ASWGBuilding>(Actor))
+	{
+		Building->SnapshotTransform = WorldTransform;
+	}
+
+	// The server never sends SceneCreateObjectByCrc for anything in the .ws
+	// (Core3 BuildingObjectImplementation::sendTo: "static in the client"), but
+	// it does reference these ids — NPCs are contained in a static cell, a
+	// terminal is targeted — so the graph must know them.
+	const ISWGNetworkObjectInterface* ParentObject = Cast<ISWGNetworkObjectInterface>(Parent);
+	const int64 ParentObjectId = ParentObject ? ParentObject->GetObjectId() : 0;
+	ASWGCell* Cell = Cast<ASWGCell>(Actor);
+
+	// A cell registers only once FinishCell has attached it to its building:
+	// registering re-applies containment for whatever is already in the room,
+	// composing it against the cell's transform — which until then is the
+	// building-relative spawn transform, i.e. the world origin.
+	if (ObjectGraph && !Cell)
+	{
+		ObjectGraph->RegisterStaticObject(Info.ObjectId, Actor, ParentObjectId);
+	}
+
+	if (ASWGCell* ParentCell = Cast<ASWGCell>(Parent))
+	{
+		ParentCell->InteriorActors.Add(Actor);
+	}
+
+	if (Cell && !ParentBuilding)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: world snapshot cell %lld has no building parent — left unfinished"), Info.ObjectId);
+		return Actor;
+	}
+
+	if (Cell)
+	{
+		// Same as the network path's UpdateContainment + TLCS baseline, only
+		// both facts come from the .ws node at once.
+		if (ObjectGraph)
+		{
+			ObjectGraph->SetCellNumber(Info.ObjectId, Info.CellNumber);
+		}
+		FSWGCellSpawnHandler::FinishCell(Cell, ParentBuilding, Info.CellNumber, TreSubsystem, MeshGenerator, bForceInterior);
+
+		if (ObjectGraph)
+		{
+			ObjectGraph->RegisterStaticObject(Info.ObjectId, Actor, ParentObjectId);
+		}
+	}
+	else if (MeshGenerator)
+	{
+		// A registered handler (buildings — see FSWGActorSpawnHandlerRegistry)
+		// gets first refusal on continuing this actor's generation; only fall
+		// back to the generic one-mesh-component path when nothing is
+		// registered for its class.
+		FSWGActorSpawnArguments SpawnInfo { 0, Info.ActorClass, Info.TemplateName };
+		if (!FSWGActorSpawnHandlerRegistry::Get().TryHandle(*Actor, SpawnInfo))
+		{
+			MeshGenerator->RequestMeshForTemplatePath(Actor, Info.TemplateName);
+		}
+	}
+
+	for (const FSWGWorldSnapshotSpawnInfo& Child : Info.Children)
+	{
+		// Composed into world space and left unattached: nothing in the .ws
+		// ever moves, and both the building's and the cell's root components
+		// are replaced once their meshes finish building, which would orphan
+		// anything attached before then.
+		const FTransform ChildRelative(Child.Rotation, SWGToUnrealSpace(Child.Position));
+		SpawnWorldSnapshotNode(Child, ChildRelative * WorldTransform, Actor, ObjectGraph, bForceInterior);
+	}
+
+	return Actor;
 }
 
 float USWGTerrainSubsystem::GetHeightAt(float X, float Y) const

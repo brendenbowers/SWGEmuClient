@@ -266,6 +266,16 @@ public:
 	bool ResolvePortalLayoutPath(const FString& TemplatePath, FString& OutPobPath);
 
 	/**
+	 * Walks TemplatePath's DERV chain for interiorLayoutFileName (SBOT) — the
+	 * .ilf placing a building's client-side furniture and clutter in its
+	 * rooms. False when the building has none (most housing).
+	 */
+	bool ResolveInteriorLayoutPath(const FString& TemplatePath, FString& OutIlfPath);
+
+	/** The DERV-chain walk behind the two above: first FormType form in the chain whose data form carries the XXXX string Key. */
+	bool ResolveTemplateStringParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, FString& OutValue);
+
+	/**
 	 * A .pob cell's MeshPath (FSWGPobCell::MeshPath) is sometimes a final
 	 * .msh path directly and sometimes a bare .lod reference 
 	 */

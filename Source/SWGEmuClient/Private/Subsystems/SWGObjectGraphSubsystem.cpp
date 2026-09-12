@@ -256,6 +256,17 @@ void USWGObjectGraphSubsystem::HandleCmdStartScene(const FCmdStartSceneMessage& 
 	// SceneCreateObjectByCrc/BaselinesMessage stream that follows — this is how
 	// we know which spawned ASWGCreature should actually be an ASWGPlayer.
 	LocalPlayerObjectId = Msg.CharacterID;
+	PlayerObjectId = 0;
+	bRevealPendingPlayerPlacement = false;
+
+	// FSWGZoneLoadingState reopens the level and the server resends everything
+	// from scratch; a stale containment here would misplace a reused id.
+	ActorRegistry.Reset();
+	ContainerByObjectId.Reset();
+	ContainmentTypeByObjectId.Reset();
+	CellNumberByObjectId.Reset();
+	ReadyObjects.Reset();
+	PendingMessages.Reset();
 
 	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: local player ObjectId set to %lld from CmdStartScene"), LocalPlayerObjectId);
 }
@@ -344,6 +355,17 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 		NetObject->SetObjectCrc(Msg.ObjectCrc);
 	}
 
+	// Whether that position was world or cell-relative isn't known until the
+	// containment arrives — see ApplyContainment.
+	if (ASWGCreature* Creature = Cast<ASWGCreature>(NewActor))
+	{
+		Creature->bAwaitingCellPlacement = true;
+	}
+	else if (ASWGObject* Object = Cast<ASWGObject>(NewActor))
+	{
+		Object->bAwaitingCellPlacement = true;
+	}
+
 	// Hidden until SceneEndBaselines confirms the object is fully initialized.
 	NewActor->SetActorHiddenInGame(true);
 	NewActor->SetActorEnableCollision(false);
@@ -408,9 +430,27 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 	// A contained object (equipped gear, inventory contents) still goes
 	// through the normal SceneCreateObjectByCrc/Baselines/SceneEndBaselines
 	// flow — it just also gets an UpdateContainmentMessage with a nonzero
+	ReadyObjects.Add(Msg.ObjectId);
+
+	const bool bIsLocalPlayer = LocalPlayerObjectId != 0 && Msg.ObjectId == LocalPlayerObjectId;
+
 	if (const int64* ContainerId = ContainerByObjectId.Find(Msg.ObjectId); ContainerId && *ContainerId != 0)
 	{
 		ApplyContainment(Actor, *ContainerId);
+		SyncSlottedEquipment(Msg.ObjectId, 0);
+
+		// The local player is never tucked away — if its cell is unknown it
+		// zoned in inside a snapshot building that hasn't loaded yet. Take
+		// control now; ApplyContainment reveals the level once it's placed.
+		if (bIsLocalPlayer && Actor->IsHidden())
+		{
+			Actor->SetActorHiddenInGame(false);
+			Actor->SetActorEnableCollision(true);
+			if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor); Creature && Creature->bAwaitingCellPlacement)
+			{
+				bRevealPendingPlayerPlacement = true;
+			}
+		}
 
 		if (Actor->IsHidden())
 		{
@@ -424,6 +464,13 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 	{
 		Actor->SetActorHiddenInGame(false);
 		Actor->SetActorEnableCollision(true);
+
+		// Spawned in world space, so a cell entered later must not re-place it.
+		// Needed for the local player, which never gets an UpdateTransform.
+		if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor))
+		{
+			Creature->bAwaitingCellPlacement = false;
+		}
 	}
 
 	// The local player's own CREO — swap control from the editor's default
@@ -455,7 +502,7 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 	// zone is actually ready to look at — reveal the streaming level now
 	// rather than waiting for some notion of "every object done," which
 	// never really happens in an open world (NPCs keep streaming in as you move).
-	if (LocalPlayerObjectId != 0 && Msg.ObjectId == LocalPlayerObjectId)
+	if (bIsLocalPlayer && !bRevealPendingPlayerPlacement)
 	{
 		RevealCurrentZoneLevel();
 	}
@@ -463,7 +510,9 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 
 void USWGObjectGraphSubsystem::HandleUpdateContainment(const FUpdateContainmentMessage& Msg)
 {
+	const int64 PreviousContainerId = ContainerByObjectId.FindRef(Msg.ObjectId);
 	ContainerByObjectId.Add(Msg.ObjectId, Msg.ContainerId);
+	ContainmentTypeByObjectId.Add(Msg.ObjectId, (int32)Msg.Type);
 
 	AActor* Actor = FindActor(Msg.ObjectId);
 
@@ -479,6 +528,14 @@ void USWGObjectGraphSubsystem::HandleUpdateContainment(const FUpdateContainmentM
 	if (Actor && !Cast<ASWGCell>(Actor))
 	{
 		ApplyContainment(Actor, Msg.ContainerId);
+	}
+
+	// Core3 links before it sends baselines, so an item's first containment
+	// lands before its TANO3 — HandleSceneEndBaselines syncs that one. This
+	// covers an NPC or player changing gear later.
+	if (Actor && ReadyObjects.Contains(Msg.ObjectId))
+	{
+		SyncSlottedEquipment(Msg.ObjectId, PreviousContainerId);
 	}
 
 	// A cell's owning building is ContainerId here, but its cell number comes
@@ -505,6 +562,12 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	// Raw wire position -> UE space at this boundary, same as the initial spawn.
 	const FVector OldLocation = Actor->GetActorLocation();
 	const FVector NewLocation = GroundedLocationFor(Actor, SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ)));
+
+	// This message is world space, so the transform no longer needs composing into a cell.
+	if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor))
+	{
+		Creature->bAwaitingCellPlacement = false;
+	}
 
 	// DirectionAngle is Quaternion::getSpecialDegrees() — a full turn is 100,
 	// not 256. Pitch/Roll aren't part of this message, so only Yaw changes
@@ -592,21 +655,142 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ContainerId
 	ASWGCell* ContainerCell = Cast<ASWGCell>(ContainerActor);
 	const bool bContainedInCell = ContainerCell != nullptr;
 	const bool bContained = ContainerId != 0 && !bContainedInCell;
+	const bool bIsCreature = Actor->IsA<ASWGCreature>();
 	Actor->SetActorHiddenInGame(bContained);
 	Actor->SetActorEnableCollision(!bContained);
-
-	const bool bIsCreature = Actor->IsA<ASWGCreature>();
 
 	if (bContainedInCell && !bIsCreature)
 	{
 		if (Actor->GetAttachParentActor() != ContainerCell)
 		{
-			Actor->AttachToActor(ContainerCell, FAttachmentTransformRules::KeepRelativeTransform);
+			// First attach: the spawn transform is cell-relative. Any later
+			// one (a streamed-out cell detached this with its world transform,
+			// or the server moved it between rooms) keeps world.
+			ASWGObject* Object = Cast<ASWGObject>(Actor);
+			const bool bRelative = Object && Object->bAwaitingCellPlacement;
+			if (Object)
+			{
+				Object->bAwaitingCellPlacement = false;
+			}
+			Actor->AttachToActor(ContainerCell, bRelative ? FAttachmentTransformRules::KeepRelativeTransform : FAttachmentTransformRules::KeepWorldTransform);
 		}
 	}
 	else if (!bContainedInCell && !bIsCreature && Actor->GetAttachParentActor() != nullptr)
 	{
 		Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+	}
+
+	// Creatures aren't attached (a character's movement component doesn't
+	// cooperate with a parent), so the cell-relative spawn transform is
+	// composed into world space once instead — see bAwaitingCellPlacement.
+	if (bContainedInCell && bIsCreature)
+	{
+		ASWGCreature* Creature = CastChecked<ASWGCreature>(Actor);
+		if (Creature->bAwaitingCellPlacement)
+		{
+			Creature->bAwaitingCellPlacement = false;
+			Creature->PlacedInCell = ContainerCell;
+
+			// X/Y are untouched since spawn (no transform updates reach an
+			// in-cell creature), but Z may have fallen under gravity while the
+			// cell was unknown — rebuild it from the stored network Z.
+			const float HalfHeight = Creature->GetCapsuleComponent() ? Creature->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 0.0f;
+			FTransform Relative = Actor->GetActorTransform();
+			Relative.SetLocation(FVector(Relative.GetLocation().X, Relative.GetLocation().Y, Creature->LastNetworkZ + HalfHeight));
+			Creature->SetActorTransform(Relative * ContainerCell->GetActorTransform());
+
+			// Feet-level, world space — the capsule resize in
+			// USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent reads this
+			// back when the mesh lands, which can be after this.
+			Creature->LastNetworkZ = Creature->GetActorLocation().Z - HalfHeight;
+
+			// The local player zoned in inside a building: the level was held
+			// back until it stood somewhere real (HandleSceneEndBaselines).
+			if (bRevealPendingPlayerPlacement && Creature->GetObjectId() == LocalPlayerObjectId)
+			{
+				bRevealPendingPlayerPlacement = false;
+				RevealCurrentZoneLevel();
+			}
+		}
+	}
+}
+
+void USWGObjectGraphSubsystem::SyncSlottedEquipment(int64 ObjectId, int64 PreviousContainerId)
+{
+	const int64 ContainerId = ContainerByObjectId.FindRef(ObjectId);
+	const int32 ContainmentType = ContainmentTypeByObjectId.FindRef(ObjectId);
+	const bool bSlotted = ContainerId != 0 && SWGIsSlottedArrangement(ContainmentType);
+
+	if (PreviousContainerId != 0 && (PreviousContainerId != ContainerId || !bSlotted))
+	{
+		if (ASWGCreature* PreviousCreature = Cast<ASWGCreature>(FindActor(PreviousContainerId)))
+		{
+			PreviousCreature->EquipmentComponent->RemoveContainedItem((uint64)ObjectId);
+		}
+	}
+
+	if (!bSlotted)
+	{
+		return;
+	}
+
+	ASWGCreature* Creature = Cast<ASWGCreature>(FindActor(ContainerId));
+	ASWGItem* Item = Cast<ASWGItem>(FindActor(ObjectId));
+	if (!Creature || !Item)
+	{
+		return;
+	}
+
+	FEquiptmentItem Equipment;
+	Equipment.ObjectId = (uint64)ObjectId;
+	Equipment.TemplateCRC = Item->GetObjectCrc();
+	Equipment.ContainmentType = ContainmentType;
+	if (Item->TangibleComponent)
+	{
+		Equipment.CustomizationBytes = Item->TangibleComponent->CustomizationBytes;
+	}
+	Creature->EquipmentComponent->SetContainedItem(Equipment);
+}
+
+void USWGObjectGraphSubsystem::UnregisterStaticObject(int64 ObjectId)
+{
+	ActorRegistry.Remove(ObjectId);
+	ContainerByObjectId.Remove(ObjectId);
+	CellNumberByObjectId.Remove(ObjectId);
+	ReadyObjects.Remove(ObjectId);
+}
+
+void USWGObjectGraphSubsystem::RegisterStaticObject(int64 ObjectId, AActor* Actor, int64 ContainerId)
+{
+	if (!Actor || ObjectId == 0)
+	{
+		return;
+	}
+
+	if (ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(Actor))
+	{
+		NetObject->SetObjectId(ObjectId);
+	}
+
+	ActorRegistry.Add(ObjectId, Actor);
+	ReadyObjects.Add(ObjectId);
+	if (ContainerId != 0)
+	{
+		ContainerByObjectId.Add(ObjectId, ContainerId);
+	}
+
+	// Snapshot objects spawn after the async terrain load, well after the
+	// first wave of scene messages — anything already sitting in this cell
+	// was hidden as "contained in something unknown" by HandleUpdateContainment.
+	if (Actor->IsA<ASWGCell>())
+	{
+		for (const TPair<int64, int64>& Pair : ContainerByObjectId)
+		{
+			if (Pair.Value == ObjectId && ReadyObjects.Contains(Pair.Key))
+			{
+				ApplyContainment(FindActor(Pair.Key), ObjectId);
+			}
+		}
 	}
 }
 
@@ -657,12 +841,20 @@ void USWGObjectGraphSubsystem::RemoveObject(int64 ObjectId)
 		// one that left view before its SceneCreateObjectByCrc was processed.
 		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: destroy for unregistered object %lld"), ObjectId);
 		ContainerByObjectId.Remove(ObjectId);
+		ContainmentTypeByObjectId.Remove(ObjectId);
 		CellNumberByObjectId.Remove(ObjectId);
+		ReadyObjects.Remove(ObjectId);
 		return;
 	}
 
-	ContainerByObjectId.Remove(ObjectId);
+	// An equipped item leaving view is a destroy, not an unequip containment —
+	// take it off its creature before forgetting where it was.
+	int64 PreviousContainerId = 0;
+	ContainerByObjectId.RemoveAndCopyValue(ObjectId, PreviousContainerId);
+	ContainmentTypeByObjectId.Remove(ObjectId);
 	CellNumberByObjectId.Remove(ObjectId);
+	ReadyObjects.Remove(ObjectId);
+	SyncSlottedEquipment(ObjectId, PreviousContainerId);
 
 	OnObjectDestroyed.Broadcast(ObjectId);
 
@@ -706,7 +898,9 @@ void USWGObjectGraphSubsystem::RemoveObject(int64 ObjectId)
 			const int64 ChildId = NetworkObject->GetObjectId();
 			ActorRegistry.Remove(ChildId);
 			ContainerByObjectId.Remove(ChildId);
+			ContainmentTypeByObjectId.Remove(ChildId);
 			CellNumberByObjectId.Remove(ChildId);
+			ReadyObjects.Remove(ChildId);
 			OnObjectDestroyed.Broadcast(ChildId);
 		}
 

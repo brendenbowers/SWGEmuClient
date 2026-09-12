@@ -33,4 +33,11 @@ public:
 
 	/** Called once SceneEndBaselines confirms this object is fully initialized. */
 	virtual void OnBaselineComplete() {}
+
+	/**
+	 * True while the transform is still the cell-relative spawn one, so the
+	 * first attach to a cell keeps it relative; a re-attach after the cell
+	 * streamed out and back keeps world. ASWGCreature has its own.
+	 */
+	bool bAwaitingCellPlacement = false;
 };

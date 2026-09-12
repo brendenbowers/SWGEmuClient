@@ -1213,13 +1213,12 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 	return !OutMeshVirtualPaths.IsEmpty();
 }
 
-bool USWGMeshGeneratorSubsystem::ResolvePortalLayoutPath(const FString& TemplatePath, FString& OutPobPath)
+bool USWGMeshGeneratorSubsystem::ResolveTemplateStringParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, FString& OutValue)
 {
 	// Same DERV-chain walk ResolveMeshPathForTemplate does for
-	// appearanceFilename/portalLayoutFilename together, but looking only for
-	// portalLayoutFilename and stopping as soon as it's found — a spawn
-	// handler wanting the full FSWGPobReader::ReadPob parse has no use for
-	// the exterior-only appearance path that function would also resolve.
+	// appearanceFilename, generalised over which template form the parameter
+	// lives in: SHOT (shared object) for portalLayoutFilename, SBOT (shared
+	// building) for interiorLayoutFileName. Stops at the first hit.
 	FSWGIffReader TemplateReader = TreSubsystem->CreateIffReader(TemplatePath);
 	if (!TemplateReader.IsValid())
 	{
@@ -1227,52 +1226,62 @@ bool USWGMeshGeneratorSubsystem::ResolvePortalLayoutPath(const FString& Template
 		return false;
 	}
 
-	FSWGIffChunk ShotForm, ShotDataForm;
-	if (!TemplateReader.FindForm(SWG_IFF_TAG('S','H','O','T'), ShotForm) || !FindVersionedDataForm(TemplateReader, ShotForm, ShotDataForm))
+	FSWGIffChunk Form, DataForm;
+	if (!TemplateReader.FindForm(FormType, Form) || !FindVersionedDataForm(TemplateReader, Form, DataForm))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: template %s has no SHOT data form"), *TemplatePath);
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: template %s has no %s data form"), *TemplatePath, *FormType.ToString());
 		return false;
 	}
 
 	TOptional<FSWGIffReader> CurrentReader;
 	const FSWGIffReader* ReaderPtr = &TemplateReader;
-	FSWGIffChunk CurrentShotForm = ShotForm;
-	FSWGIffChunk CurrentDataForm = ShotDataForm;
+	FSWGIffChunk CurrentForm = Form;
+	FSWGIffChunk CurrentDataForm = DataForm;
 	FString CurrentPath = TemplatePath;
 
 	for (int32 Depth = 0; Depth < 8; ++Depth)
 	{
-		if (FindXxxxStringValue(*ReaderPtr, CurrentDataForm, TEXT("portalLayoutFilename"), OutPobPath))
+		if (FindXxxxStringValue(*ReaderPtr, CurrentDataForm, Key, OutValue))
 		{
 			return true;
 		}
 
 		FString ParentPath;
-		if (!FindDervParentPath(*ReaderPtr, CurrentShotForm, ParentPath))
+		if (!FindDervParentPath(*ReaderPtr, CurrentForm, ParentPath))
 		{
 			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s (depth %d) has no DERV form, chain ends here"), *CurrentPath, Depth);
 			break;
 		}
 
 		FSWGIffReader ParentReader = TreSubsystem->CreateIffReader(ParentPath);
-		FSWGIffChunk ParentShotForm, ParentDataForm;
+		FSWGIffChunk ParentForm, ParentDataForm;
 		if (!ParentReader.IsValid()
-			|| !ParentReader.FindForm(SWG_IFF_TAG('S','H','O','T'), ParentShotForm)
-			|| !FindVersionedDataForm(ParentReader, ParentShotForm, ParentDataForm))
+			|| !ParentReader.FindForm(FormType, ParentForm)
+			|| !FindVersionedDataForm(ParentReader, ParentForm, ParentDataForm))
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: DERV parent %s (from %s) has no usable SHOT data form"), *ParentPath, *CurrentPath);
+			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: DERV parent %s (from %s) has no usable %s data form"), *ParentPath, *CurrentPath, *FormType.ToString());
 			break;
 		}
 
 		CurrentReader.Emplace(MoveTemp(ParentReader));
 		ReaderPtr = &CurrentReader.GetValue();
-		CurrentShotForm = ParentShotForm;
+		CurrentForm = ParentForm;
 		CurrentDataForm = ParentDataForm;
 		CurrentPath = ParentPath;
 	}
 
-	UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: template %s has no portalLayoutFilename anywhere in its DERV chain"), *TemplatePath);
+	UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: template %s has no %s anywhere in its DERV chain"), *TemplatePath, Key);
 	return false;
+}
+
+bool USWGMeshGeneratorSubsystem::ResolvePortalLayoutPath(const FString& TemplatePath, FString& OutPobPath)
+{
+	return ResolveTemplateStringParam(TemplatePath, SWG_IFF_TAG('S','H','O','T'), TEXT("portalLayoutFilename"), OutPobPath);
+}
+
+bool USWGMeshGeneratorSubsystem::ResolveInteriorLayoutPath(const FString& TemplatePath, FString& OutIlfPath)
+{
+	return ResolveTemplateStringParam(TemplatePath, SWG_IFF_TAG('S','B','O','T'), TEXT("interiorLayoutFileName"), OutIlfPath) && !OutIlfPath.IsEmpty();
 }
 
 bool USWGMeshGeneratorSubsystem::ResolveLodMeshPath(const FString& LodOrMeshPath, FString& OutMeshPath)
@@ -2689,13 +2698,9 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 
 	MeshComponent->SetMobility(Mobility);
 
-	// SetActorHiddenInGame(true) (see ApplyContainment) only updates the
-	// components an actor already owns at the moment it's called — since mesh
-	// building is async and can finish long after containment is applied, a
-	// component created here would otherwise default to visible even though
-	// the owning actor's own bHidden already says it should be hidden (e.g. an
-	// equipped item's own SWGItem actor, which stays hidden once contained).
-	MeshComponent->SetHiddenInGame(Actor.IsHidden());
+	// No SetHiddenInGame(Actor.IsHidden()) here: the proxy already reads the
+	// actor's bHidden on creation, and stamping the component's own flag left
+	// it stuck hidden after the actor was revealed.
 
 	if (ACharacter* Character = Cast<ACharacter>(&Actor))
 	{

@@ -40,7 +40,15 @@ public:
 
 	static void CheckAndFinishCell(USWGObjectGraphSubsystem& ObjectGraph, int64 ObjectId, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem);
 
-	static void FinishCell(ASWGCell* CellActor, ASWGBuilding* BuildingActor, int32 CellIndex, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem);
+	/**
+	 * bForceInterior builds the room regardless of the player's distance/view —
+	 * ASWGBuilding::LoadRooms's path; otherwise the room is deferred onto the
+	 * building until USWGInteriorStreamingSubsystem decides it should load.
+	 */
+	static void FinishCell(ASWGCell* CellActor, ASWGBuilding* BuildingActor, int32 CellIndex, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem, bool bForceInterior = false);
+
+	/** Spawns the building's interior layout (.ilf) nodes that belong to this room. */
+	static void SpawnInteriorLayout(ASWGCell* CellActor, ASWGBuilding* BuildingActor, const FSWGPobCell& CellData, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem);
 
 private:
 	static TWeakObjectPtr<UDataTable> GetDoorStyleTable();

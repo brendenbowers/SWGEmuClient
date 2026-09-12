@@ -21,6 +21,10 @@ void FSWGZoneLoadingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFl
 
 	const FCmdStartSceneMessage& Scene = *ScenePayload->Scene;
 
+	// Re-entered on every scene change (teleport, zone travel), not just login.
+	Ctx.bTerrainLoaded = false;
+	Ctx.bZoneReady = false;
+
 	UWorld* World = UIStateMachine.GetWorld();
 
 	if (UIStateMachine.TerrainSubsystem)
