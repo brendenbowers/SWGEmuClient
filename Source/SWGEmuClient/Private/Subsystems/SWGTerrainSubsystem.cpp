@@ -47,11 +47,11 @@
 namespace
 {
 	TAutoConsoleVariable<int32> CVarTerrainLoadRadius(
-		TEXT("swg.TerrainLoadRadius"), 3,
-		TEXT("Terrain tiles (512 m) kept loaded in every direction around the player — 3 is a 7x7 square."));
+		TEXT("swg.TerrainLoadRadius"), 2,
+		TEXT("Terrain tiles (512 m) kept loaded in every direction around the player — 2 is a 5x5 square, ground to 1-1.5 km out."));
 
 	TAutoConsoleVariable<int32> CVarTerrainUnloadRadius(
-		TEXT("swg.TerrainUnloadRadius"), 4,
+		TEXT("swg.TerrainUnloadRadius"), 3,
 		TEXT("Tiles further than this from the player are unloaded. Kept at least one past the load radius so a player at a tile edge doesn't thrash."));
 
 	TAutoConsoleVariable<int32> CVarSnapshotLoadRadius(
@@ -2078,43 +2078,46 @@ void USWGTerrainSubsystem::UpdateStreaming()
 	FVector2D Center;
 	GetStreamingCenter(Center);
 
-	// One tile ahead along the heading, so the ground the player is walking
-	// onto is requested before it comes into view. Standing still, the bias
-	// is zero and the ring is symmetric.
-	FVector2D AheadCenter = Center;
+	// Lead the player by half a tile along the heading: the ring is the same
+	// size either way, it just crosses into the next tile column early on the
+	// side being walked towards (and drops the trailing one early). A second
+	// ring around an "ahead" point instead unioned onto this one and, with the
+	// unload radius one tile out, never shed those tiles again — a wobbling
+	// heading grew the loaded set to the full radius+1 square over time.
+	FVector2D EffectiveCenter = Center;
 	if (bHasLastStreamingCenter)
 	{
 		const FVector2D Heading = Center - LastStreamingCenter;
 		if (Heading.SizeSquared() > 1.0f)
 		{
-			AheadCenter = Center + Heading.GetSafeNormal() * HeightmapWorldExtent;
+			EffectiveCenter = Center + Heading.GetSafeNormal() * (HeightmapWorldExtent * 0.5f);
 		}
 	}
 	LastStreamingCenter = Center;
 	bHasLastStreamingCenter = true;
 
-	const FIntPoint CenterTile = TileCoordAt(Center);
-	const FIntPoint AheadTile = TileCoordAt(AheadCenter);
+	const FIntPoint CenterTile = TileCoordAt(EffectiveCenter);
 
 	const int32 LoadRadius = FMath::Max(0, CVarTerrainLoadRadius.GetValueOnGameThread());
 	const int32 UnloadRadius = FMath::Max(LoadRadius, CVarTerrainUnloadRadius.GetValueOnGameThread());
 
 	TSet<FIntPoint> Wanted;
-	for (const FIntPoint& Focus : { CenterTile, AheadTile })
+	for (int32 OffsetY = -LoadRadius; OffsetY <= LoadRadius; ++OffsetY)
 	{
-		for (int32 OffsetY = -LoadRadius; OffsetY <= LoadRadius; ++OffsetY)
+		for (int32 OffsetX = -LoadRadius; OffsetX <= LoadRadius; ++OffsetX)
 		{
-			for (int32 OffsetX = -LoadRadius; OffsetX <= LoadRadius; ++OffsetX)
+			const FIntPoint Coord = CenterTile + FIntPoint(OffsetX, OffsetY);
+			if (IsTileOnMap(Coord))
 			{
-				const FIntPoint Coord = Focus + FIntPoint(OffsetX, OffsetY);
-				if (IsTileOnMap(Coord))
-				{
-					Wanted.Add(Coord);
-				}
+				Wanted.Add(Coord);
 			}
 		}
 	}
-	Wanted.Append(InitialTiles);
+	// The spawn 3x3 is only pinned until it has reported ready.
+	if (!bInitialTilesReported)
+	{
+		Wanted.Append(InitialTiles);
+	}
 
 	for (const FIntPoint& Coord : Wanted)
 	{

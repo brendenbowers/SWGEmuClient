@@ -534,8 +534,9 @@ private:
 	static constexpr float HeightmapWorldExtent = 512.0f; // world units per axis
 
 	// Chebyshev tile radii around the player come from swg.TerrainLoadRadius /
-	// swg.TerrainUnloadRadius (defaults 3 and 4: a 7x7, 3.5 km square, with
-	// unload one tile further so pacing at a boundary can't thrash).
+	// swg.TerrainUnloadRadius (defaults 2 and 3: a 5x5, 2.5 km square, with
+	// unload one tile further so pacing at a boundary can't thrash). Static
+	// objects use swg.SnapshotLoadRadius / swg.SnapshotUnloadRadius (1 and 2).
 
 	// A bake is ~13 ms plus triangulation; four at once keeps a burst (zone
 	// entry, 49 tiles) under a second without starving the mesh generator's pool.
