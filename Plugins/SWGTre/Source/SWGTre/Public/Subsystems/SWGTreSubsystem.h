@@ -98,6 +98,13 @@ public:
 	 */
 	bool FindTemplateStringId(const FString& TemplatePath, const TCHAR* Key, FString& OutTable, FString& OutText);
 
+	/**
+	 * Reads an integer field from a shared template, walking the DERV chain
+	 * until a layer sets it — how the collision flags reach every object from
+	 * shared_base_object / shared_static_base / shared_base_building.
+	 */
+	bool FindTemplateIntParam(const FString& TemplatePath, const TCHAR* Key, int32& OutValue);
+
 	/** FindTemplateStringId("objectName") for a template CRC, resolved through the string tables. Empty if nothing resolves. */
 	FString ResolveTemplateObjectName(uint32 Crc);
 

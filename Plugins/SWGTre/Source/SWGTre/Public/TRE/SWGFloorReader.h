@@ -54,10 +54,30 @@ struct FSWGFloorData
  * exists in the corpus but hasn't been decoded — ReadFloor returns false
  * for it rather than silently misreading it as 0006.
  */
+/** A floor triangle's edge flags. Edge N runs from corner N to corner N+1 (Core3 FloorMesh). */
+enum class ESWGFloorEdgeType : uint8
+{
+	/** A wall: nothing walks off the floor here. */
+	Uncrossable = 0,
+	/** Shared with a neighbouring triangle, or a portal into the next cell. */
+	Crossable = 1,
+	/** Core3's "blocking" edges — kept distinct; treated as a wall too. */
+	Blocking = 2,
+};
+
 class SWGTRE_API FSWGFloorReader
 {
 public:
 	static bool ReadFloor(const FSWGIffReader& Reader, FSWGFloorData& OutFloor);
+
+	/**
+	 * Vertical barrier quads along every uncrossable edge, Height tall, as a
+	 * triangle list — how SWG kept you inside a room: the floor ends at the
+	 * wall and its edge says so; there is no wall mesh to hit. Core3 builds
+	 * the same barriers (FloorMesh, BARRIER_HEIGHT 3 m) for its collision.
+	 * Appended to OutVertices/OutIndices, which may already hold the floor.
+	 */
+	static int32 AppendBarrierMesh(const FSWGFloorData& Floor, float Height, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 
 private:
 	FSWGFloorReader() = default;

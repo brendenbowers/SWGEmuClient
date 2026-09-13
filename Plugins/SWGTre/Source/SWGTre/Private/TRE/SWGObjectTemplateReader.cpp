@@ -55,6 +55,40 @@ bool FSWGObjectTemplateReader::FindStringIdField(const FSWGIffReader& Reader, co
 	return false;
 }
 
+bool FSWGObjectTemplateReader::FindIntField(const FSWGIffReader& Reader, const TCHAR* Key, int32& OutValue)
+{
+	FSWGIffChunk Shot, DataForm;
+	if (!FindShotDataForm(Reader, Shot, DataForm))
+	{
+		return false;
+	}
+
+	for (const FSWGIffChunk& Child : Reader.FindAllChildChunks(DataForm, SWG_IFF_TAG('X','X','X','X')))
+	{
+		FSWGIFFChunkReader ChunkReader(Child, Reader);
+		FString ChunkKey;
+		if (!ChunkReader.ReadTerminiatedString(ChunkKey) || !ChunkKey.Equals(Key))
+		{
+			continue;
+		}
+
+		uint8 HasValue = 0, ValueType = 0;
+		if (!ChunkReader.ReadValueLE(HasValue) || HasValue == 0)
+		{
+			return false; // unset in this layer
+		}
+		// Numeric params mark a plain literal with 0x20 (every int/float field
+		// in shared_static_base.iff), unlike strings' 0x01; ranges and die
+		// rolls use other values and aren't a single number to return.
+		if (!ChunkReader.ReadValueLE(ValueType) || (ValueType != 0x20 && ValueType != 0x01))
+		{
+			return false;
+		}
+		return ChunkReader.ReadValueLE(OutValue);
+	}
+	return false;
+}
+
 bool FSWGObjectTemplateReader::FindDervParentPath(const FSWGIffReader& Reader, FString& OutParentPath)
 {
 	FSWGIffChunk Shot, Derv, Xxxx;

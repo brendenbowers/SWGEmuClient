@@ -37,8 +37,13 @@
 #include "Animation/AnimSingleNodeInstance.h"
 #include "UObject/SoftObjectPath.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/PlayerController.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Engine/Engine.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/BoxComponent.h"
+#include "Components/SphereComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Misc/Optional.h"
 #include "Objects/World/SWGBuilding.h"
@@ -709,7 +714,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 
 				if (Request.TemplateCrc != 0 && Request.MeshVirtualPaths.IsEmpty())
 				{
-					if (!ResolveMeshPath(Request.TemplateCrc, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath, &Request.LodLevels))
+					if (!ResolveMeshPath(Request.TemplateCrc, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath, &Request.LodLevels, &Request.CollisionSourcePath))
 					{
 						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template CRC %08X"), Request.TemplateCrc);
 						return;
@@ -717,7 +722,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				}
 				else if (!Request.TemplatePath.IsEmpty() && Request.MeshVirtualPaths.IsEmpty())
 				{
-					if (!ResolveMeshPathForTemplate(Request.TemplatePath, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath, &Request.LodLevels))
+					if (!ResolveMeshPathForTemplate(Request.TemplatePath, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath, &Request.LodLevels, &Request.CollisionSourcePath))
 					{
 						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template %s"), *Request.TemplatePath);
 						return;
@@ -776,6 +781,11 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				const float YawCorrectionDegrees = GetStaticMeshYawCorrection(Request.MeshVirtualPaths);
 				const EComponentMobility::Type Mobility = Request.bStatic ? EComponentMobility::Static : EComponentMobility::Movable;
 
+				// Still on the worker: the extents and the .flr are TRE reads.
+				FSWGAppearanceCollision Collision;
+				TOptional<FSWGFloorData> Floor;
+				const bool bHasCollision = !Request.bSkeletal && ResolveAppearanceCollision(Request, Collision, Floor);
+
 				ResultGuard.Dismiss();
 
 				// Back on the game thread to build/attach the mesh component.
@@ -786,7 +796,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				// its own continuation. Without it this lambda's operator() is const,
 				// Request is a const FSWGPendingMeshRequest, and any attempt to pass
 				// it on selects the (deleted) copy constructor instead of the move.
-				AsyncTask(ENamedThreads::GameThread, [this, Request = MoveTemp(Request), MeshData, LodMeshData = MoveTemp(LodMeshData), CacheHash, DebugName, YawCorrectionDegrees, Mobility]() mutable
+				AsyncTask(ENamedThreads::GameThread, [this, Request = MoveTemp(Request), MeshData, LodMeshData = MoveTemp(LodMeshData), CacheHash, DebugName, YawCorrectionDegrees, Mobility, Collision = MoveTemp(Collision), Floor = MoveTemp(Floor), bHasCollision]() mutable
 					{
 						// Own guard over the same (moved-in) Promise — the outer
 						// lambda's guard Dismiss()'d before handing off here.
@@ -933,6 +943,15 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 						const TMap<FString, float>* MorphWeightsPtr = MorphWeights.Num() > 0 ? &MorphWeights : nullptr;
 						const TMap<FString, int32>* TextureIndicesPtr = TextureIndices.Num() > 0 ? &TextureIndices : nullptr;
 						UMeshComponent* MeshComponent = BuildGeneratedMeshComponent(*Request.Actor, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility, PaletteTintsPtr, TextureIndicesPtr, ReplaceableTexturePath, LodMeshData, Request.LodLevels);
+
+						// Characters collide through their capsule, and a building's
+						// walls and floors come from its .pob cells (its exterior .lod
+						// carries a NULL extent — the bounding box would seal the door).
+						// Everything else gets the appearance's own extents and floor.
+						if (MeshComponent && bHasCollision && !Request.Actor->IsA<ACharacter>() && !Request.Actor->IsA<ASWGBuilding>())
+						{
+							BuildAppearanceCollision(*Request.Actor, *MeshComponent, Collision, Floor.GetPtrOrNull(), DebugName);
+						}
 						// SkeletalAnimationPipeline is null until Initialize() runs — see Tick()'s
 						// own comment for why this can't be assumed non-null unconditionally.
 						if (SkeletalAnimationPipeline)
@@ -975,7 +994,7 @@ namespace
 	}
 }
 
-bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels)
+bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels, FString* OutCollisionSourcePath)
 {
 	const FString TemplatePath = TreSubsystem->ResolveTemplatePath(TemplateCrc);
 	if (TemplatePath.IsEmpty())
@@ -984,10 +1003,10 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FStr
 		return false;
 	}
 
-	return ResolveMeshPathForTemplate(TemplatePath, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal, OutAppearancePath, OutLodLevels);
+	return ResolveMeshPathForTemplate(TemplatePath, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal, OutAppearancePath, OutLodLevels, OutCollisionSourcePath);
 }
 
-bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels)
+bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels, FString* OutCollisionSourcePath)
 {
 	// Resolution chain:
 	//   template .iff (SCOT/STOT > FORM SHOT > versioned data form > XXXX
@@ -1174,6 +1193,13 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 
 	for (const FString& MeshGroupPath : MeshGroupPaths)
 	{
+		// Collision lives on the appearance file (.lod or bare .msh), not the
+		// per-LOD meshes — see FSWGPendingMeshRequest::CollisionSourcePath.
+		if (OutCollisionSourcePath && OutCollisionSourcePath->IsEmpty() && !bOutSkeletal)
+		{
+			*OutCollisionSourcePath = MeshGroupPath;
+		}
+
 		if (MeshGroupPath.EndsWith(TEXT(".mgn")) || MeshGroupPath.EndsWith(TEXT(".msh")))
 		{
 			OutMeshVirtualPaths.Add(MeshGroupPath);
@@ -2837,6 +2863,14 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedCollisionMesh(uint32
 	// (one room type's collision geometry never varies between instances).
 	if (UStaticMesh* Existing = LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName)))
 	{
+		// Assets saved before the flag existed are fixed up on load rather
+		// than rebuilt — see where it's set below for why it matters.
+		if (UBodySetup* BodySetup = Existing->GetBodySetup(); BodySetup && !BodySetup->bDoubleSidedGeometry)
+		{
+			BodySetup->bDoubleSidedGeometry = true;
+			BodySetup->InvalidatePhysicsData();
+			BodySetup->CreatePhysicsMeshes();
+		}
 		return Existing;
 	}
 
@@ -2889,6 +2923,12 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedCollisionMesh(uint32
 	if (UBodySetup* BodySetup = StaticMesh->GetBodySetup())
 	{
 		BodySetup->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
+		// Chaos triangle meshes only block from their front face unless told
+		// otherwise. SWG's collision geometry — cell shells, floor barriers,
+		// CMSH extents — has no consistent winding, so a one-sided mesh is a
+		// wall from one direction and air from the other: exactly the
+		// walk-through-the-room-wall symptom. Sheets have no inside anyway.
+		BodySetup->bDoubleSidedGeometry = true;
 		BodySetup->InvalidatePhysicsData();
 		BodySetup->CreatePhysicsMeshes();
 	}
@@ -3080,3 +3120,268 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 	return MeshComponent;
 }
 
+
+
+// ── Appearance collision ─────────────────────────────────────────────────
+
+bool USWGMeshGeneratorSubsystem::ResolveAppearanceCollision(const FSWGPendingMeshRequest& Request, FSWGAppearanceCollision& OutCollision, TOptional<FSWGFloorData>& OutFloor)
+{
+	if (!TreSubsystem)
+	{
+		return false;
+	}
+
+	// Retail's gate: an object blocks a mover only if its template's
+	// collisionMaterialBlockFlags share a bit with the mover's material (1 for
+	// creatures). shared_base_object sets 0 — furniture and loose tangibles
+	// are walk-through, as they were in the game — while shared_static_base
+	// and shared_base_building set 1. The flags live up the DERV chain.
+	const FString TemplatePath = !Request.TemplatePath.IsEmpty() ? Request.TemplatePath : TreSubsystem->ResolveTemplatePath(Request.TemplateCrc);
+	int32 MaterialBlockFlags = 0;
+	if (TemplatePath.IsEmpty() || !TreSubsystem->FindTemplateIntParam(TemplatePath, TEXT("collisionMaterialBlockFlags"), MaterialBlockFlags))
+	{
+		return false;
+	}
+	constexpr int32 CreatureMaterialFlag = 1;
+	if ((MaterialBlockFlags & CreatureMaterialFlag) == 0)
+	{
+		return false;
+	}
+
+	TArray<FString> Candidates;
+	if (!Request.CollisionSourcePath.IsEmpty())
+	{
+		Candidates.Add(Request.CollisionSourcePath);
+	}
+	for (const FString& MeshPath : Request.MeshVirtualPaths)
+	{
+		Candidates.AddUnique(MeshPath);
+	}
+
+	// The .lod normally has it all; a bare .msh appearance carries its own.
+	// Only an authored collision extent or floor counts: an explicit FORM NULL
+	// (chairs, seats, campfire ash — all with block flags set) is the authors
+	// saying "walk through", not "use the render bounds"; walls, pillars and
+	// bridges all carry real boxes. So no bounding-extent fallback.
+	bool bFound = false;
+	for (const FString& Candidate : Candidates)
+	{
+		FSWGAppearanceCollision CandidateCollision;
+		if (!FSWGAppearanceCollisionReader::Read(TreSubsystem->CreateIffReader(Candidate), CandidateCollision))
+		{
+			continue;
+		}
+		if (CandidateCollision.HasCollisionExtent() || !CandidateCollision.FloorPath.IsEmpty())
+		{
+			OutCollision = MoveTemp(CandidateCollision);
+			bFound = true;
+			break;
+		}
+	}
+
+	if (bFound && !OutCollision.FloorPath.IsEmpty())
+	{
+		FSWGFloorData FloorData;
+		FSWGIffReader FloorReader = TreSubsystem->CreateIffReader(OutCollision.FloorPath);
+		if (FloorReader.IsValid() && FSWGFloorReader::ReadFloor(FloorReader, FloorData) && !FloorData.Triangles.IsEmpty())
+		{
+			OutFloor = MoveTemp(FloorData);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: appearance floor %s failed to load"), *OutCollision.FloorPath);
+		}
+	}
+
+	return bFound;
+}
+
+UStaticMeshComponent* USWGMeshGeneratorSubsystem::AddCollisionMeshComponent(AActor& Actor, USceneComponent& Parent, uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices)
+{
+	UStaticMesh* CollisionMesh = GetOrBuildGeneratedCollisionMesh(CacheHash, DebugName, Vertices, Indices);
+	if (!CollisionMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to build collision mesh for %s"), *DebugName);
+		return nullptr;
+	}
+
+	UStaticMeshComponent* Component = NewObject<UStaticMeshComponent>(&Actor);
+	Component->SetMobility(Parent.Mobility);
+	Component->SetupAttachment(&Parent);
+	Component->SetStaticMesh(CollisionMesh);
+	Component->SetVisibility(false);
+	Component->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	Component->SetCollisionObjectType(ECC_WorldStatic);
+	Component->SetCollisionResponseToAllChannels(ECR_Block);
+	Component->RegisterComponent();
+	return Component;
+}
+
+namespace
+{
+	void ConfigureCollisionPrimitive(UPrimitiveComponent& Component, USceneComponent& Parent)
+	{
+		Component.SetMobility(Parent.Mobility);
+		Component.SetupAttachment(&Parent);
+		Component.SetVisibility(false);
+		Component.SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		Component.SetCollisionObjectType(ECC_WorldStatic);
+		Component.SetCollisionResponseToAllChannels(ECR_Block);
+	}
+}
+
+void USWGMeshGeneratorSubsystem::BuildAppearanceCollision(AActor& Actor, USceneComponent& Parent, const FSWGAppearanceCollision& Collision, const FSWGFloorData* Floor, const FString& DebugName)
+{
+	check(IsInGameThread());
+
+	int32 PrimitiveCount = 0;
+	int32 MeshCount = 0;
+
+	// Recursive over the extent tree. Local space is the appearance's, which is
+	// exactly Parent's (the generated mesh component), so no transform beyond
+	// each primitive's own centre.
+	TFunction<void(const FSWGCollisionExtent&)> AddExtent = [&](const FSWGCollisionExtent& Extent)
+	{
+		switch (Extent.Type)
+		{
+		case ESWGCollisionExtentType::Box:
+		{
+			UBoxComponent* Box = NewObject<UBoxComponent>(&Actor);
+			ConfigureCollisionPrimitive(*Box, Parent);
+			Box->SetRelativeLocation(Extent.Box.GetCenter());
+			Box->SetBoxExtent(Extent.Box.GetExtent(), false);
+			Box->RegisterComponent();
+			++PrimitiveCount;
+			break;
+		}
+		case ESWGCollisionExtentType::Sphere:
+		{
+			USphereComponent* Sphere = NewObject<USphereComponent>(&Actor);
+			ConfigureCollisionPrimitive(*Sphere, Parent);
+			Sphere->SetRelativeLocation(Extent.Center);
+			Sphere->SetSphereRadius(Extent.Radius, false);
+			Sphere->RegisterComponent();
+			++PrimitiveCount;
+			break;
+		}
+		case ESWGCollisionExtentType::Cylinder:
+		{
+			// No cylinder primitive in Chaos; a capsule of the same radius,
+			// its straight section spanning the cylinder, is the nearest
+			// shape without cooking a convex. Off by the rounded caps at the
+			// top and bottom, where nothing walks anyway.
+			UCapsuleComponent* Capsule = NewObject<UCapsuleComponent>(&Actor);
+			ConfigureCollisionPrimitive(*Capsule, Parent);
+			const float HalfHeight = FMath::Max(Extent.Height * 0.5f, Extent.Radius);
+			Capsule->SetRelativeLocation(Extent.Center + FVector(0.0f, 0.0f, Extent.Height * 0.5f));
+			Capsule->SetCapsuleSize(Extent.Radius, HalfHeight, false);
+			Capsule->RegisterComponent();
+			++PrimitiveCount;
+			break;
+		}
+		case ESWGCollisionExtentType::Mesh:
+		{
+			const uint32 MeshHash = HashCombine(GetTypeHash(DebugName), GetTypeHash(MeshCount));
+			AddCollisionMeshComponent(Actor, Parent, MeshHash, FString::Printf(TEXT("%s [cmsh %d]"), *DebugName, MeshCount), Extent.Vertices, Extent.Indices);
+			++MeshCount;
+			break;
+		}
+		case ESWGCollisionExtentType::Composite:
+			for (const FSWGCollisionExtent& Child : Extent.Children)
+			{
+				AddExtent(Child);
+			}
+			break;
+		case ESWGCollisionExtentType::Detail:
+			// Coarse-to-fine alternatives for the same shape; the last is the real one.
+			if (!Extent.Children.IsEmpty())
+			{
+				AddExtent(Extent.Children.Last());
+			}
+			break;
+		case ESWGCollisionExtentType::Null:
+		default:
+			break;
+		}
+	};
+
+	if (Collision.HasCollisionExtent())
+	{
+		AddExtent(*Collision.CollisionExtent);
+	}
+
+	if (Floor)
+	{
+		TArray<FVector> FloorVertices = Floor->Vertices;
+		TArray<int32> FlatIndices;
+		FlatIndices.Reserve(Floor->Triangles.Num() * 3);
+		for (const FSWGFloorTriangle& Triangle : Floor->Triangles)
+		{
+			FlatIndices.Add(Triangle.CornerIndex1);
+			FlatIndices.Add(Triangle.CornerIndex2);
+			FlatIndices.Add(Triangle.CornerIndex3);
+		}
+		// Its uncrossable edges are the railings and drop-offs the floor's
+		// author fenced; a bridge deck's edges keep you on the deck the way
+		// a room's keep you in the room.
+		constexpr float BarrierHeight = 300.0f;
+		FSWGFloorReader::AppendBarrierMesh(*Floor, BarrierHeight, FloorVertices, FlatIndices);
+		const uint32 FloorHash = HashCombine(GetTypeHash(Collision.FloorPath), GetTypeHash(FString(TEXT("barriers-1"))));
+		AddCollisionMeshComponent(Actor, Parent, FloorHash, Collision.FloorPath, FloorVertices, FlatIndices);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGMeshGeneratorSubsystem: %s collision — %d primitive(s), %d mesh(es)%s"),
+		*DebugName, PrimitiveCount, MeshCount, Floor ? TEXT(", floor") : TEXT(""));
+}
+
+
+// Dev: what would stop a player walking forward from here. Traces from the
+// camera along its view for <distance> (default 500) on the Pawn channel and
+// logs every blocking hit's actor, component and mesh asset.
+static FAutoConsoleCommand SWGTraceForwardCmd(
+	TEXT("swg.TraceForward"),
+	TEXT("swg.TraceForward [distance] — logs the collision the camera is looking at, on the Pawn channel."),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			UWorld* World = nullptr;
+			for (const FWorldContext& Context : GEngine->GetWorldContexts())
+			{
+				if (Context.WorldType == EWorldType::PIE || Context.WorldType == EWorldType::Game)
+				{
+					World = Context.World();
+					break;
+				}
+			}
+			const APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
+			if (!PlayerController || !PlayerController->PlayerCameraManager)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("swg.TraceForward: no player camera"));
+				return;
+			}
+
+			const float Distance = Args.Num() > 0 ? FCString::Atof(*Args[0]) : 500.0f;
+			const FVector Start = PlayerController->PlayerCameraManager->GetCameraLocation();
+			const FVector End = Start + PlayerController->PlayerCameraManager->GetCameraRotation().Vector() * Distance;
+
+			TArray<FHitResult> Hits;
+			FCollisionQueryParams Params(SCENE_QUERY_STAT(SWGTraceForward), false);
+			if (const APawn* Pawn = PlayerController->GetPawn())
+			{
+				Params.AddIgnoredActor(Pawn);
+			}
+			World->LineTraceMultiByChannel(Hits, Start, End, ECC_Pawn, Params);
+
+			UE_LOG(LogTemp, Warning, TEXT("swg.TraceForward: %d hit(s) over %.0f from %s"), Hits.Num(), Distance, *Start.ToCompactString());
+			for (const FHitResult& Hit : Hits)
+			{
+				const UPrimitiveComponent* Component = Hit.GetComponent();
+				const UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component);
+				UE_LOG(LogTemp, Warning, TEXT("   %.0f: %s / %s (%s)%s at %s"),
+					Hit.Distance,
+					Hit.GetActor() ? *Hit.GetActor()->GetName() : TEXT("<none>"),
+					Component ? *Component->GetName() : TEXT("<none>"),
+					Component ? *Component->GetClass()->GetName() : TEXT(""),
+					StaticMeshComponent && StaticMeshComponent->GetStaticMesh() ? *FString::Printf(TEXT(" mesh %s"), *StaticMeshComponent->GetStaticMesh()->GetName()) : TEXT(""),
+					*Hit.ImpactPoint.ToCompactString());
+			}
+		}));

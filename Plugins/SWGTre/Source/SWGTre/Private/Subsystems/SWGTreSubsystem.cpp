@@ -360,6 +360,28 @@ bool USWGTreSubsystem::FindTemplateStringId(const FString& TemplatePath, const T
 	return false;
 }
 
+bool USWGTreSubsystem::FindTemplateIntParam(const FString& TemplatePath, const TCHAR* Key, int32& OutValue)
+{
+	FString CurrentPath = TemplatePath;
+	for (int32 Depth = 0; Depth < 16 && !CurrentPath.IsEmpty(); ++Depth)
+	{
+		const FSWGIffReader Reader = CreateIffReader(CurrentPath);
+		if (!Reader.IsValid())
+		{
+			return false;
+		}
+		if (FSWGObjectTemplateReader::FindIntField(Reader, Key, OutValue))
+		{
+			return true;
+		}
+		if (!FSWGObjectTemplateReader::FindDervParentPath(Reader, CurrentPath))
+		{
+			return false;
+		}
+	}
+	return false;
+}
+
 FString USWGTreSubsystem::ResolveTemplateObjectName(uint32 Crc)
 {
 	const FString TemplatePath = ResolveTemplatePath(Crc);

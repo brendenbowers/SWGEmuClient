@@ -22,6 +22,14 @@ public:
 	 */
 	static bool FindStringIdField(const FSWGIffReader& Reader, const TCHAR* Key, FString& OutTable, FString& OutText);
 
+	/**
+	 * Reads an integer XXXX field ("collisionMaterialBlockFlags", "containerType"):
+	 *   key\0  01(has value)  20(numeric literal)  int32
+	 * Only the literal form is accepted; ranges/die rolls return false.
+	 * False also when the key is absent or unset in this layer.
+	 */
+	static bool FindIntField(const FSWGIffReader& Reader, const TCHAR* Key, int32& OutValue);
+
 	/** The template this one DERVs from (FORM SHOT > FORM DERV > XXXX path\0), or false at the chain's root. */
 	static bool FindDervParentPath(const FSWGIffReader& Reader, FString& OutParentPath);
 

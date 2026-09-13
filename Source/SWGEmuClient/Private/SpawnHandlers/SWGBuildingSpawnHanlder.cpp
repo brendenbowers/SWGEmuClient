@@ -129,11 +129,286 @@ namespace
 		}
 	}
 
+	// How far from the portal plane a wall piece inside the opening still
+	// counts as the door, in UE units. Interior wall panels stand right on the
+	// plane, and a room's far wall can be parallel and close, so rooms keep
+	// this tight. Exterior shells lean and step — the cloning facility's
+	// facade sits 25-175 cm in front of its portal at door height — and have
+	// nothing parallel behind the door for metres, so the shell reaches further.
+	constexpr float PortalCutHalfDepthInterior = 100.0f;
+	constexpr float PortalCutHalfDepthExterior = 200.0f;
+
+	// |dot| of a triangle's normal with the doorway's above which the triangle
+	// counts as lying in the doorway plane (about 45 degrees). Jambs are ~0.
+	constexpr float PortalCutParallelDot = 0.7f;
+
+	// How far below a portal's sill the cut reaches, in UE units.
+	constexpr float PortalCutSillDrop = 100.0f;
+
+	// Wall barriers raised along a floor's uncrossable edges, in UE units —
+	// Core3's BARRIER_HEIGHT. Taller than any character, short of ceilings
+	// with a mezzanine above.
+	constexpr float FloorBarrierHeight = 300.0f;
+
+	/** A convex polygon in 3D, as produced by clipping a triangle. */
+	using FClipPolygon = TArray<FVector, TInlineAllocator<8>>;
+
+	/**
+	 * Sutherland-Hodgman against one plane: the part of Polygon on the side
+	 * the plane normal points to goes in OutFront, the rest in OutBack.
+	 */
+	void SplitPolygon(const FClipPolygon& Polygon, const FPlane& Plane, FClipPolygon& OutFront, FClipPolygon& OutBack)
+	{
+		OutFront.Reset();
+		OutBack.Reset();
+		const int32 Count = Polygon.Num();
+		for (int32 VertexIndex = 0; VertexIndex < Count; ++VertexIndex)
+		{
+			const FVector& Current = Polygon[VertexIndex];
+			const FVector& Next = Polygon[(VertexIndex + 1) % Count];
+			const double CurrentDistance = Plane.PlaneDot(Current);
+			const double NextDistance = Plane.PlaneDot(Next);
+
+			(CurrentDistance >= 0.0 ? OutFront : OutBack).Add(Current);
+			if ((CurrentDistance >= 0.0) != (NextDistance >= 0.0))
+			{
+				const FVector Crossing = FMath::Lerp(Current, Next, CurrentDistance / (CurrentDistance - NextDistance));
+				OutFront.Add(Crossing);
+				OutBack.Add(Crossing);
+			}
+		}
+	}
+
+	/** Fan-triangulates a convex polygon onto the output arrays. */
+	void EmitPolygon(const FClipPolygon& Polygon, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
+	{
+		if (Polygon.Num() < 3)
+		{
+			return;
+		}
+		// A clip along an existing edge leaves a zero-width strip; nothing to collide with.
+		FVector AreaVector = FVector::ZeroVector;
+		for (int32 VertexIndex = 1; VertexIndex + 1 < Polygon.Num(); ++VertexIndex)
+		{
+			AreaVector += FVector::CrossProduct(Polygon[VertexIndex] - Polygon[0], Polygon[VertexIndex + 1] - Polygon[0]);
+		}
+		if (AreaVector.Size() < 2.0f) // < 1 cm^2
+		{
+			return;
+		}
+		const int32 Base = OutVertices.Num();
+		OutVertices.Append(Polygon.GetData(), Polygon.Num());
+		for (int32 VertexIndex = 1; VertexIndex + 1 < Polygon.Num(); ++VertexIndex)
+		{
+			OutIndices.Add(Base);
+			OutIndices.Add(Base + VertexIndex);
+			OutIndices.Add(Base + VertexIndex + 1);
+		}
+	}
+
+	/**
+	 * The cell's collision geometry with its doorways cut out. Retail's
+	 * collision skipped the triangles a portal covers when a mover crossed it;
+	 * cutting the openings out of the mesh up front does the same for a
+	 * physics mesh. Every triangle lying in a portal's plane (normal within
+	 * PortalCutParallelDot, within the cell's half depth of it) is clipped
+	 * against the prism through the opening's outline: the part inside the
+	 * doorway is discarded, the rest re-triangulated — so a whole-facade
+	 * triangle that spans a door (the cloning facility's does) keeps its wall
+	 * and loses only the door. Jambs and lintels are perpendicular and untouched.
+	 */
+	void CutPortalsFromCollisionImpl(const FSWGPobCell& CellData, TArray<FVector>& OutVertices, TArray<int32>& OutIndices, int32& OutCutTriangles)
+	{
+		OutCutTriangles = 0;
+		OutVertices = CellData.CollisionVertices;
+		OutIndices.Reset();
+		OutIndices.Reserve(CellData.CollisionIndices.Num());
+
+		const float HalfDepth = CellData.CellIndex == 0 ? PortalCutHalfDepthExterior : PortalCutHalfDepthInterior;
+
+		struct FPortalPrism
+		{
+			FVector Origin;
+			FVector Normal;
+			/** Outward-facing side planes through each outline edge, plus the margin. */
+			TArray<FPlane, TInlineAllocator<8>> SidePlanes;
+		};
+		TArray<FPortalPrism> Prisms;
+
+		for (const FSWGPobPortalRef& Portal : CellData.Portals)
+		{
+			if (!Portal.bIsPassable || Portal.OpeningVertices.Num() < 3)
+			{
+				continue;
+			}
+
+			// Newell's method, as ASWGBuilding::GetEntrances — some openings aren't planar.
+			FPortalPrism Prism;
+			Prism.Origin = FVector::ZeroVector;
+			Prism.Normal = FVector::ZeroVector;
+			const int32 Count = Portal.OpeningVertices.Num();
+			for (int32 VertexIndex = 0; VertexIndex < Count; ++VertexIndex)
+			{
+				const FVector& EdgeStart = Portal.OpeningVertices[VertexIndex];
+				const FVector& EdgeEnd = Portal.OpeningVertices[(VertexIndex + 1) % Count];
+				Prism.Origin += EdgeStart;
+				Prism.Normal += FVector(
+					(EdgeStart.Y - EdgeEnd.Y) * (EdgeStart.Z + EdgeEnd.Z),
+					(EdgeStart.Z - EdgeEnd.Z) * (EdgeStart.X + EdgeEnd.X),
+					(EdgeStart.X - EdgeEnd.X) * (EdgeStart.Y + EdgeEnd.Y));
+			}
+			Prism.Origin /= Count;
+			if (!Prism.Normal.Normalize())
+			{
+				continue;
+			}
+
+			for (int32 VertexIndex = 0; VertexIndex < Count; ++VertexIndex)
+			{
+				const FVector& EdgeStart = Portal.OpeningVertices[VertexIndex];
+				const FVector& EdgeEnd = Portal.OpeningVertices[(VertexIndex + 1) % Count];
+				FVector SideNormal = FVector::CrossProduct(EdgeEnd - EdgeStart, Prism.Normal).GetSafeNormal();
+				if (SideNormal.IsNearlyZero())
+				{
+					continue;
+				}
+				// Outward: away from the opening's centre.
+				if (FVector::DotProduct(SideNormal, Prism.Origin - EdgeStart) > 0.0f)
+				{
+					SideNormal = -SideNormal;
+				}
+				// Exactly on the outline for the sides and lintel: any margin
+				// shaves slivers off the walls beside the frame. The sill edge is
+				// pushed down instead — a shell that leans or steps leaves a
+				// strip of itself under the portal's bottom edge (the cloning
+				// facility's is 8 cm, on a sill already 8 cm up), and below a
+				// door there is only ground or the building's own floor sheet.
+				const FVector PlaneBase = SideNormal.Z < -0.7f ? EdgeStart + FVector(0.0f, 0.0f, -PortalCutSillDrop) : EdgeStart;
+				Prism.SidePlanes.Add(FPlane(PlaneBase, SideNormal));
+			}
+			if (Prism.SidePlanes.Num() >= 3)
+			{
+				Prisms.Add(MoveTemp(Prism));
+			}
+		}
+
+		if (Prisms.IsEmpty())
+		{
+			OutIndices = CellData.CollisionIndices;
+			return;
+		}
+
+		for (int32 TriangleStart = 0; TriangleStart + 2 < CellData.CollisionIndices.Num(); TriangleStart += 3)
+		{
+			const int32 IndexA = CellData.CollisionIndices[TriangleStart];
+			const int32 IndexB = CellData.CollisionIndices[TriangleStart + 1];
+			const int32 IndexC = CellData.CollisionIndices[TriangleStart + 2];
+			if (!CellData.CollisionVertices.IsValidIndex(IndexA) || !CellData.CollisionVertices.IsValidIndex(IndexB) || !CellData.CollisionVertices.IsValidIndex(IndexC))
+			{
+				continue;
+			}
+			const FVector& CornerA = CellData.CollisionVertices[IndexA];
+			const FVector& CornerB = CellData.CollisionVertices[IndexB];
+			const FVector& CornerC = CellData.CollisionVertices[IndexC];
+			const FVector TriangleNormal = FVector::CrossProduct(CornerB - CornerA, CornerC - CornerA).GetSafeNormal();
+
+			// Pieces of this triangle still standing; starts as the whole thing.
+			TArray<FClipPolygon, TInlineAllocator<4>> Pieces;
+			Pieces.Add({ CornerA, CornerB, CornerC });
+			bool bCut = false;
+
+			for (const FPortalPrism& Prism : Prisms)
+			{
+				if (FMath::Abs(FVector::DotProduct(TriangleNormal, Prism.Normal)) < PortalCutParallelDot)
+				{
+					continue;
+				}
+
+				TArray<FClipPolygon, TInlineAllocator<4>> NextPieces;
+				for (const FClipPolygon& Piece : Pieces)
+				{
+					// Peel the outside off against each side plane; what survives
+					// every plane is inside the doorway prism.
+					FClipPolygon Inside = Piece;
+					for (const FPlane& SidePlane : Prism.SidePlanes)
+					{
+						FClipPolygon Outside, StillInside;
+						SplitPolygon(Inside, SidePlane, Outside, StillInside);
+						if (Outside.Num() >= 3)
+						{
+							NextPieces.Add(MoveTemp(Outside));
+						}
+						Inside = MoveTemp(StillInside);
+						if (Inside.Num() < 3)
+						{
+							break;
+						}
+					}
+
+					if (Inside.Num() < 3)
+					{
+						continue;
+					}
+
+					// Inside the outline — but only door if it sits in the wall,
+					// not a floor or ceiling slab that happens to pass under the frame.
+					FVector InsideCentroid = FVector::ZeroVector;
+					for (const FVector& Vertex : Inside) { InsideCentroid += Vertex; }
+					InsideCentroid /= Inside.Num();
+					if (FMath::Abs(FVector::DotProduct(InsideCentroid - Prism.Origin, Prism.Normal)) <= HalfDepth)
+					{
+						bCut = true; // the inside piece is dropped
+					}
+					else
+					{
+						NextPieces.Add(MoveTemp(Inside));
+					}
+				}
+				Pieces = MoveTemp(NextPieces);
+			}
+
+			if (!bCut)
+			{
+				OutIndices.Add(IndexA);
+				OutIndices.Add(IndexB);
+				OutIndices.Add(IndexC);
+				continue;
+			}
+
+			++OutCutTriangles;
+			for (const FClipPolygon& Piece : Pieces)
+			{
+				EmitPolygon(Piece, OutVertices, OutIndices);
+			}
+		}
+	}
+
 	// Owned by neither spawn concept — bakes floor collision from FSWGPobCell
 	// data onto Actor (the building itself for the exterior shell, or a cell
 	// actor once FSWGCellSpawnHandler::FinishCell builds it).
 	void CreateCollisionForCell(TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem, AActor* Actor, const FSWGPobCell& CellData)
 	{
+		// The cell's CMSH is its walls (and for cell 0, the exterior shell) —
+		// what stops you walking through a building. The .flr below is only
+		// what you stand on. Cell-local like the floor, so attached the same way.
+		if (!CellData.CollisionVertices.IsEmpty() && !CellData.CollisionIndices.IsEmpty() && Actor->GetRootComponent())
+		{
+			TArray<FVector> WallVertices;
+			TArray<int32> WallIndices;
+			int32 CutTriangles = 0;
+			CutPortalsFromCollisionImpl(CellData, WallVertices, WallIndices, CutTriangles);
+			if (!WallIndices.IsEmpty())
+			{
+				// Salted per cut rule: the saved SM_Collision_* asset is the cache,
+				// so a change to how doorways are cut must not reuse the old shell.
+				const uint32 WallHash = HashCombine(HashCombine(GetTypeHash(CellData.MeshPath), GetTypeHash(CellData.CellIndex)), GetTypeHash(FString(TEXT("portalcut-4"))));
+				UStaticMeshComponent* Walls = MeshGeneratorSubsystem->AddCollisionMeshComponent(*Actor, *Actor->GetRootComponent(), WallHash,
+					FString::Printf(TEXT("%s [cell %d walls]"), *CellData.MeshPath, CellData.CellIndex), WallVertices, WallIndices);
+				UE_LOG(LogTemp, Log, TEXT("CreateCollisionForCell: cell %d '%s' walls — %d tri(s), %d clipped around %d portal(s)%s"),
+					CellData.CellIndex, *CellData.CellName, WallIndices.Num() / 3, CutTriangles, CellData.Portals.Num(), Walls ? TEXT("") : TEXT(" — FAILED"));
+			}
+		}
+
 		FSWGIffReader FloorReader = TreSubsystem->CreateIffReader(CellData.CollisionFloorPath);
 		FSWGFloorData FloorData;
 		const bool bFloorParsed = FloorReader.IsValid() && FSWGFloorReader::ReadFloor(FloorReader, FloorData);
@@ -146,8 +421,11 @@ namespace
 			return;
 		}
 
-		const uint32 CacheHash = GetTypeHash(CellData.CollisionFloorPath);
+		// Salted: the saved SM_Collision_* asset is the cache, and the floor
+		// mesh now carries its wall barriers too.
+		const uint32 CacheHash = HashCombine(GetTypeHash(CellData.CollisionFloorPath), GetTypeHash(FString(TEXT("barriers-1"))));
 
+		TArray<FVector> FloorVertices = FloorData.Vertices;
 		TArray<int32> FlatIndices;
 		FlatIndices.Reserve(FloorData.Triangles.Num() * 3);
 		for (const FSWGFloorTriangle& Tri : FloorData.Triangles)
@@ -157,7 +435,14 @@ namespace
 			FlatIndices.Add(Tri.CornerIndex3);
 		}
 
-		UStaticMesh* CollisionMesh = MeshGeneratorSubsystem->GetOrBuildGeneratedCollisionMesh(CacheHash, CellData.CollisionFloorPath, FloorData.Vertices, FlatIndices);
+		// The room's walls: the floor stops at them and flags the edge, so a
+		// barrier along every uncrossable edge is what keeps a player inside.
+		// Portal edges are crossable and get none — the doorway stays open.
+		const int32 Barriers = FSWGFloorReader::AppendBarrierMesh(FloorData, FloorBarrierHeight, FloorVertices, FlatIndices);
+		UE_LOG(LogTemp, Log, TEXT("CreateCollisionForCell: cell %d '%s' floor %s — %d tri(s), %d wall barrier(s)"),
+			CellData.CellIndex, *CellData.CellName, *CellData.CollisionFloorPath, FloorData.Triangles.Num(), Barriers);
+
+		UStaticMesh* CollisionMesh = MeshGeneratorSubsystem->GetOrBuildGeneratedCollisionMesh(CacheHash, CellData.CollisionFloorPath, FloorVertices, FlatIndices);
 		if (!CollisionMesh)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("CreateCollisionForCell: failed to get/build cached collision mesh for cell %s floor %s"), *CellData.CellName, *CellData.CollisionFloorPath);
@@ -203,6 +488,11 @@ namespace
 			}
 		}
 	}
+}
+
+void FSWGCellSpawnHandler::CutPortalsFromCollision(const FSWGPobCell& CellData, TArray<FVector>& OutVertices, TArray<int32>& OutIndices, int32& OutCutTriangles)
+{
+	CutPortalsFromCollisionImpl(CellData, OutVertices, OutIndices, OutCutTriangles);
 }
 
 REGISTER_SWG_ACTOR_SPAWN_HANDLER(FSWGBuildingSpawnHandler, ASWGBuilding)

@@ -58,6 +58,15 @@ public:
 	 */
 	static void SpawnCellDoors(ASWGBuilding* BuildingActor, const FString& CellName, TArrayView<const FSWGPobPortalRef> Portals, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem);
 
+	/**
+	 * The cell's collision geometry with its doorways clipped out — the shell
+	 * of many buildings closes its portals with triangles in the doorway
+	 * plane (sometimes a single facade-sized one), which retail's collision
+	 * skipped when a mover crossed the portal. Clipping creates vertices, so
+	 * both arrays come back fresh; OutCutTriangles counts source triangles touched.
+	 */
+	static void CutPortalsFromCollision(const FSWGPobCell& CellData, TArray<FVector>& OutVertices, TArray<int32>& OutIndices, int32& OutCutTriangles);
+
 private:
 	static TWeakObjectPtr<UDataTable> GetDoorStyleTable();
 };

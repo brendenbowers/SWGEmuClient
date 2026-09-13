@@ -87,3 +87,41 @@ bool FSWGFloorReader::ReadFloor(const FSWGIffReader& Reader, FSWGFloorData& OutF
 
 	return true;
 }
+
+
+int32 FSWGFloorReader::AppendBarrierMesh(const FSWGFloorData& Floor, float Height, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
+{
+	int32 Barriers = 0;
+	const FVector Up(0.0f, 0.0f, Height);
+
+	for (const FSWGFloorTriangle& Triangle : Floor.Triangles)
+	{
+		const int32 Corners[3] = { Triangle.CornerIndex1, Triangle.CornerIndex2, Triangle.CornerIndex3 };
+		const uint8 EdgeTypes[3] = { Triangle.EdgeType1, Triangle.EdgeType2, Triangle.EdgeType3 };
+
+		for (int32 EdgeIndex = 0; EdgeIndex < 3; ++EdgeIndex)
+		{
+			if (EdgeTypes[EdgeIndex] == (uint8)ESWGFloorEdgeType::Crossable)
+			{
+				continue;
+			}
+			const int32 StartIndex = Corners[EdgeIndex];
+			const int32 EndIndex = Corners[(EdgeIndex + 1) % 3];
+			if (!Floor.Vertices.IsValidIndex(StartIndex) || !Floor.Vertices.IsValidIndex(EndIndex))
+			{
+				continue;
+			}
+
+			const FVector& Start = Floor.Vertices[StartIndex];
+			const FVector& End = Floor.Vertices[EndIndex];
+			const int32 Base = OutVertices.Num();
+			OutVertices.Add(Start);
+			OutVertices.Add(End);
+			OutVertices.Add(End + Up);
+			OutVertices.Add(Start + Up);
+			OutIndices.Append({ Base, Base + 1, Base + 2, Base, Base + 2, Base + 3 });
+			++Barriers;
+		}
+	}
+	return Barriers;
+}

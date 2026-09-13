@@ -8,6 +8,8 @@
 #include "TRE/SWGCustomizationIdManager.h"
 #include "TRE/SWGAssetCustomizationManager.h"
 #include "TRE/SWGClientDataFileReader.h"
+#include "TRE/SWGAppearanceCollisionReader.h"
+#include "TRE/SWGFloorReader.h"
 #include "Customization/SWGCustomizationVariables.h"
 #include "Engine/AssetUserData.h"
 #include "SWGMeshGeneratorSubsystem.generated.h"
@@ -180,6 +182,14 @@ struct FSWGPendingMeshRequest
 	 *  MeshVirtualPaths already resolved by the caller. */
 	FString AppearancePath;
 
+	/**
+	 * The file whose FORM APPR carries this appearance's collision — the .lod
+	 * when there is one (retail authors extents and the floor at that level;
+	 * the per-LOD .msh files carry NULL), else the .msh itself. Empty for
+	 * skeletal and caller-resolved requests.
+	 */
+	FString CollisionSourcePath;
+
 	/** Decoded customization for an actor-less item-mesh request (see
 	 *  RequestItemMesh) — the equipped item's own palette/morph/texture-index
 	 *  choices (e.g. a dyed or alternate-pattern piece of armor), resolved
@@ -306,6 +316,28 @@ public:
 	UStaticMesh* GetOrBuildGeneratedCollisionMesh(uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices);
 
 	/**
+	 * Attaches an appearance's authored collision under Parent as invisible
+	 * components: the collision extent tree (boxes, spheres, cylinders,
+	 * meshes) as blockers and the .flr floor as the walkable surface — the
+	 * split SWG itself used, so a bridge deck holds you up while its railing
+	 * keeps you on. An explicit NULL extent means walk-through — no bounding
+	 * box stand-in. Game thread.
+	 */
+	void BuildAppearanceCollision(AActor& Actor, USceneComponent& Parent, const FSWGAppearanceCollision& Collision, const FSWGFloorData* Floor, const FString& DebugName);
+
+	/** Complex-as-simple collision from raw triangles (a cell's CMSH walls, a .flr floor), attached invisible under Parent. Game thread. */
+	UStaticMeshComponent* AddCollisionMeshComponent(AActor& Actor, USceneComponent& Parent, uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices);
+
+	/**
+	 * Reads the collision block for a request: CollisionSourcePath first,
+	 * then the top mesh, keeping the first file with an authored extent or
+	 * floor (an explicit NULL extent is honoured), and loads its .flr. Only
+	 * for templates whose collisionMaterialBlockFlags block creatures.
+	 * TRE reads only — safe off the game thread.
+	 */
+	bool ResolveAppearanceCollision(const FSWGPendingMeshRequest& Request, FSWGAppearanceCollision& OutCollision, TOptional<FSWGFloorData>& OutFloor);
+
+	/**
 	 * Actor-less counterpart to RequestMesh(Actor, CrcClass) — resolves
 	 * TemplateCrc, parses its mesh, and builds/caches either a UStaticMesh
 	 * (weapons/held items — .apt->.lod->.msh appearance chain) or a
@@ -371,10 +403,10 @@ private:
 	 * resolved MeshVirtualPath, but callers that only have a CRC/template will
 	 * need this once it's implemented.
 	 */
-	bool ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels = nullptr);
+	bool ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels = nullptr, FString* OutCollisionSourcePath = nullptr);
 
 	/** The path-based half of ResolveMeshPath, factored out so RequestMeshForTemplatePath can skip the CRC->path lookup. */
-	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels = nullptr);
+	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels = nullptr, FString* OutCollisionSourcePath = nullptr);
 
 	/** .lmg (FORM MLOD > FORM 0000 > one NAME per LOD) -> its highest-detail .mgn. */
 	bool ResolveLmgMeshPath(const FString& LmgPath, FString& OutMgnPath);
