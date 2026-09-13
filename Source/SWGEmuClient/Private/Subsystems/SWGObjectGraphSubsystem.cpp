@@ -386,6 +386,7 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 		if (ActorClass->IsChildOf(ASWGCreature::StaticClass()) || ActorClass->IsChildOf(ASWGPlayer::StaticClass()) || ActorClass->IsChildOf(ASWGItem::StaticClass())
 			|| ActorClass->IsChildOf(ASWGBuilding::StaticClass()) || ActorClass->IsChildOf(ASWGInstallation::StaticClass()) || ActorClass->IsChildOf(ASWGStaticProp::StaticClass()))
 		{
+			ApplyClientDataFile(NewActor, Msg.ObjectCrc);
 			MeshGenerator->RequestMesh(NewActor, Msg.ObjectCrc);
 		}
 	}
@@ -751,6 +752,34 @@ void USWGObjectGraphSubsystem::SyncSlottedEquipment(int64 ObjectId, int64 Previo
 		Equipment.CustomizationBytes = Item->TangibleComponent->CustomizationBytes;
 	}
 	Creature->EquipmentComponent->SetContainedItem(Equipment);
+}
+
+void USWGObjectGraphSubsystem::ApplyClientDataFile(AActor* Actor, uint32 TemplateCrc)
+{
+	ASWGCreature* Creature = Cast<ASWGCreature>(Actor);
+	if (!Creature || !MeshGenerator)
+	{
+		return;
+	}
+
+	FSWGClientDataFile ClientData;
+	if (!MeshGenerator->ResolveClientDataFile(TemplateCrc, ClientData))
+	{
+		return;
+	}
+
+	if (Creature->TangibleComponent && !ClientData.Customization.IsEmpty())
+	{
+		Creature->TangibleComponent->ClientDataCustomization = MeshGenerator->ToCustomizationVariables(ClientData.Customization);
+	}
+
+	if (Creature->EquipmentComponent && !ClientData.Wearables.IsEmpty())
+	{
+		Creature->EquipmentComponent->SetClientDataWearables(ClientData.Wearables);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: %s (crc %08X) client data: %d wearable group(s), %d body customization value(s)"),
+		*Actor->GetName(), TemplateCrc, ClientData.Wearables.Num(), ClientData.Customization.Num());
 }
 
 void USWGObjectGraphSubsystem::UnregisterStaticObject(int64 ObjectId)

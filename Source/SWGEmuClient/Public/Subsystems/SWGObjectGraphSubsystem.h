@@ -210,6 +210,14 @@ private:
 	 */
 	void SyncSlottedEquipment(int64 ObjectId, int64 PreviousContainerId);
 
+	/**
+	 * Applies a creature template's baked-in .cdf appearance — body
+	 * customization onto the tangible component and FORM WEAR outfit onto
+	 * the equipment component. Must run before the body mesh request so the
+	 * customization is in place when that mesh builds.
+	 */
+	void ApplyClientDataFile(AActor* Actor, uint32 TemplateCrc);
+
 	TMap<uint32, TSubclassOf<AActor>> CrcToActorClass;
 	bool bCrcMapBuilt = false;
 

@@ -186,6 +186,32 @@ public:
 		ReadMap(Value, ReadKeyFn, ReadValueFn);
 		return Value;
 	}
+
+	/**
+	 * [key value]... with no leading count — pairs run to the end of the
+	 * chunk. Additive into Value so one map can be assembled from several
+	 * sibling chunks (a .cdf's CSSI/WCSI chunks hold one pair each).
+	 */
+	template<typename TKeyType, typename TValueType>
+	bool ReadMapToEnd(TMap<TKeyType, TValueType>& Value, TFunction<bool(TKeyType&)> ReadKeyFn, TFunction<bool(TValueType&)> ReadValueFn)
+	{
+		if (!Data)
+		{
+			return false;
+		}
+
+		while (!AtEnd())
+		{
+			TKeyType ReadKeyVal;
+			TValueType ReadVal;
+			if (!ReadKeyFn(ReadKeyVal) || !ReadValueFn(ReadVal))
+			{
+				return false;
+			}
+			Value.Add(MoveTemp(ReadKeyVal), MoveTemp(ReadVal));
+		}
+		return true;
+	}
 	
 	/**
 	 * SWG (Y-up) -> UE (Z-up) for model-local geometry: swg(x,y,z) -> ue(x, z, y).

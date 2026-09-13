@@ -6,6 +6,7 @@
 #include "Network/Objects/Zone/Creature/CreatureObjectDelta.h"
 #include "Network/Objects/Zone/Object/SWGBaselineListHelpers.h"
 #include "Network/Objects/Zone/Creature/EquiptmentItem.h"
+#include "TRE/SWGClientDataFileReader.h"
 #include "SWGEquipmentComponent.generated.h"
 
 struct FSWGPacket;
@@ -41,7 +42,23 @@ public:
 	void SetContainedItem(const FEquiptmentItem& Item);
 	void RemoveContainedItem(uint64 ObjectId);
 
+	/**
+	 * Outfit baked into the owner's template .cdf (FORM WEAR) — how every
+	 * "dressed_*" NPC is clothed; the server sends no wearable objects for
+	 * them. Permanent for the actor's lifetime: never removed by
+	 * RemoveUnequippedVisuals, since no equipment list ever names them.
+	 */
+	void SetClientDataWearables(const TArray<FSWGClientDataWearable>& Wearables);
+
 protected:
+	/**
+	 * Keys into WearableComponentsByObjectId for SetClientDataWearables'
+	 * meshes: ClientDataWearableIdBase | mesh index. Server object IDs are
+	 * 48-bit, so the top bit can't collide.
+	 */
+	static constexpr uint64 ClientDataWearableIdBase = 1ull << 63;
+	TSet<uint64> ClientDataWearableIds;
+
 	/** EquipmentList merged with ContainedEquipment, one entry per ObjectId. */
 	TArray<FEquiptmentItem> GatherCurrentEquipment() const;
 

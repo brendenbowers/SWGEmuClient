@@ -40,6 +40,16 @@ void USWGTangibleComponent::ApplyBase3(const FTangibleObjectBaseline& Baseline)
 	UpdateNameLabel();
 }
 
+FSWGCustomizationVariables USWGTangibleComponent::GetEffectiveCustomization() const
+{
+	FSWGCustomizationVariables Result = ClientDataCustomization;
+	for (const TPair<uint8, int16>& Pair : DecodedCustomization.Values)
+	{
+		Result.Values.Add(Pair.Key, Pair.Value);
+	}
+	return Result;
+}
+
 void USWGTangibleComponent::ApplyDelta3(const FTangibleObjectDelta& Delta)
 {
 	if (Delta.Complexity.IsSet())     { Complexity = *Delta.Complexity; }

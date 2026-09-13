@@ -39,6 +39,14 @@ public:
 	TArray<uint8>  CustomizationBytes;
 	FSWGCustomizationVariables DecodedCustomization;
 
+	// Baked-in body customization from the owner's template .cdf (CSSI —
+	// NPC skin color, face blends); the server sends none for NPCs. Set by
+	// USWGObjectGraphSubsystem at spawn, before the mesh builds.
+	FSWGCustomizationVariables ClientDataCustomization;
+
+	/** ClientDataCustomization with DecodedCustomization layered on top — the server's value wins per variable. */
+	FSWGCustomizationVariables GetEffectiveCustomization() const;
+
 	TSWGBaselineList<int32> VisibleComponents;
 	int32          OptionsBitmask = 0;
 	uint8          ObjectVisible = 0;

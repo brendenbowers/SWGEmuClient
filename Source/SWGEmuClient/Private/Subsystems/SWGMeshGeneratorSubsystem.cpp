@@ -913,9 +913,10 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 						{
 							if (!Request.AppearancePath.IsEmpty())
 							{
-								PaletteTints = ResolveCustomizationPaletteTints(Tangible->DecodedCustomization, Request.AppearancePath);
-								MorphWeights = ResolveCustomizationMorphWeights(Tangible->DecodedCustomization, Request.AppearancePath);
-								TextureIndices = ResolveCustomizationTextureIndices(Tangible->DecodedCustomization, Request.AppearancePath);
+								const FSWGCustomizationVariables Customization = Tangible->GetEffectiveCustomization();
+								PaletteTints = ResolveCustomizationPaletteTints(Customization, Request.AppearancePath);
+								MorphWeights = ResolveCustomizationMorphWeights(Customization, Request.AppearancePath);
+								TextureIndices = ResolveCustomizationTextureIndices(Customization, Request.AppearancePath);
 							}
 						}
 
@@ -1179,62 +1180,136 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 			continue;
 		}
 
-		FSWGIffReader GroupReader = TreSubsystem->CreateIffReader(MeshGroupPath);
-		if (!GroupReader.IsValid())
-		{
-			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: failed to open mesh group file %s (from appearance %s)"), *MeshGroupPath, *AppearancePath);
-			continue;
-		}
-
-		TArray<FString> Candidates;
 		if (bOutSkeletal)
 		{
-			// .lmg: FORM MLOD > FORM 0000 > multiple NAME (full paths already).
-			FSWGIffChunk MlodForm, Form0000;
-			if (!GroupReader.FindForm(SWG_IFF_TAG('M','L','O','D'), MlodForm) || !GroupReader.FindChildForm(MlodForm, SWG_IFF_TAG('0','0','0','0'), Form0000))
+			FString FinalPath;
+			if (ResolveLmgMeshPath(MeshGroupPath, FinalPath))
 			{
-				UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing MLOD/0000 structure"), *MeshGroupPath);
-				continue;
-			}
-			for (const FSWGIffChunk& Child : GroupReader.ReadChildren(Form0000))
-			{
-				if (Child.Tag == SWGIffTags::Name)
-				{
-					Candidates.Add(ReadFullChunkString(GroupReader, Child));
-				}
-			}
-		}
-		else
-		{
-			TArray<FSWGLodLevel> Levels;
-			if (!ResolveLodLevels(MeshGroupPath, Levels))
-			{
-				continue;
-			}
-			OutMeshVirtualPaths.Add(Levels[0].MeshPath);
-
-			// Lower levels only make sense for a single-mesh appearance; a
-			// multi-part one would need per-part LODs merged together.
-			if (OutLodLevels && MeshGroupPaths.Num() == 1)
-			{
-				Levels.RemoveAt(0);
-				*OutLodLevels = MoveTemp(Levels);
+				OutMeshVirtualPaths.Add(FinalPath);
 			}
 			continue;
 		}
 
-		const FString FinalPath = PickHighestDetailLod(Candidates);
-		if (!FinalPath.IsEmpty())
+		TArray<FSWGLodLevel> Levels;
+		if (!ResolveLodLevels(MeshGroupPath, Levels))
 		{
-			OutMeshVirtualPaths.Add(FinalPath);
+			continue;
 		}
-		else
+		OutMeshVirtualPaths.Add(Levels[0].MeshPath);
+
+		// Lower levels only make sense for a single-mesh appearance; a
+		// multi-part one would need per-part LODs merged together.
+		if (OutLodLevels && MeshGroupPaths.Num() == 1)
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s produced no mesh candidates"), *MeshGroupPath);
+			Levels.RemoveAt(0);
+			*OutLodLevels = MoveTemp(Levels);
 		}
 	}
 
 	return !OutMeshVirtualPaths.IsEmpty();
+}
+
+bool USWGMeshGeneratorSubsystem::ResolveLmgMeshPath(const FString& LmgPath, FString& OutMgnPath)
+{
+	FSWGIffReader GroupReader = TreSubsystem->CreateIffReader(LmgPath);
+	if (!GroupReader.IsValid())
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: failed to open mesh group file %s"), *LmgPath);
+		return false;
+	}
+
+	// .lmg: FORM MLOD > FORM 0000 > multiple NAME (full paths already).
+	FSWGIffChunk MlodForm, Form0000;
+	if (!GroupReader.FindForm(SWG_IFF_TAG('M','L','O','D'), MlodForm) || !GroupReader.FindChildForm(MlodForm, SWG_IFF_TAG('0','0','0','0'), Form0000))
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing MLOD/0000 structure"), *LmgPath);
+		return false;
+	}
+
+	TArray<FString> Candidates;
+	for (const FSWGIffChunk& Child : GroupReader.ReadChildren(Form0000))
+	{
+		if (Child.Tag == SWGIffTags::Name)
+		{
+			Candidates.Add(ReadFullChunkString(GroupReader, Child));
+		}
+	}
+
+	OutMgnPath = PickHighestDetailLod(Candidates);
+	if (OutMgnPath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s produced no mesh candidates"), *LmgPath);
+		return false;
+	}
+	return true;
+}
+
+bool USWGMeshGeneratorSubsystem::ResolveClientDataFile(uint32 TemplateCrc, FSWGClientDataFile& OutClientData)
+{
+	const FString TemplatePath = TreSubsystem->ResolveTemplatePath(TemplateCrc);
+	FString CdfPath;
+	if (TemplatePath.IsEmpty() || !ResolveTemplateStringParam(TemplatePath, SWG_IFF_TAG('S','H','O','T'), TEXT("clientDataFile"), CdfPath) || CdfPath.IsEmpty())
+	{
+		return false;
+	}
+
+	if (!FSWGClientDataFileReader::Read(TreSubsystem->CreateIffReader(CdfPath), OutClientData))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: template %s names clientDataFile %s but it failed to parse"), *TemplatePath, *CdfPath);
+		return false;
+	}
+
+	return !OutClientData.Wearables.IsEmpty() || !OutClientData.Customization.IsEmpty();
+}
+
+FSWGCustomizationVariables USWGMeshGeneratorSubsystem::ToCustomizationVariables(const TMap<FString, int32>& NamedCustomization)
+{
+	EnsureCustomizationManagersLoaded();
+
+	FSWGCustomizationVariables Result;
+	for (const TPair<FString, int32>& Pair : NamedCustomization)
+	{
+		if (const uint8* TypeId = CustomizationIdManager.NameToId.Find(Pair.Key))
+		{
+			Result.Values.Add(*TypeId, (int16)Pair.Value);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: customization variable '%s' is not in customization_id_manager.iff"), *Pair.Key);
+		}
+	}
+	return Result;
+}
+
+void USWGMeshGeneratorSubsystem::RequestWearableMesh(const FString& LmgPath, const TMap<FString, int32>& NamedCustomization,
+	TFunction<void(USkeletalMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnSkeletalComplete)
+{
+	if (!OnSkeletalComplete)
+	{
+		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestWearableMesh called with no callback"));
+		return;
+	}
+
+	// Resolved here on the game thread for the same reason RequestItemMesh
+	// does its slot check up front: cheap, and keeps the threaded part of
+	// ProcessNextRequest on its existing "paths already resolved" branch.
+	FString MgnPath;
+	if (!ResolveLmgMeshPath(LmgPath, MgnPath))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: wearable %s has no usable mesh"), *LmgPath);
+		return;
+	}
+
+	FSWGPendingMeshRequest Request;
+	Request.MeshVirtualPaths = { MgnPath };
+	Request.bSkeletal = true;
+	// The .lmg is its own ACST key (see FSWGAssetCustomizationManager) —
+	// a .cdf's WCSI names resolve against it the way a TANO wearable's do
+	// against its .sat.
+	Request.AppearancePath = LmgPath;
+	Request.Customization = ToCustomizationVariables(NamedCustomization);
+	Request.OnItemSkeletalMeshReady = MoveTemp(OnSkeletalComplete);
+	PendingRequests.Add(MoveTemp(Request));
 }
 
 bool USWGMeshGeneratorSubsystem::ResolveTemplateStringParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, FString& OutValue)

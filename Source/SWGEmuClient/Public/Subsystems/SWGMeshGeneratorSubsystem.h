@@ -7,6 +7,7 @@
 #include "TRE/SWGSkeletonReader.h"
 #include "TRE/SWGCustomizationIdManager.h"
 #include "TRE/SWGAssetCustomizationManager.h"
+#include "TRE/SWGClientDataFileReader.h"
 #include "Customization/SWGCustomizationVariables.h"
 #include "Engine/AssetUserData.h"
 #include "SWGMeshGeneratorSubsystem.generated.h"
@@ -322,6 +323,26 @@ public:
 		TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnSkeletalComplete);
 
 	/**
+	 * Skeletal-only sibling of RequestItemMesh for a wearable known by its
+	 * appearance/mesh/*.lmg path instead of a template — the form a mobile
+	 * template's .cdf FORM WEAR uses (see ResolveClientDataFile). Customization
+	 * is keyed by full variable name ("/private/index_color_1"), as the .cdf
+	 * stores it; the .lmg path is its own ACST key.
+	 */
+	void RequestWearableMesh(const FString& LmgPath, const TMap<FString, int32>& NamedCustomization,
+		TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnSkeletalComplete);
+
+	/**
+	 * Reads the clientDataFile (.cdf) a mobile template names in its SHOT
+	 * form — baked-in outfit and body customization for "dressed_*" NPCs.
+	 * False when the template has none or it has no wearables/customization.
+	 */
+	bool ResolveClientDataFile(uint32 TemplateCrc, FSWGClientDataFile& OutClientData);
+
+	/** Name-keyed customization (a .cdf's CSSI/WCSI) to the wire-id form every Resolve* step takes. */
+	FSWGCustomizationVariables ToCustomizationVariables(const TMap<FString, int32>& NamedCustomization);
+
+	/**
 	 * Plays a one-shot combat action on Actor's generated skeletal mesh,
 	 * resuming its loop afterwards. ActionName is a combat_manager.iff action
 	 * ("attack_mid_center_0"), resolved through the actor's own .ash; see
@@ -354,6 +375,9 @@ private:
 
 	/** The path-based half of ResolveMeshPath, factored out so RequestMeshForTemplatePath can skip the CRC->path lookup. */
 	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels = nullptr);
+
+	/** .lmg (FORM MLOD > FORM 0000 > one NAME per LOD) -> its highest-detail .mgn. */
+	bool ResolveLmgMeshPath(const FString& LmgPath, FString& OutMgnPath);
 
 	/**
 	 * CRC -> template -> arrangementDescriptorFilename (walking the DERV chain

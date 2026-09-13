@@ -8,6 +8,14 @@
 #include "GameFramework/Character.h"
 #include "Algo/AllOf.h"
 
+namespace
+{
+	// The body build sits in the same LIFO mesh queue as every other spawn,
+	// so on a busy zone-in it can be tens of seconds behind an item's mesh.
+	constexpr float BodyMeshPollInterval = 0.25f;
+	constexpr int32 BodyMeshMaxRetries = 240; // 60s
+}
+
 USWGEquipmentComponent::USWGEquipmentComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
@@ -74,6 +82,38 @@ void USWGEquipmentComponent::ApplyDelta6(const FCreatureObjectDelta& Delta)
 	BuildEquipmentVisuals(GatherCurrentEquipment());
 }
 
+void USWGEquipmentComponent::SetClientDataWearables(const TArray<FSWGClientDataWearable>& Wearables)
+{
+	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	USWGMeshGeneratorSubsystem* MeshGen = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr;
+	if (!MeshGen)
+	{
+		return;
+	}
+
+	// Index-derived ids keep a repeat call idempotent: AttachWearableSkeletalMesh
+	// reuses the component already registered under the same id.
+	uint64 NextId = ClientDataWearableIdBase;
+	for (const FSWGClientDataWearable& Wearable : Wearables)
+	{
+		for (const FString& LmgPath : Wearable.MeshPaths)
+		{
+			const uint64 WearableId = NextId++;
+			ClientDataWearableIds.Add(WearableId);
+
+			TWeakObjectPtr<USWGEquipmentComponent> WeakThis(this);
+			MeshGen->RequestWearableMesh(LmgPath, Wearable.Customization,
+				[WeakThis, WearableId](USkeletalMesh* Mesh, const FSWGMeshData, const TArray<UMaterialInterface*>& Materials)
+				{
+					if (USWGEquipmentComponent* Equipment = WeakThis.Get())
+					{
+						Equipment->AttachWearableSkeletalMesh(WearableId, Mesh, Materials);
+					}
+				});
+		}
+	}
+}
+
 void USWGEquipmentComponent::SetPreviewEquipment(TArray<FEquiptmentItem> InEquipment, FString InAlternateAppearance)
 {
 	EquipmentList.Items = MoveTemp(InEquipment);
@@ -96,7 +136,7 @@ void USWGEquipmentComponent::RemoveUnequippedVisuals(const TConstArrayView<FEqui
 
 	for (auto It = WearableComponentsByObjectId.CreateIterator(); It; ++It)
 	{
-		if (EquippedIds.Contains(It.Key()))
+		if (EquippedIds.Contains(It.Key()) || ClientDataWearableIds.Contains(It.Key()))
 		{
 			continue;
 		}
@@ -219,21 +259,21 @@ void USWGEquipmentComponent::AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh*
 	//todo: watch for hte mesh to beready
 	if (!SkeletalMeshComponent->GetSkeletalMeshAsset())
 	{
-		static constexpr int32 MaxRetries = 120; // ~2s at 60fps
-		if (RetryCount >= MaxRetries)
+		if (RetryCount >= BodyMeshMaxRetries)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("USWGEquipmentComponent: gave up waiting for %s's skeletal mesh after %d retries"), *GetOwner()->GetName(), RetryCount);
 			return;
 		}
 
 		TWeakObjectPtr<USWGEquipmentComponent> WeakThis(this);
-		GetWorld()->GetTimerManager().SetTimerForNextTick([WeakThis, ObjectId, Mesh, MeshData, Materials, RetryCount]()
+		FTimerHandle Unused;
+		GetWorld()->GetTimerManager().SetTimer(Unused, [WeakThis, ObjectId, Mesh, MeshData, Materials, RetryCount]()
 		{
 			if (USWGEquipmentComponent* StrongThis = WeakThis.Get())
 			{
 				StrongThis->AttachMeshToHardpoint(ObjectId, Mesh, MeshData, Materials, RetryCount + 1);
 			}
-		});
+		}, BodyMeshPollInterval, false);
 		return;
 	}
 
@@ -275,8 +315,7 @@ void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkelet
 
 	if (!BodyMesh->GetSkeletalMeshAsset())
 	{
-		static constexpr int32 MaxRetries = 120; // ~2s at 60fps
-		if (RetryCount >= MaxRetries)
+		if (RetryCount >= BodyMeshMaxRetries)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("USWGEquipmentComponent: gave up waiting for %s's body skeletal mesh after %d retries — wearable %llu not attached"), *GetOwner()->GetName(), RetryCount, ObjectId);
 			return;
@@ -284,13 +323,14 @@ void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkelet
 
 		// TODO: switch this to wait on the body mesh's OnSkeletalMeshChanged delegate instead a timer
 		TWeakObjectPtr<USWGEquipmentComponent> WeakThis(this);
-		GetWorld()->GetTimerManager().SetTimerForNextTick([WeakThis, ObjectId, Mesh, Materials, RetryCount]()
+		FTimerHandle Unused;
+		GetWorld()->GetTimerManager().SetTimer(Unused, [WeakThis, ObjectId, Mesh, Materials, RetryCount]()
 		{
 			if (USWGEquipmentComponent* StrongThis = WeakThis.Get())
 			{
 				StrongThis->AttachWearableSkeletalMesh(ObjectId, Mesh, Materials, RetryCount + 1);
 			}
-		});
+		}, BodyMeshPollInterval, false);
 		return;
 	}
 
@@ -346,7 +386,7 @@ void USWGEquipmentComponent::ReconcileBodyOcclusion()
 		}
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("USWGEquipmentComponent: ReconcileBodyOcclusion — %s covered zones: [%s]"),
+	UE_LOG(LogTemp, Verbose, TEXT("USWGEquipmentComponent: ReconcileBodyOcclusion — %s covered zones: [%s]"),
 		*BodyMeshAsset->GetName(), *FString::Join(CoveredZones.Array(), TEXT(", ")));
 
 	for (int32 SectionIndex = 0; SectionIndex < BodyZoneData->ZoneNamesBySection.Num(); ++SectionIndex)
@@ -362,7 +402,7 @@ void USWGEquipmentComponent::ReconcileBodyOcclusion()
 			return CoveredZones.Contains(ZoneName);
 		});
 
-		UE_LOG(LogTemp, Warning, TEXT("USWGEquipmentComponent:   section %d zones=[%s] -> %s"),
+		UE_LOG(LogTemp, Verbose, TEXT("USWGEquipmentComponent:   section %d zones=[%s] -> %s"),
 			SectionIndex, *FString::Join(SectionZones, TEXT(", ")), bFullyCovered ? TEXT("HIDE") : TEXT("show"));
 
 		BodyMesh->ShowMaterialSection(SectionIndex, SectionIndex, !bFullyCovered, /*LODIndex=*/0);
