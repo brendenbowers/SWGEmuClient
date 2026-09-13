@@ -425,6 +425,23 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 	MeshGeneratorSubsystem->RequestMesh(BuildingActor, ExteriorCell.MeshPath);
 	CreateCollisionForCell(TreSubsystem, MeshGeneratorSubsystem, BuildingActor, ExteriorCell);
 
+	// Entrance doors belong to the shell, not to the room behind them: rooms
+	// stream in only when the player is close, and a doorway shouldn't stand
+	// open until then. The hardpoint can sit on either side of the portal, so
+	// take the exterior's refs plus any interior ref that faces cell 0.
+	FSWGCellSpawnHandler::SpawnCellDoors(BuildingActor, ExteriorCell.CellName, ExteriorCell.Portals, MeshGeneratorSubsystem);
+	TArray<FSWGPobPortalRef> EntrancePortals;
+	for (int32 CellIndex = 1; CellIndex < BuildingActor->PortalData.Cells.Num(); ++CellIndex)
+	{
+		for (const FSWGPobPortalRef& PortalRef : BuildingActor->PortalData.Cells[CellIndex].Portals)
+		{
+			if (PortalRef.ConnectingCellIndex == 0 && PortalRef.bHasDoorHardpoint)
+			{
+				EntrancePortals.Add(PortalRef);
+			}
+		}
+	}
+	FSWGCellSpawnHandler::SpawnCellDoors(BuildingActor, ExteriorCell.CellName, EntrancePortals, MeshGeneratorSubsystem);
 
 	return true;
 }
@@ -543,65 +560,76 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 			BuildingActor->RegisterCellTrigger(CellActor, CellData.CanSeeParent);
 		});
 
-	UWorld* World = CellActor->GetWorld();
-	for (int j = 0; j < CellData.Portals.Num(); j++)
+	SpawnCellDoors(BuildingActor, CellData.CellName, CellData.Portals, MeshGeneratorSubsystem);
+}
+
+void FSWGCellSpawnHandler::SpawnCellDoors(ASWGBuilding* BuildingActor, const FString& CellName, TArrayView<const FSWGPobPortalRef> Portals, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem)
+{
+	UWorld* World = BuildingActor ? BuildingActor->GetWorld() : nullptr;
+	if (!World || !MeshGeneratorSubsystem)
 	{
-		const FSWGPobPortalRef& PortalRef = CellData.Portals[j];
+		return;
+	}
+
+	for (const FSWGPobPortalRef& PortalRef : Portals)
+	{
 		if (PortalRef.DoorStyle.IsEmpty())
 		{
 			continue; // open archway, no door object
 		}
 
-		// Both cells a portal joins reference it and the door is deduped by
-		// PortalNumber, so whichever finishes first places it. A reference with
-		// no hardpoint has nothing to place it by — leave it to the other side.
+		// A reference with no hardpoint has nothing to place the door by —
+		// leave it to the other side of the portal.
 		if (!PortalRef.bHasDoorHardpoint)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::FinishCell: cell %s portal %d has door style '%s' but no hardpoint — leaving the door to the connecting cell"),
-				*CellData.CellName, PortalRef.PortalNumber, *PortalRef.DoorStyle);
+			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::SpawnCellDoors: cell %s portal %d has door style '%s' but no hardpoint — leaving the door to the connecting cell"),
+				*CellName, PortalRef.PortalNumber, *PortalRef.DoorStyle);
+			continue;
+		}
+
+		if (BuildingActor->Doors.ContainsByPredicate([&PortalRef](const TObjectPtr<ASWGDoor> DoorObj) { return DoorObj && DoorObj->PortalNumber == PortalRef.PortalNumber; }))
+		{
 			continue;
 		}
 
 		FString DoorMeshPath;
 		if (!MeshGeneratorSubsystem->ResolveLodMeshPath(TEXT("appearance/lod/") + PortalRef.DoorStyle + TEXT(".lod"), DoorMeshPath) || DoorMeshPath.IsEmpty())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::FinishCell: portal %d has no usable mesh path for door style %s"), PortalRef.PortalNumber, *PortalRef.DoorStyle);
+			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::SpawnCellDoors: portal %d has no usable mesh path for door style %s"), PortalRef.PortalNumber, *PortalRef.DoorStyle);
 			continue;
 		}
 
-		if (!BuildingActor->Doors.ContainsByPredicate([&PortalRef](const TObjectPtr<ASWGDoor> DoorObj) { return DoorObj->PortalNumber == PortalRef.PortalNumber; }))
-		{
-			ASWGDoor* DoorActor = World->SpawnActor<ASWGDoor>(ASWGDoor::StaticClass(), FTransform::Identity);
-			BuildingActor->Doors.Add(DoorActor);
-			DoorActor->PortalNumber = PortalRef.PortalNumber;
-			DoorActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
-			DoorActor->SetActorRelativeTransform(PortalRef.DoorHardpoint);
+		ASWGDoor* DoorActor = World->SpawnActor<ASWGDoor>(ASWGDoor::StaticClass(), FTransform::Identity);
+		BuildingActor->Doors.Add(DoorActor);
+		DoorActor->PortalNumber = PortalRef.PortalNumber;
+		DoorActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
+		DoorActor->SetActorRelativeTransform(PortalRef.DoorHardpoint);
 
-			TWeakObjectPtr<ASWGDoor> DoorActorWeakPtr = DoorActor;
-			MeshGeneratorSubsystem->RequestMesh(DoorActor, DoorMeshPath).Next([DoorActorWeakPtr, PortalRef, OwningBuilding = CellActor->OwningBuilding](const FSWGMeshGenerationResult& Result)
+		TWeakObjectPtr<ASWGDoor> DoorActorWeakPtr = DoorActor;
+		TWeakObjectPtr<ASWGBuilding> OwningBuilding = BuildingActor;
+		MeshGeneratorSubsystem->RequestMesh(DoorActor, DoorMeshPath).Next([DoorActorWeakPtr, PortalRef, OwningBuilding](const FSWGMeshGenerationResult& Result)
+			{
+				if (!DoorActorWeakPtr.IsValid() || !OwningBuilding.IsValid())
 				{
-					if (!DoorActorWeakPtr.IsValid() || !OwningBuilding.IsValid())
-					{
-						return;
-					}
+					return;
+				}
 
-					if (Result.MeshOrComponent.IsType<FEmptyVariantState>())
-					{
-						OwningBuilding->Doors.Remove(DoorActorWeakPtr.Get());
-						DoorActorWeakPtr->Destroy();
-						return;
-					}
+				if (Result.MeshOrComponent.IsType<FEmptyVariantState>())
+				{
+					OwningBuilding->Doors.Remove(DoorActorWeakPtr.Get());
+					DoorActorWeakPtr->Destroy();
+					return;
+				}
 
-					DoorActorWeakPtr->AttachToActor(OwningBuilding.Get(), FAttachmentTransformRules::KeepWorldTransform);
+				DoorActorWeakPtr->AttachToActor(OwningBuilding.Get(), FAttachmentTransformRules::KeepWorldTransform);
 
-					const FSWGDoorStyleRow* StyleRow = nullptr;
-					if (TWeakObjectPtr<UDataTable> DoorStyleTable = FSWGCellSpawnHandler::GetDoorStyleTable(); DoorStyleTable.IsValid())
-					{
-						StyleRow = DoorStyleTable->FindRow<FSWGDoorStyleRow>(FName(*PortalRef.DoorStyle), TEXT("FSWGCellSpawnHandler::FinishCell"), false);
-					}
-					DoorActorWeakPtr->InitializeDoorStyle(StyleRow);
-				});
-		}
+				const FSWGDoorStyleRow* StyleRow = nullptr;
+				if (TWeakObjectPtr<UDataTable> DoorStyleTable = FSWGCellSpawnHandler::GetDoorStyleTable(); DoorStyleTable.IsValid())
+				{
+					StyleRow = DoorStyleTable->FindRow<FSWGDoorStyleRow>(FName(*PortalRef.DoorStyle), TEXT("FSWGCellSpawnHandler::SpawnCellDoors"), false);
+				}
+				DoorActorWeakPtr->InitializeDoorStyle(StyleRow);
+			});
 	}
 }
 

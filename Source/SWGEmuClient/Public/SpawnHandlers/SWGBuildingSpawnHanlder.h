@@ -9,6 +9,7 @@
 
 
 struct FSWGPobCell;
+struct FSWGPobPortalRef;
 class ASWGCell;
 class ASWGBuilding;
 class USWGObjectGraphSubsystem;
@@ -49,6 +50,13 @@ public:
 
 	/** Spawns the building's interior layout (.ilf) nodes that belong to this room. */
 	static void SpawnInteriorLayout(ASWGCell* CellActor, ASWGBuilding* BuildingActor, const FSWGPobCell& CellData, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem);
+
+	/**
+	 * Spawns a door for each portal that has a door style and a
+	 * hardpoint, skipping portals the building already has a door for. Both
+	 * cells a portal joins reference it, so whichever side runs first places it.
+	 */
+	static void SpawnCellDoors(ASWGBuilding* BuildingActor, const FString& CellName, TArrayView<const FSWGPobPortalRef> Portals, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem);
 
 private:
 	static TWeakObjectPtr<UDataTable> GetDoorStyleTable();
