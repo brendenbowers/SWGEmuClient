@@ -35,9 +35,9 @@ void ASWGDoor::InitializeDoorStyle(const FSWGDoorStyleRow* StyleRow)
     }
 
     // FSWGDoorStyleRow stores door_style.iff's raw values, in meters like
-    // every other SWG file — SWGWorldScale (100) converts to UE's
+    // every other SWG file — SWGToUnrealSpace converts to UE axes and
     // centimeters here, at the point of use, same as every other reader.
-    OpenOffset = StyleRow->MoveOffset * SWGWorldScale;
+    OpenOffset = SWGToUnrealSpace(StyleRow->MoveOffset);
     OpenTime = StyleRow->OpenTime;
     CloseTime = StyleRow->CloseTime;
     Springiness = StyleRow->Springiness;

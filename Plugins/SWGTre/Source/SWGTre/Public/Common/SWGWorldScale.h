@@ -16,27 +16,19 @@
 constexpr float SWGWorldScale = 100.0f;
 
 /**
- * SWG models face +Z, which ReadVectorLE's swg(x,y,z) -> ue(x,z,y) swap lands
- * on UE +Y; UE characters face actor +X. Every character mesh applies this
- * turn, whichever path built it, and server headings add the opposite sign
- * back (see USWGObjectGraphSubsystem). Non-character meshes keep the
- * unrotated +Y forward and take no offset at either end.
+ * Axes. SWG's native frame (files and the wire) is x east, y up, z north,
+ * with models facing +z — left-handed, like UE. "Raw" space is Core3's
+ * relabeling of it: x east, y north, z up, metres. Read as UE (X, Y, Z) that
+ * raw frame is a mirror image (UE has Y to the right of X, but north is to
+ * the LEFT of east), which is why the raw<->UE step below is a rotation and
+ * not just the scale: UE X = north (raw Y), UE Y = east (raw X), UE Z = up.
+ * SWG's +z forward therefore lands on UE +X, so meshes need no yaw offset
+ * and headings map 1:1. FSWGIFFChunkReader::ReadVectorLE applies the same
+ * rotation to native file geometry directly.
  */
-constexpr float SWGCharacterMeshYaw = -90.0f;
-
-/**
- * Inverse of USWGObjectGraphSubsystem's incoming heading conversion: characters
- * are yaw-only on the wire, and the mesh turn above has to come back off before
- * the DataTransform serializers swap the quaternion into SWG axes.
- */
-FORCEINLINE FQuat SWGCharacterHeadingToRawSpace(const FRotator& UnrealRotation)
-{
-	return FRotator(0.0f, UnrealRotation.Yaw + SWGCharacterMeshYaw, 0.0f).Quaternion();
-}
-
 FORCEINLINE FVector SWGToUnrealSpace(const FVector& RawPos)
 {
-	return RawPos * SWGWorldScale;
+	return FVector(RawPos.Y, RawPos.X, RawPos.Z) * SWGWorldScale;
 }
 
 FORCEINLINE float SWGToUnrealSpace(float RawValue)
@@ -46,10 +38,38 @@ FORCEINLINE float SWGToUnrealSpace(float RawValue)
 
 FORCEINLINE FVector SWGToRawSpace(const FVector& UnrealPos)
 {
-	return UnrealPos / SWGWorldScale;
+	return FVector(UnrealPos.Y, UnrealPos.X, UnrealPos.Z) / SWGWorldScale;
 }
 
 FORCEINLINE float SWGToRawSpace(float UnrealValue)
 {
 	return UnrealValue / SWGWorldScale;
+}
+
+/**
+ * Raw-space yaw (FSWGTerrainPlacement, FSWGTerrainHole) is the usual
+ * counter-clockwise angle in the raw (x east, y north) plane. UE yaw turns
+ * +X (north) toward +Y (east), which in that plane is clockwise.
+ */
+FORCEINLINE float SWGToRawYawRadians(float UnrealYawDegrees)
+{
+	return -FMath::DegreesToRadians(UnrealYawDegrees);
+}
+
+/** Native (x, y-up, z) quaternion components -> UE, the same axis rotation as SWGToUnrealSpace. */
+FORCEINLINE FQuat SWGNativeToUnrealRotation(float X, float Y, float Z, float W)
+{
+	return FQuat(Z, X, Y, W);
+}
+
+/** Inverse of SWGNativeToUnrealRotation: the result's X/Y/Z/W are the native wire components, in order. */
+FORCEINLINE FQuat SWGUnrealToNativeRotation(const FQuat& UnrealRotation)
+{
+	return FQuat(UnrealRotation.Y, UnrealRotation.Z, UnrealRotation.X, UnrealRotation.W);
+}
+
+/** Characters are yaw-only on the wire; drops any pitch/roll before converting. */
+FORCEINLINE FQuat SWGCharacterHeadingToNativeRotation(const FRotator& UnrealRotation)
+{
+	return SWGUnrealToNativeRotation(FRotator(0.0f, UnrealRotation.Yaw, 0.0f).Quaternion());
 }

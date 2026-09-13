@@ -75,7 +75,7 @@ namespace
 	// name derives from source paths only, so any change to how it's built
 	// (LODs, material slots, importer fixes) must bump this or the old asset
 	// keeps loading.
-	constexpr uint32 GeneratedStaticMeshVersion = 4;
+	constexpr uint32 GeneratedStaticMeshVersion = 5;
 
 	// Whole-chunk null-terminated ascii string (chunk's only content is the
 	// string) — same idiom as FSWGMeshReader::ReadNullTerminatedString.
@@ -87,7 +87,7 @@ namespace
 	}
 
 	// Most static MSH files use the common SWG forward-axis convention after
-	// ReadVector3LE's Y-up -> Z-up conversion. A small set of kiosk/terminal
+	// ReadVectorLE's native -> UE axis rotation. A small set of kiosk/terminal
 	// assets are authored with their local forward axis rotated right by one
 	// quarter turn. Keep this at the component level: actor rotation remains
 	// the server-authoritative world facing.
@@ -3040,7 +3040,7 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 			const FBox MeshBounds = StaticMesh->GetBoundingBox();
 			MeshComponent->RegisterComponent();
 			MeshComponent->AttachToComponent(Capsule, FAttachmentTransformRules::KeepRelativeTransform);
-			MeshComponent->SetRelativeRotation(FRotator(0.0f, YawCorrectionDegrees + SWGCharacterMeshYaw, 0.0f));
+			MeshComponent->SetRelativeRotation(FRotator(0.0f, YawCorrectionDegrees, 0.0f));
 
 			if (MeshBounds.IsValid)
 			{

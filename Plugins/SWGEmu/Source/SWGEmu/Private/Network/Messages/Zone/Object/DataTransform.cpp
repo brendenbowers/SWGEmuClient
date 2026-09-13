@@ -18,13 +18,12 @@ FSWGPacket FDataTransform::Serialize() const
 	//Pkt << TS;
 	//Pkt << Move;
 
-	// Exact inverse of the incoming FQuat(DirX, DirZ, -DirY, DirW) in
-	// USWGObjectGraphSubsystem: the Y/Z swap is a reflection, so the sign has
-	// to ride along or the heading comes back mirrored (yaw 0 reads as SWG
-	// heading 0 instead of 90, i.e. a quarter turn off in the retail client).
+	// Direction already holds the native wire components in order (see
+	// SWGUnrealToNativeRotation), the inverse of the incoming
+	// SWGNativeToUnrealRotation in USWGObjectGraphSubsystem.
 	Pkt.WriteFloat(Direction.X);
-	Pkt.WriteFloat(-Direction.Z);
 	Pkt.WriteFloat(Direction.Y);
+	Pkt.WriteFloat(Direction.Z);
 	Pkt.WriteFloat(Direction.W);
 
 	// Core3's Transform::parsePosition reads the wire as X, Z, Y. Position is

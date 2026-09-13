@@ -12,10 +12,10 @@ FSWGPacket FDataTransformWithParent::Serialize() const
 
 	Pkt.WriteUInt64(ParentId);
 
-	// Same inverse-of-incoming swap as FDataTransform::Serialize.
+	// Native wire components in order, same as FDataTransform::Serialize.
 	Pkt.WriteFloat(Direction.X);
-	Pkt.WriteFloat(-Direction.Z);
 	Pkt.WriteFloat(Direction.Y);
+	Pkt.WriteFloat(Direction.Z);
 	Pkt.WriteFloat(Direction.W);
 
 	// Wire order is X, Z, Y.

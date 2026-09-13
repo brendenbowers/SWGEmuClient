@@ -357,7 +357,7 @@ private:
 	 * alters what a given source file should produce: every generated asset is
 	 * renamed and rebuilt.
 	 */
-	static constexpr uint32 GeneratedAssetVersion = 4;
+	static constexpr uint32 GeneratedAssetVersion = 5;
 
 	/** How far below the capsule's feet the ground trace reaches — enough to keep contact over small steps and terrain tessellation without finding the floor below a bridge. */
 	static constexpr float TerrainAlignmentTraceDepth = 100.0f;

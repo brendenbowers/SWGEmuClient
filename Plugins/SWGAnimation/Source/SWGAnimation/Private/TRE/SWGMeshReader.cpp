@@ -279,13 +279,11 @@ void FSWGMeshReader::TryReadAppearance(const FSWGIffReader& Reader, const FSWGIf
 				continue;
 			}
 
-			// Conjugate the basis by the same Y/Z swap ReadVectorLE applies,
-			// which reduces to swapping both rows and columns 1 and 2:
-			// R_ue[i][j] = R_swg[SwgAxis[i]][SwgAxis[j]]. Conjugating a matrix
-			// this way already accounts for the reflection, so unlike
-			// ReadQuatLE it needs no extra sign. Translation follows the same
-			// axis map.
-			static constexpr int32 SwgAxis[3] = { 0, 2, 1 };
+			// Conjugate the basis by the same axis permutation ReadVectorLE
+			// applies (SwgAxis[ue] = native axis):
+			// R_ue[i][j] = R_swg[SwgAxis[i]][SwgAxis[j]]. Translation follows
+			// the same axis map.
+			static constexpr int32 SwgAxis[3] = { 2, 0, 1 };
 
 			FMatrix RotationMatrix = FMatrix::Identity;
 			for (int32 i = 0; i < 3; ++i)
@@ -368,12 +366,20 @@ bool FSWGMeshReader::ReadMshSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 		OutSubmesh.Vertices.Add(MoveTemp(Vertex));
 	}
 
+	// SWG's front faces are wound the opposite way to UE's, so every triangle
+	// is stored with its last two corners swapped (same for the static-mesh
+	// index chunks below).
 	FSWGIFFChunkReader IndxReader(IndxChunk, Reader);
 	const uint32 TriIndexCount = IndxReader.ReadValueLE<uint32>();
 	OutSubmesh.Triangles.Reserve((int32)TriIndexCount);
-	for (uint32 i = 0; i < TriIndexCount; ++i)
+	for (uint32 i = 0; i + 2 < TriIndexCount; i += 3)
 	{
-		OutSubmesh.Triangles.Add((int32)IndxReader.ReadValueLE<uint16>());
+		const int32 CornerA = (int32)IndxReader.ReadValueLE<uint16>();
+		const int32 CornerB = (int32)IndxReader.ReadValueLE<uint16>();
+		const int32 CornerC = (int32)IndxReader.ReadValueLE<uint16>();
+		OutSubmesh.Triangles.Add(CornerA);
+		OutSubmesh.Triangles.Add(CornerC);
+		OutSubmesh.Triangles.Add(CornerB);
 	}
 
 	return true;
@@ -550,9 +556,12 @@ bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 		for (uint32 t = 0; t < TriCount; ++t)
 		{
 			OitlReader.Skip<uint16>(); // leading flag, unused
-			OutSubmesh.Triangles.Add((int32)OitlReader.ReadValueLE<uint32>());
-			OutSubmesh.Triangles.Add((int32)OitlReader.ReadValueLE<uint32>());
-			OutSubmesh.Triangles.Add((int32)OitlReader.ReadValueLE<uint32>());
+			const int32 CornerA = (int32)OitlReader.ReadValueLE<uint32>();
+			const int32 CornerB = (int32)OitlReader.ReadValueLE<uint32>();
+			const int32 CornerC = (int32)OitlReader.ReadValueLE<uint32>();
+			OutSubmesh.Triangles.Add(CornerA);
+			OutSubmesh.Triangles.Add(CornerC);
+			OutSubmesh.Triangles.Add(CornerB);
 		}
 	}
 	else
@@ -574,9 +583,12 @@ bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 		OutSubmesh.Triangles.Reserve((int32)TriCount * 3);
 		for (uint32 t = 0; t < TriCount; ++t)
 		{
-			OutSubmesh.Triangles.Add((int32)ItlReader.ReadValueLE<uint32>());
-			OutSubmesh.Triangles.Add((int32)ItlReader.ReadValueLE<uint32>());
-			OutSubmesh.Triangles.Add((int32)ItlReader.ReadValueLE<uint32>());
+			const int32 CornerA = (int32)ItlReader.ReadValueLE<uint32>();
+			const int32 CornerB = (int32)ItlReader.ReadValueLE<uint32>();
+			const int32 CornerC = (int32)ItlReader.ReadValueLE<uint32>();
+			OutSubmesh.Triangles.Add(CornerA);
+			OutSubmesh.Triangles.Add(CornerC);
+			OutSubmesh.Triangles.Add(CornerB);
 		}
 	}
 

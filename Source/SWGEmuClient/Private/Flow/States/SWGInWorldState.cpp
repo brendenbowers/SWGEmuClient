@@ -104,7 +104,7 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 					// every position it sends us — convert before sending, same as
 					// ASWGPlayer::SendDataTransformUpdate.
 					Transform.Position = SWGToRawSpace(PlayerActor->GetActorLocation());
-					Transform.Direction = SWGCharacterHeadingToRawSpace(PlayerActor->GetActorRotation());
+					Transform.Direction = SWGCharacterHeadingToNativeRotation(PlayerActor->GetActorRotation());
 					Transform.TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
 					Transform.MoveCount = 1;
 					Transform.Speed = 0.0f;

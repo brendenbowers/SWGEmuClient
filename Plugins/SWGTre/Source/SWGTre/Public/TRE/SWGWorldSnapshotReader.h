@@ -24,7 +24,7 @@ struct FSWGWorldSnapshotNode
 	/** Wire order (w,x,y,z) — matches Core3's Quaternion::set(qw,qx,qy,qz) exactly, no axis remap needed here. */
 	FQuat Direction = FQuat::Identity;
 
-	/** Wire order is X,Z,Y (Core3 reads x,z,y then position.set(x,z,y)) — same convention as CmdStartScene's spawn position; no remap needed for UE's X,Y,Z. */
+	/** Raw (Core3) order: x east, y north, z up, metres; SWGToUnrealSpace rotates it into UE axes at placement. */
 	FVector Position = FVector::ZeroVector;
 
 	float GameObjectType = 0.0f;

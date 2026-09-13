@@ -679,12 +679,11 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 	{
 		if (USWGTerrainSubsystem* TerrainSubsystem = GameInstance->GetSubsystem<USWGTerrainSubsystem>())
 		{
-			// The subsystem works in raw/native space (the .trn's own units),
-			// not final UE actor coordinates. Yaw needs no handedness fix —
-			// SWGWorldScale is a pure scale, with no axis remap.
+			// The subsystem works in raw space (the .trn's own units and axes),
+			// not final UE actor coordinates — yaw included.
 			const FVector ActorLocation = Actor.GetActorLocation();
 			const FVector RawPosition = SWGToRawSpace(ActorLocation);
-			const float YawRadians = FMath::DegreesToRadians(Actor.GetActorRotation().Yaw);
+			const float YawRadians = SWGToRawYawRadians(Actor.GetActorRotation().Yaw);
 
 			UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD %s cells=%d actorUE=(%.1f,%.1f,%.1f) padRawZ=%.3f yaw=%.1f"),
 				*TemplateName, BuildingActor->PortalData.Cells.Num(),

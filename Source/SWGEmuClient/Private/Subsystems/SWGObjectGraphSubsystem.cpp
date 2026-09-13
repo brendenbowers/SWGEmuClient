@@ -309,12 +309,9 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 
 	
 	const FVector Location = SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ));
-	// SceneCreateObjectMessage's DirX/DirY/DirZ/DirW are the same left-handed
-	// SWG quaternion FSWGWorldSnapshotReader::ReadNode decodes for static
-	// placed objects (see its FQuat(QX, QZ, -QY, QW)): a plain Y/Z swap is a
-	// reflection, not a proper rotation, so the surviving Y component must be
-	// negated to preserve rotation sense instead of mirroring yaw.
-	const FQuat Rotation(Msg.DirX, Msg.DirZ, -Msg.DirY, Msg.DirW);
+	// DirX/DirY/DirZ/DirW are the native wire quaternion, the same one
+	// FSWGWorldSnapshotReader::ReadNode decodes for static placed objects.
+	const FQuat Rotation = SWGNativeToUnrealRotation(Msg.DirX, Msg.DirY, Msg.DirZ, Msg.DirW);
 
 	// Characters stand upright, so their server heading is effectively
 	// yaw-only and whatever pitch/roll the quaternion decomposes to is noise.
@@ -326,7 +323,7 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 	FQuat SpawnRotation = Rotation;
 	if (ActorClass->IsChildOf(ACharacter::StaticClass()))
 	{
-		SpawnRotation = FRotator(0.0f, Rotation.Rotator().Yaw - SWGCharacterMeshYaw, 0.0f).Quaternion();
+		SpawnRotation = FRotator(0.0f, Rotation.Rotator().Yaw, 0.0f).Quaternion();
 	}
 
 	FActorSpawnParameters SpawnParams;
@@ -556,8 +553,7 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 		return;
 	}
 
-	// Same X,Z,Y wire order as the initial spawn position (SceneCreateObjectMessage)
-	// — no axis swap needed, just direct field->component mapping. Msg.PosZ is
+	// Same raw (Core3) order as the initial spawn position. Msg.PosZ is
 	// feet/ground-level; GroundedLocationFor corrects for ACharacter's capsule
 	// center being the actual actor origin (see its own comment / the header's).
 	// Raw wire position -> UE space at this boundary, same as the initial spawn.
@@ -572,12 +568,9 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 
 	// DirectionAngle is Quaternion::getSpecialDegrees() — a full turn is 100,
 	// not 256. Pitch/Roll aren't part of this message, so only Yaw changes
-	// here. Same left-handed to right-handed conversion as the initial spawn
-	// quaternion (see SceneCreateObjectByCrc's FQuat(Msg.DirX, Msg.DirZ,
-	// -Msg.DirY, Msg.DirW)) — for a pure yaw that reduces to negating the
-	// angle — plus the same character mesh quarter turn the spawn path applies.
-	const float HeadingDegrees = (Msg.DirectionAngle / 100.0f) * 360.0f;
-	const float YawDegrees = -HeadingDegrees + (Cast<ACharacter>(Actor) ? -SWGCharacterMeshYaw : 0.0f);
+	// here. SWG's yaw about its up axis maps 1:1 onto UE yaw (see
+	// SWGWorldScale.h), so the heading is used as-is.
+	const float YawDegrees = (Msg.DirectionAngle / 100.0f) * 360.0f;
 
 	ACharacter* Character = Cast<ACharacter>(Actor);
 	USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr;

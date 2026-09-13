@@ -19,7 +19,7 @@ enum class ESWGCollisionExtentType : uint8
 /**
  * One node of an appearance's extent tree — SWG's collision primitives
  * (BoxExtent, SphereExtent, CylinderExtent, MeshExtent, ComponentExtent,
- * DetailExtent). Already in UE units and axes (Y-up swapped to Z-up, scaled
+ * DetailExtent). Already in UE units and axes (ReadVectorLE rotation, scaled
  * by SWGWorldScale), local to the appearance, like FSWGFloorReader's output.
  */
 struct SWGTRE_API FSWGCollisionExtent

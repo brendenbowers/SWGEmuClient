@@ -54,10 +54,8 @@ void FSWGZoneLoadingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFl
 		// resolves to the old (pre-travel) level. PostLoadMapWithWorld fires once
 		// for the newly-loaded world regardless of travel type — defer until then.
 		PendingTerrainName = Scene.TerrainName;
-		// No axis swap — Scene.PosX/PosY/PosZ match the server's PositionX/Y/Z
-		// directly (the wire's X,Z,Y transmission order is just Core3's send
-		// sequence, not a relabeling); SWG already matches UE's X/Y-horizontal,
-		// Z-vertical convention 1:1.
+		// Raw (Core3) space — x east, y north, z up — which is what the
+		// terrain subsystem works in; SWGToUnrealSpace handles the UE axes.
 		PendingSpawnPosition = FVector(Scene.PosX, Scene.PosY, Scene.PosZ);
 		UE_LOG(LogTemp, Log, TEXT("FSWGZoneLoadingState::Enter: PendingTerrainName='%s' (Len=%d)"), *PendingTerrainName, PendingTerrainName.Len());
 

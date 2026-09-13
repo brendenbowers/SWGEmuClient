@@ -150,7 +150,7 @@ bool FSWGAppearanceCollisionReader::ReadExtent(const FSWGIffReader& Reader, cons
 			return false;
 		}
 		FSWGIFFChunkReader BoxReader(BoxChunk, Reader);
-		// Written max then min; the Y/Z swap can reorder components, so rebuild the box from both corners.
+		// Written max then min; the axis rotation reorders components, so rebuild the box from both corners.
 		const FVector CornerA = BoxReader.ReadVectorLE<FVector, float>(SWGWorldScale);
 		const FVector CornerB = BoxReader.ReadVectorLE<FVector, float>(SWGWorldScale);
 		OutExtent.Type = ESWGCollisionExtentType::Box;

@@ -222,10 +222,7 @@ void FSWGSkeletalAnimationPipeline::UpdateMeshPlacement(float DeltaTime)
 		Playing.TerrainAlignment = FQuat::Slerp(Playing.TerrainAlignment, TargetAlignment,
 			FMath::Clamp(DeltaTime * TerrainAlignmentInterpSpeed, 0.0f, 1.0f)).GetNormalized();
 
-		// SWG's forward axis offset first, then the tilt — see the same yaw
-		// correction applied at attach time in TryApplyGeneratedAnimatedMesh.
-		const FQuat BaseRotation = FRotator(0.0f, SWGCharacterMeshYaw, 0.0f).Quaternion();
-		MeshComponent->SetRelativeRotation(BaseRotation * Playing.TerrainAlignment);
+		MeshComponent->SetRelativeRotation(Playing.TerrainAlignment);
 
 		// Grounding, measured from the joints rather than the component's
 		// bounds — those are reference-pose bounds (their extents are
@@ -1333,11 +1330,6 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 				{
 					CharacterMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -Capsule->GetScaledCapsuleHalfHeight()));
 				}
-
-				// SWG's forward axis is 90 degrees off from Unreal's — the same quirk
-				// ASWGPlayer's camera/control rotation already corrects for. That fix
-				// doesn't touch the mesh itself, so rotate the whole mesh rigidly here.
-				CharacterMesh->SetRelativeRotation(FRotator(0.0f, SWGCharacterMeshYaw, 0.0f));
 
 				// The importer creates material slots named after each submesh's shader
 				// path but leaves the actual material null — build/assign the same real

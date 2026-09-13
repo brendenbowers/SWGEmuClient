@@ -11,7 +11,7 @@ bool FCmdStartSceneMessage::Deserialize(FSWGMessage& Reader)
 	Reader >> CharacterID;
 	TerrainName = Reader.ReadAsciiString();
 	Reader >> PosX;
-	Reader >> PosZ;  // Z before Y on wire (SWG uses left-handed coords)
+	Reader >> PosZ;  // native order is x, y-up, z; stored in raw (Core3) order
 	Reader >> PosY;
 	RaceTemplate = Reader.ReadAsciiString();
 	Reader >> GalacticTime;

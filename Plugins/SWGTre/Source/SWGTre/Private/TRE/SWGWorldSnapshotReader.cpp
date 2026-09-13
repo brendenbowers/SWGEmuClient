@@ -1,5 +1,6 @@
 #include "TRE/SWGWorldSnapshotReader.h"
 #include "TRE/SWGIffTags.h"
+#include "Common/SWGWorldScale.h"
 
 namespace
 {
@@ -139,11 +140,9 @@ bool FSWGWorldSnapshotReader::ReadNode(const FSWGIffReader& Reader, const FSWGIf
 	const float QX = SnapshotReadFloatLE(D, 20);
 	const float QY = SnapshotReadFloatLE(D, 24);
 	const float QZ = SnapshotReadFloatLE(D, 28);
-	// Same Y/Z relabeling as position below, but a plain component swap alone
-	// is a reflection (determinant -1), not a proper rotation — for a pure-yaw
-	// quaternion the surviving axis component must also be negated to preserve
-	// rotation sense instead of mirroring it.
-	OutNode.Direction = FQuat(QX, QZ, -QY, QW);
+	// Straight to UE axes; the position below stays raw (Core3 order) and is
+	// rotated the same way by SWGToUnrealSpace at placement.
+	OutNode.Direction = SWGNativeToUnrealRotation(QX, QY, QZ, QW);
 
 	const float X = SnapshotReadFloatLE(D, 32);
 	const float Z = SnapshotReadFloatLE(D, 36);

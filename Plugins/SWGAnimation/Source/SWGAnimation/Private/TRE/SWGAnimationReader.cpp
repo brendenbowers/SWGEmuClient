@@ -78,7 +78,7 @@ namespace
 		return (Value & SignBit) ? BaseValue - Offset : BaseValue + Offset;
 	}
 
-	// Same Y-up (model space) -> Z-up (UE) axis swap and meters -> 100-units
+	// Same native -> UE axis rotation and meters -> 100-units
 	// scale as SWGMeshReader.cpp/SWGSkeletonReader.cpp — root translation
 	// deltas are authored in the same convention as everything else this
 	// codebase reads from these files.
@@ -96,8 +96,8 @@ FQuat FSWGAnimationReader::DecodeCompressedQuaternion(
 	const float Z = ExpandQuat10(PackedValue, FormatZ);
 	const float W = FMath::Sqrt(FMath::Max(0.0f, 1.0f - X * X - Y * Y - Z * Z));
 
-	// Keep the current configurable UE-axis conversion while validating it.
-	FQuat Result(-X, -Z, -Y, W);
+	// Same native -> UE axis rotation as FSWGIFFChunkReader::ReadQuatLE.
+	FQuat Result(Z, X, Y, W);
 	Result.Normalize();
 	return Result;
 }
@@ -159,8 +159,8 @@ void FSWGAnimationReader::DecodeQchnChunkRaw(const FSWGIffReader& Reader, const 
 		const float X = QchnReader.ReadValueLE<float>();
 		const float Y = QchnReader.ReadValueLE<float>();
 		const float Z = QchnReader.ReadValueLE<float>();
-		// Y/Z swap + conjugate — see DecodeCompressedQuaternion's comment.
-		OutTrack.Keyframes.Add(FrameIndex, FQuat(-X, -Z, -Y, W));
+		// Same native -> UE axis rotation as ReadQuatLE.
+		OutTrack.Keyframes.Add(FrameIndex, FQuat(Z, X, Y, W));
 	};
 
 	DecodeSample(0);
@@ -201,7 +201,7 @@ TArray<FQuat> FSWGAnimationReader::DecodeStaticRotations(
 			const float X = SrotReader.ReadValueLE<float>();
 			const float Y = SrotReader.ReadValueLE<float>();
 			const float Z = SrotReader.ReadValueLE<float>();
-			Result.Add(FQuat(-X, -Z, -Y, W));
+			Result.Add(FQuat(Z, X, Y, W));
 		}
 	}
 

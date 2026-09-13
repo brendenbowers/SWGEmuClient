@@ -17,7 +17,7 @@ struct FSWGAnimationData
 	TArray<FSWGAnimationBoneTrack> BoneTracks; // only bones this clip actually animates — others should keep the skeleton's bind pose throughout
 
 	// Root bone's translation delta from its bind pose, per frame — sparse,
-	// already converted to UE space (Y/Z swap + meters->100uu, matching every
+	// already converted to UE space (axis rotation + meters->100uu, matching every
 	// other position value in this codebase). Empty if the clip has no
 	// FORM ATRN/LOCT data at all (root stays at its bind pose translation).
 	// See this file's class comment for the two source encodings this comes

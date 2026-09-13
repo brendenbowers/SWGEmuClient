@@ -468,11 +468,9 @@ void ASWGPlayer::Tick(float DeltaTime)
 	GetCharacterMovement()->bOrientRotationToMovement = !bSteering;
 	if (bSteering && Controller)
 	{
-		// With the mesh now facing actor +X (see the PoseableMesh -90 yaw in
-		// USWGMeshGeneratorSubsystem), facing the camera direction is simply
-		// matching ControlRotation's yaw — the old -90 here compensated for
-		// the mesh's pre-fix +Y facing and would now make the body strafe
-		// sideways relative to its own stride whenever RMB steering is held.
+		// The mesh faces actor +X (SWG's +z forward lands there, see
+		// SWGWorldScale.h), so facing the camera is just matching
+		// ControlRotation's yaw.
 		FRotator NewRotation = GetActorRotation();
 		NewRotation.Yaw = Controller->GetControlRotation().Yaw;
 		SetActorRotation(NewRotation);
@@ -513,7 +511,7 @@ void ASWGPlayer::SendDataTransformUpdate()
 	}
 
 	const FVector RawPosition = SWGToRawSpace(GetActorLocation());
-	const FQuat RawDirection = SWGCharacterHeadingToRawSpace(GetActorRotation());
+	const FQuat RawDirection = SWGCharacterHeadingToNativeRotation(GetActorRotation());
 	const uint32 RawTimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
 	const int32 RawMoveCount = ++TransformMovementCounter;
 	// Same raw/pre-scale conversion as Position — server compares this against

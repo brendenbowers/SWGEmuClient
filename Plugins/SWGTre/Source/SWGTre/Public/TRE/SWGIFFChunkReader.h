@@ -214,18 +214,17 @@ public:
 	}
 	
 	/**
-	 * SWG (Y-up) -> UE (Z-up) for model-local geometry: swg(x,y,z) -> ue(x, z, y).
-	 *
-	 * The Y/Z swap has determinant -1 (a reflection), SWG is right-handed and 
-	 * UE is left-handed, so expressing the same geometry in UE needs an odd mapping. 
-	 * It also converts triangle winding between the two conventions for free
+	 * SWG native (x right, y up, z forward) -> UE (X forward, Y right, Z up):
+	 * swg(x,y,z) -> ue(z, x, y). Both frames are left-handed and this is a
+	 * cyclic permutation, i.e. a proper rotation — see SWGWorldScale.h. A
+	 * plain Y/Z swap would be a reflection and mirror the world.
 	 */
 	template<typename TVectorType, typename TComponentType>
 	bool ReadVectorLE(TVectorType& Value, TComponentType WorldScale)
 	{
-		Value.X = ReadValueLE<TComponentType>();
-		Value.Z = ReadValueLE<TComponentType>();
 		Value.Y = ReadValueLE<TComponentType>();
+		Value.Z = ReadValueLE<TComponentType>();
+		Value.X = ReadValueLE<TComponentType>();
 
 		Value *= WorldScale;
 		return true;
@@ -245,22 +244,16 @@ public:
 		return Value;
 	}
 
-	// Quaternions are stored (W,X,Y,Z)
-	// Applies the same Y/Z swap as ReadVectorLE, plus a conjugate (negated
-	// vector part). Positions and rotations do not transform alike under this
-	// conversion: because the swap is a reflection, a position maps v -> Mv,
-	// but a rotation axis is a pseudovector and picks up an extra sign,
-	// q -> (w, -Mv). Without the negation the conversion becomes an
-	// anti-homomorphism (conv(A)*conv(B) == conv(B*A)) and composes
-	// incorrectly against FSWGAnimationReader::DecodeCompressedQuaternion,
-	// which decodes .ans samples the same conjugated way.
+	// Quaternions are stored (W,X,Y,Z). The axis map is a proper rotation, so
+	// the vector part maps exactly like a position (no conjugate needed) —
+	// FSWGAnimationReader decodes .ans samples the same way.
 	template<typename TQuatType, typename TComponentType>
 	bool ReadQuatLE(TQuatType& Value)
 	{
 		Value.W = ReadValueLE<TComponentType>();
-		Value.X = -ReadValueLE<TComponentType>();
-		Value.Z = -ReadValueLE<TComponentType>();
-		Value.Y = -ReadValueLE<TComponentType>();
+		Value.Y = ReadValueLE<TComponentType>();
+		Value.Z = ReadValueLE<TComponentType>();
+		Value.X = ReadValueLE<TComponentType>();
 		return true;
 	}
 
@@ -300,8 +293,8 @@ public:
 			return false;
 		}
 
-		// Axis-swap conjugation (a reflection, so it needs no extra sign the
-		// way ReadQuatLE does) AND a transpose — note the [j]/[i] order.
+		// Conjugation by ReadVectorLE's axis permutation (SwgAxis[ue] = native
+		// axis) AND a transpose — note the [j]/[i] order.
 		//
 		// The transpose is not cosmetic: SWG stores this 3x4 as three rows of
 		// [Rx Ry Rz T], where the basis axes are the matrix's COLUMNS
@@ -309,7 +302,7 @@ public:
 		// row-vector convention (v' = v * M), where the basis axes are its
 		// ROWS. Copying straight across therefore stored the transpose of a
 		// rotation — i.e. its inverse.
-		static constexpr int32 SwgAxis[3] = { 0, 2, 1 };
+		static constexpr int32 SwgAxis[3] = { 2, 0, 1 };
 		FMatrixType RotationMatrix = FMatrixType::Identity;
 
 		for (int32 i = 0; i < 3; ++i)

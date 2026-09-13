@@ -22,7 +22,7 @@ struct SWGTRE_API FSWGDoorStyleRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	bool bFlip2 = false;
 
-	/** Local-space translation from closed to fully open, e.g. (-2.1, 0, 0) — slides along a single axis, never combined, on every style checked so far. */
+	/** Raw-space (x east, y north, z up) local translation from closed to fully open, e.g. (-2.1, 0, 0) — slides along a single axis, never combined, on every style checked so far. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	FVector MoveOffset = FVector::ZeroVector;
 
