@@ -189,7 +189,11 @@ void FSWGSkeletalAnimationPipeline::UpdateMeshPlacement(float DeltaTime)
 		FHitResult Hit;
 		FQuat TargetAlignment = FQuat::Identity;
 
-		if (World->LineTraceSingleByChannel(Hit, Start, Start - FVector(0.0f, 0.0f, TraceDown), ECC_WorldStatic, Params)
+		// Only postures that lay the body on the ground follow the slope. An
+		// upright biped stays level in the retail client — only its feet
+		// track the surface — so tilting it reads as leaning into the hill.
+		if (PostureLiesOnGround(Playing.Posture)
+			&& World->LineTraceSingleByChannel(Hit, Start, Start - FVector(0.0f, 0.0f, TraceDown), ECC_WorldStatic, Params)
 			&& Hit.ImpactNormal.SizeSquared() > KINDA_SMALL_NUMBER)
 		{
 			// The normal is world space but the tilt is applied to a component
@@ -200,10 +204,8 @@ void FSWGSkeletalAnimationPipeline::UpdateMeshPlacement(float DeltaTime)
 
 			FQuat Alignment = FQuat::FindBetweenNormals(FVector::UpVector, LocalNormal);
 
-			// Full alignment reads badly on anything steep — a biped ends up
-			// visibly leaning out of the hill. Clamp to a believable lean and
-			// let the rest of the slope go unmatched, which is what the retail
-			// client's creatures do too.
+			// Full alignment reads badly on anything steep. Clamp to a
+			// believable lean and let the rest of the slope go unmatched.
 			FVector Axis;
 			float Angle = 0.0f;
 			Alignment.ToAxisAndAngle(Axis, Angle);

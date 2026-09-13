@@ -31,6 +31,23 @@ enum class ESWGPosture : uint8
 	Invalid        = 255
 };
 
+/** True for postures whose animation lays the body along the ground rather than standing it on its feet. */
+inline bool PostureLiesOnGround(ESWGPosture Posture)
+{
+	switch (Posture)
+	{
+	case ESWGPosture::Prone:
+	case ESWGPosture::LyingDown:
+	case ESWGPosture::Sitting:
+	case ESWGPosture::KnockedDown:
+	case ESWGPosture::Incapacitated:
+	case ESWGPosture::Dead:
+		return true;
+	default:
+		return false;
+	}
+}
+
 /**
  * Values are the "value" column of datatables/include/locomotion.iff. A
  * locomotion is the *observable* movement mode a creature is in — the join of
