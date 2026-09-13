@@ -87,7 +87,7 @@ float USWGInteriorStreamingSubsystem::DistanceToBuilding(const FViewState& View,
 	return Footprint.bIsValid ? FMath::Sqrt(Footprint.ComputeSquaredDistanceToPoint(Camera2D)) : FVector::Dist2D(View.CameraLocation, Building.GetActorLocation());
 }
 
-bool USWGInteriorStreamingSubsystem::WantsRooms(const FViewState& View, const ASWGBuilding& Building, bool bClosed)
+bool USWGInteriorStreamingSubsystem::WantsRoom(const FViewState& View, ASWGBuilding& Building, int32 CellIndex, bool bForUnload)
 {
 	if (!View.bValid)
 	{
@@ -102,27 +102,64 @@ bool USWGInteriorStreamingSubsystem::WantsRooms(const FViewState& View, const AS
 		return true;
 	}
 
-	const FVector ToBuilding = Building.GetActorLocation() - View.CameraLocation;
-	const float Distance = DistanceToBuilding(View, Building);
-
-	// Close enough for the closed tier means close enough for anything.
-	if (View.ClosedDistance >= 0.0f && Distance <= View.ClosedDistance)
-	{
-		return true;
-	}
-	if (bClosed || View.VisibleDistance < 0.0f || Distance > View.VisibleDistance)
+	// A closed room is only ever seen from inside, so it loads when the player
+	// is close in front of any doorway; an exterior-visible room shows through
+	// its own doorway from further off, but only while that doorway is looked at.
+	const bool bClosed = Building.IsClosedRoom(CellIndex);
+	const float Range = (bClosed ? View.ClosedDistance : View.VisibleDistance) * (bForUnload ? UnloadHysteresis : 1.0f);
+	const float MinFacingDot = bForUnload ? EntranceFacingUnloadDot : EntranceFacingLoadDot;
+	const bool bRequireInViewCone = !bClosed && !bForUnload;
+	if (Range < 0.0f)
 	{
 		return false;
 	}
 
-	const FVector Direction2D = FVector(ToBuilding.X, ToBuilding.Y, 0.0f).GetSafeNormal();
 	const FVector Forward2D = FVector(View.CameraForward.X, View.CameraForward.Y, 0.0f).GetSafeNormal();
-	return FVector::DotProduct(Forward2D, Direction2D) >= View.CosHalfAngle;
+	const FTransform& BuildingTransform = Building.GetActorTransform();
+	const TArray<ASWGBuilding::FEntrance>& Entrances = Building.GetEntrances();
+
+	// No doorway geometry in the POB: fall back to the building as a whole.
+	if (Entrances.IsEmpty())
+	{
+		if (DistanceToBuilding(View, Building) > Range)
+		{
+			return false;
+		}
+		const FVector ToBuilding2D = FVector(Building.GetActorLocation() - View.CameraLocation).GetSafeNormal2D();
+		return !bRequireInViewCone || FVector::DotProduct(Forward2D, ToBuilding2D) >= View.CosHalfAngle;
+	}
+
+	for (const ASWGBuilding::FEntrance& Entrance : Entrances)
+	{
+		if (!bClosed && Entrance.CellIndex != CellIndex)
+		{
+			continue;
+		}
+
+		const FVector Center = BuildingTransform.TransformPosition(Entrance.Center);
+		const FVector Outward2D = BuildingTransform.TransformVectorNoScale(Entrance.Normal).GetSafeNormal2D();
+		const FVector ToCamera2D = (View.CameraLocation - Center).GetSafeNormal2D();
+
+		if (FVector::DotProduct(Outward2D, ToCamera2D) < MinFacingDot)
+		{
+			continue;
+		}
+		if (FVector::Dist2D(View.CameraLocation, Center) > Range)
+		{
+			continue;
+		}
+		if (bRequireInViewCone && FVector::DotProduct(Forward2D, -ToCamera2D) < View.CosHalfAngle)
+		{
+			continue;
+		}
+		return true;
+	}
+	return false;
 }
 
-bool USWGInteriorStreamingSubsystem::ShouldLoadRooms(const ASWGBuilding& Building, bool bClosed) const
+bool USWGInteriorStreamingSubsystem::ShouldLoadRoom(ASWGBuilding& Building, int32 CellIndex) const
 {
-	return WantsRooms(GetViewState(), Building, bClosed);
+	return WantsRoom(GetViewState(), Building, CellIndex, /*bForUnload*/ false);
 }
 
 void USWGInteriorStreamingSubsystem::Tick(float DeltaTime)
@@ -155,22 +192,18 @@ void USWGInteriorStreamingSubsystem::Tick(float DeltaTime)
 		const bool bWithinFootprint = Footprint.bIsValid && Footprint.IsInside(FVector2D(View.PawnLocation.X, View.PawnLocation.Y));
 		Building->SetPlayerWithinFootprint(bWithinFootprint || Building->OwnsCell(View.PlayerContainerId));
 
-		const float Distance = DistanceToBuilding(View, *Building);
-
-		for (const bool bClosed : { false, true })
+		for (int32 CellIndex = 1; CellIndex < Building->GetRoomCount(); ++CellIndex)
 		{
-			const float TierDistance = bClosed ? View.ClosedDistance : View.VisibleDistance;
-
-			if (!Building->AreRoomsLoaded(bClosed))
+			if (!Building->IsRoomLoaded(CellIndex))
 			{
-				if (WantsRooms(View, *Building, bClosed))
+				if (Building->HasDeferredRoom(CellIndex) && WantsRoom(View, *Building, CellIndex, /*bForUnload*/ false))
 				{
-					Building->LoadRooms(bClosed);
+					Building->LoadRoom(CellIndex);
 				}
 			}
-			else if (!Building->IsPlayerInside() && !Building->OwnsCell(View.PlayerContainerId) && Distance > TierDistance * UnloadHysteresis)
+			else if (!WantsRoom(View, *Building, CellIndex, /*bForUnload*/ true))
 			{
-				Building->UnloadRooms(bClosed);
+				Building->UnloadRoom(CellIndex);
 			}
 		}
 

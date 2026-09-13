@@ -618,12 +618,13 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 
 void USWGObjectGraphSubsystem::HandleObjControllerMessage(const FObjControllerMessageIn& Msg)
 {
-	// A server-pushed DataTransform is zone-in or a bounce-back correction,
-	// both of which re-arm PlayerObject::isTeleporting; acking one that didn't
-	// is a harmless no-op. The sub-op test matters because CombatAction,
-	// CombatSpam and CommandQueueRemove all arrive in this envelope addressed
-	// to us, and acking those floods the wire once combat starts.
-	if (Msg.GetSubOp() != ESWGObjControllerOp::DataTransform)
+	// A server-pushed DataTransform (WithParent when we're in a cell) is
+	// zone-in or a bounce-back correction, both of which re-arm
+	// PlayerObject::isTeleporting; acking one that didn't is a harmless no-op.
+	// The sub-op test matters because CombatAction, CombatSpam and
+	// CommandQueueRemove all arrive in this envelope addressed to us, and
+	// acking those floods the wire once combat starts.
+	if (Msg.GetSubOp() != ESWGObjControllerOp::DataTransform && Msg.GetSubOp() != ESWGObjControllerOp::DataTransformWithParent)
 	{
 		return;
 	}

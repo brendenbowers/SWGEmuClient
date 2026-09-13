@@ -321,7 +321,7 @@ public:
 	 * graph under its .ws id, and recurses into its children. Parent is the
 	 * already-spawned owner (a building for a cell, a cell for a prop). A closed
 	 * room is deferred onto its building for USWGInteriorStreamingSubsystem
-	 * unless bForceInterior — ASWGBuilding::LoadRooms's re-entry.
+	 * unless bForceInterior — ASWGBuilding::LoadRoom's re-entry.
 	 */
 	AActor* SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpawnInfo& Info, const FTransform& WorldTransform, AActor* Parent, class USWGObjectGraphSubsystem* ObjectGraph, bool bForceInterior = false);
 

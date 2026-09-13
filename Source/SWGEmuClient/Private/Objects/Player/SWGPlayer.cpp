@@ -402,6 +402,15 @@ void ASWGPlayer::SendDataTransformUpdate()
 
 	const ASWGCell* CurrentCell = ResolveCurrentCell();
 
+	const int64 ParentId = CurrentCell ? CurrentCell->GetObjectId() : 0;
+	if (ParentId != LastReportedParentId)
+	{
+		UE_LOG(LogTemp, Log, TEXT("ASWGPlayer: reporting position relative to %s (cell %lld, building %s)"),
+			CurrentCell ? *CurrentCell->GetName() : TEXT("the world"), ParentId,
+			CurrentCell && CurrentCell->OwningBuilding.IsValid() ? *CurrentCell->OwningBuilding->GetName() : TEXT("none"));
+		LastReportedParentId = ParentId;
+	}
+
 	if (CurrentCell != nullptr)
 	{
 		const ASWGBuilding* OwningBuilding = CurrentCell->OwningBuilding.Get();

@@ -12,6 +12,7 @@
 enum class ESWGObjControllerOp : uint32
 {
 	DataTransform      = 0x71u,  // Server-pushed teleport/bounce-back — needs a TeleportAck
+	DataTransformWithParent = 0xF1u, // Same, for a player inside a cell — also needs the ack
 	CombatAction       = 0xCCu,  // Who swung at whom, with what, and whether it landed
 	CommandQueueRemove = 0x117u, // The reply to our CommandQueueEnqueue: cooldown + error
 	CombatSpam         = 0x134u, // One line of the combat log

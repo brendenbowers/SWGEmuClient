@@ -101,7 +101,7 @@ public:
 	 */
 	void RegisterStaticObject(int64 ObjectId, AActor* Actor, int64 ContainerId = 0);
 
-	/** Forgets a static object's registry entries without touching its actor — ASWGBuilding::UnloadRooms destroys that itself. */
+	/** Forgets a static object's registry entries without touching its actor — ASWGBuilding::UnloadRoom destroys that itself. */
 	void UnregisterStaticObject(int64 ObjectId);
 
 	/** Fired once SceneEndBaselines confirms an object's baselines are complete. */

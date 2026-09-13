@@ -42,7 +42,7 @@ public:
 
 	/**
 	 * bForceInterior builds the room regardless of the player's distance/view —
-	 * ASWGBuilding::LoadRooms's path; otherwise the room is deferred onto the
+	 * ASWGBuilding::LoadRoom's path; otherwise the room is deferred onto the
 	 * building until USWGInteriorStreamingSubsystem decides it should load.
 	 */
 	static void FinishCell(ASWGCell* CellActor, ASWGBuilding* BuildingActor, int32 CellIndex, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem, bool bForceInterior = false);

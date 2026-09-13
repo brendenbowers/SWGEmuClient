@@ -8,19 +8,21 @@
 class ASWGBuilding;
 
 /**
- * Streams building interiors around the local player. Every room is deferred
- * at spawn (ASWGBuilding::DeferredSnapshotCells / DeferredNetworkCells) and
- * built in one of two tiers:
+ * Streams building interiors around the local player, room by room. Every
+ * room is deferred at spawn (ASWGBuilding::DeferredSnapshotCells /
+ * DeferredNetworkCells) and loaded against the building's doorways
+ * (ASWGBuilding::GetEntrances):
  *
- *  - exterior-visible rooms (POB canSeeParentCell): within
- *    swg.InteriorVisibleRadius AND inside the camera's view cone
- *    (swg.InteriorViewHalfAngle) — what you could actually see through the doorway;
- *  - closed rooms: within swg.InteriorLoadRadius, no view test — you're about
- *    to walk in.
+ *  - an exterior-visible room (POB canSeeParentCell) loads when the camera is
+ *    in front of that room's own doorway, within swg.InteriorVisibleRadius of
+ *    it, and looking at it (swg.InteriorViewHalfAngle);
+ *  - a closed room loads when the camera is in front of any doorway within
+ *    swg.InteriorLoadRadius — about to walk in — with no view test.
  *
- * A loaded tier is only unloaded by distance (radius * hysteresis), never by
- * turning away, so panning the camera can't thrash it. Network buildings only
- * ever load — the server already range-culls those with SceneDestroyObject.
+ * Unloading needs the camera clearly behind the doorway or well beyond the
+ * radius (hysteresis on both), never just turning away, so panning can't
+ * thrash. Network buildings only ever load — the server already range-culls
+ * those with SceneDestroyObject.
  */
 UCLASS()
 class SWGEMUCLIENT_API USWGInteriorStreamingSubsystem : public UGameInstanceSubsystem, public FTickableGameObject
@@ -35,8 +37,8 @@ public:
 	/** Buildings call this once they hold any deferred room. Idempotent. */
 	void RegisterBuilding(ASWGBuilding* Building);
 
-	/** The load decision for one tier of Building, evaluated against the camera right now. */
-	bool ShouldLoadRooms(const ASWGBuilding& Building, bool bClosed) const;
+	/** The load decision for one room of Building, evaluated against the camera right now. */
+	bool ShouldLoadRoom(ASWGBuilding& Building, int32 CellIndex) const;
 
 private:
 	struct FViewState
@@ -55,10 +57,16 @@ private:
 	};
 
 	FViewState GetViewState() const;
-	static bool WantsRooms(const FViewState& View, const ASWGBuilding& Building, bool bClosed);
 
-	/** XY distance from the camera to the building's footprint — 0 inside it. Against the origin a starport's doorway is 50m+ away. */
+	/** The load decision for one room; bForUnload evaluates the looser keep-loaded criteria instead. */
+	static bool WantsRoom(const FViewState& View, ASWGBuilding& Building, int32 CellIndex, bool bForUnload);
+
+	/** XY distance from the camera to the building's footprint — 0 inside it. Only used for buildings without doorway geometry. */
 	static float DistanceToBuilding(const FViewState& View, const ASWGBuilding& Building);
+
+	/** Load once clearly in front of a doorway; unload only once clearly behind — the gap stops thrash along its wall. */
+	static constexpr float EntranceFacingLoadDot = 0.1f;
+	static constexpr float EntranceFacingUnloadDot = -0.2f;
 
 	TArray<TWeakObjectPtr<ASWGBuilding>> Buildings;
 

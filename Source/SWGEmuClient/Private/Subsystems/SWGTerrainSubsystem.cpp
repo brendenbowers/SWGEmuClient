@@ -645,6 +645,13 @@ AActor* USWGTerrainSubsystem::SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpaw
 	ASWGBuilding* ParentBuilding = Cast<ASWGBuilding>(Parent);
 	const bool bIsCell = Info.ActorClass->IsChildOf(ASWGCell::StaticClass());
 
+	// Without a POB there is nothing to finish a room against; spawning it
+	// anyway leaves an actor at its building-relative origin, i.e. the world's.
+	if (bIsCell && ParentBuilding && ParentBuilding->PortalData.Cells.IsEmpty())
+	{
+		return nullptr;
+	}
+
 	// Every room (and everything inside it) is handed to the building here
 	// without creating an actor; USWGInteriorStreamingSubsystem brings it back
 	// through this same function once the player is close enough / looking.

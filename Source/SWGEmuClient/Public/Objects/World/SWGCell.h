@@ -39,7 +39,7 @@ public:
 	bool bCanSeeParent = false;
 
 	// Client-only props placed in this room (.ws children, interior layout),
-	// destroyed with it by ASWGBuilding::UnloadRooms. Unattached: the cell's
+	// destroyed with it by ASWGBuilding::UnloadRoom. Unattached: the cell's
 	// root is replaced when its mesh lands.
 	TArray<TWeakObjectPtr<AActor>> InteriorActors;
 };

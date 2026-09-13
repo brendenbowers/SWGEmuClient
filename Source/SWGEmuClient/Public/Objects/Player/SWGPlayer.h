@@ -165,5 +165,8 @@ private:
 	float TimeSinceLastTransformSend = 0.0f;
 	int32 TransformMovementCounter = 0;
 	bool bWasMovingLastSend = false;
+
+	/** The cell id last reported to the server (0 = world), so a change of room logs once rather than every send. */
+	int64 LastReportedParentId = 0;
 	bool bIsMouseLooking = false;
 };

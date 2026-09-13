@@ -414,15 +414,15 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 	// other cell is an interior room, built on demand from its own CCLT
 	// SceneCreateObjectByCrc/UpdateContainmentMessage pair.
 	const FSWGPobCell& ExteriorCell = BuildingActor->PortalData.Cells[0];
-
-	FString CellMeshPath;
-	if (!MeshGeneratorSubsystem->ResolveLodMeshPath(ExteriorCell.MeshPath, CellMeshPath) || CellMeshPath.IsEmpty())
+	if (ExteriorCell.MeshPath.IsEmpty())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: exterior cell '%s' in portal layout file %s has no usable mesh path (raw: %s)"), *ExteriorCell.CellName, *PobPath, *ExteriorCell.MeshPath);
+		UE_LOG(LogTemp, Warning, TEXT("FSWGBuildingSpawnHandler::HandleActorSpawn: exterior cell '%s' in portal layout file %s has no mesh path"), *ExteriorCell.CellName, *PobPath);
 		return true;
 	}
 
-	MeshGeneratorSubsystem->RequestMesh(BuildingActor, CellMeshPath);
+	// The .lod goes through as-is: the mesh generator builds every level of
+	// the shell into one asset (USWGMeshGeneratorSubsystem::ResolveLodLevels).
+	MeshGeneratorSubsystem->RequestMesh(BuildingActor, ExteriorCell.MeshPath);
 	CreateCollisionForCell(TreSubsystem, MeshGeneratorSubsystem, BuildingActor, ExteriorCell);
 
 
@@ -446,13 +446,13 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 	const FSWGPobCell& CellData = BuildingActor->PortalData.Cells[CellIndex];
 
 	// Every room waits for USWGInteriorStreamingSubsystem, which calls back
-	// through ASWGBuilding::LoadRooms with bForceInterior once the player is
+	// through ASWGBuilding::LoadRoom with bForceInterior once the player is
 	// close enough (and, for a room visible from outside, looking this way).
 	if (!bForceInterior)
 	{
 		UGameInstance* GameInstance = CellActor->GetWorld() ? CellActor->GetWorld()->GetGameInstance() : nullptr;
 		USWGInteriorStreamingSubsystem* Streaming = GameInstance ? GameInstance->GetSubsystem<USWGInteriorStreamingSubsystem>() : nullptr;
-		if (Streaming && !Streaming->ShouldLoadRooms(*BuildingActor, !CellData.CanSeeParent))
+		if (Streaming && !Streaming->ShouldLoadRoom(*BuildingActor, CellIndex))
 		{
 			BuildingActor->DeferredNetworkCells.Add({ CellActor, CellIndex });
 			Streaming->RegisterBuilding(BuildingActor);

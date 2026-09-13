@@ -120,13 +120,102 @@ bool ASWGBuilding::IsClosedRoom(int32 CellIndex) const
 	return PortalData.Cells.IsValidIndex(CellIndex) && !PortalData.Cells[CellIndex].CanSeeParent;
 }
 
-void ASWGBuilding::LoadRooms(bool bClosed)
+const TArray<ASWGBuilding::FEntrance>& ASWGBuilding::GetEntrances()
 {
-	if (AreRoomsLoaded(bClosed))
+	if (bEntrancesBuilt)
+	{
+		return Entrances;
+	}
+	bEntrancesBuilt = true;
+
+	for (int32 CellIndex = 1; CellIndex < PortalData.Cells.Num(); ++CellIndex)
+	{
+		const FSWGPobCell& Cell = PortalData.Cells[CellIndex];
+
+		// Which way is "out" for this room: away from its own floor.
+		FVector RoomCenter = FVector::ZeroVector;
+		for (const FVector& V : Cell.CollisionVertices)
+		{
+			RoomCenter += V;
+		}
+		if (!Cell.CollisionVertices.IsEmpty())
+		{
+			RoomCenter /= Cell.CollisionVertices.Num();
+		}
+
+		for (const FSWGPobPortalRef& Portal : Cell.Portals)
+		{
+			if (Portal.ConnectingCellIndex != 0 || Portal.OpeningVertices.Num() < 3)
+			{
+				continue;
+			}
+
+			// Newell's method: robust for the non-planar/concave openings
+			// some doorways have, where a single triangle's cross product isn't.
+			FVector Center = FVector::ZeroVector;
+			FVector Normal = FVector::ZeroVector;
+			const int32 Count = Portal.OpeningVertices.Num();
+			for (int32 i = 0; i < Count; ++i)
+			{
+				const FVector& A = Portal.OpeningVertices[i];
+				const FVector& B = Portal.OpeningVertices[(i + 1) % Count];
+				Center += A;
+				Normal += FVector((A.Y - B.Y) * (A.Z + B.Z), (A.Z - B.Z) * (A.X + B.X), (A.X - B.X) * (A.Y + B.Y));
+			}
+			Center /= Count;
+			if (!Normal.Normalize())
+			{
+				continue;
+			}
+			if (FVector::DotProduct(Normal, Center - RoomCenter) < 0.0f)
+			{
+				Normal = -Normal;
+			}
+
+			Entrances.Add({ CellIndex, Center, Normal });
+		}
+	}
+
+	return Entrances;
+}
+
+bool ASWGBuilding::IsRoomLoaded(int32 CellIndex) const
+{
+	for (const ASWGCell* Cell : Cells)
+	{
+		if (Cell && Cell->CellNumber == CellIndex)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ASWGBuilding::HasDeferredRoom(int32 CellIndex) const
+{
+	for (const FDeferredNetworkCell& Deferred : DeferredNetworkCells)
+	{
+		if (Deferred.CellIndex == CellIndex)
+		{
+			return true;
+		}
+	}
+	for (const FSWGWorldSnapshotSpawnInfo& Info : DeferredSnapshotCells)
+	{
+		if (Info.CellNumber == CellIndex)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void ASWGBuilding::LoadRoom(int32 CellIndex)
+{
+	if (IsRoomLoaded(CellIndex))
 	{
 		return;
 	}
-	(bClosed ? bClosedRoomsLoaded : bVisibleRoomsLoaded) = true;
 
 	UGameInstance* GameInstance = GetGameInstance();
 	if (!GameInstance)
@@ -139,63 +228,56 @@ void ASWGBuilding::LoadRooms(bool bClosed)
 	USWGTerrainSubsystem* Terrain = GameInstance->GetSubsystem<USWGTerrainSubsystem>();
 	USWGObjectGraphSubsystem* ObjectGraph = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>();
 
+	// A network cell is finished in place and leaves the deferred list for good.
 	for (auto It = DeferredNetworkCells.CreateIterator(); It; ++It)
 	{
-		if (IsClosedRoom(It->CellIndex) != bClosed)
+		if (It->CellIndex != CellIndex)
 		{
 			continue;
 		}
 		if (ASWGCell* Cell = It->Cell.Get())
 		{
-			FSWGCellSpawnHandler::FinishCell(Cell, this, It->CellIndex, Tre, MeshGen, /*bForceInterior*/ true);
+			FSWGCellSpawnHandler::FinishCell(Cell, this, CellIndex, Tre, MeshGen, /*bForceInterior*/ true);
 		}
 		It.RemoveCurrent();
+		return;
 	}
 
+	// A .ws room is spawned from its node, which stays deferred so an unload can be reversed.
 	if (!Terrain)
 	{
 		return;
 	}
-
-	int32 SpawnedCount = 0;
 	for (const FSWGWorldSnapshotSpawnInfo& CellInfo : DeferredSnapshotCells)
 	{
-		if (IsClosedRoom(CellInfo.CellNumber) != bClosed)
+		if (CellInfo.CellNumber != CellIndex)
 		{
 			continue;
 		}
 		const FTransform CellRelative(CellInfo.Rotation, SWGToUnrealSpace(CellInfo.Position));
-		AActor* CellActor = Terrain->SpawnWorldSnapshotNode(CellInfo, CellRelative * SnapshotTransform, this, ObjectGraph, /*bForceInterior*/ true);
-		if (ASWGCell* Cell = Cast<ASWGCell>(CellActor))
+		if (ASWGCell* Cell = Cast<ASWGCell>(Terrain->SpawnWorldSnapshotNode(CellInfo, CellRelative * SnapshotTransform, this, ObjectGraph, /*bForceInterior*/ true)))
 		{
 			StreamedCells.Add(Cell);
-			++SpawnedCount;
 		}
-	}
-
-	UE_LOG(LogTemp, Log, TEXT("ASWGBuilding::LoadRooms: %s — %d %s .ws room(s)"), *GetName(), SpawnedCount, bClosed ? TEXT("closed") : TEXT("visible"));
-}
-
-void ASWGBuilding::UnloadRooms(bool bClosed)
-{
-	if (!AreRoomsLoaded(bClosed))
-	{
 		return;
 	}
-	(bClosed ? bClosedRoomsLoaded : bVisibleRoomsLoaded) = false;
+}
 
+void ASWGBuilding::UnloadRoom(int32 CellIndex)
+{
 	UGameInstance* GameInstance = GetGameInstance();
 	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
 
 	auto Unregister = [ObjectGraph](AActor* Actor)
-	{
-		const ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(Actor);
-		if (ObjectGraph && NetObject)
 		{
-			ObjectGraph->UnregisterStaticObject(NetObject->GetObjectId());
-		}
-	};
+			const ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(Actor);
+			if (ObjectGraph && NetObject)
+			{
+				ObjectGraph->UnregisterStaticObject(NetObject->GetObjectId());
+			}
+		};
 
+	// Only .ws rooms are ours to destroy; a network cell is the server's.
 	for (auto It = StreamedCells.CreateIterator(); It; ++It)
 	{
 		ASWGCell* Cell = It->Get();
@@ -204,9 +286,9 @@ void ASWGBuilding::UnloadRooms(bool bClosed)
 			It.RemoveCurrent();
 			continue;
 		}
-		if (Cell->bCanSeeParent == bClosed)
+		if (Cell->CellNumber != CellIndex)
 		{
-			continue; // the other tier
+			continue;
 		}
 
 		for (const TWeakObjectPtr<AActor>& PropWeak : Cell->InteriorActors)
@@ -225,9 +307,8 @@ void ASWGBuilding::UnloadRooms(bool bClosed)
 		Unregister(Cell);
 		Cell->Destroy();
 		It.RemoveCurrent();
+		return;
 	}
-
-	UE_LOG(LogTemp, Log, TEXT("ASWGBuilding::UnloadRooms: %s — %s"), *GetName(), bClosed ? TEXT("closed") : TEXT("visible"));
 }
 
 void ASWGBuilding::SetExteriorShellHidden(bool bShouldHide)

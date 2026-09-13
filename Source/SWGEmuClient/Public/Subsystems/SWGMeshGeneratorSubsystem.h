@@ -112,6 +112,18 @@ struct FSWGMeshGenerationResult
 	FSWGMeshGenerationResult() {}
 };
 
+/**
+ * One detail level of a .lod (FORM DTLA): the mesh and the distance band it
+ * is drawn over, from the INFO chunk's [childId][near][far] entries. Raw
+ * SWG metres. Beyond the last level's far distance retail draws nothing.
+ */
+struct FSWGLodLevel
+{
+	FString MeshPath;
+	float NearDistance = 0.0f;
+	float FarDistance = 0.0f;
+};
+
 /** One entity waiting for its mesh to be resolved, parsed, and built. */
 struct FSWGPendingMeshRequest
 {
@@ -132,6 +144,9 @@ struct FSWGPendingMeshRequest
 	 *  their own final .mgn path — all of them need parsing and merging into
 	 *  one combined mesh. */
 	TArray<FString> MeshVirtualPaths;
+
+	/** Lower detail levels below MeshVirtualPaths[0], nearest first — only for a single-mesh .lod appearance. */
+	TArray<FSWGLodLevel> LodLevels;
 
 	/** SAT LATX entries, keyed by the skeleton path they animate. */
 	TMap<FString, FString> AnimationLatPaths;
@@ -277,9 +292,12 @@ public:
 
 	/**
 	 * A .pob cell's MeshPath (FSWGPobCell::MeshPath) is sometimes a final
-	 * .msh path directly and sometimes a bare .lod reference 
+	 * .msh path directly and sometimes a bare .lod reference
 	 */
 	bool ResolveLodMeshPath(const FString& LodOrMeshPath, FString& OutMeshPath);
+
+	/** Every level of a .lod, nearest first — its CHLD meshes joined to the INFO distance bands by child id. */
+	bool ResolveLodLevels(const FString& LodPath, TArray<FSWGLodLevel>& OutLevels);
 
 	/**
 	 * Cache-or-build a collision-only UStaticMesh from raw triangle geometry
@@ -332,10 +350,10 @@ private:
 	 * resolved MeshVirtualPath, but callers that only have a CRC/template will
 	 * need this once it's implemented.
 	 */
-	bool ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath);
+	bool ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels = nullptr);
 
 	/** The path-based half of ResolveMeshPath, factored out so RequestMeshForTemplatePath can skip the CRC->path lookup. */
-	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath);
+	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels = nullptr);
 
 	/**
 	 * CRC -> template -> arrangementDescriptorFilename (walking the DERV chain
@@ -361,7 +379,7 @@ private:
 	bool IsAnySlotAppearanceRelated(const TArray<FString>& SlotNames);
 
 	/** mg4: FSWGMeshReader::ReadStaticMesh/ReadSkeletalMeshBindPose — intended to run off the game thread, like USWGTerrainSubsystem::BakeHeightmap. */
-	bool ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData);
+	bool ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData, TArray<FSWGMeshData>& OutLodMeshData);
 
 	/**
 	 * Loads the once-built UStaticMesh for CacheHash (package name hashed
@@ -376,7 +394,7 @@ private:
 	 * with PlaceholderColor baked into its vertex colors as the fallback tint
 	 * for any submesh whose real material can't be resolved later.
 	 */
-	UStaticMesh* GetOrBuildGeneratedStaticMesh(uint32 CacheHash, const FString& DebugName, const FSWGMeshData& MeshData, const FVector3f& PlaceholderColor);
+	UStaticMesh* GetOrBuildGeneratedStaticMesh(uint32 CacheHash, const FString& DebugName, const FSWGMeshData& MeshData, const FVector3f& PlaceholderColor, const TArray<FSWGMeshData>& LodMeshData = {}, const TArray<FSWGLodLevel>& LodLevels = {});
 
 	/**
 	 * Gets/builds the cached UStaticMesh (see GetOrBuildGeneratedStaticMesh —
@@ -398,7 +416,7 @@ private:
 	 * root's world transform (the actor's already-correct network spawn
 	 * placement), since nothing else carries that placement once it's gone.
 	 */
-	UMeshComponent* BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr, const FString& ReplaceableTexturePath = FString());
+	UMeshComponent* BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr, const FString& ReplaceableTexturePath = FString(), const TArray<FSWGMeshData>& LodMeshData = {}, const TArray<FSWGLodLevel>& LodLevels = {});
 
 	/**
 	 * The actor-agnostic asset-producing half of BuildGeneratedMeshComponent,
@@ -411,7 +429,7 @@ private:
 	 * failed/unresolved. Returns nullptr (OutMaterials left empty) if the
 	 * static mesh itself couldn't be built.
 	 */
-	UStaticMesh* BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials, const FString& ReplaceableTexturePath = FString());
+	UStaticMesh* BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials, const FString& ReplaceableTexturePath = FString(), const TArray<FSWGMeshData>& LodMeshData = {}, const TArray<FSWGLodLevel>& LodLevels = {});
 
 	/**
 	 * Parses a .sht shader template (e.g. "shader/dl44_main_as9.sht") and

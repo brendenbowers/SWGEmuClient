@@ -90,25 +90,43 @@ public:
 	bool OwnsCell(int64 CellObjectId) const;
 
 	/**
-	 * Rooms stream in two tiers, decided by USWGInteriorStreamingSubsystem:
-	 * bClosed=false is the rooms whose portal opens to the exterior (POB
-	 * canSeeParentCell) — loaded by distance and view cone; bClosed=true is
-	 * everything else — loaded only when close. A network cell is finished
-	 * once and stays; a .ws room is destroyed again by UnloadRooms.
+	 * Rooms stream individually, decided by USWGInteriorStreamingSubsystem
+	 * against each room's doorways (GetEntrances). A network cell is finished
+	 * once and stays; a .ws room is destroyed again by UnloadRoom.
 	 */
-	bool AreRoomsLoaded(bool bClosed) const { return bClosed ? bClosedRoomsLoaded : bVisibleRoomsLoaded; }
-	void LoadRooms(bool bClosed);
-	void UnloadRooms(bool bClosed);
+	bool IsRoomLoaded(int32 CellIndex) const;
+	bool HasDeferredRoom(int32 CellIndex) const;
+	void LoadRoom(int32 CellIndex);
+	void UnloadRoom(int32 CellIndex);
+
+	/** Number of rooms in the POB, cell 0 (the exterior) included. */
+	int32 GetRoomCount() const { return PortalData.Cells.Num(); }
 
 	/** Whether the POB marks cell CellIndex as a closed room (no portal to the exterior). */
 	bool IsClosedRoom(int32 CellIndex) const;
 
+	/** A doorway from an exterior-visible room out to cell 0, building-local UE space; Normal points outward. */
+	struct FEntrance
+	{
+		int32 CellIndex = 0;
+		FVector Center = FVector::ZeroVector;
+		FVector Normal = FVector::ForwardVector;
+	};
+
+	/**
+	 * Every portal into the exterior, derived once from PortalData. A room's
+	 * interior is only visible from in front of a doorway — its own for an
+	 * exterior-visible room, any of the building's for a closed one. Empty
+	 * if the POB has no such portals.
+	 */
+	const TArray<FEntrance>& GetEntrances();
+
 private:
-	/** .ws cells created by LoadRooms, so UnloadRooms can take exactly those down. */
+	/** .ws cells created by LoadRoom, so UnloadRoom can take exactly those down. */
 	TArray<TWeakObjectPtr<ASWGCell>> StreamedCells;
 
-	bool bVisibleRoomsLoaded = false;
-	bool bClosedRoomsLoaded = false;
+	TArray<FEntrance> Entrances;
+	bool bEntrancesBuilt = false;
 
 	UFUNCTION()
 	void OnCellTriggerBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);

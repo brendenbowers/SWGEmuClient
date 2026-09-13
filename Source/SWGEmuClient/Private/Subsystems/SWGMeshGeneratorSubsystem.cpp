@@ -6,6 +6,7 @@
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "Engine/StaticMesh.h"
+#include "SceneManagement.h"
 #include "Components/StaticMeshComponent.h"
 #include "GeometryScript/MeshAssetFunctions.h"
 #include "PhysicsEngine/BodySetup.h"
@@ -65,6 +66,12 @@ using namespace UE::Geometry;
 
 namespace
 {
+	// Mixed into every SM_ package name. The saved asset is the cache and its
+	// name derives from source paths only, so any change to how it's built
+	// (LODs, material slots, importer fixes) must bump this or the old asset
+	// keeps loading.
+	constexpr uint32 GeneratedStaticMeshVersion = 4;
+
 	// Whole-chunk null-terminated ascii string (chunk's only content is the
 	// string) — same idiom as FSWGMeshReader::ReadNullTerminatedString.
 	FString ReadFullChunkString(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk)
@@ -702,7 +709,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 
 				if (Request.TemplateCrc != 0 && Request.MeshVirtualPaths.IsEmpty())
 				{
-					if (!ResolveMeshPath(Request.TemplateCrc, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath))
+					if (!ResolveMeshPath(Request.TemplateCrc, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath, &Request.LodLevels))
 					{
 						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template CRC %08X"), Request.TemplateCrc);
 						return;
@@ -710,11 +717,24 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				}
 				else if (!Request.TemplatePath.IsEmpty() && Request.MeshVirtualPaths.IsEmpty())
 				{
-					if (!ResolveMeshPathForTemplate(Request.TemplatePath, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath))
+					if (!ResolveMeshPathForTemplate(Request.TemplatePath, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath, &Request.LodLevels))
 					{
 						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template %s"), *Request.TemplatePath);
 						return;
 					}
+				}
+				else if (Request.MeshVirtualPaths.Num() == 1 && Request.MeshVirtualPaths[0].EndsWith(TEXT(".lod")))
+				{
+					// A .pob cell handed straight in (a building's exterior shell).
+					TArray<FSWGLodLevel> Levels;
+					if (!ResolveLodLevels(Request.MeshVirtualPaths[0], Levels))
+					{
+						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve %s"), *Request.MeshVirtualPaths[0]);
+						return;
+					}
+					Request.MeshVirtualPaths = { Levels[0].MeshPath };
+					Levels.RemoveAt(0);
+					Request.LodLevels = MoveTemp(Levels);
 				}
 
 				if (Request.MeshVirtualPaths.IsEmpty())
@@ -727,7 +747,8 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 					Request.MeshVirtualPaths.Num(), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
 
 				FSWGMeshData MeshData;
-				const bool bParsed = ParseMesh(Request, MeshData);
+				TArray<FSWGMeshData> LodMeshData;
+				const bool bParsed = ParseMesh(Request, MeshData, LodMeshData);
 				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ParseMesh returned %s for actor %s (crc %08X), %d submesh(es)"),
 					bParsed ? TEXT("true") : TEXT("false"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, MeshData.Submeshes.Num());
 				if (!bParsed)
@@ -739,9 +760,16 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				const FString ActorClassName = Request.Actor.IsValid()
 					? Request.Actor->GetClass()->GetName()
 					: (bIsItemRequest ? ASWGItem::StaticClass()->GetName() : TEXT("Unknown"));
-				const uint32 CacheHash = Request.bStatic
+				uint32 CacheHash = Request.bStatic
 					? GetTypeHash(Request.TemplatePath)
 					: (GetTypeHash(Request.MeshVirtualPaths) ^ GetTypeHash(ActorClassName));
+				// The saved SM_ asset is the cache and its name is this hash, so
+				// the LOD set and the generator version have to be part of it.
+				CacheHash = HashCombine(CacheHash, GeneratedStaticMeshVersion);
+				for (const FSWGLodLevel& Level : Request.LodLevels)
+				{
+					CacheHash = HashCombine(CacheHash, GetTypeHash(Level.MeshPath));
+				}
 				const FString DebugName = Request.bStatic
 					? Request.TemplatePath
 					: FString::Printf(TEXT("%s (%s)"), *FString::Join(Request.MeshVirtualPaths, TEXT(", ")), *ActorClassName);
@@ -758,7 +786,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				// its own continuation. Without it this lambda's operator() is const,
 				// Request is a const FSWGPendingMeshRequest, and any attempt to pass
 				// it on selects the (deleted) copy constructor instead of the move.
-				AsyncTask(ENamedThreads::GameThread, [this, Request = MoveTemp(Request), MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility]() mutable
+				AsyncTask(ENamedThreads::GameThread, [this, Request = MoveTemp(Request), MeshData, LodMeshData = MoveTemp(LodMeshData), CacheHash, DebugName, YawCorrectionDegrees, Mobility]() mutable
 					{
 						// Own guard over the same (moved-in) Promise — the outer
 						// lambda's guard Dismiss()'d before handing off here.
@@ -903,7 +931,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 						const TMap<FString, FLinearColor>* PaletteTintsPtr = PaletteTints.Num() > 0 ? &PaletteTints : nullptr;
 						const TMap<FString, float>* MorphWeightsPtr = MorphWeights.Num() > 0 ? &MorphWeights : nullptr;
 						const TMap<FString, int32>* TextureIndicesPtr = TextureIndices.Num() > 0 ? &TextureIndices : nullptr;
-						UMeshComponent* MeshComponent = BuildGeneratedMeshComponent(*Request.Actor, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility, PaletteTintsPtr, TextureIndicesPtr, ReplaceableTexturePath);
+						UMeshComponent* MeshComponent = BuildGeneratedMeshComponent(*Request.Actor, MeshData, CacheHash, DebugName, YawCorrectionDegrees, Mobility, PaletteTintsPtr, TextureIndicesPtr, ReplaceableTexturePath, LodMeshData, Request.LodLevels);
 						// SkeletalAnimationPipeline is null until Initialize() runs — see Tick()'s
 						// own comment for why this can't be assumed non-null unconditionally.
 						if (SkeletalAnimationPipeline)
@@ -946,7 +974,7 @@ namespace
 	}
 }
 
-bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath)
+bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels)
 {
 	const FString TemplatePath = TreSubsystem->ResolveTemplatePath(TemplateCrc);
 	if (TemplatePath.IsEmpty())
@@ -955,10 +983,10 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPath(uint32 TemplateCrc, TArray<FStr
 		return false;
 	}
 
-	return ResolveMeshPathForTemplate(TemplatePath, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal, OutAppearancePath);
+	return ResolveMeshPathForTemplate(TemplatePath, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal, OutAppearancePath, OutLodLevels);
 }
 
-bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath)
+bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels)
 {
 	// Resolution chain:
 	//   template .iff (SCOT/STOT > FORM SHOT > versioned data form > XXXX
@@ -1178,25 +1206,21 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 		}
 		else
 		{
-			// .lod: FORM DTLA > FORM 0007 > FORM DATA > multiple CHLD
-			// ([4-byte index][path relative to "appearance/", not full]).
-			FSWGIffChunk DtlaForm, Form0007, DataForm;
-			if (!GroupReader.FindForm(SWG_IFF_TAG('D','T','L','A'), DtlaForm)
-				|| !GroupReader.FindChildForm(DtlaForm, SWG_IFF_TAG('0','0','0','7'), Form0007)
-				|| !GroupReader.FindChildForm(Form0007, SWGIffTags::Data, DataForm))
+			TArray<FSWGLodLevel> Levels;
+			if (!ResolveLodLevels(MeshGroupPath, Levels))
 			{
-				UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s missing DTLA/0007/DATA structure"), *MeshGroupPath);
 				continue;
 			}
-			for (const FSWGIffChunk& Child : GroupReader.ReadChildren(DataForm))
+			OutMeshVirtualPaths.Add(Levels[0].MeshPath);
+
+			// Lower levels only make sense for a single-mesh appearance; a
+			// multi-part one would need per-part LODs merged together.
+			if (OutLodLevels && MeshGroupPaths.Num() == 1)
 			{
-				if (Child.Tag == SWG_IFF_TAG('C','H','L','D') && Child.DataSize > 4)
-				{
-					const uint8* Data = GroupReader.GetChunkData(Child);
-					const FString RelativePath = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + 4), Child.DataSize - 4 - 1);
-					Candidates.Add(TEXT("appearance/") + RelativePath);
-				}
+				Levels.RemoveAt(0);
+				*OutLodLevels = MoveTemp(Levels);
 			}
+			continue;
 		}
 
 		const FString FinalPath = PickHighestDetailLod(Candidates);
@@ -1284,21 +1308,14 @@ bool USWGMeshGeneratorSubsystem::ResolveInteriorLayoutPath(const FString& Templa
 	return ResolveTemplateStringParam(TemplatePath, SWG_IFF_TAG('S','B','O','T'), TEXT("interiorLayoutFileName"), OutIlfPath) && !OutIlfPath.IsEmpty();
 }
 
-bool USWGMeshGeneratorSubsystem::ResolveLodMeshPath(const FString& LodOrMeshPath, FString& OutMeshPath)
+bool USWGMeshGeneratorSubsystem::ResolveLodLevels(const FString& LodPath, TArray<FSWGLodLevel>& OutLevels)
 {
-	if (!LodOrMeshPath.EndsWith(TEXT(".lod")))
-	{
-		OutMeshPath = LodOrMeshPath;
-		return true;
-	}
+	OutLevels.Reset();
 
-	// Same FORM DTLA > 0007 > DATA > CHLD walk ResolveMeshPathForTemplate
-	// does for the static (non-skeletal) mesh-group case — see that
-	// function's own comment on this exact chunk layout.
-	FSWGIffReader GroupReader = TreSubsystem->CreateIffReader(LodOrMeshPath);
+	FSWGIffReader GroupReader = TreSubsystem->CreateIffReader(LodPath);
 	if (!GroupReader.IsValid())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to open .lod file %s"), *LodOrMeshPath);
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to open .lod file %s"), *LodPath);
 		return false;
 	}
 
@@ -1307,27 +1324,73 @@ bool USWGMeshGeneratorSubsystem::ResolveLodMeshPath(const FString& LodOrMeshPath
 		|| !GroupReader.FindChildForm(DtlaForm, SWG_IFF_TAG('0','0','0','7'), Form0007)
 		|| !GroupReader.FindChildForm(Form0007, SWGIffTags::Data, DataForm))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s missing DTLA/0007/DATA structure"), *LodOrMeshPath);
+		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s missing DTLA/0007/DATA structure"), *LodPath);
 		return false;
 	}
 
-	TArray<FString> Candidates;
+	// DATA > CHLD: [id:uint32][path relative to "appearance/"].
+	TMap<uint32, FString> PathById;
 	for (const FSWGIffChunk& Child : GroupReader.ReadChildren(DataForm))
 	{
 		if (Child.Tag == SWG_IFF_TAG('C','H','L','D') && Child.DataSize > 4)
 		{
 			const uint8* Data = GroupReader.GetChunkData(Child);
-			const FString RelativePath = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + 4), Child.DataSize - 4 - 1);
-			Candidates.Add(TEXT("appearance/") + RelativePath);
+			const uint32 Id = Data[0] | (Data[1] << 8) | (Data[2] << 16) | (Data[3] << 24);
+			PathById.Add(Id, TEXT("appearance/") + FString::ConstructFromPtrSize((const ANSICHAR*)(Data + 4), Child.DataSize - 4 - 1));
 		}
 	}
 
-	OutMeshPath = PickHighestDetailLod(Candidates);
-	if (OutMeshPath.IsEmpty())
+	// 0007 > INFO: [id:uint32][near:float][far:float] per level.
+	for (const FSWGIffChunk& Chunk : GroupReader.ReadChildren(Form0007))
+	{
+		if (Chunk.IsForm() || Chunk.Tag != SWGIffTags::Info)
+		{
+			continue;
+		}
+		FSWGIFFChunkReader InfoReader(Chunk, GroupReader);
+		while (InfoReader.CanRead(12))
+		{
+			const uint32 Id = InfoReader.ReadValueLE<uint32>();
+			FSWGLodLevel Level;
+			Level.NearDistance = InfoReader.ReadValueLE<float>();
+			Level.FarDistance = InfoReader.ReadValueLE<float>();
+			if (const FString* Path = PathById.Find(Id))
+			{
+				Level.MeshPath = *Path;
+				OutLevels.Add(MoveTemp(Level));
+			}
+		}
+	}
+
+	// A .lod with children but no INFO (a few props) still yields its best level.
+	if (OutLevels.IsEmpty() && !PathById.IsEmpty())
+	{
+		TArray<FString> Candidates;
+		PathById.GenerateValueArray(Candidates);
+		FSWGLodLevel Level;
+		Level.MeshPath = PickHighestDetailLod(Candidates);
+		OutLevels.Add(MoveTemp(Level));
+	}
+
+	OutLevels.Sort([](const FSWGLodLevel& A, const FSWGLodLevel& B) { return A.NearDistance < B.NearDistance; });
+	return !OutLevels.IsEmpty();
+}
+
+bool USWGMeshGeneratorSubsystem::ResolveLodMeshPath(const FString& LodOrMeshPath, FString& OutMeshPath)
+{
+	if (!LodOrMeshPath.EndsWith(TEXT(".lod")))
+	{
+		OutMeshPath = LodOrMeshPath;
+		return true;
+	}
+
+	TArray<FSWGLodLevel> Levels;
+	if (!ResolveLodLevels(LodOrMeshPath, Levels))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s produced no mesh candidates"), *LodOrMeshPath);
 		return false;
 	}
+	OutMeshPath = Levels[0].MeshPath;
 	return true;
 }
 
@@ -1462,8 +1525,21 @@ bool USWGMeshGeneratorSubsystem::IsAnySlotAppearanceRelated(const TArray<FString
 	return false;
 }
 
-bool USWGMeshGeneratorSubsystem::ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData)
+bool USWGMeshGeneratorSubsystem::ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData, TArray<FSWGMeshData>& OutLodMeshData)
 {
+	// A level that fails to parse is dropped rather than failing the request;
+	// the distance bands stay aligned by index, so it must leave a hole.
+	OutLodMeshData.SetNum(Request.LodLevels.Num());
+	for (int32 i = 0; i < Request.LodLevels.Num(); ++i)
+	{
+		FSWGIffReader LodReader = TreSubsystem->CreateIffReader(Request.LodLevels[i].MeshPath);
+		if (!LodReader.IsValid() || !FSWGMeshReader::ReadStaticMesh(LodReader, OutLodMeshData[i]))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to read LOD %d mesh %s"), i + 1, *Request.LodLevels[i].MeshPath);
+			OutLodMeshData[i].Submeshes.Reset();
+		}
+	}
+
 	// Usually one path, but a humanoid skeletal appearance resolves to several
 	// body-part .mgn paths (arms/body/hands/head — see ResolveMeshPath) that
 	// all need parsing and merging into one combined mesh.
@@ -2465,7 +2541,55 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 	return Result;
 }
 
-UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 CacheHash, const FString& DebugName, const FSWGMeshData& MeshData, const FVector3f& PlaceholderColor)
+namespace
+{
+	/**
+	 * One material slot per distinct shader across every LOD, LOD0's submesh
+	 * order first. Runtime SetMaterial(slot) then reaches every LOD, and the
+	 * asset's SectionInfoMap points each (LOD, section) at its slot. Derived
+	 * from the parsed data on both cache miss and hit, so it's the same list.
+	 */
+	struct FSWGMaterialSlots
+	{
+		TArray<FString> ShaderBySlot;
+
+		/** [0] is LOD0, then one per LodMeshData entry, aligned by index. */
+		TArray<TArray<int32>> SlotBySubmeshPerLod;
+
+		FSWGMaterialSlots(const FSWGMeshData& MeshData, const TArray<FSWGMeshData>& LodMeshData)
+		{
+			auto AddLod = [this](const FSWGMeshData& Lod)
+				{
+					TArray<int32>& Slots = SlotBySubmeshPerLod.AddDefaulted_GetRef();
+					for (const FSWGMeshSubmesh& Submesh : Lod.Submeshes)
+					{
+						int32 Slot = ShaderBySlot.IndexOfByKey(Submesh.ShaderName);
+						if (Slot == INDEX_NONE)
+						{
+							Slot = ShaderBySlot.Add(Submesh.ShaderName);
+						}
+						Slots.Add(Slot);
+					}
+				};
+			AddLod(MeshData);
+			for (const FSWGMeshData& Lod : LodMeshData)
+			{
+				AddLod(Lod);
+			}
+		}
+	};
+
+	// Same projection UStaticMesh's own auto-compute evaluates against
+	// (FStaticMeshRenderData::ResolveSectionInfo), so the .lod's metre
+	// thresholds land where the engine's LOD selection expects them.
+	float LodScreenSize(float BoundsRadius, float DistanceRaw)
+	{
+		const FPerspectiveMatrix ProjMatrix(UE_PI * 0.25f, 1920.0f, 1080.0f, 1.0f);
+		return ComputeBoundsScreenSize(FVector::ZeroVector, BoundsRadius, FVector(0.0f, 0.0f, SWGToUnrealSpace(DistanceRaw)), ProjMatrix);
+	}
+}
+
+UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 CacheHash, const FString& DebugName, const FSWGMeshData& MeshData, const FVector3f& PlaceholderColor, const TArray<FSWGMeshData>& LodMeshData, const TArray<FSWGLodLevel>& LodLevels)
 {
 	const FString AssetName = FString::Printf(TEXT("SM_%u"), CacheHash);
 	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
@@ -2489,17 +2613,6 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 Ca
 		return nullptr;
 	}
 
-	// A bare, unregistered, never-rendered UDynamicMesh — just a scratch
-	// buffer to hand to CopyMeshToStaticMesh, not a component. Building a
-	// full UDynamicMeshComponent (register, attach, material-assign, later
-	// destroy) here would be pure waste: this path only runs on a cache
-	// miss, and the component would never be shown.
-	UDynamicMesh* ScratchMesh = NewObject<UDynamicMesh>(GetTransientPackage());
-	ScratchMesh->EditMesh([&MeshData, PlaceholderColor](FDynamicMesh3& EditMesh)
-	{
-		PopulateDynamicMeshFromMeshData(EditMesh, MeshData, PlaceholderColor);
-	});
-
 	UPackage* Package = CreatePackage(*PackagePath);
 	Package->FullyLoad();
 	UStaticMesh* StaticMesh = NewObject<UStaticMesh>(Package, FName(*AssetName), RF_Public | RF_Standalone);
@@ -2515,21 +2628,102 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 Ca
 	// same pattern GetOrBuildGeneratedSkeletalMesh already uses
 	// (TryApplyGeneratedAnimatedMesh's per-slot CharacterMesh->SetMaterial
 	// calls, never baked into the saved USkeletalMesh either).
-	// CommitMeshDescription (inside CopyMeshToStaticMesh) still auto-creates
-	// one material slot per submesh from the mesh description's polygon
-	// groups, which is all that runtime SetMaterial call needs to succeed.
 	FGeometryScriptCopyMeshToAssetOptions Options;
 	Options.bEmitTransaction = false;
+	Options.bDeferMeshPostEditChange = true;
 
-	FGeometryScriptMeshWriteLOD TargetLOD;
-	EGeometryScriptOutcomePins Outcome;
-	UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(ScratchMesh, StaticMesh, Options, TargetLOD, Outcome);
+	// A bare, unregistered, never-rendered UDynamicMesh — just a scratch
+	// buffer to hand to CopyMeshToStaticMesh, not a component.
+	auto WriteLod = [&](const FSWGMeshData& Lod, int32 LodIndex) -> bool
+		{
+			UDynamicMesh* ScratchMesh = NewObject<UDynamicMesh>(GetTransientPackage());
+			ScratchMesh->EditMesh([&Lod, PlaceholderColor](FDynamicMesh3& EditMesh)
+				{
+					PopulateDynamicMeshFromMeshData(EditMesh, Lod, PlaceholderColor);
+				});
 
-	if (Outcome != EGeometryScriptOutcomePins::Success)
+			FGeometryScriptMeshWriteLOD TargetLOD;
+			TargetLOD.LODIndex = LodIndex;
+			EGeometryScriptOutcomePins Outcome;
+			UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(ScratchMesh, StaticMesh, Options, TargetLOD, Outcome);
+			return Outcome == EGeometryScriptOutcomePins::Success;
+		};
+
+	if (!WriteLod(MeshData, 0))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: CopyMeshToStaticMesh failed for '%s'"), *DebugName);
 		return nullptr;
 	}
+
+	// Lower levels: each is its own LOD, switched at the level's near distance.
+	// A level that failed to parse is skipped, so LOD indices are compacted.
+	FBox Bounds(ForceInit);
+	for (const FSWGMeshSubmesh& Submesh : MeshData.Submeshes)
+	{
+		for (const FSWGMeshVertex& V : Submesh.Vertices)
+		{
+			Bounds += V.Position;
+		}
+	}
+	const float BoundsRadius = Bounds.IsValid ? Bounds.GetExtent().Size() : 0.0f;
+
+	const FSWGMaterialSlots Slots(MeshData, LodMeshData);
+	TArray<int32> LodIndexBySource; // LodMeshData index -> asset LOD index, INDEX_NONE if skipped
+	int32 NextLodIndex = 1;
+	StaticMesh->GetSourceModel(0).ScreenSize.Default = 1.0f;
+	for (int32 i = 0; i < LodMeshData.Num(); ++i)
+	{
+		const bool bWritten = LodMeshData[i].Submeshes.Num() > 0 && LodLevels.IsValidIndex(i) && WriteLod(LodMeshData[i], NextLodIndex);
+		if (bWritten)
+		{
+			// Selection returns the first LOD (lowest detail first) whose
+			// threshold exceeds the current screen size, so each must sit
+			// strictly below the level above it or that level is never picked.
+			// A .lod with a near distance inside the mesh's own bounds
+			// (ply_nboo_house_lg_s01) otherwise produces a LOD1 above 1.0.
+			const float Previous = StaticMesh->GetSourceModel(NextLodIndex - 1).ScreenSize.Default;
+			StaticMesh->GetSourceModel(NextLodIndex).ScreenSize.Default = FMath::Min(LodScreenSize(BoundsRadius, LodLevels[i].NearDistance), Previous * 0.95f);
+		}
+		LodIndexBySource.Add(bWritten ? NextLodIndex++ : INDEX_NONE);
+	}
+
+	if (NextLodIndex > 1)
+	{
+		StaticMesh->bAutoComputeLODScreenSize = false;
+	}
+
+	// Each LOD's sections come out in its own submesh order; point them at
+	// the unified slots so one SetMaterial per slot covers every level.
+	TArray<FStaticMaterial> Materials;
+	for (const FString& Shader : Slots.ShaderBySlot)
+	{
+		Materials.Add(FStaticMaterial(nullptr, FName(*FPaths::GetBaseFilename(Shader))));
+	}
+	StaticMesh->SetStaticMaterials(Materials);
+
+	auto MapSections = [&](int32 AssetLod, const TArray<int32>& SlotBySubmesh)
+		{
+			for (int32 Section = 0; Section < SlotBySubmesh.Num(); ++Section)
+			{
+				StaticMesh->GetSectionInfoMap().Set(AssetLod, Section, FMeshSectionInfo(SlotBySubmesh[Section]));
+			}
+		};
+	MapSections(0, Slots.SlotBySubmeshPerLod[0]);
+	for (int32 i = 0; i < LodMeshData.Num(); ++i)
+	{
+		if (LodIndexBySource[i] != INDEX_NONE)
+		{
+			MapSections(LodIndexBySource[i], Slots.SlotBySubmeshPerLod[i + 1]);
+		}
+	}
+	StaticMesh->GetOriginalSectionInfoMap().CopyFrom(StaticMesh->GetSectionInfoMap());
+
+	// Explicit material slots read as opaque, which is what opts a mesh into
+	// the project's distance-field generation — seconds of game-thread stall
+	// per mesh, and nothing here uses distance fields.
+	StaticMesh->bGenerateMeshDistanceField = false;
+
+	StaticMesh->PostEditChange();
 
 	USWGMeshSourceUserData* SourceData = NewObject<USWGMeshSourceUserData>(StaticMesh);
 	SourceData->DebugName = DebugName;
@@ -2544,7 +2738,13 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 Ca
 	SaveArgs.SaveFlags = SAVE_NoError;
 	UPackage::SavePackage(Package, StaticMesh, *FileName, SaveArgs);
 
-	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated static mesh '%s' for '%s'"), *PackagePath, *DebugName);
+	// Read back from the built render data — what LOD selection will actually use.
+	FString ScreenSizes;
+	for (int32 LodIndex = 0; LodIndex < NextLodIndex; ++LodIndex)
+	{
+		ScreenSizes += FString::Printf(TEXT("%s%.3f"), LodIndex ? TEXT(", ") : TEXT(""), StaticMesh->GetRenderData()->ScreenSize[LodIndex].Default);
+	}
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: built and cached generated static mesh '%s' for '%s' (%d LOD(s), screen sizes %s)"), *PackagePath, *DebugName, NextLodIndex, *ScreenSizes);
 	return StaticMesh;
 #else
 	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: generated static mesh '%s' isn't built yet and can't be built in a packaged build"), *PackagePath);
@@ -2639,11 +2839,11 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedCollisionMesh(uint32
 #endif
 }
 
-UStaticMesh* USWGMeshGeneratorSubsystem::BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials, const FString& ReplaceableTexturePath)
+UStaticMesh* USWGMeshGeneratorSubsystem::BuildItemStaticMeshAssets(const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, const FVector3f& PlaceholderColor, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, TArray<UMaterialInterface*>& OutMaterials, const FString& ReplaceableTexturePath, const TArray<FSWGMeshData>& LodMeshData, const TArray<FSWGLodLevel>& LodLevels)
 {
 	OutMaterials.Reset();
 
-	UStaticMesh* StaticMesh = GetOrBuildGeneratedStaticMesh(CacheHash, DebugName, MeshData, PlaceholderColor);
+	UStaticMesh* StaticMesh = GetOrBuildGeneratedStaticMesh(CacheHash, DebugName, MeshData, PlaceholderColor, LodMeshData, LodLevels);
 	if (!StaticMesh)
 	{
 		return nullptr;
@@ -2662,10 +2862,14 @@ UStaticMesh* USWGMeshGeneratorSubsystem::BuildItemStaticMeshAssets(const FSWGMes
 	{
 		PlaceholderMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
 	}
+	// One material per unified slot (LOD0's submeshes first, then any shader
+	// only a lower level uses) — the same list GetOrBuildGeneratedStaticMesh
+	// mapped the asset's sections onto.
+	const FSWGMaterialSlots Slots(MeshData, LodMeshData);
 	int32 NumTextured = 0;
-	for (int32 i = 0; i < MeshData.Submeshes.Num(); ++i)
+	for (const FString& Shader : Slots.ShaderBySlot)
 	{
-		UMaterialInterface* Mat = GetOrBuildObjectMaterial(MeshData.Submeshes[i].ShaderName, PaletteTintOverrides, TextureIndexOverrides, ReplaceableTexturePath);
+		UMaterialInterface* Mat = GetOrBuildObjectMaterial(Shader, PaletteTintOverrides, TextureIndexOverrides, ReplaceableTexturePath);
 		if (Mat)
 		{
 			++NumTextured;
@@ -2673,16 +2877,16 @@ UStaticMesh* USWGMeshGeneratorSubsystem::BuildItemStaticMeshAssets(const FSWGMes
 		OutMaterials.Add(Mat ? Mat : PlaceholderMaterial);
 	}
 	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: %s assigned %d/%d real textured material(s), tint=(%.2f,%.2f,%.2f)"),
-		*DebugName, NumTextured, MeshData.Submeshes.Num(),
+		*DebugName, NumTextured, Slots.ShaderBySlot.Num(),
 		PlaceholderColor.X, PlaceholderColor.Y, PlaceholderColor.Z);
 
 	return StaticMesh;
 }
 
-UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, const FString& ReplaceableTexturePath)
+UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& Actor, const FSWGMeshData& MeshData, uint32 CacheHash, const FString& DebugName, float YawCorrectionDegrees, EComponentMobility::Type Mobility, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, const FString& ReplaceableTexturePath, const TArray<FSWGMeshData>& LodMeshData, const TArray<FSWGLodLevel>& LodLevels)
 {
 	TArray<UMaterialInterface*> Materials;
-	UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForActor(Actor), PaletteTintOverrides, TextureIndexOverrides, Materials, ReplaceableTexturePath);
+	UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForActor(Actor), PaletteTintOverrides, TextureIndexOverrides, Materials, ReplaceableTexturePath, LodMeshData, LodLevels);
 	if (!StaticMesh)
 	{
 		return nullptr;
@@ -2697,6 +2901,12 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 	}
 
 	MeshComponent->SetMobility(Mobility);
+
+	// Retail draws nothing past the last level's far distance.
+	if (!LodLevels.IsEmpty())
+	{
+		MeshComponent->SetCullDistance(SWGToUnrealSpace(LodLevels.Last().FarDistance));
+	}
 
 	// No SetHiddenInGame(Actor.IsHidden()) here: the proxy already reads the
 	// actor's bHidden on creation, and stamping the component's own flag left
