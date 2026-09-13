@@ -30,6 +30,7 @@
 #include "Subsystems/SWGTargetSubsystem.h"
 #include "Materials/MaterialInterface.h"
 #include "Objects/SWGNetworkObjectInterface.h"
+#include "EngineUtils.h"
 
 ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -196,6 +197,17 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	// risking the same zero-events problem through an Enhanced Input action.
 	PlayerInputComponent->BindAxisKey(EKeys::MouseWheelAxis, this, &ASWGPlayer::OnMouseWheel);
 
+	// Gamepad. The left stick already drives IA_Move through IMC_Default;
+	// the rest is bound here as raw keys like the mouse above.
+	PlayerInputComponent->BindAxisKey(EKeys::Gamepad_RightX, this, &ASWGPlayer::GamepadLookX);
+	PlayerInputComponent->BindAxisKey(EKeys::Gamepad_RightY, this, &ASWGPlayer::GamepadLookY);
+	PlayerInputComponent->BindAxisKey(EKeys::Gamepad_DPad_Up, this, &ASWGPlayer::GamepadZoomIn);
+	PlayerInputComponent->BindAxisKey(EKeys::Gamepad_DPad_Down, this, &ASWGPlayer::GamepadZoomOut);
+	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Bottom, IE_Pressed, this, &ASWGPlayer::TargetNearest);
+	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Right, IE_Pressed, this, &ASWGPlayer::ClearTarget);
+	PlayerInputComponent->BindKey(EKeys::Gamepad_RightShoulder, IE_Pressed, this, &ASWGPlayer::CycleTargetNext);
+	PlayerInputComponent->BindKey(EKeys::Gamepad_LeftShoulder, IE_Pressed, this, &ASWGPlayer::CycleTargetPrevious);
+
 	// Action bar hotkeys: 1-9, 0, then hyphen and equals — SWG's twelve-slot
 	// bank. Bound the same legacy way as the mouse keys above rather than
 	// through Enhanced Input, so the HUD needs no input assets of its own.
@@ -305,16 +317,124 @@ void ASWGPlayer::OnLeftMouseButtonPressed()
 	TargetSubsystem->SetTargetActor(HitActor);
 }
 
+void ASWGPlayer::GamepadLookX(float Value)
+{
+	// Axis bindings fire every frame, zero included, so this is a clean per-frame
+	// "is the stick pushed sideways" that Tick reads to turn the body with the camera.
+	bIsGamepadSteering = !FMath::IsNearlyZero(Value);
+	if (bIsGamepadSteering)
+	{
+		AddControllerYawInput(Value * GamepadLookRateDegrees * GetWorld()->GetDeltaSeconds());
+	}
+}
+
+void ASWGPlayer::GamepadLookY(float Value)
+{
+	if (!FMath::IsNearlyZero(Value))
+	{
+		// Stick up tilts the camera up, the opposite of mouse-Y's push-forward-to-look-down.
+		AddControllerPitchInput(-Value * GamepadLookRateDegrees * GetWorld()->GetDeltaSeconds());
+	}
+}
+
+void ASWGPlayer::GamepadZoomIn(float Value)
+{
+	// Same clamp as OnMouseWheel; the wheel's per-notch step becomes a per-second rate.
+	if (!FMath::IsNearlyZero(Value))
+	{
+		CameraBoom->TargetArmLength = FMath::Clamp(
+			CameraBoom->TargetArmLength - Value * GamepadZoomRate * GetWorld()->GetDeltaSeconds(), 100.0f, 1000.0f);
+	}
+}
+
+void ASWGPlayer::GamepadZoomOut(float Value)
+{
+	GamepadZoomIn(-Value);
+}
+
+void ASWGPlayer::TargetNearest()
+{
+	// Cycling from "no target" lands on the nearest; from a target it steps
+	// past it, so repeated presses walk outward like the bumper does.
+	CycleTarget(1);
+}
+
+void ASWGPlayer::CycleTargetNext() { CycleTarget(1); }
+void ASWGPlayer::CycleTargetPrevious() { CycleTarget(-1); }
+
+void ASWGPlayer::ClearTarget()
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	if (USWGTargetSubsystem* TargetSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGTargetSubsystem>() : nullptr)
+	{
+		TargetSubsystem->ClearTarget();
+	}
+}
+
+void ASWGPlayer::CycleTarget(int32 Direction)
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	USWGTargetSubsystem* TargetSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGTargetSubsystem>() : nullptr;
+	if (!TargetSubsystem)
+	{
+		return;
+	}
+
+	struct FCandidate
+	{
+		AActor* Actor;
+		float DistanceSquared;
+	};
+	TArray<FCandidate> Candidates;
+
+	const FVector Origin = GetActorLocation();
+	const float RadiusSquared = FMath::Square(TargetCycleRadius);
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (Actor == this || Actor->IsHidden() || !USWGTargetSubsystem::IsSelectable(Actor))
+		{
+			continue;
+		}
+		const float DistanceSquared = FVector::DistSquared(Origin, Actor->GetActorLocation());
+		if (DistanceSquared <= RadiusSquared)
+		{
+			Candidates.Add({ Actor, DistanceSquared });
+		}
+	}
+
+	if (Candidates.IsEmpty())
+	{
+		return;
+	}
+	Candidates.Sort([](const FCandidate& A, const FCandidate& B) { return A.DistanceSquared < B.DistanceSquared; });
+
+	// Step from the current target's slot in the list, wrapping at either
+	// end; with no current target (or one that has left the radius) start
+	// from the nearest going forward, the farthest going back.
+	AActor* CurrentTarget = TargetSubsystem->GetTargetActor();
+	int32 CurrentIndex = CurrentTarget ? Candidates.IndexOfByPredicate([CurrentTarget](const FCandidate& C) { return C.Actor == CurrentTarget; }) : INDEX_NONE;
+	int32 NextIndex;
+	if (CurrentIndex == INDEX_NONE)
+	{
+		NextIndex = Direction >= 0 ? 0 : Candidates.Num() - 1;
+	}
+	else
+	{
+		NextIndex = (CurrentIndex + Direction + Candidates.Num()) % Candidates.Num();
+	}
+
+	TargetSubsystem->SetTargetActor(Candidates[NextIndex].Actor);
+}
+
 void ASWGPlayer::OnRightMouseButtonPressed()
 {
 	bIsMouseLooking = true;
-	GetCharacterMovement()->bOrientRotationToMovement = false;
 }
 
 void ASWGPlayer::OnRightMouseButtonReleased()
 {
 	bIsMouseLooking = false;
-	GetCharacterMovement()->bOrientRotationToMovement = true;
 }
 
 void ASWGPlayer::Move(const FInputActionValue& Value)
@@ -343,7 +463,10 @@ void ASWGPlayer::Tick(float DeltaTime)
 		return;
 	}
 
-	if (bIsMouseLooking && Controller)
+	// Steering: RMB held, or the right stick deflected sideways this frame.
+	const bool bSteering = bIsMouseLooking || bIsGamepadSteering;
+	GetCharacterMovement()->bOrientRotationToMovement = !bSteering;
+	if (bSteering && Controller)
 	{
 		// With the mesh now facing actor +X (see the PoseableMesh -90 yaw in
 		// USWGMeshGeneratorSubsystem), facing the camera direction is simply

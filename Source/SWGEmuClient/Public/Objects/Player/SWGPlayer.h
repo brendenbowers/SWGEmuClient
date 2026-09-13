@@ -92,7 +92,8 @@ protected:
 	void LookMouseX(float Value);
 	void LookMouseY(float Value);
 
-	// Holding RMB turns the character to face the camera instead of the
+	// Holding RMB (or pushing the right stick sideways) turns the character
+	// to face the camera instead of the
 	// default auto-face-movement behavior (bOrientRotationToMovement) —
 	// released, it reverts back. Implemented manually in Tick() rather than
 	// via bUseControllerRotationYaw because the actor's yaw needs the same
@@ -110,6 +111,32 @@ protected:
 	// How far click-to-target reaches, in Unreal units.
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Targeting")
 	float TargetTraceDistance = 20000.0f;
+
+	// Gamepad: right stick orbits the camera without needing RMB held, and
+	// the D-pad zooms. Both are axis keys, so the value is per-frame and
+	// scaled by these rates and DeltaSeconds.
+	void GamepadLookX(float Value);
+	void GamepadLookY(float Value);
+	void GamepadZoomIn(float Value);
+	void GamepadZoomOut(float Value);
+
+	UPROPERTY(EditDefaultsOnly, Category = "Input|Gamepad")
+	float GamepadLookRateDegrees = 150.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Input|Gamepad")
+	float GamepadZoomRate = 600.0f;
+
+	// Gamepad targeting has no cursor to trace under, so it works off a
+	// distance-sorted list of selectable actors around the player: A picks
+	// the nearest, the bumpers step through the list, B clears.
+	void TargetNearest();
+	void CycleTarget(int32 Direction);
+	void CycleTargetNext();
+	void CycleTargetPrevious();
+	void ClearTarget();
+
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Targeting")
+	float TargetCycleRadius = 6000.0f;
 	// Sends the current position/orientation to the server as a
 	// FDataTransformMessage, throttled by Tick — see the .cpp for the
 	// send-rate/stop-detection reasoning.
@@ -169,4 +196,5 @@ private:
 	/** The cell id last reported to the server (0 = world), so a change of room logs once rather than every send. */
 	int64 LastReportedParentId = 0;
 	bool bIsMouseLooking = false;
+	bool bIsGamepadSteering = false;
 };
