@@ -96,12 +96,7 @@ void USWGTargetBoxWidget::RefreshIdentity()
 
 	if (const USWGTangibleComponent* Tangible = ObjectGraph->FindComponent<USWGTangibleComponent>(TargetId))
 	{
-		// STF string tables aren't resolved yet, so an unnamed object falls
-		// back to its raw string id — the same stand-in the floating name
-		// labels use (USWGTangibleComponent::UpdateNameLabel).
-		TargetName = FText::FromString(!Tangible->CustomName.IsEmpty()
-			? Tangible->CustomName
-			: Tangible->ObjectName.StringTableId);
+		TargetName = FText::FromString(Tangible->GetDisplayName());
 	}
 
 	TargetLevel = 0;

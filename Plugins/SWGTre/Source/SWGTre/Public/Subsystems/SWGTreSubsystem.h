@@ -4,6 +4,7 @@
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "TRE/SWGTreArchive.h"
 #include "TRE/SWGIffReader.h"
+#include "TRE/SWGStringTableReader.h"
 #include "SWGTreSubsystem.generated.h"
 
 class UTexture2D;
@@ -67,6 +68,39 @@ public:
 	/** Looks up a template's virtual path from its CRC (from SceneCreateObjectByCrc), or empty if unknown. */
 	FString ResolveTemplatePath(uint32 Crc) const;
 
+	// ── String tables (.stf) ─────────────────────────────────────────────
+
+	/**
+	 * Loads string/<StringLanguage>/<Table>.stf once and caches it. Table is
+	 * the bare id used by StringIds ("mob/creature_names"). Returns nullptr
+	 * if the file doesn't exist or fails to decode (also cached, so a bad
+	 * reference doesn't re-hit the archives every frame).
+	 */
+	const FSWGStringTable* GetStringTable(const FString& Table);
+
+	/** Display text for Table:Key, or empty if either the table or the key is missing. */
+	FString LookupString(const FString& Table, const FString& Key);
+
+	/**
+	 * Resolves a "@table:key" reference (as sent in chat/system messages and
+	 * StringIds) to its display text. A string without a ':' is returned
+	 * as-is — it's already literal text. An unresolvable reference falls
+	 * back to the bare key so something readable still shows.
+	 */
+	FString ResolveStringId(const FString& Reference);
+
+	/**
+	 * Reads a StringId field ("objectName", "detailedDescription") from a
+	 * shared template, walking the DERV chain up to the base template until
+	 * a layer sets it. This is where an object's name comes from when the
+	 * server sends an empty ObjectName in its baseline — most NPCs, signs
+	 * and props leave it to the template.
+	 */
+	bool FindTemplateStringId(const FString& TemplatePath, const TCHAR* Key, FString& OutTable, FString& OutText);
+
+	/** FindTemplateStringId("objectName") for a template CRC, resolved through the string tables. Empty if nothing resolves. */
+	FString ResolveTemplateObjectName(uint32 Crc);
+
 	int32 GetTemplateCount() const { return CrcToTemplatePath.Num(); }
 
 	TMap<uint32, FString>& GetCrcToTemplatePathMap() { return CrcToTemplatePath; }
@@ -94,12 +128,19 @@ private:
 	UPROPERTY(Config)
 	bool AutoLoad = false;
 
+	/** Locale folder under string/ to read .stf tables from. DefaultGame.ini: StringLanguage=en */
+	UPROPERTY(Config)
+	FString StringLanguage = TEXT("en");
+
 	TArray<TUniquePtr<FSWGTreArchive>> Archives;
 
 	/** Virtual path -> index into Archives; later archives in load order win on conflict. */
 	TMap<FString, int32> VirtualPathToArchiveIndex;
 
 	TMap<uint32, FString> CrcToTemplatePath;
+
+	/** Table id -> decoded .stf; a null entry records a table that failed to load. See GetStringTable. */
+	TMap<FString, TUniquePtr<FSWGStringTable>> StringTables;
 
 	/** Virtual path + flags -> decoded transient UTexture2D. See GetOrLoadTexture. */
 	UPROPERTY()

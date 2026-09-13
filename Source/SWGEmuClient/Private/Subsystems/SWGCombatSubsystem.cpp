@@ -404,7 +404,7 @@ void USWGCombatSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> Msg)
 		const FChatSystemMessage& Chat = *static_cast<const FChatSystemMessage*>(Msg.Get());
 		if (!Chat.Message.IsEmpty())
 		{
-			UE_LOG(LogSWGCombat, Warning, TEXT("server says: %s"), *Chat.Message);
+			UE_LOG(LogSWGCombat, Warning, TEXT("server says: %s"), *(Tre ? Tre->ResolveStringId(Chat.Message) : Chat.Message));
 		}
 		return;
 	}
@@ -579,7 +579,7 @@ void USWGCombatSubsystem::HandleCombatSpam(const FObjControllerMessageIn& Envelo
 		Spam.CustomText.IsEmpty() ? TEXT("") : *FString::Printf(TEXT("\"%s\""), *Spam.CustomText),
 		Spam.Damage);
 
-	OnCombatSpam.Broadcast(StringId.IsEmpty() ? Spam.CustomText : StringId, Spam.Damage, Spam.Color);
+	OnCombatSpam.Broadcast(StringId.IsEmpty() ? Spam.CustomText : (Tre ? Tre->ResolveStringId(StringId) : StringId), Spam.Damage, Spam.Color);
 }
 
 void USWGCombatSubsystem::DumpCombatAnimationChain(const FString& ServerAnimationName, uint8 HitResult, uint8 DefenderPosture)

@@ -2,6 +2,7 @@
 #include "TRE/SWGIffTags.h"
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGDDSTextureLoader.h"
+#include "TRE/SWGObjectTemplateReader.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 
@@ -51,6 +52,7 @@ void USWGTreSubsystem::Deinitialize()
 	Archives.Reset();
 	VirtualPathToArchiveIndex.Reset();
 	CrcToTemplatePath.Reset();
+	StringTables.Reset();
 
 	Super::Deinitialize();
 }
@@ -60,6 +62,7 @@ bool USWGTreSubsystem::LoadArchives(const FString& Directory)
 	Archives.Reset();
 	VirtualPathToArchiveIndex.Reset();
 	CrcToTemplatePath.Reset();
+	StringTables.Reset();
 
 	if (!FPaths::DirectoryExists(Directory))
 	{
@@ -287,4 +290,83 @@ void USWGTreSubsystem::BuildCrcTable()
 		FString Path = FString::ConstructFromPtrSize((const ANSICHAR*)(StngBytes + Offset), End - (int32)Offset);
 		CrcToTemplatePath.Add(Crc, MoveTemp(Path));
 	}
+}
+
+const FSWGStringTable* USWGTreSubsystem::GetStringTable(const FString& Table)
+{
+	if (const TUniquePtr<FSWGStringTable>* Cached = StringTables.Find(Table))
+	{
+		return Cached->Get();
+	}
+
+	const FString VirtualPath = FString::Printf(TEXT("string/%s/%s.stf"), *StringLanguage, *Table);
+	TUniquePtr<FSWGStringTable> Loaded;
+	if (FileExists(VirtualPath))
+	{
+		Loaded = MakeUnique<FSWGStringTable>();
+		if (!FSWGStringTableReader::Read(ExtractFile(VirtualPath), *Loaded))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGTreSubsystem: failed to decode string table %s"), *VirtualPath);
+			Loaded.Reset();
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGTreSubsystem: string table %s not found"), *VirtualPath);
+	}
+
+	return StringTables.Add(Table, MoveTemp(Loaded)).Get();
+}
+
+FString USWGTreSubsystem::LookupString(const FString& Table, const FString& Key)
+{
+	const FSWGStringTable* StringTable = GetStringTable(Table);
+	const FString* Value = StringTable ? StringTable->Find(Key) : nullptr;
+	return Value ? *Value : FString();
+}
+
+FString USWGTreSubsystem::ResolveStringId(const FString& Reference)
+{
+	FString Table, Key;
+	if (!FSWGStringTableReader::ParseStringId(Reference, Table, Key))
+	{
+		return Reference;
+	}
+
+	const FString Value = LookupString(Table, Key);
+	return Value.IsEmpty() ? Key : Value;
+}
+
+bool USWGTreSubsystem::FindTemplateStringId(const FString& TemplatePath, const TCHAR* Key, FString& OutTable, FString& OutText)
+{
+	// Bounded so a cyclic DERV chain in bad data can't spin forever.
+	FString CurrentPath = TemplatePath;
+	for (int32 Depth = 0; Depth < 16 && !CurrentPath.IsEmpty(); ++Depth)
+	{
+		const FSWGIffReader Reader = CreateIffReader(CurrentPath);
+		if (!Reader.IsValid())
+		{
+			return false;
+		}
+		if (FSWGObjectTemplateReader::FindStringIdField(Reader, Key, OutTable, OutText))
+		{
+			return true;
+		}
+		if (!FSWGObjectTemplateReader::FindDervParentPath(Reader, CurrentPath))
+		{
+			return false;
+		}
+	}
+	return false;
+}
+
+FString USWGTreSubsystem::ResolveTemplateObjectName(uint32 Crc)
+{
+	const FString TemplatePath = ResolveTemplatePath(Crc);
+	FString Table, Text;
+	if (TemplatePath.IsEmpty() || !FindTemplateStringId(TemplatePath, TEXT("objectName"), Table, Text))
+	{
+		return FString();
+	}
+	return LookupString(Table, Text);
 }

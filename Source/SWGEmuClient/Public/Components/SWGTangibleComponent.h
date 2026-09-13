@@ -52,6 +52,14 @@ public:
 	uint8          ObjectVisible = 0;
 	bool           bHasBase3 = false;
 
+	/**
+	 * Human-readable name: CustomName if the player set one (renamed pet,
+	 * crafted item), else ObjectName resolved through the .stf string tables,
+	 * else the owner template's objectName (most NPCs/props leave the wire
+	 * ObjectName empty). Falls back to the raw string key when no table resolves.
+	 */
+	FString GetDisplayName() const;
+
 	void ApplyBase3(const FTangibleObjectBaseline& Baseline);
 	void ApplyDelta3(const FTangibleObjectDelta& Delta);
 
@@ -63,10 +71,7 @@ public:
 	void RepositionNameLabel();
 
 private:
-	// Dev-visibility name tag floating above the object — CustomName if the
-	// player set one (e.g. a crafted/renamed item), otherwise the raw
-	// File/StringTableId from ObjectName as a stand-in until STF string-table
-	// lookup exists to resolve it to real display text.
+	// Dev-visibility name tag floating above the object, showing GetDisplayName().
 	void UpdateNameLabel();
 
 	UPROPERTY()

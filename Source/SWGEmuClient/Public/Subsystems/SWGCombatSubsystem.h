@@ -65,7 +65,7 @@ struct SWGEMUCLIENT_API FSWGCombatEvent
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSWGOnCombatEvent, const FSWGCombatEvent&, Event);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FSWGOnCombatSpam, const FString&, StringId, int32, Damage, uint8, Color);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FSWGOnCombatSpam, const FString&, Text, int32, Damage, uint8, Color);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FSWGOnAttackStopped, ESWGAttackStopReason, Reason, const FString&, Detail);
 
 /**
@@ -119,7 +119,7 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "SWGEmu|Combat")
 	FSWGOnCombatEvent OnCombatAction;
 
-	/** One combat log line. StringId is "@file:name", empty when the line carried its own text in Detail. */
+	/** One combat log line. Text is the "@file:name" reference resolved through the .stf tables, or the line's own custom text. */
 	UPROPERTY(BlueprintAssignable, Category = "SWGEmu|Combat")
 	FSWGOnCombatSpam OnCombatSpam;
 

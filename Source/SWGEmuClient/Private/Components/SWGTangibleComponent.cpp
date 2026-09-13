@@ -4,6 +4,8 @@
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Character.h"
+#include "Objects/SWGNetworkObjectInterface.h"
+#include "Subsystems/SWGTreSubsystem.h"
 
 USWGTangibleComponent::USWGTangibleComponent()
 {
@@ -126,11 +128,7 @@ void USWGTangibleComponent::UpdateNameLabel()
 		NameLabel->RegisterComponent();
 	}
 
-	const FString DisplayName = !CustomName.IsEmpty()
-		? CustomName
-		: FString::Printf(TEXT("%s/%s"), *ObjectName.File, *ObjectName.StringTableId);
-
-	NameLabel->SetText(FText::FromString(DisplayName));
+	NameLabel->SetText(FText::FromString(GetDisplayName()));
 }
 
 void USWGTangibleComponent::RepositionNameLabel()
@@ -141,4 +139,40 @@ void USWGTangibleComponent::RepositionNameLabel()
 	}
 
 	NameLabel->SetRelativeLocation(FVector(0.0f, 0.0f, ComputeHeightAboveRoot(GetOwner())));
+}
+
+FString USWGTangibleComponent::GetDisplayName() const
+{
+	if (!CustomName.IsEmpty())
+	{
+		return CustomName;
+	}
+
+	const AActor* Owner = GetOwner();
+	const UGameInstance* GameInstance = Owner ? Owner->GetGameInstance() : nullptr;
+	USWGTreSubsystem* Tre = GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
+	if (!Tre)
+	{
+		return ObjectName.StringTableId;
+	}
+
+	if (!ObjectName.File.IsEmpty() && !ObjectName.StringTableId.IsEmpty())
+	{
+		const FString Resolved = Tre->LookupString(ObjectName.File, ObjectName.StringTableId);
+		if (!Resolved.IsEmpty())
+		{
+			return Resolved;
+		}
+	}
+
+	if (const ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(Owner))
+	{
+		const FString FromTemplate = Tre->ResolveTemplateObjectName(NetObject->GetObjectCrc());
+		if (!FromTemplate.IsEmpty())
+		{
+			return FromTemplate;
+		}
+	}
+
+	return ObjectName.StringTableId;
 }
