@@ -2,11 +2,14 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
+#include "Tickable.h"
 #include "TRE/SWGTerrainReader.h"
+#include "TRE/SWGWorldSnapshotReader.h"
 #include "SWGTerrainSubsystem.generated.h"
 
 class USWGTreSubsystem;
 class USWGMeshGeneratorSubsystem;
+class USWGObjectGraphSubsystem;
 class ALandscape;
 class UDataTable;
 class UTexture2D;
@@ -17,7 +20,7 @@ namespace UE::Geometry { class FDynamicMesh3; }
 
 /**
  * One static world-snapshot object (building, wall, pillar, item, etc.)
- * resolved and ready to spawn — see USWGTerrainSubsystem::LoadWorldSnapshotObjects.
+ * resolved and ready to spawn — see USWGTerrainSubsystem::ResolveSnapshotObjectsForTile.
  * Mirrors the .ws node tree: a building's Children are its cells, a cell's
  * Children are the props placed inside it.
  */
@@ -41,7 +44,7 @@ struct FSWGWorldSnapshotSpawnInfo
 	TArray<FSWGWorldSnapshotSpawnInfo> Children;
 };
 
-/** Result of BakeHeightmap (or a cache hit) — everything SpawnLandscape needs. */
+/** Result of BakeHeightmap — everything one tile's mesh needs. */
 struct FSWGBakedHeightmap
 {
 	/** Row-major, HeightmapResolution x HeightmapResolution. Raw float heights — Landscape's uint16 encoding happens in SpawnLandscape. */
@@ -94,6 +97,9 @@ struct FSWGTerrainHole
 
 	float YawRadians = 0.0f;
 
+	/** The building that cut it, so its holes leave with it. 0 = anonymous, kept for the zone. */
+	int64 OwnerObjectId = 0;
+
 	bool Contains(const FVector2D& Point) const;
 
 	/** Axis-aligned world bounds of the rotated rectangle. */
@@ -101,18 +107,22 @@ struct FSWGTerrainHole
 };
 
 /**
- * Orchestrates the terrain pipeline end to end: cache check, .trn parse
- * (FSWGTerrainReader), heightmap baking for the region around the player's
- * spawn point, and ALandscape population — see world-object-plan.html
- * "Message -> visible-in-level" (ti1-ti7) for the full design. Triggered from
- * FSWGZoneLoadingState::Enter() using CmdStartScene's TerrainName + spawn
- * position, both already available via FSWGSceneStartPayload.
+ * Streams the terrain around the local player as a grid of 512 m tiles, the
+ * way retail's client generated chunks around its camera (there is no
+ * authored partition in the .trn — see FSWGTerrainHeader). Each tile is one
+ * UDynamicMeshComponent baked on a worker from the immutable planet data plus
+ * an overlay of runtime edits (building pads, room holes); the .ws objects
+ * rooted in a tile spawn inside a tighter ring (the server only sends
+ * network objects within ~192 m, so distant statics are scenery) and are
+ * destroyed again when the player leaves it.
  *
- * Empty skeleton for now — every step below is a stub. Filling these in is
- * separate follow-up work per the phased plan.
+ * Triggered from FSWGZoneLoadingState::Enter() via BeginLoadTerrain with
+ * CmdStartScene's TerrainName + spawn position. OnTerrainReady fires once the
+ * tiles immediately around the spawn are collidable; the rest of the ring
+ * streams in behind it.
  */
 UCLASS()
-class SWGEMUCLIENT_API USWGTerrainSubsystem : public UGameInstanceSubsystem
+class SWGEMUCLIENT_API USWGTerrainSubsystem : public UGameInstanceSubsystem, public FTickableGameObject
 {
 	GENERATED_BODY()
 
@@ -120,14 +130,19 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
+	// FTickableGameObject
+	virtual void Tick(float DeltaTime) override;
+	virtual TStatId GetStatId() const override;
+	virtual bool IsTickable() const override { return bTerrainDataCached; }
+
 	/**
-	 * Entry point (ti2): kicks off cache check -> parse -> bake -> spawn for the
-	 * region around SpawnPosition. Broadcasts OnTerrainReady when the landscape
-	 * for that region is spawned and collidable.
+	 * Entry point: parses the .trn on a worker, then streams tiles around
+	 * SpawnPosition (and the player, once one exists). Broadcasts
+	 * OnTerrainReady when the tiles around the spawn are spawned and collidable.
 	 */
 	void BeginLoadTerrain(const FString TerrainVirtualPath, const FVector& SpawnPosition);
 
-	/** Broadcast once BeginLoadTerrain's region has a spawned, collidable landscape. */
+	/** Broadcast once BeginLoadTerrain's spawn-area tiles have a spawned, collidable mesh. */
 	DECLARE_MULTICAST_DELEGATE(FOnTerrainReady);
 	FOnTerrainReady OnTerrainReady;
 
@@ -149,108 +164,210 @@ public:
 
 	/**
 	 * Stamps a runtime-placed object's terrain modification into the live
-	 * terrain and regenerates only the baked tiles it overlaps.
+	 * terrain and re-bakes only the loaded tiles it overlaps; tiles loaded
+	 * later bake with it already applied.
 	 *
-	 * TemplatePath is the object's shared template (.iff). Its terrain edit is
-	 * resolved in retail's own order of preference: "terrainModificationFileName"
-	 * (a .lay layer graph — what POIs and a few world buildings use) first,
-	 * then "structureFootprintFileName" (a .sfp grid — player houses,
-	 * installations, faction HQs), which is synthesised into an equivalent
-	 * boundary + AffectorHeightConstant layer. Objects with neither are a no-op.
+	 * TemplatePath is the object's shared template (.iff); its
+	 * "terrainModificationFileName" (.lay layer graph) is what gets stamped.
+	 * Objects without one are a no-op.
 	 *
 	 * WorldPosition/YawRadians are RAW/native space (the .trn's own units and
 	 * the network wire's raw X/Y/Z), matching GetHeightAt — not final UE-space
 	 * actor coordinates.
 	 *
-	 * Safe to call at any time and from the game thread only. Re-baking happens
-	 * on a worker thread; if one is already in flight the request is queued, so
-	 * a burst of buildings arriving together coalesces instead of racing.
+	 * OwnerObjectId ties the edit to its object so RemoveObjectTerrainEdits can
+	 * take it back out when a streamed .ws building unloads; a second call for
+	 * the same owner is ignored rather than stacked.
+	 *
+	 * Game thread only. Safe before the terrain loads — the edit is held and
+	 * applied once it has.
 	 *
 	 * Returns false only when the template has no terrain modification at all.
 	 */
-	bool ApplyObjectTerrainModification(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians);
+	bool ApplyObjectTerrainModification(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians, int64 OwnerObjectId = 0);
 
 	/**
 	 * Registers areas the terrain must not cover — see FSWGTerrainHole. Safe
-	 * before the terrain loads; FlushPendingTerrainHoles picks those up.
-	 * Game thread only. Raw/native space.
+	 * before the terrain loads. Game thread only. Raw/native space.
 	 */
 	void AddTerrainHoles(const TArray<FSWGTerrainHole>& Holes);
 
+	/** Drops every pad layer and hole registered under OwnerObjectId and re-bakes the loaded tiles they covered. Game thread. */
+	void RemoveObjectTerrainEdits(int64 OwnerObjectId);
+
+	/**
+	 * Spawns one node at WorldTransform (UE space), registers it with the object
+	 * graph under its .ws id, and recurses into its children. Parent is the
+	 * already-spawned owner (a building for a cell, a cell for a prop). A closed
+	 * room is deferred onto its building for USWGInteriorStreamingSubsystem
+	 * unless bForceInterior — ASWGBuilding::LoadRoom's re-entry. Every actor
+	 * created, at any depth, is appended to OutSpawned when given.
+	 */
+	AActor* SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpawnInfo& Info, const FTransform& WorldTransform, AActor* Parent, USWGObjectGraphSubsystem* ObjectGraph, bool bForceInterior = false, TArray<TWeakObjectPtr<AActor>>* OutSpawned = nullptr);
+
 private:
 	/**
+	 * Everything a bake reads, captured by value per job so workers never look
+	 * at subsystem state. The planet data is immutable and shared; the edit
+	 * overlay is replaced wholesale (copy-on-write) whenever an edit lands,
+	 * so a job in flight keeps the version it started with.
+	 */
+	struct FSWGTerrainBakeSource
+	{
+		TSharedPtr<const FSWGTerrainData, ESPMode::ThreadSafe> Planet;
+		TSharedPtr<const TArray<FSWGTerrainLayer>, ESPMode::ThreadSafe> EditLayers;
+		TArray<FSWGTerrainHole> Holes;
+		int32 EditVersion = 0;
+	};
+
+	/** A pad layer with the object that placed it, so RemoveObjectTerrainEdits can find it. */
+	struct FSWGOwnedTerrainLayer
+	{
+		int64 OwnerObjectId = 0;
+		FSWGTerrainLayer Layer;
+	};
+
+	/**
 	 * A terrain modification requested before the terrain existed. Buildings
-	 * routinely spawn ahead of the async terrain load finishing (confirmed in
-	 * the logs: every building lands ~150ms before the tile does), so these are
-	 * held and replayed by FlushPendingObjectTerrainModifications rather than
-	 * dropped — dropping them meant a building's pad silently never applied.
+	 * routinely spawn ahead of the async .trn parse finishing, so these are
+	 * held and replayed rather than dropped — dropping them meant a
+	 * building's pad silently never applied.
 	 */
 	struct FSWGPendingTerrainModification
 	{
 		FString TemplatePath;
 		FVector WorldPosition = FVector::ZeroVector;
 		float YawRadians = 0.0f;
+		int64 OwnerObjectId = 0;
 	};
 
-	/** Replays everything queued while the terrain was still loading. Game thread, called once the tiles exist. */
-	void FlushPendingObjectTerrainModifications();
+	/** One streamed tile's game-thread state. Keyed in Tiles by its grid coordinate. */
+	struct FSWGTerrainTile
+	{
+		/** Null until the first bake lands. Pooled on unload. */
+		TObjectPtr<UDynamicMeshComponent> Component;
 
-	/**
-	 * Re-bakes the tiles holding any hole registered during the terrain load.
-	 * Buildings land while LoadTerrain's worker is already running, so the
-	 * initial bake never sees their holes. Game thread, called once the tiles exist.
-	 */
-	void FlushPendingTerrainHoles();
+		FSWGBakedHeightmap Heightmap;
 
-	/** Resolves TemplatePath's .lay / .sfp into world-space layers ready to append to CachedTerrainData. Off-thread safe. */
-	bool BuildObjectTerrainLayers(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians, TArray<FSWGTerrainLayer>& OutLayers);
+		/** The edit version this tile should show; bumped by any edit overlapping it. */
+		int32 WantedEditVersion = 0;
 
-	/** Appends Layers to CachedTerrainData and kicks (or queues) a re-bake of every tile they overlap. Game thread. */
-	void ApplyTerrainLayersAndRegenerate(TArray<FSWGTerrainLayer> Layers);
+		/** The edit version the live mesh was baked with; -1 until one lands. */
+		int32 LiveEditVersion = -1;
 
-	/** Starts the worker-thread re-bake for PendingDirtyTiles, if any and if none is already running. Game thread. */
-	void ProcessPendingTerrainRegeneration();
+		bool bBakeInFlight = false;
 
-	/**
-	 * Bakes and triangulates one tile end to end. Worker thread — it touches no
-	 * UObject, and Holes is passed in rather than read off the member so the
-	 * game thread can keep appending. See FSWGTerrainTileBuild.
-	 */
-	FSWGTerrainTileBuild BakeTerrainTile(const FSWGTerrainData& TerrainData, const FVector& RegionOrigin,
-		const FVector& GridOrigin, const TArray<FSWGTerrainHole>& Holes) const;
+		/** Every actor this tile's .ws objects produced, at any depth, destroyed with the tile. */
+		TArray<TWeakObjectPtr<AActor>> SnapshotActors;
 
-	/** Hands a finished build to its component — a mesh move, a material, and an async collision request. Game thread. */
-	void ApplyTerrainTileBuild(int32 TileIndex, FSWGTerrainTileBuild& Build);
+		/** Resolved .ws objects not yet spawned — drained a few per frame by SpawnPendingSnapshotObjects. */
+		TArray<FSWGWorldSnapshotSpawnInfo> PendingSnapshotObjects;
+		int32 NextSnapshotIndex = 0;
 
-	/** World-space XY extent one baked tile covers. */
-	static FBox2D GetTileBounds(const FSWGBakedHeightmap& Heightmap);
+		/** Set once the tile's objects have been queued (or it has none); cleared when they are destroyed. */
+		bool bSnapshotSpawned = false;
+		bool bSnapshotResolveInFlight = false;
+	};
 
-	/** Queues a re-bake of every live tile overlapping Bounds. Game thread. */
-	void InvalidateTilesOverlapping(const FBox2D& Bounds);
+	// ── Load ─────────────────────────────────────────────────────────────
 
 	void Error(const FString& ErrorMessage);
 
+	/** Worker: parses the .trn and .ws, then hands both to the game thread to start streaming. */
 	void LoadTerrain(const FString& TerrainVirtualPath, const FVector& SpawnPosition);
 
 	/** Creates the outdoor sky, sun, and ambient fill for the active planet. */
 	void SetupPlanetLighting(const FString& TerrainVirtualPath);
 
-	/** ti3: check Saved/TerrainCache/ for this (TerrainVirtualPath, region) before parsing/baking. RegionOrigin is a component's min corner (see BakeHeightmap). */
-	bool FindCachedHeightmap(const FString& TerrainVirtualPath, const FVector& RegionOrigin, FSWGBakedHeightmap& OutHeightmap);
-
-	/** ti4: USWGTreSubsystem::CreateIffReader + FSWGTerrainReader::ReadTerrain — synchronous, cheap. */
+	/** USWGTreSubsystem::CreateIffReader + FSWGTerrainReader::ReadTerrain — synchronous, cheap. */
 	bool ParseTerrain(const FString& TerrainVirtualPath, FSWGTerrainData& OutTerrainData);
 
+	/** Spawns the empty root actor every tile component attaches to. Game thread. */
+	void SpawnTerrainActor();
+
+	/** Tears down every tile, snapshot actor and queued job of the current zone. Game thread. */
+	void ResetZone();
+
+	// ── Streaming ────────────────────────────────────────────────────────
+
+	/** Grid coordinate of the tile containing a raw-space position. */
+	static FIntPoint TileCoordAt(const FVector2D& RawPosition);
+
+	/** Raw-space min corner of a tile. */
+	static FVector TileOrigin(const FIntPoint& Coord);
+
+	/** Raw-space XY extent of a tile. */
+	static FBox2D TileBounds(const FIntPoint& Coord);
+
+	/** Whether a tile lies (at least partly) inside the planet's playable extent. */
+	bool IsTileOnMap(const FIntPoint& Coord) const;
+
 	/**
-	 * ti5: evaluate FSWGTerrainEvaluator::GetHeight(x,y) across one component's
-	 * region (RegionOrigin = min corner, HeightmapResolution x HeightmapResolution
-	 * samples spaced HeightmapWorldExtent/(HeightmapResolution-1) apart), on a
-	 * background thread (this is called from). Independent components sharing a
-	 * RegionOrigin exactly HeightmapWorldExtent apart get identical heights at
-	 * their shared edge, since GetHeight is a deterministic pure function of world
-	 * (x,y) — no separate seam-stitching needed for grid tiling.
+	 * Re-evaluates the wanted tile set around the streaming centre: queues
+	 * bakes for missing tiles (nearest first, biased one tile along the
+	 * player's heading), unloads tiles past UnloadRadiusTiles, then pumps the
+	 * bake queue. Game thread; runs every StreamingSweepInterval.
 	 */
-	FSWGBakedHeightmap BakeHeightmap(const FSWGTerrainData& TerrainData, const FVector& RegionOrigin) const;
+	void UpdateStreaming();
+
+	/** The raw-space position streaming is centred on — the pawn once it exists, the spawn point before that. */
+	bool GetStreamingCenter(FVector2D& OutRawPosition) const;
+
+	/** Starts worker bakes for queued tiles, nearest first, up to MaxBakesInFlight. Game thread. */
+	void PumpBakeQueue();
+
+	/** Kicks one tile's bake on a worker. Game thread. */
+	void StartTileBake(const FIntPoint& Coord);
+
+	/** A finished bake arriving on the game thread — applied, or dropped if the tile is gone or stale. */
+	void OnTileBakeFinished(const FIntPoint& Coord, int32 Generation, int32 EditVersion, FSWGTerrainTileBuild& Build);
+
+	/** Destroys a tile's snapshot actors and pools its component. Game thread. */
+	void UnloadTile(const FIntPoint& Coord);
+
+	/** Fresh or pooled, attached to the terrain actor at the tile's origin. Game thread. */
+	UDynamicMeshComponent* AcquireTileComponent(const FIntPoint& Coord);
+
+	/**
+	 * Bakes and triangulates one tile end to end. Worker thread — it touches no
+	 * UObject; everything it reads is in Source. See FSWGTerrainTileBuild.
+	 */
+	FSWGTerrainTileBuild BakeTerrainTile(const FSWGTerrainBakeSource& Source, const FIntPoint& Coord) const;
+
+	/** Hands a finished build to its component — a mesh move, a material, and an async collision request. Game thread. */
+	void ApplyTerrainTileBuild(const FIntPoint& Coord, FSWGTerrainTile& Tile, FSWGTerrainTileBuild& Build);
+
+	/** Snapshot of the current planet + edits for a job to carry. Game thread. */
+	FSWGTerrainBakeSource MakeBakeSource() const;
+
+	// ── Edits ────────────────────────────────────────────────────────────
+
+	/** Replays everything queued while the terrain was still loading. Game thread, called once the planet data exists. */
+	void FlushPendingObjectTerrainModifications();
+
+	/** Resolves TemplatePath's .lay into world-space layers ready for the edit overlay. Off-thread safe. */
+	bool BuildObjectTerrainLayers(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians, TArray<FSWGTerrainLayer>& OutLayers);
+
+	/** Rebuilds the shared edit overlay from OwnedEditLayers and bumps EditVersion. Game thread. */
+	void PublishEditLayers();
+
+	/** Marks every loaded tile overlapping Bounds as wanting the current edit version and queues its re-bake. Game thread. */
+	void InvalidateTilesOverlapping(const FBox2D& Bounds);
+
+	/** World-space XY extent one baked tile covers. */
+	static FBox2D GetTileBounds(const FSWGBakedHeightmap& Heightmap);
+
+	// ── Rendering ────────────────────────────────────────────────────────
+
+	/**
+	 * Evaluate FSWGTerrainEvaluator::GetHeight(x,y) across one tile's region
+	 * (RegionOrigin = min corner, HeightmapResolution x HeightmapResolution
+	 * samples spaced HeightmapWorldExtent/(HeightmapResolution-1) apart), on a
+	 * background thread. Adjacent tiles get identical heights at their shared
+	 * edge, since GetHeight is a deterministic pure function of world (x,y) —
+	 * no separate seam-stitching needed.
+	 */
+	FSWGBakedHeightmap BakeHeightmap(const FSWGTerrainBakeSource& Source, const FVector& RegionOrigin) const;
 
 	/**
 	 * Companion bake, same region/resolution as BakeHeightmap: evaluates
@@ -259,7 +376,7 @@ private:
 	 * per-vertex weights into Heightmap.ShaderWeightColors — see
 	 * FSWGBakedHeightmap's own comment for the exact channel layout.
 	 */
-	void BakeShaderWeights(const FSWGTerrainData& TerrainData, FSWGBakedHeightmap& Heightmap) const;
+	void BakeShaderWeights(const FSWGTerrainBakeSource& Source, FSWGBakedHeightmap& Heightmap) const;
 
 	/**
 	 * Builds (or returns an already-built) UMaterialInstanceDynamic for this
@@ -274,56 +391,56 @@ private:
 	/** Resolves shader/<FamilyLayerName>.sht and loads its tagged texture slot. */
 	UTexture2D* GetOrLoadShaderTexture(const FString& LayerName, bool bNormalMap = false);
 
-	/** ti6: spawn one ALandscape actor at the whole grid's min corner (game thread). */
+	/** Landscape path, kept but unused: spawn one ALandscape actor at the whole grid's min corner (game thread). */
 	ALandscape* SpawnLandscapeActor(const FVector& GridOrigin, float Spacing);
 
-	/** ti6: build/register one component from a baked heightmap at the given SectionBase (quad units, game thread). */
+	/** Landscape path, kept but unused: build/register one component from a baked heightmap at the given SectionBase (quad units, game thread). */
 	void AddLandscapeComponent(ALandscape* Landscape, const FSWGBakedHeightmap& Heightmap, const FIntPoint& SectionBase);
 
-	/** ti6: spawn the actor + every component in the grid (game thread). Kept
-	 *  around but no longer called (see SpawnDynamicMeshTerrainGrid) — its
-	 *  ULandscapeComponent scale composition is undocumented/unreliable, and a
-	 *  plain mesh sidesteps that by working in direct world-space units. */
+	/** Landscape path, kept but unused — its ULandscapeComponent scale composition is undocumented/unreliable, and a plain mesh sidesteps that. */
 	void SpawnLandscapeGrid(const TArray<FSWGBakedHeightmap>& Grid, const FVector& GridOrigin, float Spacing);
 
-	/**
-	 * Active terrain rendering path: one UDynamicMeshComponent per baked grid
-	 * tile, vertices placed directly in world-space units (no actor/component
-	 * scale beyond identity) — same approach USWGMeshGeneratorSubsystem already
-	 * uses for buildings/props, chosen specifically to avoid ULandscapeComponent's
-	 * scale-encoding indirection that caused the "terrain ~1000 units below the
-	 * buildings" bug.
-	 */
-	void SpawnDynamicMeshTerrainGrid(TArray<FSWGTerrainTileBuild>& Grid, const FVector& GridOrigin, float Spacing);
+	// ── World snapshot ───────────────────────────────────────────────────
 
 	/**
 	 * Parses snapshot/<zone>.ws (the client-side counterpart to Core3's own
 	 * loadSnapshotObjects — static world content like buildings/walls that's
-	 * never sent over the network), keeps only
-	 * top-level nodes within WorldSnapshotSpawnRadius of SpawnPosition, and
-	 * resolves each one's actor class the same way SceneCreateObjectByCrc
-	 * dispatch does (root FORM tag -> DT_SWGFormTagMappings), just keyed by
-	 * template path instead of CRC. Safe to call off the game thread (no
-	 * UObject spawning here, just parsing/resolving) — mirrors ParseTerrain/
-	 * BakeHeightmap's own thread-safety story.
+	 * never sent over the network) and buckets its top-level nodes by tile
+	 * coordinate. Worker thread; the result is read-only from then on.
 	 */
-	TArray<FSWGWorldSnapshotSpawnInfo> LoadWorldSnapshotObjects(const FString& TerrainVirtualPath, const FVector& SpawnPosition);
+	TSharedPtr<const FSWGWorldSnapshotData, ESPMode::ThreadSafe> LoadWorldSnapshot(const FString& TerrainVirtualPath, TMap<FIntPoint, TArray<int32>>& OutNodesByTile);
+
+	/**
+	 * Resolves the .ws nodes rooted in one tile the same way SceneCreateObjectByCrc
+	 * dispatch does (root FORM tag -> DT_SWGFormTagMappings), just keyed by
+	 * template path instead of CRC. Off the game thread, inside the tile's bake.
+	 */
+	TArray<FSWGWorldSnapshotSpawnInfo> ResolveSnapshotObjectsForTile(const FIntPoint& Coord) const;
 
 	/** Resolves one .ws node (and its subtree) into OutInfo. False if the template resolves to no actor class. */
-	bool ResolveWorldSnapshotNode(const struct FSWGWorldSnapshotNode& Node, const struct FSWGWorldSnapshotData& SnapshotData, FSWGWorldSnapshotSpawnInfo& OutInfo) const;
+	bool ResolveWorldSnapshotNode(const FSWGWorldSnapshotNode& Node, const FSWGWorldSnapshotData& SnapshotData, FSWGWorldSnapshotSpawnInfo& OutInfo) const;
 
-	/** Spawns every resolved object from LoadWorldSnapshotObjects (game thread only). */
-	void SpawnWorldSnapshotObjects(const TArray<FSWGWorldSnapshotSpawnInfo>& Objects);
-
-public:
 	/**
-	 * Spawns one node at WorldTransform (UE space), registers it with the object
-	 * graph under its .ws id, and recurses into its children. Parent is the
-	 * already-spawned owner (a building for a cell, a cell for a prop). A closed
-	 * room is deferred onto its building for USWGInteriorStreamingSubsystem
-	 * unless bForceInterior — ASWGBuilding::LoadRoom's re-entry.
+	 * Resolves a tile's .ws objects on a worker and queues them for spawning
+	 * when it lands (unless the player has since moved out of range). Static
+	 * objects use their own, tighter ring than the terrain —
+	 * swg.SnapshotLoadRadius / swg.SnapshotUnloadRadius. Game thread.
 	 */
-	AActor* SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpawnInfo& Info, const FTransform& WorldTransform, AActor* Parent, class USWGObjectGraphSubsystem* ObjectGraph, bool bForceInterior = false);
+	void StartSnapshotResolve(const FIntPoint& Coord);
+
+	/** Hands a tile's resolved objects to the per-frame spawner. Game thread. */
+	void QueueSnapshotObjectsForTile(const FIntPoint& Coord, FSWGTerrainTile& Tile, TArray<FSWGWorldSnapshotSpawnInfo>&& Objects);
+
+	/**
+	 * Spawns queued .ws objects, nearest tile first, until
+	 * swg.SnapshotSpawnBudgetMs of game-thread time is used (always at least
+	 * one). A city tile lands hundreds of actors; doing them all the frame the
+	 * bake finished was a visible hitch. Every frame, from Tick.
+	 */
+	void SpawnPendingSnapshotObjects();
+
+	/** Takes down a tile's snapshot actors: rooms, object-graph registrations, terrain edits, then the actors. Game thread. */
+	void DestroySnapshotActors(FSWGTerrainTile& Tile);
 
 private:
 	UPROPERTY()
@@ -332,7 +449,7 @@ private:
 	UPROPERTY()
 	TObjectPtr<USWGMeshGeneratorSubsystem> MeshGenerator;
 
-	/** Lazily loaded on first use — see LoadWorldSnapshotObjects. Same DataTable SWGInitializationState uses for CRC dispatch. */
+	/** Lazily loaded on first use — see ResolveWorldSnapshotNode. Same DataTable SWGInitializationState uses for CRC dispatch. */
 	UPROPERTY()
 	TObjectPtr<UDataTable> FormTagMappingTable;
 
@@ -344,70 +461,87 @@ private:
 	UPROPERTY()
 	TMap<FString, TObjectPtr<UTexture2D>> LoadedShaderTextures;
 
-	// How far from the spawn position to keep world-snapshot objects (9099
-	// total nodes for all of tatooine — spawning every one would be wasteful
-	// and mostly irrelevant to where the player actually is). Cut down
-	// alongside ComponentGridSize (see its own comment) now that mesh
-	// geometry is back to human-scale UE units — the old 3000 (matching a
-	// ~3-tile-wide baked area) would now try to spawn props across a
-	// footprint we no longer bake terrain for at all.
-	static constexpr float WorldSnapshotSpawnRadius = 1000.0f;
-
-	// Cached from the last successful ParseTerrain in LoadTerrain, so GetHeightAt
-	// can re-evaluate the same height function on demand (diagnostics, and any
-	// future on-the-fly-height need) without re-parsing the .trn each call.
-	FSWGTerrainData CachedTerrainData;
-	bool bTerrainDataCached = false;
-
-	// Live tile state, retained so a terrain modification can regenerate an
-	// individual tile in place rather than reloading the whole zone. Index i of
-	// TerrainTileComponents and TerrainTileHeightmaps describe the same tile.
+	/** Root every tile component attaches to, at the raw-space origin. */
 	UPROPERTY()
 	TObjectPtr<AActor> TerrainMeshActor;
 
+	/** Components of unloaded tiles, kept registered but empty for the next tile to reuse. */
 	UPROPERTY()
-	TArray<TObjectPtr<UDynamicMeshComponent>> TerrainTileComponents;
+	TArray<TObjectPtr<UDynamicMeshComponent>> PooledTileComponents;
 
-	TArray<FSWGBakedHeightmap> TerrainTileHeightmaps;
+	// The parsed planet, immutable once loaded. Shared into every bake job so
+	// GetHeightAt on the game thread and a dozen workers can all read it at
+	// once with nothing ever writing to it.
+	TSharedPtr<const FSWGTerrainData, ESPMode::ThreadSafe> PlanetData;
+	bool bTerrainDataCached = false;
 
-	/** Areas no terrain is generated over — see AddTerrainHoles. Dropped per zone alongside the tile grid. */
+	// Runtime edits. OwnedEditLayers is the game thread's editable record;
+	// PublishedEditLayers is the immutable copy jobs capture (rebuilt by
+	// PublishEditLayers), so an append never reallocates under a worker.
+	TArray<FSWGOwnedTerrainLayer> OwnedEditLayers;
+	TSharedPtr<const TArray<FSWGTerrainLayer>, ESPMode::ThreadSafe> PublishedEditLayers;
 	TArray<FSWGTerrainHole> TerrainHoles;
-
-	FVector TerrainGridOrigin = FVector::ZeroVector;
-	FString ActiveTerrainVirtualPath;
-
-	// Re-baking reads CachedTerrainData from a worker thread while the game
-	// thread may still be calling GetHeightAt against it. Concurrent reads are
-	// fine; a concurrent *append* is not, so modifications arriving during an
-	// in-flight bake are held here and drained once it lands.
-	TArray<FSWGTerrainLayer> QueuedTerrainLayers;
-	TSet<int32> PendingDirtyTiles;
-	bool bTerrainRegenerationInFlight = false;
+	int32 EditVersion = 0;
 
 	/** Modifications requested before the terrain finished loading — see FSWGPendingTerrainModification. */
 	TArray<FSWGPendingTerrainModification> PendingObjectModifications;
 
-	// Bumped every time the tile grid is rebuilt (zone travel). An in-flight
-	// re-bake that lands after a zone change carries the old value and is
-	// discarded rather than written into the new zone's tiles.
+	/** Owners already stamped, so a re-spawned building doesn't stack a second pad. */
+	TSet<int64> StampedEditOwners;
+
+	// Live tiles. Components are owned by TerrainMeshActor (and so reachable
+	// by GC through it); this map is the game thread's bookkeeping only.
+	TMap<FIntPoint, FSWGTerrainTile> Tiles;
+
+	/** Tiles wanted but not yet baking — PumpBakeQueue takes the nearest. */
+	TSet<FIntPoint> BakeQueue;
+	int32 BakesInFlight = 0;
+
+	// Bumped every time the zone changes. A bake that lands after a zone change
+	// carries the old value and is discarded rather than written into the new
+	// zone's tiles.
 	int32 TerrainGeneration = 0;
 
-	// Bake grid tuning — placeholder extent, not a finished sizing decision (see
-	// world-object-plan.html "Heightmap baking + local cache": "resolution TBD
-	// against Landscape's expected sizing"). Resolution IS constrained though:
-	// ULandscapeComponent requires SubsectionSizeQuads+1 to be a power of two
-	// (LandscapeComponent.h:449) — 128 samples = 127 quads = a single valid
-	// subsection (SubsectionSizeQuads=127, NumSubsections=1).
+	FString ActiveTerrainVirtualPath;
+
+	/** Where the player arrived; streams from here until a pawn exists. Raw space. */
+	FVector2D SpawnRawPosition = FVector2D::ZeroVector;
+
+	/** Last sweep's centre, for the heading bias. Raw space. */
+	FVector2D LastStreamingCenter = FVector2D::ZeroVector;
+	bool bHasLastStreamingCenter = false;
+
+	/** The 3x3 around the spawn; OnTerrainReady fires once all are live. */
+	TSet<FIntPoint> InitialTiles;
+	bool bInitialTilesReported = false;
+
+	float TimeUntilNextSweep = 0.0f;
+
+	// The parsed .ws for this zone plus its top-level node indices bucketed by
+	// the tile their position falls in. Read-only after LoadTerrain.
+	TSharedPtr<const FSWGWorldSnapshotData, ESPMode::ThreadSafe> SnapshotData;
+	TMap<FIntPoint, TArray<int32>> SnapshotNodesByTile;
+
+	// ── Tuning ───────────────────────────────────────────────────────────
+
+	// Resolution is constrained: ULandscapeComponent requires SubsectionSizeQuads+1
+	// to be a power of two (LandscapeComponent.h:449) — 128 samples = 127 quads.
 	static constexpr int32 HeightmapResolution = 128; // samples per axis
 
-	// With 128 samples this is 4 units a quad, down from 2032 (16 a quad) once
-	// meshing stopped being a game-thread cost that scaled with density. This
-	// and ComponentGridSize are the dial; 254 with a 5x5 grid gets 2 a quad.
-	static constexpr float HeightmapWorldExtent = 508.0f; // world units per axis
+	// 512 m: a power-of-two multiple of retail's 8 m chunk, so tile edges line up
+	// with the map origin and retail's own chunk grid. 127 quads over 512 m is
+	// ~4 m a quad — every second retail pole (FSWGTerrainHeader::GetPoleSpacing).
+	static constexpr float HeightmapWorldExtent = 512.0f; // world units per axis
 
-	// 5x5 x 508 = 2540 units, past the 2032 one coarse tile used to cover. Small
-	// tiles also re-bake better: a building dirties its own tile, not the world.
-	static constexpr int32 ComponentGridSize = 5;
+	// Chebyshev tile radii around the player come from swg.TerrainLoadRadius /
+	// swg.TerrainUnloadRadius (defaults 3 and 4: a 7x7, 3.5 km square, with
+	// unload one tile further so pacing at a boundary can't thrash).
+
+	// A bake is ~13 ms plus triangulation; four at once keeps a burst (zone
+	// entry, 49 tiles) under a second without starving the mesh generator's pool.
+	static constexpr int32 MaxBakesInFlight = 4;
+
+	static constexpr float StreamingSweepInterval = 0.5f;
 
 	// Hole-edge quads are split this many ways per axis — 0.5 units at the
 	// current spacing. Sub-quads are kept by their centre, which is what

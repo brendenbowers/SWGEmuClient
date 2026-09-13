@@ -1,5 +1,6 @@
 #include "TRE/SWGTerrainReader.h"
 #include "TRE/SWGIffTags.h"
+#include "TRE/SWGIFFChunkReader.h"
 
 namespace
 {
@@ -714,6 +715,72 @@ bool FSWGTerrainReader::ReadLayerFile(const FSWGIffReader& Reader, FSWGTerrainDa
 	return bFoundAnyLayer;
 }
 
+bool FSWGTerrainReader::ReadHeader(const FSWGIffReader& Reader, const FSWGIffChunk& PtatVersionForm, FSWGTerrainHeader& OutHeader)
+{
+	FSWGIffChunk DataChunk;
+	if (!Reader.FindChildChunk(PtatVersionForm, SWG_IFF_TAG('D','A','T','A'), DataChunk))
+	{
+		return false;
+	}
+
+	FSWGIFFChunkReader ChunkReader(DataChunk, Reader);
+
+	FString SourceFile;
+	uint32 UseGlobalWater = 0;
+	if (!ChunkReader.ReadTerminiatedString(SourceFile)
+		|| !ChunkReader.ReadValueLE(OutHeader.MapSize)
+		|| !ChunkReader.ReadValueLE(OutHeader.ChunkSize)
+		|| !ChunkReader.ReadValueLE(OutHeader.TilesPerChunk)
+		|| !ChunkReader.ReadValueLE(UseGlobalWater)
+		|| !ChunkReader.ReadValueLE(OutHeader.GlobalWaterTableHeight)
+		|| !ChunkReader.ReadValueLE(OutHeader.GlobalWaterTableShaderSize)
+		|| !ChunkReader.ReadTerminiatedString(OutHeader.GlobalWaterTableShader)
+		|| !ChunkReader.ReadValueLE(OutHeader.TimeCycle))
+	{
+		return false;
+	}
+	OutHeader.bUseGlobalWaterTable = UseGlobalWater != 0;
+
+	if (PtatVersionForm.FormType == SWG_IFF_TAG('0','0','1','3'))
+	{
+		FSWGTerrainHeader::FLegacyV13 Legacy;
+		for (int32 PairIndex = 0; PairIndex < 4; ++PairIndex)
+		{
+			FString ShaderName;
+			float ShaderSize = 0.0f;
+			if (!ChunkReader.ReadTerminiatedString(ShaderName) || !ChunkReader.ReadValueLE(ShaderSize)) return false;
+			Legacy.ShaderNames.Add(MoveTemp(ShaderName));
+			Legacy.ShaderSizes.Add(ShaderSize);
+		}
+		if (!ChunkReader.ReadValueLE(Legacy.Flag) || !ChunkReader.ReadTerminiatedString(Legacy.Name)) return false;
+		OutHeader.LegacyV13 = MoveTemp(Legacy);
+	}
+
+	// Four vegetation tiers. Core3 reads minDistance as a uint for the first
+	// three and a float for radialFar; stored as float either way.
+	auto ReadTier = [&ChunkReader](FSWGTerrainHeader::FVegetationTier& OutTier, bool bFloatMinDistance) -> bool
+	{
+		uint32 MinDistanceUInt = 0;
+		const bool bMinOk = bFloatMinDistance
+			? ChunkReader.ReadValueLE(OutTier.MinDistance)
+			: ChunkReader.ReadValueLE(MinDistanceUInt);
+		if (!bFloatMinDistance)
+		{
+			OutTier.MinDistance = (float)MinDistanceUInt;
+		}
+		return bMinOk
+			&& ChunkReader.ReadValueLE(OutTier.MaxDistance)
+			&& ChunkReader.ReadValueLE(OutTier.TileSize)
+			&& ChunkReader.ReadValueLE(OutTier.TileBorder)
+			&& ChunkReader.ReadValueLE(OutTier.Seed);
+	};
+
+	return ReadTier(OutHeader.FloraCollidable, false)
+		&& ReadTier(OutHeader.FloraNonCollidable, false)
+		&& ReadTier(OutHeader.RadialNear, false)
+		&& ReadTier(OutHeader.RadialFar, true);
+}
+
 bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData& OutData)
 {
 	if (!Reader.IsValid()) return false;
@@ -728,6 +795,9 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 	const TArray<FSWGIffChunk> PtatChildren = Reader.FindChildForms(TopLevel[0]);
 	if (PtatChildren.Num() == 0) return false;
 	const FSWGIffChunk& PtatVersionForm = PtatChildren[0];
+
+	// Header failure isn't fatal to height evaluation — defaults match every shipped planet.
+	ReadHeader(Reader, PtatVersionForm, OutData.Header);
 
 	FSWGIffChunk TgenForm, TgenForm0000;
 	if (!Reader.FindChildForm(PtatVersionForm, SWG_IFF_TAG('T','G','E','N'), TgenForm)) return false;

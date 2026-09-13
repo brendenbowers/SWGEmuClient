@@ -18,6 +18,7 @@
 #include "Subsystems/SWGTerrainSubsystem.h"
 #include "Subsystems/SWGInteriorStreamingSubsystem.h"
 #include "Common/SWGWorldScale.h"
+#include "Objects/SWGNetworkObjectInterface.h"
 
 namespace
 {
@@ -400,10 +401,19 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 				ActorLocation.X, ActorLocation.Y, ActorLocation.Z,
 				RawPosition.Z, Actor.GetActorRotation().Yaw);
 
-			TerrainSubsystem->ApplyObjectTerrainModification(TemplateName, RawPosition, YawRadians);
+			// Owned by the building's object id so a streamed-out .ws building
+			// takes its pad and holes with it (USWGTerrainSubsystem::RemoveObjectTerrainEdits).
+			const ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(&Actor);
+			const int64 OwnerObjectId = NetObject ? NetObject->GetObjectId() : 0;
+
+			TerrainSubsystem->ApplyObjectTerrainModification(TemplateName, RawPosition, YawRadians, OwnerObjectId);
 
 			TArray<FSWGTerrainHole> Holes;
 			GatherInteriorFloorHoles(TreSubsystem, BuildingActor->PortalData, RawPosition, YawRadians, Holes);
+			for (FSWGTerrainHole& Hole : Holes)
+			{
+				Hole.OwnerObjectId = OwnerObjectId;
+			}
 			TerrainSubsystem->AddTerrainHoles(Holes);
 		}
 	}

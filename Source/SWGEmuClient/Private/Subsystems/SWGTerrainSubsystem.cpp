@@ -46,6 +46,26 @@
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarTerrainLoadRadius(
+		TEXT("swg.TerrainLoadRadius"), 3,
+		TEXT("Terrain tiles (512 m) kept loaded in every direction around the player — 3 is a 7x7 square."));
+
+	TAutoConsoleVariable<int32> CVarTerrainUnloadRadius(
+		TEXT("swg.TerrainUnloadRadius"), 4,
+		TEXT("Tiles further than this from the player are unloaded. Kept at least one past the load radius so a player at a tile edge doesn't thrash."));
+
+	TAutoConsoleVariable<int32> CVarSnapshotLoadRadius(
+		TEXT("swg.SnapshotLoadRadius"), 1,
+		TEXT("Tiles (512 m) around the player whose .ws static objects are spawned — 1 is the 3x3, 512-1024 m out. Never wider than swg.TerrainLoadRadius."));
+
+	TAutoConsoleVariable<int32> CVarSnapshotUnloadRadius(
+		TEXT("swg.SnapshotUnloadRadius"), 2,
+		TEXT("Tiles further than this have their static objects destroyed while the ground stays. Kept at least the load radius."));
+
+	TAutoConsoleVariable<float> CVarSnapshotSpawnBudgetMs(
+		TEXT("swg.SnapshotSpawnBudgetMs"), 2.0f,
+		TEXT("Game-thread time per frame spent spawning a streamed tile's .ws objects. At least one spawns each frame regardless."));
+
 	// Landscape's uint16 height packing represents a fixed +/-256 *local* height
 	// range (LANDSCAPE_ZSCALE is hardcoded regardless of actor Z scale); the
 	// actor's Z scale stretches that into final world units. Baked heights must
@@ -332,20 +352,20 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void USWGTerrainSubsystem::Deinitialize()
 {
+	ResetZone();
 }
 
 void USWGTerrainSubsystem::BeginLoadTerrain(const FString TerrainVirtualPath, const FVector& SpawnPosition)
 {
-	// Dropped here rather than at grid spawn: buildings register holes before the
-	// grid exists, so clearing there would discard the ones from this load.
-	TerrainHoles.Reset();
+	check(IsInGameThread());
 
-	// Likewise pads queued by the previous scene's buildings, and the previous
-	// zone's height function — GetHeightAt must not answer for the old planet
-	// while the new one bakes.
-	PendingObjectModifications.Reset();
-	bTerrainDataCached = false;
+	// Everything from the previous planet goes now, not when the new data
+	// lands: buildings for the new zone register holes and pads before the
+	// .trn has parsed, and those must survive into the new zone.
+	ResetZone();
 
+	SpawnRawPosition = FVector2D(SpawnPosition.X, SpawnPosition.Y);
+	ActiveTerrainVirtualPath = TerrainVirtualPath;
 
 	Async(EAsyncExecution::Thread, [this, TerrainVirtualPath, SpawnPosition]()
 		{
@@ -373,63 +393,146 @@ void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const 
 {
 	UE_LOG(LogTemp, Verbose, TEXT("USWGTerrainSubsystem: Begin loading terrain: %s"), *TerrainVirtualPath);
 
-	FSWGTerrainData TerrainData;
-	if (!ParseTerrain(TerrainVirtualPath, TerrainData))
+	TSharedPtr<FSWGTerrainData, ESPMode::ThreadSafe> Parsed = MakeShared<FSWGTerrainData, ESPMode::ThreadSafe>();
+	if (!ParseTerrain(TerrainVirtualPath, *Parsed))
 	{
 		Error(FString::Printf(TEXT("Failed to parse terrain: %s"), *TerrainVirtualPath));
 		return;
 	}
 
-	const int32 ComponentVerts = HeightmapResolution;
-	const float ComponentExtent = HeightmapWorldExtent; // world size of one component
-	const float Spacing = ComponentExtent / (ComponentVerts - 1);
-	const float GridExtent = ComponentExtent * ComponentGridSize;
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %s — map %.0f, chunk %.0f x %u tiles (pole spacing %.2f), global water %d @ %.1f, %d top-level layer(s)"),
+		*TerrainVirtualPath, Parsed->Header.MapSize, Parsed->Header.ChunkSize, Parsed->Header.TilesPerChunk, Parsed->Header.GetPoleSpacing(),
+		Parsed->Header.bUseGlobalWaterTable ? 1 : 0, Parsed->Header.GlobalWaterTableHeight, Parsed->TopLevelLayers.Num());
 
-	// Grid's min corner, not its center — SpawnPosition sits in the middle of the whole grid.
-	const FVector GridOrigin(SpawnPosition.X - GridExtent * 0.5f, SpawnPosition.Y - GridExtent * 0.5f, 0.0f);
+	TMap<FIntPoint, TArray<int32>> NodesByTile;
+	TSharedPtr<const FSWGWorldSnapshotData, ESPMode::ThreadSafe> Snapshot = LoadWorldSnapshot(TerrainVirtualPath, NodesByTile);
 
-	const int32 TileCount = ComponentGridSize * ComponentGridSize;
-	TArray<FSWGTerrainTileBuild> Grid;
-	Grid.SetNum(TileCount);
-
-	// This bake cannot see holes: buildings register them on the game thread
-	// while this worker runs. FlushPendingTerrainHoles re-bakes for them below.
-	const TArray<FSWGTerrainHole> Holes;
-
-	// Tiles are independent by construction: GetHeight is a pure function of
-	// world (x,y), so nothing here reads another tile's result.
-	ParallelFor(TileCount, [this, &Grid, &TerrainData, &Holes, GridOrigin, ComponentExtent](int32 TileIndex)
+	// Nothing here touched a UObject; the streaming itself is game-thread work.
+	AsyncTask(ENamedThreads::GameThread, [this, TerrainVirtualPath, Parsed, Snapshot, NodesByTile = MoveTemp(NodesByTile)]() mutable
 		{
-			const int32 GridX = TileIndex % ComponentGridSize;
-			const int32 GridY = TileIndex / ComponentGridSize;
-			const FVector RegionOrigin(GridOrigin.X + GridX * ComponentExtent, GridOrigin.Y + GridY * ComponentExtent, 0.0f);
+			if (TerrainVirtualPath != ActiveTerrainVirtualPath)
+			{
+				// Zone changed again while this parsed; the newer load owns the subsystem now.
+				return;
+			}
 
-			Grid[TileIndex] = BakeTerrainTile(TerrainData, RegionOrigin, GridOrigin, Holes);
-		});
-
-	TArray<FSWGWorldSnapshotSpawnInfo> SnapshotObjects = LoadWorldSnapshotObjects(TerrainVirtualPath, SpawnPosition);
-
-	// SpawnLandscapeGrid touches actors/components/textures — all game-thread-only
-	// — but LoadTerrain itself runs on the background thread BeginLoadTerrain
-	// dispatched onto. Marshal back before touching any of that. Caching
-	// TerrainData here too (rather than back on the background thread) avoids a
-	// write/read race with GetHeightAt, which is only ever called from the game thread.
-	AsyncTask(ENamedThreads::GameThread, [this, TerrainVirtualPath, Grid = MoveTemp(Grid), GridOrigin, Spacing, TerrainData = MoveTemp(TerrainData), SnapshotObjects = MoveTemp(SnapshotObjects)]() mutable
-		{
-			CachedTerrainData = TerrainData;
+			PlanetData = Parsed;
+			SnapshotData = Snapshot;
+			SnapshotNodesByTile = MoveTemp(NodesByTile);
 			bTerrainDataCached = true;
-			ActiveTerrainVirtualPath = TerrainVirtualPath;
 
 			SetupPlanetLighting(TerrainVirtualPath);
-			SpawnDynamicMeshTerrainGrid(Grid, GridOrigin, Spacing);
-			SpawnWorldSnapshotObjects(SnapshotObjects);
-			// Tiles now exist and CachedTerrainData is populated, so anything
-			// that spawned during the load can finally have its pad applied and
-			// its rooms cut out.
+			SpawnTerrainActor();
+
+			// The tiles the player lands on; OnTerrainReady waits for exactly these.
+			const FIntPoint SpawnTile = TileCoordAt(SpawnRawPosition);
+			for (int32 OffsetY = -1; OffsetY <= 1; ++OffsetY)
+			{
+				for (int32 OffsetX = -1; OffsetX <= 1; ++OffsetX)
+				{
+					const FIntPoint Coord = SpawnTile + FIntPoint(OffsetX, OffsetY);
+					if (IsTileOnMap(Coord))
+					{
+						InitialTiles.Add(Coord);
+					}
+				}
+			}
+
+			// Pads queued during the parse go in before the first bake so the
+			// spawn tiles come out flattened rather than re-baked a moment later.
 			FlushPendingObjectTerrainModifications();
-			FlushPendingTerrainHoles();
-			OnTerrainReady.Broadcast();
+
+			TimeUntilNextSweep = 0.0f;
+			UpdateStreaming();
 		});
+}
+
+void USWGTerrainSubsystem::SpawnTerrainActor()
+{
+	check(IsInGameThread());
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: no valid world to spawn terrain mesh in"));
+		return;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* TerrainActor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, SpawnParams);
+	if (!TerrainActor)
+	{
+		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: failed to spawn terrain mesh actor"));
+		return;
+	}
+
+	// A plain AActor has no root component at construction time. The actor sits
+	// at the world origin; each tile component carries its own origin instead,
+	// so no single grid origin has to be chosen up front.
+	USceneComponent* TerrainRoot = NewObject<USceneComponent>(TerrainActor, TEXT("TerrainRoot"));
+	TerrainActor->SetRootComponent(TerrainRoot);
+	TerrainRoot->RegisterComponent();
+
+	TerrainMeshActor = TerrainActor;
+}
+
+void USWGTerrainSubsystem::ResetZone()
+{
+	check(IsInGameThread());
+
+	++TerrainGeneration;
+	bTerrainDataCached = false;
+	bInitialTilesReported = false;
+	bHasLastStreamingCenter = false;
+
+	// Emptied before the teardown: destroying a building removes its edits,
+	// which would otherwise queue re-bakes for tiles that are about to go.
+	TMap<FIntPoint, FSWGTerrainTile> OldTiles = MoveTemp(Tiles);
+	Tiles.Reset();
+	BakeQueue.Reset();
+	for (TPair<FIntPoint, FSWGTerrainTile>& Pair : OldTiles)
+	{
+		DestroySnapshotActors(Pair.Value);
+	}
+	InitialTiles.Reset();
+	// In-flight bakes still count until they land and see the new generation.
+
+	if (IsValid(TerrainMeshActor))
+	{
+		TerrainMeshActor->Destroy();
+		TerrainMeshActor = nullptr;
+	}
+	PooledTileComponents.Reset();
+
+	PlanetData.Reset();
+	SnapshotData.Reset();
+	SnapshotNodesByTile.Reset();
+
+	OwnedEditLayers.Reset();
+	PublishedEditLayers.Reset();
+	TerrainHoles.Reset();
+	StampedEditOwners.Reset();
+	PendingObjectModifications.Reset();
+	EditVersion = 0;
+}
+
+void USWGTerrainSubsystem::Tick(float DeltaTime)
+{
+	SpawnPendingSnapshotObjects();
+
+	TimeUntilNextSweep -= DeltaTime;
+	if (TimeUntilNextSweep > 0.0f)
+	{
+		return;
+	}
+	TimeUntilNextSweep = StreamingSweepInterval;
+	UpdateStreaming();
+}
+
+TStatId USWGTerrainSubsystem::GetStatId() const
+{
+	RETURN_QUICK_DECLARE_CYCLE_STAT(USWGTerrainSubsystem, STATGROUP_Tickables);
 }
 
 void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath)
@@ -521,26 +624,26 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 		*ZoneName, *GradientPath);
 }
 
-TArray<FSWGWorldSnapshotSpawnInfo> USWGTerrainSubsystem::LoadWorldSnapshotObjects(const FString& TerrainVirtualPath, const FVector& SpawnPosition)
+TSharedPtr<const FSWGWorldSnapshotData, ESPMode::ThreadSafe> USWGTerrainSubsystem::LoadWorldSnapshot(const FString& TerrainVirtualPath, TMap<FIntPoint, TArray<int32>>& OutNodesByTile)
 {
-	TArray<FSWGWorldSnapshotSpawnInfo> Result;
+	OutNodesByTile.Reset();
 
 	// "terrain/tatooine.trn" -> "tatooine" -> "snapshot/tatooine.ws".
-	FString ZoneName = FPaths::GetBaseFilename(TerrainVirtualPath);
+	const FString ZoneName = FPaths::GetBaseFilename(TerrainVirtualPath);
 	const FString SnapshotPath = FString::Printf(TEXT("snapshot/%s.ws"), *ZoneName);
 
 	FSWGIffReader SnapshotReader = TreSubsystem->CreateIffReader(SnapshotPath);
 	if (!SnapshotReader.IsValid())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: no world snapshot found at %s — no static world objects will spawn"), *SnapshotPath);
-		return Result;
+		return nullptr;
 	}
 
-	FSWGWorldSnapshotData SnapshotData;
-	if (!FSWGWorldSnapshotReader::ReadWorldSnapshot(SnapshotReader, SnapshotData))
+	TSharedPtr<FSWGWorldSnapshotData, ESPMode::ThreadSafe> Snapshot = MakeShared<FSWGWorldSnapshotData, ESPMode::ThreadSafe>();
+	if (!FSWGWorldSnapshotReader::ReadWorldSnapshot(SnapshotReader, *Snapshot))
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: failed to parse world snapshot %s"), *SnapshotPath);
-		return Result;
+		return nullptr;
 	}
 
 	if (!FormTagMappingTable)
@@ -551,35 +654,46 @@ TArray<FSWGWorldSnapshotSpawnInfo> USWGTerrainSubsystem::LoadWorldSnapshotObject
 			TEXT("/Game/SWGEmu/Data/DT_SWGFormTagMappings.DT_SWGFormTagMappings"));
 	}
 
-	const float RadiusSq = WorldSnapshotSpawnRadius * WorldSnapshotSpawnRadius;
-	int32 InRangeCount = 0;
-
-	for (const FSWGWorldSnapshotNode& Node : SnapshotData.Nodes)
+	for (int32 NodeIndex = 0; NodeIndex < Snapshot->Nodes.Num(); ++NodeIndex)
 	{
-		if (FVector::DistSquared(Node.Position, SpawnPosition) > RadiusSq)
-			continue;
+		const FSWGWorldSnapshotNode& Node = Snapshot->Nodes[NodeIndex];
+		OutNodesByTile.FindOrAdd(TileCoordAt(FVector2D(Node.Position.X, Node.Position.Y))).Add(NodeIndex);
+	}
 
-		++InRangeCount;
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: world snapshot %s — %d top-level node(s) across %d tile(s)"),
+		*SnapshotPath, Snapshot->Nodes.Num(), OutNodesByTile.Num());
 
+	return Snapshot;
+}
+
+TArray<FSWGWorldSnapshotSpawnInfo> USWGTerrainSubsystem::ResolveSnapshotObjectsForTile(const FIntPoint& Coord) const
+{
+	TArray<FSWGWorldSnapshotSpawnInfo> Result;
+
+	const TArray<int32>* NodeIndices = SnapshotNodesByTile.Find(Coord);
+	if (!SnapshotData.IsValid() || !NodeIndices)
+	{
+		return Result;
+	}
+
+	for (const int32 NodeIndex : *NodeIndices)
+	{
 		FSWGWorldSnapshotSpawnInfo Info;
-		if (ResolveWorldSnapshotNode(Node, SnapshotData, Info))
+		if (ResolveWorldSnapshotNode(SnapshotData->Nodes[NodeIndex], *SnapshotData, Info))
 		{
 			Result.Add(MoveTemp(Info));
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: world snapshot %s — %d/%d node(s) within %.0f units of spawn, %d resolved to an actor class"),
-		*SnapshotPath, InRangeCount, SnapshotData.Nodes.Num(), WorldSnapshotSpawnRadius, Result.Num());
-
 	return Result;
 }
 
-bool USWGTerrainSubsystem::ResolveWorldSnapshotNode(const FSWGWorldSnapshotNode& Node, const FSWGWorldSnapshotData& SnapshotData, FSWGWorldSnapshotSpawnInfo& OutInfo) const
+bool USWGTerrainSubsystem::ResolveWorldSnapshotNode(const FSWGWorldSnapshotNode& Node, const FSWGWorldSnapshotData& Snapshot, FSWGWorldSnapshotSpawnInfo& OutInfo) const
 {
-	if (!SnapshotData.ObjectTemplateNames.IsValidIndex((int32)Node.NameID))
+	if (!Snapshot.ObjectTemplateNames.IsValidIndex((int32)Node.NameID))
 		return false;
 
-	const FString& TemplateName = SnapshotData.ObjectTemplateNames[(int32)Node.NameID];
+	const FString& TemplateName = Snapshot.ObjectTemplateNames[(int32)Node.NameID];
 
 	FSWGIffReader TemplateReader = TreSubsystem->CreateIffReader(TemplateName);
 	if (!TemplateReader.IsValid())
@@ -606,7 +720,7 @@ bool USWGTerrainSubsystem::ResolveWorldSnapshotNode(const FSWGWorldSnapshotNode&
 	for (const FSWGWorldSnapshotNode& ChildNode : Node.Children)
 	{
 		FSWGWorldSnapshotSpawnInfo ChildInfo;
-		if (ResolveWorldSnapshotNode(ChildNode, SnapshotData, ChildInfo))
+		if (ResolveWorldSnapshotNode(ChildNode, Snapshot, ChildInfo))
 		{
 			OutInfo.Children.Add(MoveTemp(ChildInfo));
 		}
@@ -615,28 +729,129 @@ bool USWGTerrainSubsystem::ResolveWorldSnapshotNode(const FSWGWorldSnapshotNode&
 	return true;
 }
 
-void USWGTerrainSubsystem::SpawnWorldSnapshotObjects(const TArray<FSWGWorldSnapshotSpawnInfo>& Objects)
+void USWGTerrainSubsystem::QueueSnapshotObjectsForTile(const FIntPoint& Coord, FSWGTerrainTile& Tile, TArray<FSWGWorldSnapshotSpawnInfo>&& Objects)
 {
+	check(IsInGameThread());
+
+	Tile.bSnapshotSpawned = true;
+	Tile.PendingSnapshotObjects = MoveTemp(Objects);
+	Tile.NextSnapshotIndex = 0;
+
+	if (!Tile.PendingSnapshotObjects.IsEmpty())
+	{
+		UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: tile (%d,%d) queued %d world snapshot object(s)"), Coord.X, Coord.Y, Tile.PendingSnapshotObjects.Num());
+	}
+}
+
+void USWGTerrainSubsystem::SpawnPendingSnapshotObjects()
+{
+	check(IsInGameThread());
+
 	UWorld* World = GetWorld();
 	if (!World)
 		return;
 
+	// Nearest tile first, so what the player can see fills in before the horizon.
+	FVector2D Center;
+	GetStreamingCenter(Center);
+	const FIntPoint CenterTile = TileCoordAt(Center);
+
+	TArray<FIntPoint> WithPending;
+	for (const TPair<FIntPoint, FSWGTerrainTile>& Pair : Tiles)
+	{
+		if (Pair.Value.NextSnapshotIndex < Pair.Value.PendingSnapshotObjects.Num())
+		{
+			WithPending.Add(Pair.Key);
+		}
+	}
+	if (WithPending.IsEmpty())
+		return;
+
+	WithPending.Sort([&CenterTile](const FIntPoint& Left, const FIntPoint& Right)
+		{
+			const FIntPoint LeftDelta = Left - CenterTile;
+			const FIntPoint RightDelta = Right - CenterTile;
+			return LeftDelta.X * LeftDelta.X + LeftDelta.Y * LeftDelta.Y < RightDelta.X * RightDelta.X + RightDelta.Y * RightDelta.Y;
+		});
+
 	UGameInstance* GameInstance = GetGameInstance();
 	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
 
-	for (const FSWGWorldSnapshotSpawnInfo& Info : Objects)
-	{
-		// Info.Position is raw/native space (straight from the .ws file, compared
-		// against WorldSnapshotSpawnRadius in that same raw space in
-		// LoadWorldSnapshotObjects) — scale to final UE space right at this
-		// actor-placement boundary.
-		SpawnWorldSnapshotNode(Info, FTransform(Info.Rotation, SWGToUnrealSpace(Info.Position)), nullptr, ObjectGraph);
-	}
+	const double BudgetSeconds = FMath::Max(0.0f, CVarSnapshotSpawnBudgetMs.GetValueOnGameThread()) * 0.001;
+	const double StartTime = FPlatformTime::Seconds();
+	int32 SpawnedThisFrame = 0;
 
-	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: spawned %d world snapshot object(s)"), Objects.Num());
+	for (const FIntPoint& Coord : WithPending)
+	{
+		FSWGTerrainTile& Tile = Tiles[Coord];
+
+		// At least one per frame regardless of budget, so a slow frame can't
+		// stall the queue outright.
+		while (Tile.NextSnapshotIndex < Tile.PendingSnapshotObjects.Num()
+			&& (SpawnedThisFrame == 0 || FPlatformTime::Seconds() - StartTime < BudgetSeconds))
+		{
+			const FSWGWorldSnapshotSpawnInfo& Info = Tile.PendingSnapshotObjects[Tile.NextSnapshotIndex++];
+			// Info.Position is raw/native space straight from the .ws — scale to
+			// final UE space right at this actor-placement boundary.
+			SpawnWorldSnapshotNode(Info, FTransform(Info.Rotation, SWGToUnrealSpace(Info.Position)), nullptr, ObjectGraph, false, &Tile.SnapshotActors);
+			++SpawnedThisFrame;
+		}
+
+		if (Tile.NextSnapshotIndex >= Tile.PendingSnapshotObjects.Num())
+		{
+			UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: tile (%d,%d) spawned %d world snapshot object(s), %d actor(s)"),
+				Coord.X, Coord.Y, Tile.PendingSnapshotObjects.Num(), Tile.SnapshotActors.Num());
+			Tile.PendingSnapshotObjects.Empty();
+			Tile.NextSnapshotIndex = 0;
+		}
+
+		if (FPlatformTime::Seconds() - StartTime >= BudgetSeconds)
+		{
+			break;
+		}
+	}
 }
 
-AActor* USWGTerrainSubsystem::SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpawnInfo& Info, const FTransform& WorldTransform, AActor* Parent, USWGObjectGraphSubsystem* ObjectGraph, bool bForceInterior)
+void USWGTerrainSubsystem::DestroySnapshotActors(FSWGTerrainTile& Tile)
+{
+	check(IsInGameThread());
+
+	UGameInstance* GameInstance = GetGameInstance();
+	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+
+	for (const TWeakObjectPtr<AActor>& ActorWeak : Tile.SnapshotActors)
+	{
+		AActor* Actor = ActorWeak.Get();
+		if (!Actor)
+			continue;
+
+		// Rooms the interior streamer opened are the building's; it takes them
+		// down (and unregisters them) before the building itself goes.
+		if (ASWGBuilding* Building = Cast<ASWGBuilding>(Actor))
+		{
+			Building->UnloadAllRooms();
+		}
+
+		if (const ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(Actor))
+		{
+			const int64 ObjectId = NetObject->GetObjectId();
+			if (ObjectGraph)
+			{
+				ObjectGraph->UnregisterStaticObject(ObjectId);
+			}
+			RemoveObjectTerrainEdits(ObjectId);
+		}
+
+		Actor->Destroy();
+	}
+
+	Tile.SnapshotActors.Reset();
+	Tile.PendingSnapshotObjects.Empty();
+	Tile.NextSnapshotIndex = 0;
+	Tile.bSnapshotSpawned = false;
+}
+
+AActor* USWGTerrainSubsystem::SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpawnInfo& Info, const FTransform& WorldTransform, AActor* Parent, USWGObjectGraphSubsystem* ObjectGraph, bool bForceInterior, TArray<TWeakObjectPtr<AActor>>* OutSpawned)
 {
 	UWorld* World = GetWorld();
 	if (!World)
@@ -682,6 +897,11 @@ AActor* USWGTerrainSubsystem::SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpaw
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: failed to spawn world snapshot object %s"), *Info.TemplateName);
 		return nullptr;
+	}
+
+	if (OutSpawned)
+	{
+		OutSpawned->Add(Actor);
 	}
 
 	if (ASWGBuilding* Building = Cast<ASWGBuilding>(Actor))
@@ -752,7 +972,7 @@ AActor* USWGTerrainSubsystem::SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpaw
 		// are replaced once their meshes finish building, which would orphan
 		// anything attached before then.
 		const FTransform ChildRelative(Child.Rotation, SWGToUnrealSpace(Child.Position));
-		SpawnWorldSnapshotNode(Child, ChildRelative * WorldTransform, Actor, ObjectGraph, bForceInterior);
+		SpawnWorldSnapshotNode(Child, ChildRelative * WorldTransform, Actor, ObjectGraph, bForceInterior, OutSpawned);
 	}
 
 	return Actor;
@@ -760,12 +980,13 @@ AActor* USWGTerrainSubsystem::SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpaw
 
 float USWGTerrainSubsystem::GetHeightAt(float X, float Y) const
 {
-	if (!bTerrainDataCached)
+	if (!bTerrainDataCached || !PlanetData.IsValid())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: GetHeightAt called before any terrain has parsed"));
 		return 0.0f;
 	}
-	return FSWGTerrainEvaluator::GetHeight(CachedTerrainData, X, Y);
+	const TArrayView<const FSWGTerrainLayer> Edits = PublishedEditLayers.IsValid() ? MakeArrayView(*PublishedEditLayers) : TArrayView<const FSWGTerrainLayer>();
+	return FSWGTerrainEvaluator::GetHeight(*PlanetData, X, Y, Edits);
 }
 
 namespace
@@ -941,22 +1162,27 @@ void USWGTerrainSubsystem::FlushPendingObjectTerrainModifications()
 
 	for (const FSWGPendingTerrainModification& Pending : Replaying)
 	{
-		ApplyObjectTerrainModification(Pending.TemplatePath, Pending.WorldPosition, Pending.YawRadians);
+		ApplyObjectTerrainModification(Pending.TemplatePath, Pending.WorldPosition, Pending.YawRadians, Pending.OwnerObjectId);
 	}
 }
 
-bool USWGTerrainSubsystem::ApplyObjectTerrainModification(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians)
+bool USWGTerrainSubsystem::ApplyObjectTerrainModification(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians, int64 OwnerObjectId)
 {
 	check(IsInGameThread());
 
 	if (!bTerrainDataCached)
 	{
-		// Buildings reliably arrive before the async terrain load completes, so
+		// Buildings reliably arrive before the async .trn parse completes, so
 		// this is the normal path on zone entry, not an edge case. Queue rather
 		// than drop — dropping meant a building's pad simply never applied.
-		PendingObjectModifications.Add({ TemplatePath, WorldPosition, YawRadians });
+		PendingObjectModifications.Add({ TemplatePath, WorldPosition, YawRadians, OwnerObjectId });
 		UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: ApplyObjectTerrainModification(%s) before terrain finished loading — deferred (%d queued)"),
 			*TemplatePath, PendingObjectModifications.Num());
+		return true;
+	}
+
+	if (OwnerObjectId != 0 && StampedEditOwners.Contains(OwnerObjectId))
+	{
 		return true;
 	}
 
@@ -966,149 +1192,168 @@ bool USWGTerrainSubsystem::ApplyObjectTerrainModification(const FString& Templat
 		return false;
 	}
 
-	// Sample the height function before the layers go in, so the log below can
-	// show what the flatten actually changed rather than what it intended to.
 	const float CentreBefore = GetHeightAt((float)WorldPosition.X, (float)WorldPosition.Y);
 
-	UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD %s layers=%d padRawPos=(%.2f, %.2f, %.3f) existingLayers=%d heightAtCentreBefore=%.3f"),
-		*TemplatePath, Layers.Num(), WorldPosition.X, WorldPosition.Y, WorldPosition.Z,
-		CachedTerrainData.TopLevelLayers.Num(), CentreBefore);
-
-	for (const FSWGTerrainLayer& Layer : Layers)
-	{
-		for (const FSWGTerrainBoundary& Boundary : Layer.Boundaries)
-		{
-			FString Corners;
-			for (const FVector2D& Vertex : Boundary.Vertices)
-			{
-				Corners += FString::Printf(TEXT("(%.2f,%.2f) "), Vertex.X, Vertex.Y);
-			}
-			UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD   boundary type=%d feather=%.3f verts=%d %s"),
-				(int32)Boundary.Type, Boundary.FeatheringAmount, Boundary.Vertices.Num(), *Corners);
-		}
-		for (const FSWGTerrainAffector& Affector : Layer.Affectors)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD   affector type=%d op=%d height=%.3f"),
-				(int32)Affector.Type, Affector.OperationType, Affector.Height);
-		}
-	}
-
-	ApplyTerrainLayersAndRegenerate(MoveTemp(Layers));
-
-	// Re-sample the same points now the layers are live. Centre should equal the
-	// affector height; the offsets show how far the pad actually reaches.
-	const float CentreAfter = GetHeightAt((float)WorldPosition.X, (float)WorldPosition.Y);
-	UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD   heightAtCentreAfter=%.3f (delta %.3f)"), CentreAfter, CentreAfter - CentreBefore);
-
-	for (const float Offset : { 5.0f, 10.0f, 15.0f, 20.0f, 25.0f, 30.0f })
-	{
-		const float HX = GetHeightAt((float)WorldPosition.X + Offset, (float)WorldPosition.Y);
-		const float HY = GetHeightAt((float)WorldPosition.X, (float)WorldPosition.Y + Offset);
-		UE_LOG(LogTemp, Warning, TEXT("TERRAINPAD   height at +%.0fm: X=%.3f Y=%.3f"), Offset, HX, HY);
-	}
-
-	return true;
-}
-
-void USWGTerrainSubsystem::ApplyTerrainLayersAndRegenerate(TArray<FSWGTerrainLayer> Layers)
-{
-	check(IsInGameThread());
-
-	for (const FSWGTerrainLayer& Layer : Layers)
+	FBox2D Affected(ForceInit);
+	for (FSWGTerrainLayer& Layer : Layers)
 	{
 		FBox2D LayerBounds;
 		if (!FSWGTerrainModifier::GetLayerWorldBounds(Layer, LayerBounds))
 		{
 			// An unbounded layer would apply everywhere. Nothing in retail's
-			// .lay/.sfp data is unbounded, so treat it as a data problem rather
-			// than silently re-baking the entire grid.
-			UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: terrain layer '%s' has no bounded region — skipping its tile invalidation"), *Layer.Name);
+			// .lay data is unbounded, so treat it as a data problem rather
+			// than silently re-baking every loaded tile.
+			UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: terrain layer '%s' has no bounded region — skipping it"), *Layer.Name);
 			continue;
 		}
-
-		InvalidateTilesOverlapping(LayerBounds);
+		Affected += LayerBounds.Min;
+		Affected += LayerBounds.Max;
+		OwnedEditLayers.Add({ OwnerObjectId, MoveTemp(Layer) });
 	}
 
-	if (bTerrainRegenerationInFlight)
+	if (OwnerObjectId != 0)
 	{
-		// A worker is reading CachedTerrainData right now — appending would
-		// reallocate under it. Hold the layers until that bake lands.
-		QueuedTerrainLayers.Append(MoveTemp(Layers));
-		return;
+		StampedEditOwners.Add(OwnerObjectId);
 	}
 
-	CachedTerrainData.TopLevelLayers.Append(MoveTemp(Layers));
-	ProcessPendingTerrainRegeneration();
+	PublishEditLayers();
+	if (Affected.bIsValid)
+	{
+		InvalidateTilesOverlapping(Affected);
+	}
+
+	const float CentreAfter = GetHeightAt((float)WorldPosition.X, (float)WorldPosition.Y);
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: terrain pad %s at (%.1f, %.1f) — centre height %.2f -> %.2f, %d edit layer(s) live"),
+		*TemplatePath, WorldPosition.X, WorldPosition.Y, CentreBefore, CentreAfter, OwnedEditLayers.Num());
+
+	return true;
 }
 
-void USWGTerrainSubsystem::ProcessPendingTerrainRegeneration()
+void USWGTerrainSubsystem::AddTerrainHoles(const TArray<FSWGTerrainHole>& Holes)
 {
 	check(IsInGameThread());
 
-	if (bTerrainRegenerationInFlight || PendingDirtyTiles.IsEmpty())
+	if (Holes.IsEmpty())
 	{
 		return;
 	}
 
-	TArray<int32> TilesToBake = PendingDirtyTiles.Array();
-	PendingDirtyTiles.Reset();
-	bTerrainRegenerationInFlight = true;
-
-	const int32 Generation = TerrainGeneration;
-	TArray<FVector> Origins;
-	Origins.Reserve(TilesToBake.Num());
-	for (int32 TileIndex : TilesToBake)
+	FBox2D Affected(ForceInit);
+	for (const FSWGTerrainHole& Hole : Holes)
 	{
-		Origins.Add(TerrainTileHeightmaps[TileIndex].Origin);
+		const FBox2D Bounds = Hole.GetWorldBounds();
+		Affected += Bounds.Min;
+		Affected += Bounds.Max;
 	}
 
-	// Holes copied, not read off the member: the game thread keeps appending as
-	// more buildings land.
-	Async(EAsyncExecution::Thread, [this, Generation, TilesToBake = MoveTemp(TilesToBake), Origins = MoveTemp(Origins), Holes = TerrainHoles, GridOrigin = TerrainGridOrigin]() mutable
-		{
-			// Safe to read CachedTerrainData here: the game thread only ever
-			// appends to it while bTerrainRegenerationInFlight is false.
-			TArray<FSWGTerrainTileBuild> Rebaked;
-			Rebaked.SetNum(Origins.Num());
+	TerrainHoles.Append(Holes);
 
-			ParallelFor(Origins.Num(), [this, &Rebaked, &Origins, &Holes, GridOrigin](int32 i)
-				{
-					Rebaked[i] = BakeTerrainTile(CachedTerrainData, Origins[i], GridOrigin, Holes);
-				});
-
-			AsyncTask(ENamedThreads::GameThread, [this, Generation, TilesToBake = MoveTemp(TilesToBake), Rebaked = MoveTemp(Rebaked)]() mutable
-				{
-					bTerrainRegenerationInFlight = false;
-
-					if (Generation != TerrainGeneration)
-					{
-						// Zone changed while this was baking — these tiles no
-						// longer exist. Drop the result and the queue with it.
-						QueuedTerrainLayers.Reset();
-						return;
-					}
-
-					for (int32 i = 0; i < TilesToBake.Num(); ++i)
-					{
-						ApplyTerrainTileBuild(TilesToBake[i], Rebaked[i]);
-					}
-
-					UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: regenerated %d terrain tile(s) after a terrain modification"), TilesToBake.Num());
-
-					if (QueuedTerrainLayers.Num() > 0)
-					{
-						CachedTerrainData.TopLevelLayers.Append(MoveTemp(QueuedTerrainLayers));
-						QueuedTerrainLayers.Reset();
-					}
-
-					ProcessPendingTerrainRegeneration();
-				});
-		});
+	// Holes are captured by copy per bake, so no publish step — just a version
+	// bump so tiles already baking come back for another pass.
+	++EditVersion;
+	InvalidateTilesOverlapping(Affected);
 }
 
-bool USWGTerrainSubsystem::FindCachedHeightmap(const FString& TerrainVirtualPath, const FVector& RegionOrigin, FSWGBakedHeightmap& OutHeightmap)
+void USWGTerrainSubsystem::RemoveObjectTerrainEdits(int64 OwnerObjectId)
 {
-	return false;
+	check(IsInGameThread());
+
+	if (OwnerObjectId == 0)
+	{
+		return;
+	}
+
+	FBox2D Affected(ForceInit);
+	bool bRemovedLayers = false;
+
+	for (auto It = OwnedEditLayers.CreateIterator(); It; ++It)
+	{
+		if (It->OwnerObjectId != OwnerObjectId)
+			continue;
+
+		FBox2D LayerBounds;
+		if (FSWGTerrainModifier::GetLayerWorldBounds(It->Layer, LayerBounds))
+		{
+			Affected += LayerBounds.Min;
+			Affected += LayerBounds.Max;
+		}
+		It.RemoveCurrent();
+		bRemovedLayers = true;
+	}
+
+	for (auto It = TerrainHoles.CreateIterator(); It; ++It)
+	{
+		if (It->OwnerObjectId != OwnerObjectId)
+			continue;
+
+		const FBox2D Bounds = It->GetWorldBounds();
+		Affected += Bounds.Min;
+		Affected += Bounds.Max;
+		It.RemoveCurrent();
+	}
+
+	StampedEditOwners.Remove(OwnerObjectId);
+
+	if (!Affected.bIsValid)
+	{
+		return;
+	}
+
+	if (bRemovedLayers)
+	{
+		PublishEditLayers();
+	}
+	else
+	{
+		++EditVersion;
+	}
+	InvalidateTilesOverlapping(Affected);
+}
+
+void USWGTerrainSubsystem::PublishEditLayers()
+{
+	check(IsInGameThread());
+
+	TSharedPtr<TArray<FSWGTerrainLayer>, ESPMode::ThreadSafe> Published = MakeShared<TArray<FSWGTerrainLayer>, ESPMode::ThreadSafe>();
+	Published->Reserve(OwnedEditLayers.Num());
+	for (const FSWGOwnedTerrainLayer& Owned : OwnedEditLayers)
+	{
+		Published->Add(Owned.Layer);
+	}
+
+	PublishedEditLayers = Published;
+	++EditVersion;
+}
+
+void USWGTerrainSubsystem::InvalidateTilesOverlapping(const FBox2D& Bounds)
+{
+	check(IsInGameThread());
+
+	for (TPair<FIntPoint, FSWGTerrainTile>& Pair : Tiles)
+	{
+		if (!TileBounds(Pair.Key).Intersect(Bounds))
+			continue;
+
+		Pair.Value.WantedEditVersion = EditVersion;
+		if (!Pair.Value.bBakeInFlight)
+		{
+			BakeQueue.Add(Pair.Key);
+		}
+		// A bake already running carries an older version; OnTileBakeFinished
+		// sees the mismatch and re-queues it.
+	}
+
+	PumpBakeQueue();
+}
+
+USWGTerrainSubsystem::FSWGTerrainBakeSource USWGTerrainSubsystem::MakeBakeSource() const
+{
+	FSWGTerrainBakeSource Source;
+	Source.Planet = PlanetData;
+	Source.EditLayers = PublishedEditLayers;
+	Source.Holes = TerrainHoles;
+	Source.EditVersion = EditVersion;
+	return Source;
 }
 
 bool USWGTerrainSubsystem::ParseTerrain(const FString& TerrainVirtualPath, FSWGTerrainData& OutTerrainData)
@@ -1129,10 +1374,11 @@ bool USWGTerrainSubsystem::ParseTerrain(const FString& TerrainVirtualPath, FSWGT
 	return true;
 }
 
-FSWGBakedHeightmap USWGTerrainSubsystem::BakeHeightmap(const FSWGTerrainData& TerrainData, const FVector& RegionOrigin) const
+FSWGBakedHeightmap USWGTerrainSubsystem::BakeHeightmap(const FSWGTerrainBakeSource& Source, const FVector& RegionOrigin) const
 {
 	const int32 Resolution = HeightmapResolution;
 	const float Spacing = HeightmapWorldExtent / (Resolution - 1);
+	const TArrayView<const FSWGTerrainLayer> Edits = Source.EditLayers.IsValid() ? MakeArrayView(*Source.EditLayers) : TArrayView<const FSWGTerrainLayer>();
 
 	FSWGBakedHeightmap Heightmap;
 	Heightmap.Origin = RegionOrigin;
@@ -1154,7 +1400,7 @@ FSWGBakedHeightmap USWGTerrainSubsystem::BakeHeightmap(const FSWGTerrainData& Te
 		for (int32 Col = 0; Col < Resolution; ++Col)
 		{
 			const float WorldX = RegionOrigin.X + Col * Spacing;
-			float Height = FSWGTerrainEvaluator::GetHeight(TerrainData, WorldX, WorldY);
+			float Height = FSWGTerrainEvaluator::GetHeight(*Source.Planet, WorldX, WorldY, Edits);
 			// Safety net: a NaN/Inf height here bakes straight into the landscape's
 			// uint16 heightmap and comes out as an extreme spike (this is what was
 			// actually happening — see FSWGMapFractal::GetNoise's Pow() fix for the
@@ -1177,16 +1423,17 @@ FSWGBakedHeightmap USWGTerrainSubsystem::BakeHeightmap(const FSWGTerrainData& Te
 		}
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: BakeHeightmap region origin=(%.1f,%.1f) min=%.1f max=%.1f outOfRange(+/-%.0f)=%d/%d"),
+	UE_LOG(LogTemp, Verbose, TEXT("USWGTerrainSubsystem: BakeHeightmap region origin=(%.1f,%.1f) min=%.1f max=%.1f outOfRange(+/-%.0f)=%d/%d"),
 		RegionOrigin.X, RegionOrigin.Y, MinHeight, MaxHeight, RepresentableHeightLimit, OutOfRangeCount, Resolution * Resolution);
 
 	return Heightmap;
 }
 
-void USWGTerrainSubsystem::BakeShaderWeights(const FSWGTerrainData& TerrainData, FSWGBakedHeightmap& Heightmap) const
+void USWGTerrainSubsystem::BakeShaderWeights(const FSWGTerrainBakeSource& Source, FSWGBakedHeightmap& Heightmap) const
 {
 	const int32 Resolution = HeightmapResolution;
 	const int32 SampleCount = Resolution * Resolution;
+	const TArrayView<const FSWGTerrainLayer> Edits = Source.EditLayers.IsValid() ? MakeArrayView(*Source.EditLayers) : TArrayView<const FSWGTerrainLayer>();
 
 	// One pass, keeping every vertex's full weight map around — re-evaluating
 	// the layer tree a second time (rather than storing this) would double
@@ -1203,7 +1450,7 @@ void USWGTerrainSubsystem::BakeShaderWeights(const FSWGTerrainData& TerrainData,
 		{
 			const float WorldX = Heightmap.Origin.X + Col * Heightmap.Spacing;
 			TMap<int32, float>& Weights = PerVertexWeights[Row * Resolution + Col];
-			FSWGTerrainEvaluator::GetShaderWeights(TerrainData, WorldX, WorldY, Weights);
+			FSWGTerrainEvaluator::GetShaderWeights(*Source.Planet, WorldX, WorldY, Weights, Edits);
 
 			for (const TPair<int32, float>& Pair : Weights)
 			{
@@ -1356,7 +1603,7 @@ UMaterialInterface* USWGTerrainSubsystem::BuildTerrainTileMaterial(const FSWGBak
 
 	for (int32 Channel = 0; Channel < Heightmap.ChosenShaderFamilyIds.Num(); ++Channel)
 	{
-		const FSWGShaderFamily* Family = CachedTerrainData.FindShaderFamily(Heightmap.ChosenShaderFamilyIds[Channel]);
+		const FSWGShaderFamily* Family = PlanetData->FindShaderFamily(Heightmap.ChosenShaderFamilyIds[Channel]);
 		if (!Family || Family->LayerNames.Num() == 0)
 		{
 			continue;
@@ -1551,35 +1798,6 @@ void USWGTerrainSubsystem::AddLandscapeComponent(ALandscape* Landscape, const FS
 		UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: added component at %s (SectionBase %d,%d) with %d mips (no collision yet)"),
 			*OriginStr, SectionBase.X, SectionBase.Y, NumTextureMips);
 	}
-}
-
-void USWGTerrainSubsystem::SpawnLandscapeGrid(const TArray<FSWGBakedHeightmap>& Grid, const FVector& GridOrigin, float Spacing)
-{
-	check(IsInGameThread());
-
-	ALandscape* Landscape = SpawnLandscapeActor(GridOrigin, Spacing);
-	if (!Landscape)
-	{
-		return;
-	}
-
-	const int32 ComponentSizeQuads = HeightmapResolution - 1;
-
-	for (int32 GridY = 0; GridY < ComponentGridSize; ++GridY)
-	{
-		for (int32 GridX = 0; GridX < ComponentGridSize; ++GridX)
-		{
-			const FSWGBakedHeightmap& Heightmap = Grid[GridY * ComponentGridSize + GridX];
-			AddLandscapeComponent(Landscape, Heightmap, FIntPoint(GridX * ComponentSizeQuads, GridY * ComponentSizeQuads));
-		}
-	}
-
-	FString Name = TEXT("UNKNOWN");
-	if (ULevel* Level = Landscape->GetLevel())
-	{
-		Name = Level->GetName();
-	}
-	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: spawned %dx%d landscape grid in level: %s"), ComponentGridSize, ComponentGridSize, *Name);
 }
 
 bool FSWGTerrainHole::Contains(const FVector2D& Point) const
@@ -1809,181 +2027,380 @@ namespace
 	}
 }
 
-void USWGTerrainSubsystem::AddTerrainHoles(const TArray<FSWGTerrainHole>& Holes)
+FIntPoint USWGTerrainSubsystem::TileCoordAt(const FVector2D& RawPosition)
+{
+	return FIntPoint(FMath::FloorToInt(RawPosition.X / HeightmapWorldExtent), FMath::FloorToInt(RawPosition.Y / HeightmapWorldExtent));
+}
+
+FVector USWGTerrainSubsystem::TileOrigin(const FIntPoint& Coord)
+{
+	return FVector(Coord.X * HeightmapWorldExtent, Coord.Y * HeightmapWorldExtent, 0.0f);
+}
+
+FBox2D USWGTerrainSubsystem::TileBounds(const FIntPoint& Coord)
+{
+	const FVector2D Min(Coord.X * HeightmapWorldExtent, Coord.Y * HeightmapWorldExtent);
+	return FBox2D(Min, Min + FVector2D(HeightmapWorldExtent, HeightmapWorldExtent));
+}
+
+bool USWGTerrainSubsystem::IsTileOnMap(const FIntPoint& Coord) const
+{
+	const float HalfMap = PlanetData.IsValid() ? PlanetData->Header.MapSize * 0.5f : 8192.0f;
+	const FBox2D Bounds = TileBounds(Coord);
+	return Bounds.Max.X > -HalfMap && Bounds.Min.X < HalfMap && Bounds.Max.Y > -HalfMap && Bounds.Min.Y < HalfMap;
+}
+
+bool USWGTerrainSubsystem::GetStreamingCenter(FVector2D& OutRawPosition) const
+{
+	const UWorld* World = GetWorld();
+	const APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
+	const APawn* Pawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+	if (Pawn)
+	{
+		const FVector Raw = SWGToRawSpace(Pawn->GetActorLocation());
+		OutRawPosition = FVector2D(Raw.X, Raw.Y);
+		return true;
+	}
+
+	OutRawPosition = SpawnRawPosition;
+	return true;
+}
+
+void USWGTerrainSubsystem::UpdateStreaming()
 {
 	check(IsInGameThread());
 
-	if (Holes.IsEmpty())
+	if (!bTerrainDataCached || !IsValid(TerrainMeshActor))
 	{
 		return;
 	}
 
-	FBox2D Affected(ForceInit);
-	for (const FSWGTerrainHole& Hole : Holes)
+	FVector2D Center;
+	GetStreamingCenter(Center);
+
+	// One tile ahead along the heading, so the ground the player is walking
+	// onto is requested before it comes into view. Standing still, the bias
+	// is zero and the ring is symmetric.
+	FVector2D AheadCenter = Center;
+	if (bHasLastStreamingCenter)
 	{
-		const FBox2D Bounds = Hole.GetWorldBounds();
-		Affected += Bounds.Min;
-		Affected += Bounds.Max;
-	}
-
-	TerrainHoles.Append(Holes);
-
-	// Holes change no heights, so this re-bake redoes work it needn't — but at
-	// ~13 ms on a worker that buys one code path instead of two.
-	InvalidateTilesOverlapping(Affected);
-	ProcessPendingTerrainRegeneration();
-}
-
-void USWGTerrainSubsystem::FlushPendingTerrainHoles()
-{
-	check(IsInGameThread());
-
-	if (TerrainHoles.IsEmpty())
-	{
-		return;
-	}
-
-	// Per hole rather than over their combined bounds, so two buildings at
-	// opposite ends of the zone don't dirty everything between them.
-	for (const FSWGTerrainHole& Hole : TerrainHoles)
-	{
-		InvalidateTilesOverlapping(Hole.GetWorldBounds());
-	}
-
-	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: applying %d terrain hole(s) registered during the terrain load (%d tile(s) dirtied)"),
-		TerrainHoles.Num(), PendingDirtyTiles.Num());
-
-	ProcessPendingTerrainRegeneration();
-}
-
-void USWGTerrainSubsystem::InvalidateTilesOverlapping(const FBox2D& Bounds)
-{
-	check(IsInGameThread());
-
-	for (int32 TileIndex = 0; TileIndex < TerrainTileHeightmaps.Num(); ++TileIndex)
-	{
-		if (GetTileBounds(TerrainTileHeightmaps[TileIndex]).Intersect(Bounds))
+		const FVector2D Heading = Center - LastStreamingCenter;
+		if (Heading.SizeSquared() > 1.0f)
 		{
-			PendingDirtyTiles.Add(TileIndex);
+			AheadCenter = Center + Heading.GetSafeNormal() * HeightmapWorldExtent;
 		}
 	}
-}
+	LastStreamingCenter = Center;
+	bHasLastStreamingCenter = true;
 
-FSWGTerrainTileBuild USWGTerrainSubsystem::BakeTerrainTile(const FSWGTerrainData& TerrainData, const FVector& RegionOrigin,
-	const FVector& GridOrigin, const TArray<FSWGTerrainHole>& Holes) const
-{
-	using namespace UE::Geometry;
+	const FIntPoint CenterTile = TileCoordAt(Center);
+	const FIntPoint AheadTile = TileCoordAt(AheadCenter);
 
-	FSWGTerrainTileBuild Build;
-	Build.Heightmap = BakeHeightmap(TerrainData, RegionOrigin);
-	BakeShaderWeights(TerrainData, Build.Heightmap);
+	const int32 LoadRadius = FMath::Max(0, CVarTerrainLoadRadius.GetValueOnGameThread());
+	const int32 UnloadRadius = FMath::Max(LoadRadius, CVarTerrainUnloadRadius.GetValueOnGameThread());
 
-	// Relative to the actor (GridOrigin), same coordinate this tile's own
-	// heights were baked in world-space against — no encoding/scale
-	// indirection at all, just a direct offset.
-	const FVector LocalOrigin = Build.Heightmap.Origin - GridOrigin;
-	// Dynamic-mesh UVs reach the GPU in a compact representation. Keeping
-	// absolute SWG world coordinates here loses fractional precision once a
-	// player is far from (0,0), turning detail textures into noisy mips.
-	// Rebase within this tile, but retain the tile origin's modulo so adjacent
-	// tiles still meet at the same world-space texture phase.
-	const FVector2f TerrainUVOrigin(
-		FMath::Fmod(Build.Heightmap.Origin.X, TerrainTextureRepeatWorldSize) / TerrainTextureRepeatWorldSize,
-		FMath::Fmod(Build.Heightmap.Origin.Y, TerrainTextureRepeatWorldSize) / TerrainTextureRepeatWorldSize);
-
-	// Only this tile's holes, so the per-quad tests stay proportional to what is
-	// near the tile rather than to every building in the zone.
-	const FBox2D TileBounds = GetTileBounds(Build.Heightmap);
-	const TArray<FSWGTerrainHole> TileHoles = Holes.FilterByPredicate(
-		[&TileBounds](const FSWGTerrainHole& Hole) { return Hole.GetWorldBounds().Intersect(TileBounds); });
-
-	Build.Mesh = MakeShared<FDynamicMesh3, ESPMode::ThreadSafe>();
-	BuildTerrainTileGeometry(*Build.Mesh, Build.Heightmap, HeightmapResolution, LocalOrigin, TerrainUVOrigin,
-		TileHoles, TerrainQuadSubdivisions);
-
-	return Build;
-}
-
-void USWGTerrainSubsystem::ApplyTerrainTileBuild(int32 TileIndex, FSWGTerrainTileBuild& Build)
-{
-	check(IsInGameThread());
-
-	if (!TerrainTileComponents.IsValidIndex(TileIndex) || !TerrainTileComponents[TileIndex] || !Build.Mesh.IsValid())
+	TSet<FIntPoint> Wanted;
+	for (const FIntPoint& Focus : { CenterTile, AheadTile })
 	{
-		return;
-	}
-
-	UDynamicMeshComponent* MeshComponent = TerrainTileComponents[TileIndex];
-	TerrainTileHeightmaps[TileIndex] = Build.Heightmap;
-
-	// The whole point of the split: the triangulation already exists, so this is
-	// a move rather than a per-vertex rebuild.
-	MeshComponent->SetMesh(MoveTemp(*Build.Mesh));
-	MeshComponent->SetMaterial(0, BuildTerrainTileMaterial(Build.Heightmap));
-
-	// Shape changed, so the cooked collision is stale. bOnlyIfPending=false since
-	// the flags haven't changed; bUseAsyncCooking keeps the cook off this thread.
-	MeshComponent->UpdateCollision(false);
-}
-
-void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(TArray<FSWGTerrainTileBuild>& Grid, const FVector& GridOrigin, float Spacing)
-{
-	using namespace UE::Geometry;
-
-	check(IsInGameThread());
-
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: no valid world to spawn terrain mesh in"));
-		return;
-	}
-
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	AActor* TerrainActor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform(FQuat::Identity, GridOrigin), SpawnParams);
-	if (!TerrainActor)
-	{
-		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: failed to spawn terrain mesh actor"));
-		return;
-	}
-
-	// A plain AActor has no root component at construction time, so SpawnActor's
-	// given transform (GridOrigin) has nothing to store itself in and silently
-	// no-ops. Set the location explicitly once the root actually exists.
-	USceneComponent* TerrainRoot = NewObject<USceneComponent>(TerrainActor, TEXT("TerrainRoot"));
-	TerrainActor->SetRootComponent(TerrainRoot);
-	TerrainRoot->RegisterComponent();
-	// GridOrigin is raw/native space (matches the .trn's own units, same as
-	// every position vertex placement below is computed against) — scale to
-	// final UE space right at this actor-placement boundary.
-	TerrainActor->SetActorLocation(SWGToUnrealSpace(GridOrigin));
-
-	// Zone travel re-enters here with a fresh actor; drop the previous zone's
-	// tile bookkeeping (and any regeneration queued against it) rather than
-	// letting stale indices point at destroyed components.
-	++TerrainGeneration;
-	TerrainMeshActor = TerrainActor;
-	TerrainGridOrigin = GridOrigin;
-	TerrainTileComponents.Reset();
-	TerrainTileHeightmaps.Reset();
-	QueuedTerrainLayers.Reset();
-	PendingDirtyTiles.Reset();
-
-	const int32 Resolution = HeightmapResolution;
-
-	for (int32 TileIndex = 0; TileIndex < Grid.Num(); ++TileIndex)
-	{
-		FSWGTerrainTileBuild& Build = Grid[TileIndex];
-		if (Build.Heightmap.Heights.Num() != Resolution * Resolution || !Build.Mesh.IsValid())
+		for (int32 OffsetY = -LoadRadius; OffsetY <= LoadRadius; ++OffsetY)
 		{
-			UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: terrain tile %d has %d samples (expected %d) or no mesh — skipping"),
-				TileIndex, Build.Heightmap.Heights.Num(), Resolution * Resolution);
+			for (int32 OffsetX = -LoadRadius; OffsetX <= LoadRadius; ++OffsetX)
+			{
+				const FIntPoint Coord = Focus + FIntPoint(OffsetX, OffsetY);
+				if (IsTileOnMap(Coord))
+				{
+					Wanted.Add(Coord);
+				}
+			}
+		}
+	}
+	Wanted.Append(InitialTiles);
+
+	for (const FIntPoint& Coord : Wanted)
+	{
+		if (!Tiles.Contains(Coord))
+		{
+			Tiles.Add(Coord).WantedEditVersion = EditVersion;
+			BakeQueue.Add(Coord);
+		}
+	}
+
+	TArray<FIntPoint> ToUnload;
+	for (const TPair<FIntPoint, FSWGTerrainTile>& Pair : Tiles)
+	{
+		const FIntPoint Delta = Pair.Key - CenterTile;
+		const int32 Distance = FMath::Max(FMath::Abs(Delta.X), FMath::Abs(Delta.Y));
+		if (Distance > UnloadRadius && !Wanted.Contains(Pair.Key))
+		{
+			ToUnload.Add(Pair.Key);
+		}
+	}
+	for (const FIntPoint& Coord : ToUnload)
+	{
+		UnloadTile(Coord);
+	}
+
+	// Static objects get a tighter ring than the ground: the server only
+	// sends network objects within ~192 m (ZoneServer::CLOSEOBJECTRANGE), so
+	// a distant city is scenery, and its hundreds of actors and meshes are
+	// the expensive part of a tile. Terrain keeps the horizon.
+	const int32 SnapshotLoadRadius = FMath::Clamp(CVarSnapshotLoadRadius.GetValueOnGameThread(), 0, LoadRadius);
+	const int32 SnapshotUnloadRadius = FMath::Max(SnapshotLoadRadius, CVarSnapshotUnloadRadius.GetValueOnGameThread());
+
+	for (TPair<FIntPoint, FSWGTerrainTile>& Pair : Tiles)
+	{
+		const FIntPoint Delta = Pair.Key - CenterTile;
+		const int32 Distance = FMath::Max(FMath::Abs(Delta.X), FMath::Abs(Delta.Y));
+		FSWGTerrainTile& Tile = Pair.Value;
+
+		if (Distance <= SnapshotLoadRadius && !Tile.bSnapshotSpawned && !Tile.bSnapshotResolveInFlight)
+		{
+			StartSnapshotResolve(Pair.Key);
+		}
+		else if (Distance > SnapshotUnloadRadius && Tile.bSnapshotSpawned)
+		{
+			const int32 ActorCount = Tile.SnapshotActors.Num();
+			DestroySnapshotActors(Tile);
+			if (ActorCount > 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: tile (%d,%d) %d static actor(s) unloaded (terrain kept)"), Pair.Key.X, Pair.Key.Y, ActorCount);
+			}
+		}
+	}
+
+	PumpBakeQueue();
+}
+
+void USWGTerrainSubsystem::StartSnapshotResolve(const FIntPoint& Coord)
+{
+	check(IsInGameThread());
+
+	FSWGTerrainTile* Tile = Tiles.Find(Coord);
+	if (!Tile || !SnapshotNodesByTile.Contains(Coord))
+	{
+		// Nothing authored here — mark it done so the sweep stops asking.
+		if (Tile)
+		{
+			Tile->bSnapshotSpawned = true;
+		}
+		return;
+	}
+
+	Tile->bSnapshotResolveInFlight = true;
+	const int32 Generation = TerrainGeneration;
+
+	// Template IFF reads and the form-tag table lookup are all the resolve
+	// does; both are already exercised off the game thread by the mesh path.
+	Async(EAsyncExecution::ThreadPool, [this, Coord, Generation]()
+		{
+			TArray<FSWGWorldSnapshotSpawnInfo> Objects = ResolveSnapshotObjectsForTile(Coord);
+
+			AsyncTask(ENamedThreads::GameThread, [this, Coord, Generation, Objects = MoveTemp(Objects)]() mutable
+				{
+					if (Generation != TerrainGeneration)
+					{
+						return;
+					}
+					FSWGTerrainTile* LandedTile = Tiles.Find(Coord);
+					if (!LandedTile)
+					{
+						return;
+					}
+					LandedTile->bSnapshotResolveInFlight = false;
+
+					// Walked away while this resolved — let the next sweep ask again if needed.
+					FVector2D Center;
+					GetStreamingCenter(Center);
+					const FIntPoint Delta = Coord - TileCoordAt(Center);
+					if (FMath::Max(FMath::Abs(Delta.X), FMath::Abs(Delta.Y)) > CVarSnapshotUnloadRadius.GetValueOnGameThread())
+					{
+						return;
+					}
+
+					if (!LandedTile->bSnapshotSpawned)
+					{
+						QueueSnapshotObjectsForTile(Coord, *LandedTile, MoveTemp(Objects));
+					}
+				});
+		});
+}
+
+void USWGTerrainSubsystem::PumpBakeQueue()
+{
+	check(IsInGameThread());
+
+	if (BakeQueue.IsEmpty() || BakesInFlight >= MaxBakesInFlight)
+	{
+		return;
+	}
+
+	FVector2D Center;
+	GetStreamingCenter(Center);
+	const FIntPoint CenterTile = TileCoordAt(Center);
+
+	TArray<FIntPoint> Ordered = BakeQueue.Array();
+	Ordered.Sort([&CenterTile](const FIntPoint& Left, const FIntPoint& Right)
+		{
+			const FIntPoint LeftDelta = Left - CenterTile;
+			const FIntPoint RightDelta = Right - CenterTile;
+			return LeftDelta.X * LeftDelta.X + LeftDelta.Y * LeftDelta.Y < RightDelta.X * RightDelta.X + RightDelta.Y * RightDelta.Y;
+		});
+
+	for (const FIntPoint& Coord : Ordered)
+	{
+		if (BakesInFlight >= MaxBakesInFlight)
+		{
+			break;
+		}
+
+		FSWGTerrainTile* Tile = Tiles.Find(Coord);
+		BakeQueue.Remove(Coord);
+		if (!Tile || Tile->bBakeInFlight)
+		{
 			continue;
 		}
 
-		UDynamicMeshComponent* MeshComponent = NewObject<UDynamicMeshComponent>(TerrainActor, NAME_None, RF_Transactional);
-		MeshComponent->SetupAttachment(TerrainRoot);
+		StartTileBake(Coord);
+	}
+}
+
+void USWGTerrainSubsystem::StartTileBake(const FIntPoint& Coord)
+{
+	check(IsInGameThread());
+
+	FSWGTerrainTile* Tile = Tiles.Find(Coord);
+	if (!Tile)
+	{
+		return;
+	}
+
+	Tile->bBakeInFlight = true;
+	++BakesInFlight;
+
+	const int32 Generation = TerrainGeneration;
+	FSWGTerrainBakeSource Source = MakeBakeSource();
+	const int32 BakedVersion = Source.EditVersion;
+
+	Async(EAsyncExecution::ThreadPool, [this, Coord, Generation, BakedVersion, Source = MoveTemp(Source)]()
+		{
+			FSWGTerrainTileBuild Build = BakeTerrainTile(Source, Coord);
+
+			AsyncTask(ENamedThreads::GameThread, [this, Coord, Generation, BakedVersion, Build = MoveTemp(Build)]() mutable
+				{
+					OnTileBakeFinished(Coord, Generation, BakedVersion, Build);
+				});
+		});
+}
+
+void USWGTerrainSubsystem::OnTileBakeFinished(const FIntPoint& Coord, int32 Generation, int32 BakedVersion, FSWGTerrainTileBuild& Build)
+{
+	check(IsInGameThread());
+
+	--BakesInFlight;
+
+	if (Generation != TerrainGeneration)
+	{
+		// Zone changed while this baked — nothing to apply it to.
+		PumpBakeQueue();
+		return;
+	}
+
+	FSWGTerrainTile* Tile = Tiles.Find(Coord);
+	if (!Tile)
+	{
+		// Unloaded while baking.
+		PumpBakeQueue();
+		return;
+	}
+
+	Tile->bBakeInFlight = false;
+
+	// Show it even if stale: a slightly-old surface beats a hole while the
+	// re-bake runs. Never regress though — a stale result must not replace a
+	// newer one that landed first.
+	if (Tile->LiveEditVersion <= BakedVersion)
+	{
+		ApplyTerrainTileBuild(Coord, *Tile, Build);
+		Tile->LiveEditVersion = BakedVersion;
+	}
+
+	if (Tile->WantedEditVersion > BakedVersion)
+	{
+		BakeQueue.Add(Coord);
+	}
+
+	if (!bInitialTilesReported && !InitialTiles.IsEmpty())
+	{
+		bool bAllLive = true;
+		for (const FIntPoint& Initial : InitialTiles)
+		{
+			const FSWGTerrainTile* InitialTile = Tiles.Find(Initial);
+			if (!InitialTile || InitialTile->LiveEditVersion < 0)
+			{
+				bAllLive = false;
+				break;
+			}
+		}
+		if (bAllLive)
+		{
+			bInitialTilesReported = true;
+			UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %d spawn tile(s) live — terrain ready"), InitialTiles.Num());
+			OnTerrainReady.Broadcast();
+		}
+	}
+
+	PumpBakeQueue();
+}
+
+void USWGTerrainSubsystem::UnloadTile(const FIntPoint& Coord)
+{
+	check(IsInGameThread());
+
+	FSWGTerrainTile* Tile = Tiles.Find(Coord);
+	if (!Tile)
+	{
+		return;
+	}
+
+	DestroySnapshotActors(*Tile);
+
+	if (UDynamicMeshComponent* Component = Tile->Component)
+	{
+		// Kept registered and attached, just emptied: the next tile to load
+		// takes it over in AcquireTileComponent rather than paying for a new one.
+		Component->SetMesh(UE::Geometry::FDynamicMesh3());
+		Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Component->SetVisibility(false);
+		PooledTileComponents.Add(Component);
+	}
+
+	BakeQueue.Remove(Coord);
+	// An in-flight bake finds no tile when it lands and is dropped.
+	Tiles.Remove(Coord);
+
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: unloaded tile (%d,%d) — %d live, %d pooled"), Coord.X, Coord.Y, Tiles.Num(), PooledTileComponents.Num());
+}
+
+UDynamicMeshComponent* USWGTerrainSubsystem::AcquireTileComponent(const FIntPoint& Coord)
+{
+	check(IsInGameThread());
+
+	if (!IsValid(TerrainMeshActor))
+	{
+		return nullptr;
+	}
+
+	UDynamicMeshComponent* MeshComponent = nullptr;
+	if (!PooledTileComponents.IsEmpty())
+	{
+		MeshComponent = PooledTileComponents.Pop();
+		MeshComponent->SetVisibility(true);
+		MeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	}
+	else
+	{
+		MeshComponent = NewObject<UDynamicMeshComponent>(TerrainMeshActor, NAME_None, RF_Transactional);
+		MeshComponent->SetupAttachment(TerrainMeshActor->GetRootComponent());
 
 		// Cooking collision synchronously is most of what made a tile cost
 		// hundreds of ms of game thread, and nothing needs it the instant it appears.
@@ -1995,27 +2412,81 @@ void USWGTerrainSubsystem::SpawnDynamicMeshTerrainGrid(TArray<FSWGTerrainTileBui
 		// color still uploads to the GPU with ColorMode at its default None,
 		// which is all M_SWGTerrainBlend's VertexColor node needs.
 
-		// Terrain was previously non-collidable at all (see world-object-plan.html
-		// "Collision-data research pass") — every character fell forever through
-		// empty space before its mesh loaded, since there was nothing to land on
-		// (worked around, not fixed, by forcing MOVE_Flying until a real position
-		// update arrived). Use the terrain's own baked triangle mesh directly as
-		// its collision shape (complex-as-simple) — it's already a heightfield,
-		// there's no cheaper "simple" approximation worth building separately.
+		// The terrain's own baked triangle mesh is its collision shape
+		// (complex-as-simple) — it's already a heightfield, there's no cheaper
+		// "simple" approximation worth building separately.
 		MeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 		MeshComponent->SetCollisionObjectType(ECC_WorldStatic);
 		MeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
 		MeshComponent->RegisterComponent();
 		MeshComponent->EnableComplexAsSimpleCollision();
-
-		// Retained so ApplyObjectTerrainModification can re-bake and rewrite an
-		// individual tile later without reloading the zone. Registered before
-		// the mesh goes in, since ApplyTerrainTileBuild addresses tiles by index.
-		TerrainTileComponents.Add(MeshComponent);
-		TerrainTileHeightmaps.Add(Build.Heightmap);
-
-		ApplyTerrainTileBuild(TerrainTileComponents.Num() - 1, Build);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: spawned %d dynamic mesh terrain tile(s) at origin %s"), Grid.Num(), *GridOrigin.ToString());
+	// Raw-space tile origin, scaled to UE space at this placement boundary;
+	// the baked vertices are local to it.
+	MeshComponent->SetRelativeLocation(SWGToUnrealSpace(TileOrigin(Coord)));
+	return MeshComponent;
+}
+
+FSWGTerrainTileBuild USWGTerrainSubsystem::BakeTerrainTile(const FSWGTerrainBakeSource& Source, const FIntPoint& Coord) const
+{
+	using namespace UE::Geometry;
+
+	const FVector RegionOrigin = TileOrigin(Coord);
+
+	FSWGTerrainTileBuild Build;
+	Build.Heightmap = BakeHeightmap(Source, RegionOrigin);
+	BakeShaderWeights(Source, Build.Heightmap);
+
+	// Dynamic-mesh UVs reach the GPU in a compact representation. Keeping
+	// absolute SWG world coordinates here loses fractional precision once a
+	// player is far from (0,0), turning detail textures into noisy mips.
+	// Rebase within this tile, but retain the tile origin's modulo so adjacent
+	// tiles still meet at the same world-space texture phase.
+	const FVector2f TerrainUVOrigin(
+		FMath::Fmod(Build.Heightmap.Origin.X, TerrainTextureRepeatWorldSize) / TerrainTextureRepeatWorldSize,
+		FMath::Fmod(Build.Heightmap.Origin.Y, TerrainTextureRepeatWorldSize) / TerrainTextureRepeatWorldSize);
+
+	// Only this tile's holes, so the per-quad tests stay proportional to what is
+	// near the tile rather than to every building in the zone.
+	const FBox2D Bounds = GetTileBounds(Build.Heightmap);
+	const TArray<FSWGTerrainHole> TileHoles = Source.Holes.FilterByPredicate(
+		[&Bounds](const FSWGTerrainHole& Hole) { return Hole.GetWorldBounds().Intersect(Bounds); });
+
+	// Vertices local to the tile's own component (see AcquireTileComponent).
+	Build.Mesh = MakeShared<FDynamicMesh3, ESPMode::ThreadSafe>();
+	BuildTerrainTileGeometry(*Build.Mesh, Build.Heightmap, HeightmapResolution, FVector::ZeroVector, TerrainUVOrigin,
+		TileHoles, TerrainQuadSubdivisions);
+
+	return Build;
+}
+
+void USWGTerrainSubsystem::ApplyTerrainTileBuild(const FIntPoint& Coord, FSWGTerrainTile& Tile, FSWGTerrainTileBuild& Build)
+{
+	check(IsInGameThread());
+
+	if (!Build.Mesh.IsValid())
+	{
+		return;
+	}
+
+	if (!Tile.Component)
+	{
+		Tile.Component = AcquireTileComponent(Coord);
+		if (!Tile.Component)
+		{
+			return;
+		}
+	}
+
+	Tile.Heightmap = Build.Heightmap;
+
+	// The whole point of the split: the triangulation already exists, so this is
+	// a move rather than a per-vertex rebuild.
+	Tile.Component->SetMesh(MoveTemp(*Build.Mesh));
+	Tile.Component->SetMaterial(0, BuildTerrainTileMaterial(Build.Heightmap));
+
+	// Shape changed, so the cooked collision is stale. bOnlyIfPending=false since
+	// the flags haven't changed; bUseAsyncCooking keeps the cook off this thread.
+	Tile.Component->UpdateCollision(false);
 }

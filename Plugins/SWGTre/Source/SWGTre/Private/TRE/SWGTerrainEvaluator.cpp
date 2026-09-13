@@ -625,11 +625,18 @@ float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X,
 	return TransformValue;
 }
 
-float FSWGTerrainEvaluator::GetHeight(const FSWGTerrainData& Data, float X, float Y)
+float FSWGTerrainEvaluator::GetHeight(const FSWGTerrainData& Data, float X, float Y, TArrayView<const FSWGTerrainLayer> ExtraLayers)
 {
 	float Height = 0.0f;
 
 	for (const FSWGTerrainLayer& Layer : Data.TopLevelLayers)
+	{
+		if (Layer.bEnabled)
+		{
+			ProcessLayer(Layer, X, Y, Height, 1.0f, Data.MapGroup);
+		}
+	}
+	for (const FSWGTerrainLayer& Layer : ExtraLayers)
 	{
 		if (Layer.bEnabled)
 		{
@@ -780,7 +787,7 @@ float FSWGTerrainEvaluator::ProcessShaderLayer(const FSWGTerrainLayer& Layer, fl
 	return TransformValue;
 }
 
-void FSWGTerrainEvaluator::GetShaderWeights(const FSWGTerrainData& Data, float X, float Y, TMap<int32, float>& OutWeights)
+void FSWGTerrainEvaluator::GetShaderWeights(const FSWGTerrainData& Data, float X, float Y, TMap<int32, float>& OutWeights, TArrayView<const FSWGTerrainLayer> ExtraLayers)
 {
 	// Local accumulator, starting at 0 like Core3's own per-call baseValue —
 	// FilterHeight checks during this walk see only what this same walk's
@@ -789,6 +796,13 @@ void FSWGTerrainEvaluator::GetShaderWeights(const FSWGTerrainData& Data, float X
 	float Height = 0.0f;
 
 	for (const FSWGTerrainLayer& Layer : Data.TopLevelLayers)
+	{
+		if (Layer.bEnabled)
+		{
+			ProcessShaderLayer(Layer, X, Y, Height, 1.0f, Data.MapGroup, OutWeights);
+		}
+	}
+	for (const FSWGTerrainLayer& Layer : ExtraLayers)
 	{
 		if (Layer.bEnabled)
 		{

@@ -15,8 +15,13 @@
 class SWGTRE_API FSWGTerrainEvaluator
 {
 public:
-	/** Confirmed port of ProceduralTerrainAppearance::getHeight(x,y). */
-	static float GetHeight(const FSWGTerrainData& Data, float X, float Y);
+	/**
+	 * Confirmed port of ProceduralTerrainAppearance::getHeight(x,y).
+	 * ExtraLayers are walked after Data.TopLevelLayers as if appended to them —
+	 * runtime object modifications (building pads) live there so the parsed
+	 * planet data can stay immutable and shared across bake threads.
+	 */
+	static float GetHeight(const FSWGTerrainData& Data, float X, float Y, TArrayView<const FSWGTerrainLayer> ExtraLayers = {});
 
 	/**
 	 * Same layer-tree walk as GetHeight (identical boundary/filter/feathering
@@ -30,7 +35,7 @@ public:
 	 * implementation for these two affector types to port, since shader
 	 * painting was purely a client rendering concern).
 	 */
-	static void GetShaderWeights(const FSWGTerrainData& Data, float X, float Y, TMap<int32, float>& OutWeights);
+	static void GetShaderWeights(const FSWGTerrainData& Data, float X, float Y, TMap<int32, float>& OutWeights, TArrayView<const FSWGTerrainLayer> ExtraLayers = {});
 
 	/** Temporary diagnostic: when enabled, GetHeight/ProcessLayer log every layer's name, TransformValue, and Height delta for calls at (X,Y) (within a small epsilon). */
 	static void SetDebugTraceTarget(float X, float Y, bool bEnable);

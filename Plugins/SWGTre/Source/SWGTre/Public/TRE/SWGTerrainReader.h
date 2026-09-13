@@ -194,8 +194,73 @@ struct FSWGShaderFamily
 	TArray<FString> LayerNames;
 };
 
+/**
+ * PTAT > <version> > DATA — the planet-wide constants. Port of the head of
+ * Core3's ProceduralTerrainAppearance::parseFromIffStream; every shipped
+ * planet reads size 16384, chunk 8, tilesPerChunk 2 (a 2 m pole spacing).
+ * The flora/radial blocks that follow are the retail client's own vegetation
+ * streaming radii and are parsed for when that work arrives.
+ */
+struct FSWGTerrainHeader
+{
+	/** Playable extent along each axis in raw units — the map spans +/- MapSize/2. */
+	float MapSize = 16384.0f;
+
+	/** Retail's smallest generation chunk, and the unit larger LOD chunks are powers of two of. */
+	float ChunkSize = 8.0f;
+	uint32 TilesPerChunk = 2;
+
+	/** Core3's getDistanceBetweenPoles — the finest vertex spacing retail rendered. */
+	float GetPoleSpacing() const { return TilesPerChunk > 0 ? ChunkSize / (TilesPerChunk * 2.0f) : ChunkSize; }
+
+	bool bUseGlobalWaterTable = false;
+	float GlobalWaterTableHeight = 0.0f;
+	float GlobalWaterTableShaderSize = 0.0f;
+	FString GlobalWaterTableShader;
+
+	float TimeCycle = 0.0f;
+
+	/**
+	 * v0013 only (dev/test maps — every shipped planet is v0014). Four
+	 * (shader name, size) pairs in the same shape as the global water table's
+	 * shader + size, then a flag and a name. Core3 discards them; every v0013
+	 * file in the archives holds empty names with 0.5/0.7/0.5/0.7, 0, "" —
+	 * so their exact meaning is unconfirmed and nothing reads them yet.
+	 */
+	struct FLegacyV13
+	{
+		TArray<FString> ShaderNames;
+		TArray<float> ShaderSizes;
+		uint32 Flag = 0;
+		FString Name;
+	};
+	TOptional<FLegacyV13> LegacyV13;
+
+	/**
+	 * One vegetation tier's streaming parameters, as retail's client used them:
+	 * flora is placed per TileSize-metre tile (plus TileBorder of overlap so
+	 * neighbours don't pop at the seam), from a deterministic RNG seeded by
+	 * Seed and the tile coordinate, drawn between Min and MaxDistance.
+	 */
+	struct FVegetationTier
+	{
+		float MinDistance = 0.0f;
+		float MaxDistance = 0.0f;
+		float TileSize = 0.0f;
+		float TileBorder = 0.0f;
+		uint32 Seed = 0;
+	};
+
+	FVegetationTier FloraCollidable;
+	FVegetationTier FloraNonCollidable;
+	FVegetationTier RadialNear;
+	FVegetationTier RadialFar;
+};
+
 struct FSWGTerrainData
 {
+	FSWGTerrainHeader Header;
+
 	/** Top-level layers, in file order — either a single root LAYR or LYRS's children. */
 	TArray<FSWGTerrainLayer> TopLevelLayers;
 
@@ -249,6 +314,9 @@ public:
 	static bool ReadLayerFile(const FSWGIffReader& Reader, FSWGTerrainData& OutData);
 
 private:
+	/** PTAT > <version> > DATA — see FSWGTerrainHeader. Skips the v0013-only block and stops cleanly on a short chunk. */
+	static bool ReadHeader(const FSWGIffReader& Reader, const FSWGIffChunk& PtatVersionForm, FSWGTerrainHeader& OutHeader);
+
 	static FString ReadNullTerminatedStringAt(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk, int32 Offset);
 
 	/** FORM IHDR > FORM 0001 > DATA[int32 enabled][string name]. Shared by Layer, every Boundary, every Affector. */

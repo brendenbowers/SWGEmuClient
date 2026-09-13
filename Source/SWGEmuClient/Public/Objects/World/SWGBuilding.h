@@ -99,6 +99,9 @@ public:
 	void LoadRoom(int32 CellIndex);
 	void UnloadRoom(int32 CellIndex);
 
+	/** Every .ws room currently open — called before the building itself is streamed out. */
+	void UnloadAllRooms();
+
 	/** Number of rooms in the POB, cell 0 (the exterior) included. */
 	int32 GetRoomCount() const { return PortalData.Cells.Num(); }
 

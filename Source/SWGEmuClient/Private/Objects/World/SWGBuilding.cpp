@@ -263,6 +263,23 @@ void ASWGBuilding::LoadRoom(int32 CellIndex)
 	}
 }
 
+void ASWGBuilding::UnloadAllRooms()
+{
+	// Collect first: UnloadRoom edits StreamedCells.
+	TArray<int32> LoadedCellIndices;
+	for (const TWeakObjectPtr<ASWGCell>& CellWeak : StreamedCells)
+	{
+		if (const ASWGCell* Cell = CellWeak.Get())
+		{
+			LoadedCellIndices.AddUnique(Cell->CellNumber);
+		}
+	}
+	for (const int32 CellIndex : LoadedCellIndices)
+	{
+		UnloadRoom(CellIndex);
+	}
+}
+
 void ASWGBuilding::UnloadRoom(int32 CellIndex)
 {
 	UGameInstance* GameInstance = GetGameInstance();

@@ -41,9 +41,9 @@ public:
 
 	int32 GetPosition() { return Position; }
 
-	bool Skip(int32 Skip) 
+	bool Skip(int32 Skip)
 	{
-		if (Position + Skip >= Chunk.DataSize)
+		if (!CanRead(Skip))
 		{
 			return false;
 		}
