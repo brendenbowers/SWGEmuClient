@@ -877,6 +877,18 @@ void FSWGSkeletalAnimationPipeline::DrainCompletedSkeletalMeshBuilds(int32 MaxTo
 			continue;
 		}
 
+		// RequestGeneratedSkeletalMesh's cache check is LoadObject, so a second
+		// request for the same appearance made while the first was still
+		// building gets built too. Finalizing it would NewObject over the
+		// first mesh — destroying it under everyone already holding it — so
+		// hand out the one that landed first instead.
+		const FString AssetName = FPackageName::GetShortName(Result.PackagePath);
+		if (USkeletalMesh* AlreadyBuilt = FindObject<USkeletalMesh>(nullptr, *FString::Printf(TEXT("%s.%s"), *Result.PackagePath, *AssetName)))
+		{
+			Result.Promise->SetValue(AlreadyBuilt);
+			continue;
+		}
+
 		// Grabbed before the MoveTemp below hands BuildData's guts off to
 		// FinalizeSkeletalMesh — plain data, cheap to copy, needed further
 		// down to attach USWGMeshOcclusionZoneData.
@@ -1059,6 +1071,14 @@ void FSWGSkeletalAnimationPipeline::DrainCompletedAnimSequenceBuilds(int32 MaxTo
 		{
 			UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalAnimationPipeline: failed to build anim sequence data '%s' from '%s'"), *Result.PackagePath, *Result.ClipPath);
 			Result.Promise->SetValue(nullptr);
+			continue;
+		}
+
+		// Same duplicate-build race as DrainCompletedSkeletalMeshBuilds.
+		const FString AssetName = FPackageName::GetShortName(Result.PackagePath);
+		if (UAnimSequence* AlreadyBuilt = FindObject<UAnimSequence>(nullptr, *FString::Printf(TEXT("%s.%s"), *Result.PackagePath, *AssetName)))
+		{
+			Result.Promise->SetValue(AlreadyBuilt);
 			continue;
 		}
 

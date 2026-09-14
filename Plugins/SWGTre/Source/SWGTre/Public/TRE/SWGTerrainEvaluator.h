@@ -37,9 +37,6 @@ public:
 	 */
 	static void GetShaderWeights(const FSWGTerrainData& Data, float X, float Y, TMap<int32, float>& OutWeights, TArrayView<const FSWGTerrainLayer> ExtraLayers = {});
 
-	/** Temporary diagnostic: when enabled, GetHeight/ProcessLayer log every layer's name, TransformValue, and Height delta for calls at (X,Y) (within a small epsilon). */
-	static void SetDebugTraceTarget(float X, float Y, bool bEnable);
-
 private:
 	/** Confirmed port of ProceduralTerrainAppearance::calculateFeathering. */
 	static float CalculateFeathering(float Value, int32 FeatheringType);

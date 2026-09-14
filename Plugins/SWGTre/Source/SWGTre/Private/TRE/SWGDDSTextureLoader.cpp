@@ -237,7 +237,14 @@ UTexture2D* FSWGDDSTextureLoader::LoadTexture2D(const TArray<uint8>& DDSBytes, c
 	// uninitialized) mip 0 to fill in ourselves, and skips that internal call,
 	// so there's exactly one UpdateResource() for this texture (at the bottom
 	// of this function), after every mip is in place.
-	UTexture2D* Texture = UTexture2D::CreateTransient(Mip0.Width, Mip0.Height, PixelFormat, TextureName);
+	//
+	// Unique name, not the bare virtual path: several subsystems cache their
+	// own copy of a texture, and NewObject with a name already in use in the
+	// transient package replaces the existing object — leaving every material
+	// that held the first copy sampling a gutted texture (terrain went black
+	// wherever a streamed-in prop shared its concrete/cobblestone texture).
+	const FName UniqueName = MakeUniqueObjectName(GetTransientPackage(), UTexture2D::StaticClass(), TextureName);
+	UTexture2D* Texture = UTexture2D::CreateTransient(Mip0.Width, Mip0.Height, PixelFormat, UniqueName);
 
 	if (!Texture)
 	{

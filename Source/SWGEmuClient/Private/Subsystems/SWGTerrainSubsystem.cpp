@@ -31,7 +31,6 @@
 #include "Components/StaticMeshComponent.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
-#include "Engine/StaticMeshActor.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/SkyLight.h"
@@ -250,104 +249,6 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	TreSubsystem = Cast<USWGTreSubsystem>(Collection.InitializeDependency(USWGTreSubsystem::StaticClass()));
 	MeshGenerator = Cast<USWGMeshGeneratorSubsystem>(Collection.InitializeDependency(USWGMeshGeneratorSubsystem::StaticClass()));
-
-	static FAutoConsoleCommand TraceHeightCmd(
-		TEXT("swg.TraceHeight"),
-		TEXT("swg.TraceHeight <x> <y> — logs every layer that changes height at that coordinate."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 2)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.TraceHeight <x> <y>"));
-					return;
-				}
-
-				const float X = FCString::Atof(*Args[0]);
-				const float Y = FCString::Atof(*Args[1]);
-
-				FSWGTerrainEvaluator::SetDebugTraceTarget(X, Y, true);
-				const float Z = GetHeightAt(X, Y);
-				FSWGTerrainEvaluator::SetDebugTraceTarget(0.0f, 0.0f, false);
-
-				UE_LOG(LogTemp, Warning, TEXT("HEIGHTTRACE final x=%.2f y=%.2f height=%.4f"), X, Y, Z);
-			}));
-
-	// Diagnostic: isolates whether the runtime DDS->UTexture2D bridge produces a
-	// renderable texture, decoupled from mesh-generator/shader-parsing logic —
-	// loads one texture and displays it on a plane in front of the player.
-	static FAutoConsoleCommand TestDDSTextureCmd(
-		TEXT("swg.TestDDSTexture"),
-		TEXT("swg.TestDDSTexture <texture virtual path> — loads a .dds directly and displays it on a plane in front of the player."),
-		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
-			{
-				if (Args.Num() < 1)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("Usage: swg.TestDDSTexture <texture virtual path>"));
-					return;
-				}
-
-				if (!TreSubsystem || !TreSubsystem->FileExists(Args[0]))
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: %s not found in TRE"), *Args[0]);
-					return;
-				}
-
-				const TArray<uint8> Bytes = TreSubsystem->ExtractFile(Args[0]);
-				UTexture2D* Texture = FSWGDDSTextureLoader::LoadTexture2D(Bytes, FName(*Args[0]), /*bSRGB=*/true);
-				if (!Texture)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: FSWGDDSTextureLoader failed for %s"), *Args[0]);
-					return;
-				}
-
-				UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: %s decoded — SizeX=%d SizeY=%d PixelFormat=%d SRGB=%d HasResource=%d"),
-					*Args[0], Texture->GetSizeX(), Texture->GetSizeY(), (int32)Texture->GetPixelFormat(),
-					Texture->SRGB ? 1 : 0, Texture->GetResource() != nullptr ? 1 : 0);
-
-				UWorld* World = GetWorld();
-				APawn* Pawn = World ? World->GetFirstPlayerController()->GetPawn() : nullptr;
-				if (!World || !Pawn)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: no world/pawn to spawn the test plane near"));
-					return;
-				}
-
-				UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGObjectTextured.M_SWGObjectTextured"));
-				if (!Parent)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: M_SWGObjectTextured not found"));
-					return;
-				}
-				UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Parent, this);
-				MID->SetTextureParameterValue(TEXT("Diffuse"), Texture);
-
-				UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
-				if (!PlaneMesh)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: /Engine/BasicShapes/Plane not found"));
-					return;
-				}
-
-				const FVector SpawnLocation = Pawn->GetActorLocation() + Pawn->GetActorForwardVector() * 300.0f + FVector(0, 0, 100.0f);
-				const FRotator SpawnRotation = (-Pawn->GetActorForwardVector()).Rotation() + FRotator(90.0f, 0.0f, 0.0f);
-
-				FActorSpawnParameters SpawnParams;
-				SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-				AStaticMeshActor* PlaneActor = World->SpawnActor<AStaticMeshActor>(SpawnLocation, SpawnRotation, SpawnParams);
-				if (!PlaneActor)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: failed to spawn test plane actor"));
-					return;
-				}
-
-				UStaticMeshComponent* MeshComponent = PlaneActor->GetStaticMeshComponent();
-				MeshComponent->SetMobility(EComponentMobility::Movable);
-				MeshComponent->SetStaticMesh(PlaneMesh);
-				MeshComponent->SetWorldScale3D(FVector(3.0f, 3.0f, 1.0f));
-				MeshComponent->SetMaterial(0, MID);
-
-				UE_LOG(LogTemp, Warning, TEXT("swg.TestDDSTexture: spawned test plane at %s"), *SpawnLocation.ToString());
-			}));
 }
 
 void USWGTerrainSubsystem::Deinitialize()
@@ -1880,13 +1781,13 @@ namespace
 			FSWGTerrainVertex Ids;
 
 			// Everything feeding this (LocalOrigin, Spacing, baked Heights) is
-			// raw/native space, matching the .trn's own units — SWGWorldScale
-			// converts to final UE units right here, at the actual
+			// raw space, matching the .trn's own units — SWGToUnrealSpace
+			// rotates and scales into final UE units right here, at the actual
 			// vertex-placement boundary.
-			const FVector3d Pos = FVector3d(
+			const FVector3d Pos = SWGToUnrealSpace(FVector(
 				LocalOrigin.X + Col * Heightmap.Spacing,
 				LocalOrigin.Y + Row * Heightmap.Spacing,
-				Height) * SWGWorldScale;
+				Height));
 
 			Ids.Vertex = Mesh.AppendVertex(Pos);
 			Ids.Normal = Normals->AppendElement(FVector3f(0, 0, 1));
@@ -1955,10 +1856,12 @@ namespace
 				const bool bTouchesHole = Holes.ContainsByPredicate(
 					[&QuadBounds](const FSWGTerrainHole& Hole) { return Hole.GetWorldBounds().Intersect(QuadBounds); });
 
+				// Col runs along UE +Y and Row along UE +X (raw x east / y
+				// north -> UE Y / X), so this order keeps the faces pointing up.
 				if (!bTouchesHole)
 				{
-					AppendTriangle(GridSamples[I00], GridSamples[I01], GridSamples[I10]);
-					AppendTriangle(GridSamples[I10], GridSamples[I01], GridSamples[I11]);
+					AppendTriangle(GridSamples[I00], GridSamples[I10], GridSamples[I01]);
+					AppendTriangle(GridSamples[I10], GridSamples[I11], GridSamples[I01]);
 					continue;
 				}
 
@@ -2003,8 +1906,8 @@ namespace
 						const int32 S01 = (SubRow + 1) * (N + 1) + SubCol;
 						const int32 S11 = (SubRow + 1) * (N + 1) + (SubCol + 1);
 
-						AppendTriangle(Sub[S00], Sub[S01], Sub[S10]);
-						AppendTriangle(Sub[S10], Sub[S01], Sub[S11]);
+						AppendTriangle(Sub[S00], Sub[S10], Sub[S01]);
+						AppendTriangle(Sub[S10], Sub[S11], Sub[S01]);
 					}
 				}
 			}

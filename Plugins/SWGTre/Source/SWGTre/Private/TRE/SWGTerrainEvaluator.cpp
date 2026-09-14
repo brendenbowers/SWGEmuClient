@@ -1,24 +1,5 @@
 #include "TRE/SWGTerrainEvaluator.h"
 
-namespace
-{
-	bool GTraceEnabled = false;
-	float GTraceX = 0.0f;
-	float GTraceY = 0.0f;
-
-	bool IsTraceTarget(float X, float Y)
-	{
-		return GTraceEnabled && FMath::IsNearlyEqual(X, GTraceX, 0.01f) && FMath::IsNearlyEqual(Y, GTraceY, 0.01f);
-	}
-}
-
-void FSWGTerrainEvaluator::SetDebugTraceTarget(float X, float Y, bool bEnable)
-{
-	GTraceEnabled = bEnable;
-	GTraceX = X;
-	GTraceY = Y;
-}
-
 float FSWGTerrainEvaluator::CalculateFeathering(float Value, int32 FeatheringType)
 {
 	switch (FeatheringType)
@@ -527,9 +508,6 @@ void FSWGTerrainEvaluator::FindNearestRoadHeight(const FSWGTerrainRoadSegment& S
 
 float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup)
 {
-	const bool bTrace = IsTraceTarget(X, Y);
-	const float HeightBeforeLayer = Height;
-
 	float TransformValue = 0.0f;
 	bool bHasEnabledBoundary = false;
 
@@ -555,12 +533,6 @@ float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X,
 		TransformValue = 1.0f - TransformValue;
 	}
 
-	if (bTrace)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("HEIGHTTRACE ENTER layer='%s' afterBoundaries transformValue=%.4f hasEnabledBoundary=%d numFilters=%d numAffectors=%d numChildren=%d"),
-			*Layer.Name, TransformValue, bHasEnabledBoundary ? 1 : 0, Layer.Filters.Num(), Layer.Affectors.Num(), Layer.Children.Num());
-	}
-
 	if (TransformValue != 0.0f)
 	{
 		// Confirmed port of processTerrain's filter step: filters can only
@@ -576,14 +548,7 @@ float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X,
 
 			float Result = EvaluateFilter(Filter, X, Y, Height, MapGroup);
 			Result = CalculateFeathering(Result, Filter.FeatheringType);
-			const float PrevTransformValue = TransformValue;
 			TransformValue = FMath::Min(TransformValue, Result);
-
-			if (bTrace)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("HEIGHTTRACE layer='%s' filterType=%d rawResult=%.4f transformValue %.4f -> %.4f"),
-					*Layer.Name, (int32)Filter.Type, Result, PrevTransformValue, TransformValue);
-			}
 
 			if (TransformValue == 0.0f) break;
 		}
@@ -599,14 +564,7 @@ float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X,
 		for (const FSWGTerrainAffector& Affector : Layer.Affectors)
 		{
 			if (!Affector.bEnabled) continue;
-			const float HeightBeforeAffector = Height;
 			ApplyAffector(Affector, X, Y, TransformValue * ParentTransform, Height, MapGroup);
-
-			if (bTrace && Height != HeightBeforeAffector)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("HEIGHTTRACE layer='%s' affectorType=%d height %.4f -> %.4f (transform=%.4f parentTransform=%.4f)"),
-					*Layer.Name, (int32)Affector.Type, HeightBeforeAffector, Height, TransformValue, ParentTransform);
-			}
 		}
 
 		for (const FSWGTerrainLayer& Child : Layer.Children)
@@ -614,12 +572,6 @@ float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X,
 			if (!Child.bEnabled) continue;
 			ProcessLayer(Child, X, Y, Height, ParentTransform * TransformValue, MapGroup);
 		}
-	}
-
-	if (bTrace && Height != HeightBeforeLayer)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("HEIGHTTRACE layer='%s' TOTAL height %.4f -> %.4f (transformValue=%.4f hasEnabledBoundary=%d)"),
-			*Layer.Name, HeightBeforeLayer, Height, TransformValue, bHasEnabledBoundary ? 1 : 0);
 	}
 
 	return TransformValue;

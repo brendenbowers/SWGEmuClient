@@ -1,4 +1,5 @@
 #include "Components/SWGEquipmentComponent.h"
+#include "UObject/StrongObjectPtr.h"
 #include "Network/SWGPacket.h"
 #include "Customization/SWGCustomizationVariables.h"
 #include "Network/Objects/Zone/Object/SWGContainmentType.h"
@@ -265,13 +266,25 @@ void USWGEquipmentComponent::AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh*
 			return;
 		}
 
+		// Root the mesh/materials across the wait — see AttachWearableSkeletalMesh.
 		TWeakObjectPtr<USWGEquipmentComponent> WeakThis(this);
+		TStrongObjectPtr<UStaticMesh> HeldMesh(Mesh);
+		TArray<TStrongObjectPtr<UMaterialInterface>> HeldMaterials;
+		for (UMaterialInterface* Material : Materials)
+		{
+			HeldMaterials.Emplace(Material);
+		}
 		FTimerHandle Unused;
-		GetWorld()->GetTimerManager().SetTimer(Unused, [WeakThis, ObjectId, Mesh, MeshData, Materials, RetryCount]()
+		GetWorld()->GetTimerManager().SetTimer(Unused, [WeakThis, ObjectId, HeldMesh, MeshData, HeldMaterials, RetryCount]()
 		{
 			if (USWGEquipmentComponent* StrongThis = WeakThis.Get())
 			{
-				StrongThis->AttachMeshToHardpoint(ObjectId, Mesh, MeshData, Materials, RetryCount + 1);
+				TArray<UMaterialInterface*> RetryMaterials;
+				for (const TStrongObjectPtr<UMaterialInterface>& Material : HeldMaterials)
+				{
+					RetryMaterials.Add(Material.Get());
+				}
+				StrongThis->AttachMeshToHardpoint(ObjectId, HeldMesh.Get(), MeshData, RetryMaterials, RetryCount + 1);
 			}
 		}, BodyMeshPollInterval, false);
 		return;
@@ -322,13 +335,26 @@ void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkelet
 		}
 
 		// TODO: switch this to wait on the body mesh's OnSkeletalMeshChanged delegate instead a timer
+		// Nothing else references the freshly built mesh/materials while we
+		// wait, so the lambda has to root them or GC collects them mid-retry.
 		TWeakObjectPtr<USWGEquipmentComponent> WeakThis(this);
+		TStrongObjectPtr<USkeletalMesh> HeldMesh(Mesh);
+		TArray<TStrongObjectPtr<UMaterialInterface>> HeldMaterials;
+		for (UMaterialInterface* Material : Materials)
+		{
+			HeldMaterials.Emplace(Material);
+		}
 		FTimerHandle Unused;
-		GetWorld()->GetTimerManager().SetTimer(Unused, [WeakThis, ObjectId, Mesh, Materials, RetryCount]()
+		GetWorld()->GetTimerManager().SetTimer(Unused, [WeakThis, ObjectId, HeldMesh, HeldMaterials, RetryCount]()
 		{
 			if (USWGEquipmentComponent* StrongThis = WeakThis.Get())
 			{
-				StrongThis->AttachWearableSkeletalMesh(ObjectId, Mesh, Materials, RetryCount + 1);
+				TArray<UMaterialInterface*> RetryMaterials;
+				for (const TStrongObjectPtr<UMaterialInterface>& Material : HeldMaterials)
+				{
+					RetryMaterials.Add(Material.Get());
+				}
+				StrongThis->AttachWearableSkeletalMesh(ObjectId, HeldMesh.Get(), RetryMaterials, RetryCount + 1);
 			}
 		}, BodyMeshPollInterval, false);
 		return;
