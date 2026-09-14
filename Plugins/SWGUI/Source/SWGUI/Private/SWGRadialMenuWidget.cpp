@@ -1,6 +1,7 @@
 #include "SWGRadialMenuWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
+#include "CommonInputSubsystem.h"
 #include "Components/Button.h"
 #include "Components/ButtonSlot.h"
 #include "Components/CanvasPanelSlot.h"
@@ -8,6 +9,7 @@
 #include "Components/TextBlock.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
+#include "Objects/Player/SWGPlayer.h"
 
 void USWGRadialMenuWidget::NativeConstruct()
 {
@@ -38,6 +40,14 @@ void USWGRadialMenuWidget::Open(const FSWGRadialMenu& Menu)
 	}
 
 	ShowLevel(0);
+
+	// A gamepad has no cursor to hover with, so start it on the first row.
+	const UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetOwningLocalPlayer());
+	if (CommonInput && CommonInput->GetCurrentInputType() == ECommonInputType::Gamepad)
+	{
+		SetHighlightedRow(0);
+	}
+
 	SetFocus();
 }
 
@@ -55,11 +65,45 @@ FReply USWGRadialMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry
 
 FReply USWGRadialMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
-	if (InKeyEvent.GetKey() == EKeys::Escape)
+	const FKey Key = InKeyEvent.GetKey();
+
+	// The button that opened the menu closes it again.
+	const ASWGPlayer* Player = Cast<ASWGPlayer>(GetOwningPlayerPawn());
+	if (Key == EKeys::Escape || (Player && Key == Player->InteractKey))
 	{
 		Close();
 		return FReply::Handled();
 	}
+
+	if (Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_LeftStick_Up)
+	{
+		MoveHighlight(-1);
+		return FReply::Handled();
+	}
+	if (Key == EKeys::Gamepad_DPad_Down || Key == EKeys::Gamepad_LeftStick_Down)
+	{
+		MoveHighlight(1);
+		return FReply::Handled();
+	}
+	if (Key == EKeys::Gamepad_FaceButton_Bottom)
+	{
+		ActivateHighlightedRow();
+		return FReply::Handled();
+	}
+	if (Key == EKeys::Gamepad_FaceButton_Right)
+	{
+		Back();
+		return FReply::Handled();
+	}
+
+	// Swallow the rest of the D-pad/face buttons so they don't fire action
+	// bar slots underneath the open menu.
+	if (Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right
+		|| Key == EKeys::Gamepad_FaceButton_Left || Key == EKeys::Gamepad_FaceButton_Top)
+	{
+		return FReply::Handled();
+	}
+
 	return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
 }
 
@@ -73,6 +117,11 @@ void USWGRadialMenuWidget::ShowLevel(int32 ParentIndex)
 	CurrentParentIndex = ParentIndex;
 	ItemBox->ClearChildren();
 	Rows.Reset();
+	RowButtons.Reset();
+
+	// Keep a gamepad highlight through a level change; a mouse user has none.
+	const bool bHadHighlight = HighlightedRow != INDEX_NONE;
+	HighlightedRow = INDEX_NONE;
 
 	if (ParentIndex != 0)
 	{
@@ -108,6 +157,12 @@ void USWGRadialMenuWidget::ShowLevel(int32 ParentIndex)
 			});
 		}
 	}
+
+	if (bHadHighlight)
+	{
+		// Skip the Back row on a submenu so the highlight lands on a real option.
+		SetHighlightedRow(ParentIndex != 0 && RowButtons.Num() > 1 ? 1 : 0);
+	}
 }
 
 void USWGRadialMenuWidget::AddRow(const FText& Label, TFunction<void()> OnClicked)
@@ -141,6 +196,75 @@ void USWGRadialMenuWidget::AddRow(const FText& Label, TFunction<void()> OnClicke
 	Row->Action = MoveTemp(OnClicked);
 	Button->OnClicked.AddDynamic(Row, &USWGRadialMenuRow::HandleClicked);
 	Rows.Add(Row);
+	RowButtons.Add(Button);
 
 	ItemBox->AddChild(Button);
+}
+
+void USWGRadialMenuWidget::SetHighlightedRow(int32 RowIndex)
+{
+	HighlightedRow = RowButtons.IsValidIndex(RowIndex) ? RowIndex : INDEX_NONE;
+
+	const UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetOwningLocalPlayer());
+	const bool bGamepad = CommonInput && CommonInput->GetCurrentInputType() == ECommonInputType::Gamepad;
+
+	// The highlighted row wears the hover wash at rest, and on a gamepad only
+	// it does — the idle mouse pointer must not paint a second one.
+	for (int32 ButtonIndex = 0; ButtonIndex < RowButtons.Num(); ++ButtonIndex)
+	{
+		UButton* Button = RowButtons[ButtonIndex];
+		if (!Button)
+		{
+			continue;
+		}
+
+		FButtonStyle Style = Button->GetStyle();
+		Style.Normal.DrawAs = ButtonIndex == HighlightedRow ? ESlateBrushDrawType::Box : ESlateBrushDrawType::NoDrawType;
+		Style.Normal.TintColor = Style.Hovered.TintColor;
+		Style.Hovered.DrawAs = bGamepad ? ESlateBrushDrawType::NoDrawType : ESlateBrushDrawType::Box;
+		Button->SetStyle(Style);
+	}
+}
+
+void USWGRadialMenuWidget::MoveHighlight(int32 Direction)
+{
+	if (RowButtons.IsEmpty())
+	{
+		return;
+	}
+
+	if (HighlightedRow == INDEX_NONE)
+	{
+		SetHighlightedRow(0);
+		return;
+	}
+
+	SetHighlightedRow((HighlightedRow + Direction + RowButtons.Num()) % RowButtons.Num());
+}
+
+void USWGRadialMenuWidget::ActivateHighlightedRow()
+{
+	if (HighlightedRow == INDEX_NONE)
+	{
+		SetHighlightedRow(0);
+		return;
+	}
+
+	if (USWGRadialMenuRow* Row = Rows.IsValidIndex(HighlightedRow) ? Rows[HighlightedRow].Get() : nullptr)
+	{
+		Row->HandleClicked();
+	}
+}
+
+void USWGRadialMenuWidget::Back()
+{
+	if (CurrentParentIndex == 0)
+	{
+		Close();
+		return;
+	}
+
+	const int32 ParentIndex = CurrentParentIndex;
+	const FSWGRadialMenuItem* Parent = CurrentMenu.Items.FindByPredicate([ParentIndex](const FSWGRadialMenuItem& Item) { return Item.Index == ParentIndex; });
+	ShowLevel(Parent ? Parent->ParentIndex : 0);
 }

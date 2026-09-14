@@ -1,5 +1,6 @@
 #include "SWGActionSlotWidget.h"
 #include "SWGActionBarWidget.h"
+#include "Components/SizeBox.h"
 
 void USWGActionSlotWidget::InitialiseSlot(USWGActionBarWidget* InOwningBar, int32 InSlotIndex, const FText& InKeyLabel)
 {
@@ -78,6 +79,7 @@ void USWGActionSlotWidget::NativeConstruct()
 	}
 	ApplyIcon();
 	ApplyFrame();
+	ApplyCompact();
 }
 
 void USWGActionSlotWidget::HandleClicked()
@@ -85,5 +87,29 @@ void USWGActionSlotWidget::HandleClicked()
 	if (USWGActionBarWidget* Bar = OwningBar.Get())
 	{
 		Bar->TriggerSlot(SlotIndex);
+	}
+}
+
+void USWGActionSlotWidget::SetCompact(bool bInCompact)
+{
+	bCompact = bInCompact;
+	ApplyCompact();
+}
+
+void USWGActionSlotWidget::ApplyCompact()
+{
+	// The Blueprint's label box is tall enough for two wrapped lines; compact
+	// keeps one line, clipped with the label's ellipsis, so tiles stay squat.
+	if (USizeBox* Box = Cast<USizeBox>(LabelBox))
+	{
+		if (!FullLabelHeight.IsSet())
+		{
+			FullLabelHeight = Box->GetHeightOverride();
+		}
+		Box->SetHeightOverride(bCompact ? CompactLabelHeight : FullLabelHeight.GetValue());
+	}
+	if (CommandLabel)
+	{
+		CommandLabel->SetAutoWrapText(!bCompact);
 	}
 }

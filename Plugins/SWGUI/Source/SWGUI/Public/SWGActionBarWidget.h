@@ -79,11 +79,45 @@ public:
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|ActionBar")
 	static FText GetSlotKeyLabel(int32 SlotIndex);
 
+	/** The gamepad button for a slot: D-pad arrows for 0-3, A B X Y for 4-7, repeating for the second bank. */
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|ActionBar")
+	static FText GetGamepadSlotKeyLabel(int32 SlotIndex);
+
+	/**
+	 * Rebuilds as two banks of eight (D-pad + face buttons, shifted by a
+	 * trigger) or back to the keyboard's twelve. The HUD calls this as the
+	 * last-used input device changes.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|ActionBar")
+	void SetGamepadLayout(bool bGamepad);
+
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|ActionBar")
+	bool IsGamepadLayout() const { return bGamepadLayout; }
+
+	/** Highlights the bank the gamepad's buttons currently fire into. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|ActionBar")
+	void SetActiveBank(int32 BankIndex);
+
 protected:
 	virtual void NativeConstruct() override;
 
-	/** Builds SlotCount slot widgets into SlotBox. */
+	/** Builds the slot widgets for the current layout into SlotBox. */
 	void BuildSlotWidgets();
+
+	/** Slots the current layout shows: SlotCount, or both gamepad banks. */
+	int32 GetActiveSlotCount() const { return bGamepadLayout ? GamepadBankCount * GamepadBankSize : SlotCount; }
+
+	/** Builds one slot widget, wired to SlotIndex, or null if the class fails to instantiate. */
+	USWGActionSlotWidget* MakeSlotWidget(int32 SlotIndex, const FSlateBrush* FrameBrush);
+
+	/** Keyboard: groups of GroupSize in a row. */
+	void BuildKeyboardSlots(const FSlateBrush* FrameBrush);
+
+	/** Gamepad: per bank, a D-pad diamond and a face-button diamond. */
+	void BuildGamepadSlots(const FSlateBrush* FrameBrush);
+
+	/** Dims every group but the active bank in the gamepad layout; all groups full opacity otherwise. */
+	void ApplyBankHighlight();
 
 	/** Puts the basic attack in slot 0 if it is empty. See bSeedDefaultAttackSlot. */
 	void SeedDefaultAttackSlot();
@@ -110,12 +144,45 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
 	TSubclassOf<USWGActionSlotWidget> SlotWidgetClass;
 
-	/**
-	 * Slots per visual group. Retail shows 12 as three groups of four; a
-	 * gamepad layout wants two groups of eight (one per shoulder button).
-	 */
+	/** Slots per visual group. Retail shows 12 as three groups of four. */
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar", meta = (ClampMin = 1))
 	int32 GroupSize = 4;
+
+	/**
+	 * Gamepad layout: two banks the trigger toggles between, each drawn as
+	 * two diamonds — D-pad on the left, face buttons on the right — so a
+	 * slot sits where its button is on the pad.
+	 */
+	static constexpr int32 GamepadBankCount = 2;
+	static constexpr int32 GamepadBankSize = 8;
+
+	/** Gap between a bank's two diamonds, in slate units. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar|Gamepad")
+	float DiamondSpacing = 4.f;
+
+	/** Gap between the two banks, in slate units. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar|Gamepad")
+	float BankSpacing = 24.f;
+
+	/** Each bank is scaled by this; the tiles are squat (one-line names), so full size fits. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar|Gamepad", meta = (ClampMin = 0.25, ClampMax = 1))
+	float GamepadSlotScale = 1.f;
+
+	/**
+	 * How far each arm of a diamond is pulled toward its empty centre, in
+	 * slate units. The arms only ever meet the centre cell, so they can
+	 * overlap it without covering each other.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar|Gamepad", meta = (ClampMin = 0))
+	float DiamondOverlap = 14.f;
+
+	/** Breathing room around every tile in a diamond, in slate units, so neighbouring arms don't touch corner to corner. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar|Gamepad", meta = (ClampMin = 0))
+	float TileSpacing = 3.f;
+
+	/** Render opacity of the bank the trigger is not currently selecting. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar|Gamepad", meta = (ClampMin = 0, ClampMax = 1))
+	float InactiveBankOpacity = 0.4f;
 
 	/** Gap between groups, in slate units. */
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
@@ -130,6 +197,13 @@ protected:
 
 	UPROPERTY()
 	TArray<TObjectPtr<USWGActionSlotWidget>> SlotWidgets;
+
+	/** One per visual group, in slot order — the gamepad banks. */
+	UPROPERTY()
+	TArray<TObjectPtr<UPanelWidget>> GroupWidgets;
+
+	bool bGamepadLayout = false;
+	int32 ActiveBank = 0;
 
 private:
 	/** The player's current target, or 0 when nothing is targeted. */

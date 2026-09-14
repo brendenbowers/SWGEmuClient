@@ -2,6 +2,9 @@
 #include "SWGActionBarWidget.h"
 #include "SWGConditionWidget.h"
 #include "Objects/Player/SWGPlayer.h"
+#include "CommonInputSubsystem.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
 
 TWeakObjectPtr<USWGHudWidget> USWGHudWidget::ActiveHud;
@@ -23,6 +26,20 @@ void USWGHudWidget::NativeConstruct()
 		PlayerController->OnPossessedPawnChanged.AddUniqueDynamic(this, &USWGHudWidget::HandlePossessedPawnChanged);
 		BindHotkeys(PlayerController->GetPawn());
 	}
+
+	// The bar's height depends on its layout (one row of slots, or three-row
+	// diamonds), so size it to content: anchored to the bottom edge, it then
+	// grows upward instead of overflowing off-screen.
+	if (UCanvasPanelSlot* BarSlot = ActionBar ? Cast<UCanvasPanelSlot>(ActionBar->Slot) : nullptr)
+	{
+		BarSlot->SetAutoSize(true);
+	}
+
+	if (UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetOwningLocalPlayer()))
+	{
+		InputMethodChangedHandle = CommonInput->OnInputMethodChangedNative.AddUObject(this, &USWGHudWidget::HandleInputMethodChanged);
+		HandleInputMethodChanged(CommonInput->GetCurrentInputType());
+	}
 }
 
 void USWGHudWidget::NativeDestruct()
@@ -32,6 +49,12 @@ void USWGHudWidget::NativeDestruct()
 		PlayerController->OnPossessedPawnChanged.RemoveDynamic(this, &USWGHudWidget::HandlePossessedPawnChanged);
 	}
 	BindHotkeys(nullptr);
+
+	if (UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetOwningLocalPlayer()))
+	{
+		CommonInput->OnInputMethodChangedNative.Remove(InputMethodChangedHandle);
+	}
+	InputMethodChangedHandle.Reset();
 
 	if (ActiveHud.Get() == this)
 	{
@@ -51,18 +74,37 @@ void USWGHudWidget::BindHotkeys(APawn* Pawn)
 	if (ASWGPlayer* Previous = HotkeySource.Get())
 	{
 		Previous->OnActionSlotHotkey.RemoveAll(this);
+		Previous->OnActionBankChanged.RemoveAll(this);
 	}
 
 	HotkeySource = Cast<ASWGPlayer>(Pawn);
 	if (ASWGPlayer* Player = HotkeySource.Get())
 	{
 		Player->OnActionSlotHotkey.AddUObject(this, &USWGHudWidget::HandleActionSlotHotkey);
+		Player->OnActionBankChanged.AddUObject(this, &USWGHudWidget::HandleActionBankChanged);
+		HandleActionBankChanged(Player->GetActiveActionBank());
 	}
 }
 
 void USWGHudWidget::HandleActionSlotHotkey(int32 SlotIndex)
 {
 	TriggerActionSlot(SlotIndex);
+}
+
+void USWGHudWidget::HandleActionBankChanged(int32 BankIndex)
+{
+	if (ActionBar)
+	{
+		ActionBar->SetActiveBank(BankIndex);
+	}
+}
+
+void USWGHudWidget::HandleInputMethodChanged(ECommonInputType InputType)
+{
+	if (ActionBar)
+	{
+		ActionBar->SetGamepadLayout(InputType == ECommonInputType::Gamepad);
+	}
 }
 
 bool USWGHudWidget::TriggerActionSlot(int32 SlotIndex)

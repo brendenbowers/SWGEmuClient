@@ -10,6 +10,9 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
+#include "Components/GridPanel.h"
+#include "Components/GridSlot.h"
+#include "Components/ScaleBox.h"
 
 namespace
 {
@@ -64,9 +67,9 @@ void USWGActionBarWidget::SeedDefaultAttackSlot()
 	const USWGCombatSubsystem* Combat = GetCombat(this);
 	const FString AttackCommand = Combat ? Combat->AttackCommandName : TEXT("attack");
 
-	if (Slots.Num() < SlotCount)
+	if (Slots.Num() < GetActiveSlotCount())
 	{
-		Slots.SetNum(SlotCount);
+		Slots.SetNum(GetActiveSlotCount());
 	}
 
 	if (Slots.IsEmpty() || !Slots[0].IsEmpty())
@@ -86,9 +89,9 @@ int32 USWGActionBarWidget::FillEmptySlotsFromAbilities()
 		return 0;
 	}
 
-	if (Slots.Num() < SlotCount)
+	if (Slots.Num() < GetActiveSlotCount())
 	{
-		Slots.SetNum(SlotCount);
+		Slots.SetNum(GetActiveSlotCount());
 	}
 
 	int32 FilledCount = 0;
@@ -137,6 +140,55 @@ FText USWGActionBarWidget::GetSlotKeyLabel(int32 SlotIndex)
 		: FText::GetEmpty();
 }
 
+FText USWGActionBarWidget::GetGamepadSlotKeyLabel(int32 SlotIndex)
+{
+	// D-pad clockwise from up, then the face buttons — the order
+	// ASWGPlayer::SetupPlayerInputComponent binds them in.
+	static const TCHAR* Keys[] = { TEXT("▲"), TEXT("▶"), TEXT("▼"), TEXT("◀"),
+								   TEXT("A"), TEXT("B"), TEXT("X"), TEXT("Y") };
+
+	return SlotIndex >= 0
+		? FText::FromString(Keys[SlotIndex % UE_ARRAY_COUNT(Keys)])
+		: FText::GetEmpty();
+}
+
+void USWGActionBarWidget::SetGamepadLayout(bool bGamepad)
+{
+	if (bGamepadLayout == bGamepad && !SlotWidgets.IsEmpty())
+	{
+		return;
+	}
+
+	bGamepadLayout = bGamepad;
+	BuildSlotWidgets();
+
+	// The gamepad layout has four more slots than the keyboard one, so there
+	// may be empties to fill the first time it comes up.
+	if (bFillEmptySlotsFromAbilities)
+	{
+		FillEmptySlotsFromAbilities();
+	}
+
+	RefreshSlotVisuals();
+}
+
+void USWGActionBarWidget::SetActiveBank(int32 BankIndex)
+{
+	ActiveBank = BankIndex;
+	ApplyBankHighlight();
+}
+
+void USWGActionBarWidget::ApplyBankHighlight()
+{
+	for (int32 GroupIndex = 0; GroupIndex < GroupWidgets.Num(); ++GroupIndex)
+	{
+		if (UPanelWidget* Group = GroupWidgets[GroupIndex])
+		{
+			Group->SetRenderOpacity(bGamepadLayout && GroupIndex != ActiveBank ? InactiveBankOpacity : 1.f);
+		}
+	}
+}
+
 void USWGActionBarWidget::BuildSlotWidgets()
 {
 	if (!SlotBox || !SlotWidgetClass)
@@ -151,8 +203,39 @@ void USWGActionBarWidget::BuildSlotWidgets()
 
 	SlotBox->ClearChildren();
 	SlotWidgets.Reset();
+	GroupWidgets.Reset();
 
 	const FSlateBrush* FrameBrush = ResolveStyleBrush(SlotFrameStyle);
+	if (bGamepadLayout)
+	{
+		BuildGamepadSlots(FrameBrush);
+	}
+	else
+	{
+		BuildKeyboardSlots(FrameBrush);
+	}
+
+	ApplyBankHighlight();
+}
+
+USWGActionSlotWidget* USWGActionBarWidget::MakeSlotWidget(int32 SlotIndex, const FSlateBrush* FrameBrush)
+{
+	USWGActionSlotWidget* SlotWidget = CreateWidget<USWGActionSlotWidget>(this, SlotWidgetClass);
+	if (!SlotWidget)
+	{
+		return nullptr;
+	}
+
+	SlotWidget->InitialiseSlot(this, SlotIndex, bGamepadLayout ? GetGamepadSlotKeyLabel(SlotIndex) : GetSlotKeyLabel(SlotIndex));
+	SlotWidget->SetFrame(FrameBrush);
+	// Icon-only tiles keep the diamonds square; the keyboard row has room for names.
+	SlotWidget->SetCompact(bGamepadLayout);
+	SlotWidgets.Add(SlotWidget);
+	return SlotWidget;
+}
+
+void USWGActionBarWidget::BuildKeyboardSlots(const FSlateBrush* FrameBrush)
+{
 	const int32 SlotsPerGroup = FMath::Max(1, GroupSize);
 	UHorizontalBox* Group = nullptr;
 
@@ -165,18 +248,75 @@ void USWGActionBarWidget::BuildSlotWidgets()
 			{
 				GroupSlot->SetPadding(FMargin(GroupSpacing, 0.f, 0.f, 0.f));
 			}
+			GroupWidgets.Add(Group);
 		}
 
-		USWGActionSlotWidget* SlotWidget = CreateWidget<USWGActionSlotWidget>(this, SlotWidgetClass);
-		if (!SlotWidget)
+		if (USWGActionSlotWidget* SlotWidget = MakeSlotWidget(SlotIndex, FrameBrush))
 		{
-			continue;
+			Group->AddChildToHorizontalBox(SlotWidget);
+		}
+	}
+}
+
+void USWGActionBarWidget::BuildGamepadSlots(const FSlateBrush* FrameBrush)
+{
+	// Row/column in a 3x3 grid for each slot of a bank, laid out like the
+	// pad: D-pad Up/Right/Down/Left then A/B/X/Y (A at the bottom, Y on top)
+	// — the order ASWGPlayer binds them in.
+	static const FIntPoint DiamondCells[GamepadBankSize] = {
+		FIntPoint(0, 1), FIntPoint(1, 2), FIntPoint(2, 1), FIntPoint(1, 0),
+		FIntPoint(2, 1), FIntPoint(1, 2), FIntPoint(1, 0), FIntPoint(0, 1)
+	};
+	constexpr int32 DiamondSize = 4;
+
+	for (int32 BankIndex = 0; BankIndex < GamepadBankCount; ++BankIndex)
+	{
+		// The scale box shrinks the bank's layout size, not just its paint,
+		// so the diamonds pack together and the bar stays on screen.
+		UScaleBox* BankScale = WidgetTree->ConstructWidget<UScaleBox>();
+		BankScale->SetStretch(EStretch::UserSpecified);
+		BankScale->SetUserSpecifiedScale(GamepadSlotScale);
+		if (UHorizontalBoxSlot* BankSlot = Cast<UHorizontalBoxSlot>(SlotBox->AddChild(BankScale)); BankSlot && BankIndex > 0)
+		{
+			BankSlot->SetPadding(FMargin(BankSpacing, 0.f, 0.f, 0.f));
 		}
 
-		SlotWidget->InitialiseSlot(this, SlotIndex, GetSlotKeyLabel(SlotIndex));
-		SlotWidget->SetFrame(FrameBrush);
-		Group->AddChildToHorizontalBox(SlotWidget);
-		SlotWidgets.Add(SlotWidget);
+		UHorizontalBox* Bank = WidgetTree->ConstructWidget<UHorizontalBox>();
+		BankScale->AddChild(Bank);
+		GroupWidgets.Add(Bank);
+
+		UGridPanel* Diamond = nullptr;
+		for (int32 SlotInBank = 0; SlotInBank < GamepadBankSize; ++SlotInBank)
+		{
+			if (SlotInBank % DiamondSize == 0)
+			{
+				Diamond = WidgetTree->ConstructWidget<UGridPanel>();
+				if (UHorizontalBoxSlot* DiamondSlot = Bank->AddChildToHorizontalBox(Diamond); DiamondSlot && SlotInBank > 0)
+				{
+					DiamondSlot->SetPadding(FMargin(DiamondSpacing, 0.f, 0.f, 0.f));
+				}
+			}
+
+			if (USWGActionSlotWidget* SlotWidget = MakeSlotWidget(BankIndex * GamepadBankSize + SlotInBank, FrameBrush))
+			{
+				const FIntPoint& Cell = DiamondCells[SlotInBank];
+				if (UGridSlot* CellSlot = Diamond->AddChildToGrid(SlotWidget, Cell.X, Cell.Y))
+				{
+					CellSlot->SetHorizontalAlignment(HAlign_Center);
+					CellSlot->SetVerticalAlignment(VAlign_Center);
+
+					// A gap all round, then negative padding on the side facing
+					// the centre shrinks that row/column so the arm hangs into
+					// the empty middle.
+					FMargin Tuck(TileSpacing);
+					if (Cell.X == 0) { Tuck.Bottom -= DiamondOverlap; }
+					if (Cell.X == 2) { Tuck.Top -= DiamondOverlap; }
+					if (Cell.Y == 0) { Tuck.Right -= DiamondOverlap; }
+					if (Cell.Y == 2) { Tuck.Left -= DiamondOverlap; }
+					CellSlot->SetPadding(Tuck);
+				}
+			}
+		}
 	}
 }
 

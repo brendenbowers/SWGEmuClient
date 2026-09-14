@@ -198,15 +198,19 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	PlayerInputComponent->BindAxisKey(EKeys::MouseWheelAxis, this, &ASWGPlayer::OnMouseWheel);
 
 	// Gamepad. The left stick already drives IA_Move through IMC_Default;
-	// the rest is bound here as raw keys like the mouse above.
+	// the rest is bound here as raw keys like the mouse above. The D-pad and
+	// face buttons belong to the action bar, so targeting lives on the
+	// bumpers and stick clicks.
 	PlayerInputComponent->BindAxisKey(EKeys::Gamepad_RightX, this, &ASWGPlayer::GamepadLookX);
 	PlayerInputComponent->BindAxisKey(EKeys::Gamepad_RightY, this, &ASWGPlayer::GamepadLookY);
-	PlayerInputComponent->BindAxisKey(EKeys::Gamepad_DPad_Up, this, &ASWGPlayer::GamepadZoomIn);
-	PlayerInputComponent->BindAxisKey(EKeys::Gamepad_DPad_Down, this, &ASWGPlayer::GamepadZoomOut);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Bottom, IE_Pressed, this, &ASWGPlayer::TargetNearest);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_FaceButton_Right, IE_Pressed, this, &ASWGPlayer::ClearTarget);
+	PlayerInputComponent->BindKey(EKeys::Gamepad_LeftThumbstick, IE_Pressed, this, &ASWGPlayer::TargetNearest);
+	PlayerInputComponent->BindKey(EKeys::Gamepad_RightThumbstick, IE_Pressed, this, &ASWGPlayer::ClearTarget);
 	PlayerInputComponent->BindKey(EKeys::Gamepad_RightShoulder, IE_Pressed, this, &ASWGPlayer::CycleTargetNext);
 	PlayerInputComponent->BindKey(EKeys::Gamepad_LeftShoulder, IE_Pressed, this, &ASWGPlayer::CycleTargetPrevious);
+	PlayerInputComponent->BindKey(ActionBankShiftKey, IE_Pressed, this, &ASWGPlayer::ToggleActionBank);
+	PlayerInputComponent->BindKey(ZoomModifierKey, IE_Pressed, this, &ASWGPlayer::OnZoomModifierPressed);
+	PlayerInputComponent->BindKey(ZoomModifierKey, IE_Released, this, &ASWGPlayer::OnZoomModifierReleased);
+	PlayerInputComponent->BindKey(InteractKey, IE_Pressed, this, &ASWGPlayer::OnGamepadInteract);
 
 	// Action bar hotkeys: 1-9, 0, then hyphen and equals — SWG's twelve-slot
 	// bank. Bound the same legacy way as the mouse keys above rather than
@@ -224,6 +228,79 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 			OnActionSlotHotkey.Broadcast(SlotIndex);
 		});
 		PlayerInputComponent->KeyBindings.Emplace(MoveTemp(Binding));
+	}
+
+	// Gamepad slots: D-pad clockwise from up, then A B X Y. The order is the
+	// same one USWGActionBarWidget::GetGamepadSlotKeyLabel labels with.
+	static const FKey GamepadSlotKeys[] = {
+		EKeys::Gamepad_DPad_Up, EKeys::Gamepad_DPad_Right, EKeys::Gamepad_DPad_Down, EKeys::Gamepad_DPad_Left,
+		EKeys::Gamepad_FaceButton_Bottom, EKeys::Gamepad_FaceButton_Right, EKeys::Gamepad_FaceButton_Left, EKeys::Gamepad_FaceButton_Top
+	};
+
+	for (int32 SlotIndex = 0; SlotIndex < UE_ARRAY_COUNT(GamepadSlotKeys); ++SlotIndex)
+	{
+		FInputKeyBinding Binding(FInputChord(GamepadSlotKeys[SlotIndex], false, false, false, false), IE_Pressed);
+		Binding.KeyDelegate.GetDelegateForManualSet().BindWeakLambda(this, [this, SlotIndex]()
+		{
+			OnActionSlotHotkey.Broadcast(SlotIndex + GetActiveActionBank() * UE_ARRAY_COUNT(GamepadSlotKeys));
+		});
+		PlayerInputComponent->KeyBindings.Emplace(MoveTemp(Binding));
+	}
+}
+
+void ASWGPlayer::ToggleActionBank()
+{
+	bActionBankShifted = !bActionBankShifted;
+	OnActionBankChanged.Broadcast(GetActiveActionBank());
+}
+
+void ASWGPlayer::OnZoomModifierPressed()
+{
+	bZoomModifierHeld = true;
+}
+
+void ASWGPlayer::OnZoomModifierReleased()
+{
+	bZoomModifierHeld = false;
+}
+
+void ASWGPlayer::OnGamepadInteract()
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	USWGTargetSubsystem* TargetSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGTargetSubsystem>() : nullptr;
+	if (!TargetSubsystem)
+	{
+		return;
+	}
+
+	if (!TargetSubsystem->HasTarget())
+	{
+		TargetNearest();
+	}
+
+	ISWGNetworkObjectInterface* NetworkObject = Cast<ISWGNetworkObjectInterface>(TargetSubsystem->GetTargetActor());
+	if (!NetworkObject)
+	{
+		return;
+	}
+
+	// Anchor the menu on the target, or the screen centre if it's off-screen.
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	FVector2D ScreenPosition;
+	if (!PlayerController || !PlayerController->ProjectWorldLocationToScreen(TargetSubsystem->GetTargetActor()->GetActorLocation(), ScreenPosition))
+	{
+		int32 ViewportX = 0;
+		int32 ViewportY = 0;
+		if (PlayerController)
+		{
+			PlayerController->GetViewportSize(ViewportX, ViewportY);
+		}
+		ScreenPosition = FVector2D(ViewportX * 0.5f, ViewportY * 0.5f);
+	}
+
+	if (USWGRadialMenuSubsystem* RadialMenu = GameInstance->GetSubsystem<USWGRadialMenuSubsystem>())
+	{
+		RadialMenu->RequestMenu(NetworkObject->GetObjectId(), ScreenPosition);
 	}
 }
 
@@ -324,6 +401,15 @@ void ASWGPlayer::OnLeftMouseButtonPressed()
 	TargetSubsystem->SetTargetActor(PickActorUnderCursor(ScreenPosition));
 }
 
+namespace
+{
+	// Stick deflection through a power curve, sign preserved.
+	float ShapeStick(float Value, float Exponent)
+	{
+		return FMath::Sign(Value) * FMath::Pow(FMath::Abs(Value), Exponent);
+	}
+}
+
 void ASWGPlayer::GamepadLookX(float Value)
 {
 	// Axis bindings fire every frame, zero included, so this is a clean per-frame
@@ -331,32 +417,32 @@ void ASWGPlayer::GamepadLookX(float Value)
 	bIsGamepadSteering = !FMath::IsNearlyZero(Value);
 	if (bIsGamepadSteering)
 	{
-		AddControllerYawInput(Value * GamepadLookRateDegrees * GetWorld()->GetDeltaSeconds());
+		AddControllerYawInput(ShapeStick(Value, GamepadLookExponent) * GamepadLookRateDegrees * GetWorld()->GetDeltaSeconds());
 	}
 }
 
 void ASWGPlayer::GamepadLookY(float Value)
 {
-	if (!FMath::IsNearlyZero(Value))
+	if (FMath::IsNearlyZero(Value))
 	{
-		// Stick up tilts the camera up, the opposite of mouse-Y's push-forward-to-look-down.
-		AddControllerPitchInput(-Value * GamepadLookRateDegrees * GetWorld()->GetDeltaSeconds());
+		return;
 	}
+
+	if (bZoomModifierHeld)
+	{
+		GamepadZoom(Value);
+		return;
+	}
+
+	// Stick up tilts the camera up, the opposite of mouse-Y's push-forward-to-look-down.
+	AddControllerPitchInput(-ShapeStick(Value, GamepadLookExponent) * GamepadLookRateDegrees * GetWorld()->GetDeltaSeconds());
 }
 
-void ASWGPlayer::GamepadZoomIn(float Value)
+void ASWGPlayer::GamepadZoom(float Value)
 {
 	// Same clamp as OnMouseWheel; the wheel's per-notch step becomes a per-second rate.
-	if (!FMath::IsNearlyZero(Value))
-	{
-		CameraBoom->TargetArmLength = FMath::Clamp(
-			CameraBoom->TargetArmLength - Value * GamepadZoomRate * GetWorld()->GetDeltaSeconds(), 100.0f, 1000.0f);
-	}
-}
-
-void ASWGPlayer::GamepadZoomOut(float Value)
-{
-	GamepadZoomIn(-Value);
+	CameraBoom->TargetArmLength = FMath::Clamp(
+		CameraBoom->TargetArmLength - Value * GamepadZoomRate * GetWorld()->GetDeltaSeconds(), 100.0f, 1000.0f);
 }
 
 void ASWGPlayer::TargetNearest()

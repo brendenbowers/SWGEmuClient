@@ -31,6 +31,9 @@ public:
 	/** The cell background behind the icon; null leaves whatever the Blueprint painted. */
 	void SetFrame(const FSlateBrush* Brush);
 
+	/** Icon-only: hides the command label so the slot is a square tile, for the gamepad diamonds. */
+	void SetCompact(bool bInCompact);
+
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|ActionBar")
 	int32 GetSlotIndex() const { return SlotIndex; }
 
@@ -46,6 +49,14 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> CommandLabel;
+
+	/** Fixed-height SizeBox around CommandLabel; compact mode shortens it to one line. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UWidget> LabelBox;
+
+	/** LabelBox height in compact mode — one line of the label's font. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
+	float CompactLabelHeight = 16.f;
 
 	/** Retail toolbar icon for the command, behind the labels. */
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
@@ -79,7 +90,12 @@ private:
 	bool bHasPendingIcon = false;
 	FSlateBrush PendingFrameBrush;
 	bool bHasPendingFrame = false;
+	bool bCompact = false;
+
+	/** The Blueprint's LabelBox height, captured on first compact toggle so it can be restored. */
+	TOptional<float> FullLabelHeight;
 
 	void ApplyIcon();
 	void ApplyFrame();
+	void ApplyCompact();
 };

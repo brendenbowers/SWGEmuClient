@@ -79,10 +79,30 @@ public:
 	// ControlRotation one line after PossessedBy returns.
 	virtual void PawnClientRestart() override;
 
-	// Fired for the 1-9, 0, -, = action bar hotkeys with the slot index (0-11).
-	// The HUD listens; the pawn never sees a widget.
+	// Fired for the 1-9, 0, -, = action bar hotkeys with the slot index (0-11),
+	// and for the gamepad's D-pad/face buttons with 0-7 (bank 0) or 8-15
+	// (bank 1, after ActionBankShiftKey toggled). The HUD listens; the pawn never sees a widget.
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnActionSlotHotkey, int32 /*SlotIndex*/);
 	FOnActionSlotHotkey OnActionSlotHotkey;
+
+	// Fired when ActionBankShiftKey toggles the bank, so the bar can highlight the live one.
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnActionBankChanged, int32 /*BankIndex*/);
+	FOnActionBankChanged OnActionBankChanged;
+
+	int32 GetActiveActionBank() const { return bActionBankShifted ? 1 : 0; }
+
+	// Gamepad layout: D-pad and face buttons are the eight action slots;
+	// ActionBankShiftKey toggles to the second eight. InteractKey opens
+	// the target's radial menu (the RMB-click equivalent), and holding
+	// ZoomModifierKey turns right-stick Y into zoom.
+	UPROPERTY(EditDefaultsOnly, Category = "Input|Gamepad")
+	FKey ActionBankShiftKey = EKeys::Gamepad_LeftTrigger;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Input|Gamepad")
+	FKey InteractKey = EKeys::Gamepad_Special_Right;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Input|Gamepad")
+	FKey ZoomModifierKey = EKeys::Gamepad_RightTrigger;
 
 protected:
 	virtual void BeginPlay() override;
@@ -127,23 +147,36 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Targeting")
 	float RadialClickMaxDrag = 4.f;
 
-	// Gamepad: right stick orbits the camera without needing RMB held, and
-	// the D-pad zooms. Both are axis keys, so the value is per-frame and
-	// scaled by these rates and DeltaSeconds.
+	// Gamepad: right stick orbits the camera without needing RMB held, or
+	// zooms while ZoomModifierKey is down. Axis keys fire per-frame, so the
+	// value is scaled by these rates and DeltaSeconds.
 	void GamepadLookX(float Value);
 	void GamepadLookY(float Value);
-	void GamepadZoomIn(float Value);
-	void GamepadZoomOut(float Value);
+	void GamepadZoom(float Value);
 
+	// Stick deflection -> look speed, after the response curve below.
 	UPROPERTY(EditDefaultsOnly, Category = "Input|Gamepad")
-	float GamepadLookRateDegrees = 150.0f;
+	float GamepadLookRateDegrees = 90.0f;
+
+	// Power applied to stick deflection before the rate: >1 keeps small
+	// pushes slow for fine aiming while a full push still reaches the rate.
+	UPROPERTY(EditDefaultsOnly, Category = "Input|Gamepad", meta = (ClampMin = 0.5))
+	float GamepadLookExponent = 2.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Input|Gamepad")
 	float GamepadZoomRate = 600.0f;
 
+	void ToggleActionBank();
+	void OnZoomModifierPressed();
+	void OnZoomModifierReleased();
+
+	// Radial menu for the current target, targeting the nearest thing first
+	// if there is none — there's no cursor to click with.
+	void OnGamepadInteract();
+
 	// Gamepad targeting has no cursor to trace under, so it works off a
-	// distance-sorted list of selectable actors around the player: A picks
-	// the nearest, the bumpers step through the list, B clears.
+	// distance-sorted list of selectable actors around the player: L3 picks
+	// the nearest, the bumpers step through the list, R3 clears.
 	void TargetNearest();
 	void CycleTarget(int32 Direction);
 	void CycleTargetNext();
@@ -212,6 +245,8 @@ private:
 	int64 LastReportedParentId = 0;
 	bool bIsMouseLooking = false;
 	bool bIsGamepadSteering = false;
+	bool bActionBankShifted = false;
+	bool bZoomModifierHeld = false;
 
 	/** Where RMB went down, to tell a click from a look-drag on release. */
 	FVector2D RightMouseDownPosition = FVector2D::ZeroVector;

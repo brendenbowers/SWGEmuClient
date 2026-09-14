@@ -11,10 +11,13 @@ class UTextBlock;
 class UWidget;
 
 /**
- * The object context menu, opened by right-clicking an object. Retail draws
- * a pie; this is a list at the click point with drill-down submenus (a parent
- * option replaces the list with its children plus a Back row), which also
- * suits a gamepad later.
+ * The object context menu, opened by right-clicking an object or by the
+ * gamepad's interact button on the current target. Retail draws a pie; this
+ * is a list at the click point with drill-down submenus (a parent option
+ * replaces the list with its children plus a Back row).
+ *
+ * Gamepad: D-pad up/down moves the highlighted row, A picks it, B goes back
+ * a level or closes, and the interact button that opened the menu closes it.
  *
  * Designer layout: a full-viewport root that catches clicks to dismiss, with
  * MenuPanel (any widget) positioned at the click and ItemBox (a vertical
@@ -64,11 +67,26 @@ private:
 	void ShowLevel(int32 ParentIndex);
 	void AddRow(const FText& Label, TFunction<void()> OnClicked);
 
+	/** Moves the gamepad highlight to RowIndex (INDEX_NONE for none), restyling the rows. */
+	void SetHighlightedRow(int32 RowIndex);
+
+	/** Steps the highlight, wrapping; starts at the first row when nothing is highlighted. */
+	void MoveHighlight(int32 Direction);
+
+	void ActivateHighlightedRow();
+
+	/** Up a level if there is one, else closes — the gamepad's B. */
+	void Back();
+
 	FSWGRadialMenu CurrentMenu;
 	int32 CurrentParentIndex = 0;
+	int32 HighlightedRow = INDEX_NONE;
 
 	UPROPERTY()
 	TArray<TObjectPtr<class USWGRadialMenuRow>> Rows;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UButton>> RowButtons;
 };
 
 /** A row's click target — UButton::OnClicked needs a UFUNCTION, and each row wants its own action. */

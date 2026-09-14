@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CommonActivatableWidget.h"
+#include "CommonInputTypeEnum.h"
 #include "SWGHudWidget.generated.h"
 
 class USWGConditionWidget;
@@ -58,8 +59,13 @@ private:
 
 	void BindHotkeys(APawn* Pawn);
 	void HandleActionSlotHotkey(int32 SlotIndex);
+	void HandleActionBankChanged(int32 BankIndex);
+
+	/** Swaps the action bar between its keyboard and gamepad layouts as the last-used device changes. */
+	void HandleInputMethodChanged(ECommonInputType InputType);
 
 	TWeakObjectPtr<class ASWGPlayer> HotkeySource;
+	FDelegateHandle InputMethodChangedHandle;
 
 	static TWeakObjectPtr<USWGHudWidget> ActiveHud;
 };

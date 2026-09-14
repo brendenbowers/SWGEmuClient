@@ -4,6 +4,8 @@
 #include "Components/ButtonSlot.h"
 #include "Components/EditableTextBox.h"
 #include "Components/PanelWidget.h"
+#include "Components/ScrollBox.h"
+#include "CommonInputSubsystem.h"
 #include "Components/TextBlock.h"
 #include "Engine/GameInstance.h"
 
@@ -38,6 +40,86 @@ void USWGSuiBoxWidget::SetPage(const FSWGSuiPage& InPage)
 	{
 		Apply();
 	}
+}
+
+void USWGSuiBoxWidget::NativeOnInitialized()
+{
+	Super::NativeOnInitialized();
+
+	// Before activation, which is when CommonUI hands the window focus.
+	SetIsFocusable(true);
+}
+
+UWidget* USWGSuiBoxWidget::NativeGetDesiredFocusTarget() const
+{
+	if (InputBox && InputBox->GetVisibility() != ESlateVisibility::Collapsed)
+	{
+		return InputBox;
+	}
+	return const_cast<USWGSuiBoxWidget*>(this);
+}
+
+FReply USWGSuiBoxWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
+{
+	const FKey Key = InKeyEvent.GetKey();
+
+	if (Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_LeftStick_Up)
+	{
+		MoveSelection(-1);
+		return FReply::Handled();
+	}
+	if (Key == EKeys::Gamepad_DPad_Down || Key == EKeys::Gamepad_LeftStick_Down)
+	{
+		MoveSelection(1);
+		return FReply::Handled();
+	}
+	if (Key == EKeys::Gamepad_FaceButton_Bottom || Key == EKeys::Enter)
+	{
+		HandleOk();
+		return FReply::Handled();
+	}
+	if (Key == EKeys::Gamepad_FaceButton_Right || Key == EKeys::Escape)
+	{
+		// A page without a cancel button has no cancel answer either.
+		if (!CancelButton || CancelButton->GetVisibility() != ESlateVisibility::Collapsed)
+		{
+			HandleCancel();
+		}
+		return FReply::Handled();
+	}
+	if (Key == EKeys::Gamepad_FaceButton_Left)
+	{
+		if (OtherButton && OtherButton->GetVisibility() != ESlateVisibility::Collapsed)
+		{
+			HandleOther();
+		}
+		return FReply::Handled();
+	}
+
+	// The rest of the D-pad/face buttons stop here rather than firing action
+	// bar slots behind a modal.
+	if (Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_DPad_Right || Key == EKeys::Gamepad_FaceButton_Top)
+	{
+		return FReply::Handled();
+	}
+
+	return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
+}
+
+void USWGSuiBoxWidget::MoveSelection(int32 Direction)
+{
+	if (RowButtons.IsEmpty())
+	{
+		return;
+	}
+
+	if (SelectedRow == INDEX_NONE)
+	{
+		SelectRow(Direction > 0 ? 0 : RowButtons.Num() - 1);
+		return;
+	}
+
+	SelectRow((SelectedRow + Direction + RowButtons.Num()) % RowButtons.Num());
 }
 
 void USWGSuiBoxWidget::NativeConstruct()
@@ -173,6 +255,12 @@ void USWGSuiBoxWidget::BuildList()
 void USWGSuiBoxWidget::SelectRow(int32 RowIndex)
 {
 	SelectedRow = RowIndex;
+
+	// On a gamepad the idle mouse pointer still hovers whatever row it sits
+	// on, which reads as a second selection — so hover draws nothing then.
+	const UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetOwningLocalPlayer());
+	const bool bGamepad = CommonInput && CommonInput->GetCurrentInputType() == ECommonInputType::Gamepad;
+
 	for (int32 ButtonIndex = 0; ButtonIndex < RowButtons.Num(); ++ButtonIndex)
 	{
 		if (UButton* Button = RowButtons[ButtonIndex])
@@ -180,8 +268,14 @@ void USWGSuiBoxWidget::SelectRow(int32 RowIndex)
 			FButtonStyle Style = Button->GetStyle();
 			Style.Normal.DrawAs = ButtonIndex == RowIndex ? ESlateBrushDrawType::Box : ESlateBrushDrawType::NoDrawType;
 			Style.Normal.TintColor = FSlateColor(SelectedRowColor);
+			Style.Hovered.DrawAs = bGamepad ? ESlateBrushDrawType::NoDrawType : ESlateBrushDrawType::Box;
 			Button->SetStyle(Style);
 		}
+	}
+
+	if (UScrollBox* Scroll = Cast<UScrollBox>(ListPanel); Scroll && RowButtons.IsValidIndex(RowIndex))
+	{
+		Scroll->ScrollWidgetIntoView(RowButtons[RowIndex], true);
 	}
 }
 
