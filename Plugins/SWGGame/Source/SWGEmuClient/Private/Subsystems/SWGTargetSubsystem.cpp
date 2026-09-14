@@ -8,6 +8,8 @@
 #include "Engine/StaticMesh.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "GameFramework/Character.h"
+#include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Network/Messages/Zone/Object/TargetUpdate.h"
 #include "Components/PrimitiveComponent.h"
@@ -171,6 +173,8 @@ void USWGTargetSubsystem::SetTarget(int64 ObjectId)
 	{
 		FTargetUpdate Update(static_cast<uint64>(PlayerObjectId), static_cast<uint64>(ObjectId));
 		Network->SendMessage(Update.Serialize());
+		UE_LOG(LogTemp, Log, TEXT("USWGTargetSubsystem: target -> %lld (%s)"), ObjectId,
+			*GetNameSafe(ObjectGraph ? ObjectGraph->FindActor(ObjectId) : nullptr));
 	}
 	else
 	{
@@ -231,18 +235,49 @@ void USWGTargetSubsystem::HandleMeshReady(AActor* Actor, UMeshComponent* MeshCom
 		return;
 	}
 
-	// Creatures are picked via their capsule instead (see ASWGCreature's
-	// constructor). Their generated static mesh gets hidden the moment the
-	// skeletal pipeline swaps a real animated mesh in
-	// (FSWGSkeletalAnimationPipeline), so making it clickable would leave a
-	// stale invisible silhouette catching clicks alongside the live one.
-	if (Actor->IsA<ACharacter>())
-	{
-		return;
-	}
-
 	UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(MeshComponent);
 	UStaticMesh* StaticMesh = StaticMeshComponent ? StaticMeshComponent->GetStaticMesh() : nullptr;
+
+	// Creatures get a box fitted to the mesh bounds rather than the mesh
+	// itself: the generated static mesh is hidden once the skeletal pipeline
+	// swaps an animated one in, and the capsule alone misses most of a body
+	// that isn't centred on its origin (a gnort runs ~70 cm forward of its
+	// origin against a 17 cm capsule). Parented to the mesh so it inherits
+	// the yaw correction; hidden parents don't stop it answering traces.
+	if (ACharacter* Character = Cast<ACharacter>(Actor))
+	{
+		const FBox MeshBounds = StaticMesh ? StaticMesh->GetBoundingBox() : FBox(ForceInit);
+		if (!MeshBounds.IsValid)
+		{
+			return;
+		}
+
+		static const FName SelectionBoxName(TEXT("SelectionBox"));
+		UBoxComponent* SelectionBox = nullptr;
+		TInlineComponentArray<UBoxComponent*> Boxes(Actor);
+		if (UBoxComponent** Existing = Boxes.FindByPredicate([](const UBoxComponent* Box) { return Box && Box->GetFName() == SelectionBoxName; }))
+		{
+			SelectionBox = *Existing;
+			SelectionBox->AttachToComponent(MeshComponent, FAttachmentTransformRules::KeepRelativeTransform);
+		}
+		else
+		{
+			SelectionBox = NewObject<UBoxComponent>(Actor, SelectionBoxName);
+			SelectionBox->SetupAttachment(MeshComponent);
+			SelectionBox->RegisterComponent();
+		}
+		SelectionBox->SetRelativeLocation(MeshBounds.GetCenter());
+		SelectionBox->SetBoxExtent(MeshBounds.GetExtent(), false);
+		MakeSelectable(SelectionBox);
+
+		// The capsule was the pick target until now (ASWGCreature's
+		// constructor); with the box in place it would only double-catch.
+		if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+		{
+			Capsule->SetCollisionResponseToChannel(SelectionChannel, ECR_Ignore);
+		}
+		return;
+	}
 
 	if (UBodySetup* BodySetup = StaticMesh ? StaticMesh->GetBodySetup() : nullptr)
 	{
