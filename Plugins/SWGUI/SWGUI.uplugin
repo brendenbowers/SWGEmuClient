@@ -1,0 +1,34 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SWG Emu UI",
+	"Description": "UMG/CommonUI front end for the Star Wars Galaxies EMU client: login, galaxy and character select, the in-world HUD, and the layout shell that hosts them. Sits on top of SWGGame; nothing below it references a widget.",
+	"Category": "User Interface",
+	"CreatedBy": "SWG Emu Team",
+	"CreatedByURL": "https://github.com/swgemu",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SWGUI",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
+		}
+	],
+	"Plugins": [
+		{ "Name": "SWGGame", "Enabled": true },
+		{ "Name": "SWGEmu", "Enabled": true },
+		{ "Name": "CommonUI", "Enabled": true }
+	]
+}

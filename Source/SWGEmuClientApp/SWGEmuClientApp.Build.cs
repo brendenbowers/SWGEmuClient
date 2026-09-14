@@ -13,6 +13,7 @@ public class SWGEmuClientApp : ModuleRules
 			"CoreUObject",
 			"Engine",
 			"SWGEmuClient",
+			"SWGUI",
 		});
 	}
 }

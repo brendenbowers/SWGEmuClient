@@ -39,6 +39,14 @@
 			"Enabled": true
 		},
 		{
+			"Name": "SWGGame",
+			"Enabled": true
+		},
+		{
+			"Name": "SWGUI",
+			"Enabled": true
+		},
+		{
 			"Name": "CommonUI",
 			"Enabled": true
 		},

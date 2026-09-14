@@ -30,7 +30,6 @@
 		{ "Name": "SWGEmu", "Enabled": true },
 		{ "Name": "SWGTre", "Enabled": true },
 		{ "Name": "SWGAnimation", "Enabled": true },
-		{ "Name": "CommonUI", "Enabled": true },
 		{ "Name": "StateTree", "Enabled": true },
 		{ "Name": "GameplayStateTree", "Enabled": true },
 		{ "Name": "GeometryScripting", "Enabled": true }
