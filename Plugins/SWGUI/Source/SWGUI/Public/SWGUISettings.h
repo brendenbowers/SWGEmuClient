@@ -23,4 +23,12 @@ public:
 	/** FSWGStateTransitionRow table: which widget to push on which client-state change. */
 	UPROPERTY(Config, EditAnywhere, Category = "Layout")
 	TSoftObjectPtr<UDataTable> StateTransitionTable;
+
+	/** Object context menu opened by right-clicking an object (WBP_RadialMenu). */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGRadialMenuWidget> RadialMenuClass;
+
+	/** Server UI window for message/list/input boxes (WBP_SuiBox), pushed on the modal layer. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGSuiBoxWidget> SuiBoxClass;
 };

@@ -113,9 +113,19 @@ protected:
 	void OnMouseWheel(float Value);
 
 	void OnLeftMouseButtonPressed();
+
+	// The selectable network object under the cursor (or screen centre when the
+	// cursor is hidden), or null. Shared by click-to-target and the radial menu.
+	AActor* PickActorUnderCursor(FVector2D& OutScreenPosition) const;
+
 	// How far click-to-target reaches, in Unreal units.
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Targeting")
 	float TargetTraceDistance = 20000.0f;
+
+	// RMB is both mouse-look (held and dragged) and the radial menu (clicked).
+	// A release counts as a click when the cursor moved less than this, in pixels.
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Targeting")
+	float RadialClickMaxDrag = 4.f;
 
 	// Gamepad: right stick orbits the camera without needing RMB held, and
 	// the D-pad zooms. Both are axis keys, so the value is per-frame and
@@ -202,4 +212,7 @@ private:
 	int64 LastReportedParentId = 0;
 	bool bIsMouseLooking = false;
 	bool bIsGamepadSteering = false;
+
+	/** Where RMB went down, to tell a click from a look-drag on release. */
+	FVector2D RightMouseDownPosition = FVector2D::ZeroVector;
 };

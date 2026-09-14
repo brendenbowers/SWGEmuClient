@@ -58,6 +58,13 @@ enum class ESWGMessageOp : uint32
 	UnkByteFlag = 0x7102B15Fu,
 	AttributeListMessage = 0xf3f12f2au,
 
+	// ── Radial menu & server UI (SUI) ─────────────────────────
+	ObjectMenuSelect = 0x7CA18726u,     // Client: the radial option the player picked
+	SuiCreatePage = 0xD44B7259u,        // Server: open a scripted window (message/list/input box)
+	SuiUpdatePage = 0x5F3342F6u,        // Server: replace an open window's contents
+	SuiForceClosePage = 0x990B5DE0u,    // Server: close a window
+	SuiEventNotification = 0x092D3564u, // Client: a window button was pressed, with its values
+
 	// Add more as needed during implementation
 	Null = 0x0u,
 	Multi = 0x2u

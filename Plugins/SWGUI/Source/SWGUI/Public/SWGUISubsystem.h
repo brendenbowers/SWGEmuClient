@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "Subsystems/LocalPlayerSubsystem.h"
 #include "Flow/SWGClientState.h"
+#include "Subsystems/SWGRadialMenuSubsystem.h"
+#include "Subsystems/SWGSuiSubsystem.h"
 #include "SWGUISubsystem.generated.h"
 
 class USWGGameLayout;
@@ -27,5 +29,21 @@ private:
 	UFUNCTION()
 	void HandleStateChanged(ESWGClientState OldState, ESWGClientState NewState);
 
+	UFUNCTION()
+	void HandleRadialMenuReceived(const FSWGRadialMenu& Menu);
+
+	UFUNCTION()
+	void HandleSuiPageOpened(const FSWGSuiPage& Page);
+
+	UFUNCTION()
+	void HandleSuiPageClosed(int32 PageId);
+
 	USWGGameLayout* EnsureLayout();
+
+	UPROPERTY()
+	TObjectPtr<class USWGRadialMenuWidget> RadialMenu;
+
+	/** Open SUI windows by page id, so a server force-close can take them down. */
+	UPROPERTY()
+	TMap<int32, TObjectPtr<class USWGSuiBoxWidget>> SuiWindows;
 };

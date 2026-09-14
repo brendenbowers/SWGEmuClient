@@ -27,6 +27,7 @@
 #include "Components/SWGSocialComponent.h"
 #include "Components/SWGStomachComponent.h"
 #include "Subsystems/SWGTargetSubsystem.h"
+#include "Subsystems/SWGRadialMenuSubsystem.h"
 #include "Materials/MaterialInterface.h"
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "EngineUtils.h"
@@ -261,15 +262,12 @@ void ASWGPlayer::OnMouseWheel(float Value)
 		CameraBoom->TargetArmLength - Value * ZoomStep, MinArmLength, MaxArmLength);
 }
 
-void ASWGPlayer::OnLeftMouseButtonPressed()
+AActor* ASWGPlayer::PickActorUnderCursor(FVector2D& OutScreenPosition) const
 {
-	APlayerController* PlayerController = Cast<APlayerController>(GetController());
-	UGameInstance* GameInstance = GetGameInstance();
-	USWGTargetSubsystem* TargetSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGTargetSubsystem>() : nullptr;
-
-	if (!PlayerController || !TargetSubsystem)
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	if (!PlayerController)
 	{
-		return;
+		return nullptr;
 	}
 
 	FVector2D AimPoint;
@@ -280,12 +278,13 @@ void ASWGPlayer::OnLeftMouseButtonPressed()
 		PlayerController->GetViewportSize(ViewportX, ViewportY);
 		AimPoint = FVector2D(ViewportX * 0.5f, ViewportY * 0.5f);
 	}
+	OutScreenPosition = AimPoint;
 
 	FVector TraceStart;
 	FVector TraceDirection;
 	if (!PlayerController->DeprojectScreenPositionToWorld(AimPoint.X, AimPoint.Y, TraceStart, TraceDirection))
 	{
-		return;
+		return nullptr;
 	}
 
 	// bTraceComplex so generated item meshes are picked per-triangle: their
@@ -308,9 +307,21 @@ void ASWGPlayer::OnLeftMouseButtonPressed()
 	{
 		HitActor = HitActor->GetParentActor();
 	}
+	return HitActor;
+}
+
+void ASWGPlayer::OnLeftMouseButtonPressed()
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	USWGTargetSubsystem* TargetSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGTargetSubsystem>() : nullptr;
+	if (!TargetSubsystem)
+	{
+		return;
+	}
 
 	// A miss clears the target, matching the retail client's click-off-to-deselect.
-	TargetSubsystem->SetTargetActor(HitActor);
+	FVector2D ScreenPosition;
+	TargetSubsystem->SetTargetActor(PickActorUnderCursor(ScreenPosition));
 }
 
 void ASWGPlayer::GamepadLookX(float Value)
@@ -426,11 +437,40 @@ void ASWGPlayer::CycleTarget(int32 Direction)
 void ASWGPlayer::OnRightMouseButtonPressed()
 {
 	bIsMouseLooking = true;
+
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	if (!PlayerController || !PlayerController->GetMousePosition(RightMouseDownPosition.X, RightMouseDownPosition.Y))
+	{
+		RightMouseDownPosition = FVector2D(-1.f, -1.f);
+	}
 }
 
 void ASWGPlayer::OnRightMouseButtonReleased()
 {
 	bIsMouseLooking = false;
+
+	// A click (no drag) on an object opens its radial menu; a drag was mouse-look.
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	FVector2D ReleasePosition;
+	if (!PlayerController || RightMouseDownPosition.X < 0.f || !PlayerController->GetMousePosition(ReleasePosition.X, ReleasePosition.Y)
+		|| FVector2D::Distance(ReleasePosition, RightMouseDownPosition) > RadialClickMaxDrag)
+	{
+		return;
+	}
+
+	FVector2D ScreenPosition;
+	AActor* HitActor = PickActorUnderCursor(ScreenPosition);
+	ISWGNetworkObjectInterface* NetworkObject = Cast<ISWGNetworkObjectInterface>(HitActor);
+	if (!NetworkObject)
+	{
+		return;
+	}
+
+	UGameInstance* GameInstance = GetGameInstance();
+	if (USWGRadialMenuSubsystem* RadialMenu = GameInstance ? GameInstance->GetSubsystem<USWGRadialMenuSubsystem>() : nullptr)
+	{
+		RadialMenu->RequestMenu(NetworkObject->GetObjectId(), ScreenPosition);
+	}
 }
 
 void ASWGPlayer::Move(const FInputActionValue& Value)
