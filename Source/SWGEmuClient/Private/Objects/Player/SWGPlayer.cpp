@@ -26,7 +26,6 @@
 #include "Components/SWGCraftingComponent.h"
 #include "Components/SWGSocialComponent.h"
 #include "Components/SWGStomachComponent.h"
-#include "UI/SWGHudWidget.h"
 #include "Subsystems/SWGTargetSubsystem.h"
 #include "Materials/MaterialInterface.h"
 #include "Objects/SWGNetworkObjectInterface.h"
@@ -219,12 +218,9 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	for (int32 SlotIndex = 0; SlotIndex < UE_ARRAY_COUNT(SlotKeys); ++SlotIndex)
 	{
 		FInputKeyBinding Binding(FInputChord(SlotKeys[SlotIndex], false, false, false, false), IE_Pressed);
-		Binding.KeyDelegate.GetDelegateForManualSet().BindLambda([SlotIndex]()
+		Binding.KeyDelegate.GetDelegateForManualSet().BindWeakLambda(this, [this, SlotIndex]()
 		{
-			if (USWGHudWidget* Hud = USWGHudWidget::GetActiveHud())
-			{
-				Hud->TriggerActionSlot(SlotIndex);
-			}
+			OnActionSlotHotkey.Broadcast(SlotIndex);
 		});
 		PlayerInputComponent->KeyBindings.Emplace(MoveTemp(Binding));
 	}

@@ -31,9 +31,6 @@ public:
 	*/
 	void RegisterState(ESWGClientState StateType, TSharedPtr<ISWGFlowState> State, ESWGClientState PreviousState = ESWGClientState::None);
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI")
-	class UDataTable* StateTransitionTable;
-
 	// ── Delegates ─────────────────────────────────────────────────
 
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnStateChanged, ESWGClientState, OldState, ESWGClientState, NewState);

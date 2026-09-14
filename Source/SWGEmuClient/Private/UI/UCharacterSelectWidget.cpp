@@ -5,7 +5,7 @@
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Kismet/GameplayStatics.h"
 #include "Blueprint/SlateBlueprintLibrary.h"
-#include "UI/SWGCharacterPreviewLayout.h"
+#include "Flow/SWGCharacterPreviewLayout.h"
 
 void UCharacterSelectWidget::NativeConstruct()
 {

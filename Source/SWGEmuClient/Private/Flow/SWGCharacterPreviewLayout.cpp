@@ -1,4 +1,4 @@
-#include "UI/SWGCharacterPreviewLayout.h"
+#include "Flow/SWGCharacterPreviewLayout.h"
 
 #include "Kismet/GameplayStatics.h"
 #include "Engine/StaticMeshActor.h"

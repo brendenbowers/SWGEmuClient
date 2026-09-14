@@ -17,7 +17,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Components/StaticMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "UI/SWGCharacterPreviewLayout.h"
+#include "Flow/SWGCharacterPreviewLayout.h"
 #include "SaveData/SWGCharacterPreviewSaveGame.h"
 
 

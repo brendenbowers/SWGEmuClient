@@ -53,5 +53,13 @@ protected:
 	TObjectPtr<USWGCommandQueueWidget> CommandQueue;
 
 private:
+	UFUNCTION()
+	void HandlePossessedPawnChanged(APawn* OldPawn, APawn* NewPawn);
+
+	void BindHotkeys(APawn* Pawn);
+	void HandleActionSlotHotkey(int32 SlotIndex);
+
+	TWeakObjectPtr<class ASWGPlayer> HotkeySource;
+
 	static TWeakObjectPtr<USWGHudWidget> ActiveHud;
 };

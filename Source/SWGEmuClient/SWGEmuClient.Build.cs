@@ -23,6 +23,7 @@ public class SWGEmuClient : ModuleRules
 			"CommonUI",
 			"CommonInput",
 			"GameplayTags",
+			"DeveloperSettings",
 			"Landscape",
 			"GeometryFramework",
 			"GeometryCore",

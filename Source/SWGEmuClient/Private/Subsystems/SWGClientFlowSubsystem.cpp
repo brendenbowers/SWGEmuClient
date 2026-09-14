@@ -5,9 +5,7 @@
 #include "Flow/SWGFlowStateRegistry.h"
 #include "Flow/SWGGalaxySelectedPayload.h"
 #include "Flow/SWGCharacterSelectedPayload.h"
-#include "Flow/SWGStateTransitionConfig.h"
-#include "UI/SWGGameLayout.h"
-#include "UI/SWGCharacterPreviewLayout.h"
+#include "Flow/SWGCharacterPreviewLayout.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 
@@ -106,43 +104,6 @@ void USWGClientFlowSubsystem::Status(const FString& Status)
 
 void USWGClientFlowSubsystem::HandleStateChanged(ESWGClientState OldState, ESWGClientState NewState)
 {
-	USWGGameLayout* Layout = USWGGameLayout::GetLayout(GetWorld());
-
-	// A scene change from in world (teleport, zone travel) wants the same
-	// loading screen as the one from character select.
-	const ESWGClientState RowOldState = (OldState == ESWGClientState::InWorld && NewState == ESWGClientState::ZoneLoading)
-		? ESWGClientState::CharacterSelected : OldState;
-
-	if (StateTransitionTable && Layout)
-	{
-		for (auto& Row : StateTransitionTable->GetRowMap())
-		{
-			FSWGStateTransitionRow* TransitionRow = (FSWGStateTransitionRow*)Row.Value;
-			if (TransitionRow && TransitionRow->OldState == RowOldState && TransitionRow->NewState == NewState)
-			{
-				FGameplayTag Tag = USWGGameLayout::TAG_Layer_Menu;
-				if (TransitionRow->LayerTag != FGameplayTag::EmptyTag)
-				{
-					Tag = TransitionRow->LayerTag;
-				}
-
-				Layout->PushWidgetToLayerStack(Tag, TransitionRow->WidgetClass);
-				break;
-			}
-		}
-	}
-
-	if (Layout && NewState == ESWGClientState::CharacterSelected)
-	{
-		Layout->ClearLayer(USWGGameLayout::TAG_Layer_Menu);
-	}
-	else if (Layout && NewState == ESWGClientState::InWorld)
-	{
-		Layout->ClearLayer(USWGGameLayout::TAG_Layer_Menu);
-		Layout->ClearLayer(USWGGameLayout::TAG_Layer_Loading);
-		Layout->ClearLayer(USWGGameLayout::TAG_Layer_Modal);
-	}
-
 	APlayerController* PlayerController = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
 	if (!PlayerController)
 	{

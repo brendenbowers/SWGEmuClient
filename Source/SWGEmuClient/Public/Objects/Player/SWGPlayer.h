@@ -79,6 +79,11 @@ public:
 	// ControlRotation one line after PossessedBy returns.
 	virtual void PawnClientRestart() override;
 
+	// Fired for the 1-9, 0, -, = action bar hotkeys with the slot index (0-11).
+	// The HUD listens; the pawn never sees a widget.
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnActionSlotHotkey, int32 /*SlotIndex*/);
+	FOnActionSlotHotkey OnActionSlotHotkey;
+
 protected:
 	virtual void BeginPlay() override;
 

@@ -8,7 +8,6 @@
 #include "Blueprint/UserWidget.h"
 #include "SWGEmuClient.h"
 #include "Widgets/Input/SVirtualJoystick.h"
-#include "UI/ULoginWidget.h"
 #include "Blueprint/UserWidget.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 
@@ -36,19 +35,11 @@ void ASWGEmuClientPlayerController::BeginPlay()
 			}
 		}
 
-		// Ensure the layout container exists before the flow's first transition fires —
-		// HandleStateChanged looks it up via USWGGameLayout::GetLayout() and pushes
-		// whichever widget StateTransitionTable maps to the resulting state change.
-		bool bCreated = false;
-		USWGGameLayout::GetOrCreate(this, LayoutWidgetClass, bCreated);
-
-		if (bCreated)
+		// Kick off the client flow once a controller exists. The UI layer
+		// (USWGUISubsystem) has already created its layout by this point.
+		if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>(); FlowSubsystem->GetState() == ESWGClientState::Initialization)
 		{
-			if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>(); FlowSubsystem->GetState() == ESWGClientState::Initialization)
-			{
-				FlowSubsystem->StateTransitionTable = StateTransitionTable;
-				FlowSubsystem->TransitionTo(ESWGClientState::Initialization);
-			}
+			FlowSubsystem->TransitionTo(ESWGClientState::Initialization);
 		}
 	}
 }
