@@ -4,10 +4,21 @@
 #include "Subsystems/SWGCommandSubsystem.h"
 #include "Subsystems/SWGCombatSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
+#include "Subsystems/SWGTreSubsystem.h"
 #include "Engine/GameInstance.h"
+#include "Engine/Texture2D.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/HorizontalBox.h"
+#include "Components/HorizontalBoxSlot.h"
 
 namespace
 {
+	USWGTreSubsystem* GetTre(const UWidget* Widget)
+	{
+		UGameInstance* GameInstance = Widget ? Widget->GetGameInstance() : nullptr;
+		return GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
+	}
+
 	USWGObjectGraphSubsystem* GetObjectGraph(const UWidget* Widget)
 	{
 		UGameInstance* GameInstance = Widget ? Widget->GetGameInstance() : nullptr;
@@ -64,7 +75,6 @@ void USWGActionBarWidget::SeedDefaultAttackSlot()
 	}
 
 	Slots[0].CommandName = AttackCommand;
-	Slots[0].Label = NSLOCTEXT("SWGEmu", "ActionBarAttack", "Attack");
 }
 
 int32 USWGActionBarWidget::FillEmptySlotsFromAbilities()
@@ -142,8 +152,21 @@ void USWGActionBarWidget::BuildSlotWidgets()
 	SlotBox->ClearChildren();
 	SlotWidgets.Reset();
 
+	const FSlateBrush* FrameBrush = ResolveStyleBrush(SlotFrameStyle);
+	const int32 SlotsPerGroup = FMath::Max(1, GroupSize);
+	UHorizontalBox* Group = nullptr;
+
 	for (int32 SlotIndex = 0; SlotIndex < SlotCount; ++SlotIndex)
 	{
+		if (SlotIndex % SlotsPerGroup == 0)
+		{
+			Group = WidgetTree->ConstructWidget<UHorizontalBox>();
+			if (UHorizontalBoxSlot* GroupSlot = Cast<UHorizontalBoxSlot>(SlotBox->AddChild(Group)); GroupSlot && SlotIndex > 0)
+			{
+				GroupSlot->SetPadding(FMargin(GroupSpacing, 0.f, 0.f, 0.f));
+			}
+		}
+
 		USWGActionSlotWidget* SlotWidget = CreateWidget<USWGActionSlotWidget>(this, SlotWidgetClass);
 		if (!SlotWidget)
 		{
@@ -151,7 +174,8 @@ void USWGActionBarWidget::BuildSlotWidgets()
 		}
 
 		SlotWidget->InitialiseSlot(this, SlotIndex, GetSlotKeyLabel(SlotIndex));
-		SlotBox->AddChild(SlotWidget);
+		SlotWidget->SetFrame(FrameBrush);
+		Group->AddChildToHorizontalBox(SlotWidget);
 		SlotWidgets.Add(SlotWidget);
 	}
 }
@@ -169,12 +193,95 @@ void USWGActionBarWidget::RefreshSlotVisuals()
 		if (!Slots.IsValidIndex(SlotIndex) || Slots[SlotIndex].IsEmpty())
 		{
 			SlotWidget->SetCommandLabel(FText::GetEmpty());
+			SlotWidget->SetCommandIcon(nullptr);
 			continue;
 		}
 
 		const FSWGActionSlot& SlotData = Slots[SlotIndex];
-		SlotWidget->SetCommandLabel(SlotData.Label.IsEmpty() ? FText::FromString(SlotData.CommandName) : SlotData.Label);
+		const FText Label = SlotData.Label.IsEmpty() ? ResolveCommandName(SlotData.CommandName) : SlotData.Label;
+		const FSlateBrush* Icon = ResolveCommandIcon(SlotData.CommandName);
+		SlotWidget->SetCommandLabel(Label);
+		SlotWidget->SetCommandIcon(Icon);
+
+		UE_LOG(LogTemp, Verbose, TEXT("USWGActionBarWidget: slot %d '%s' -> '%s', icon %s"),
+			SlotIndex, *SlotData.CommandName, *Label.ToString(), Icon ? TEXT("yes") : TEXT("none"));
 	}
+}
+
+FText USWGActionBarWidget::ResolveCommandName(const FString& CommandName) const
+{
+	USWGTreSubsystem* Tre = GetTre(this);
+	if (!Tre)
+	{
+		return FText::FromString(CommandName);
+	}
+
+	FString Name = CommandName.ToLower();
+	FString Display = Tre->LookupString(TEXT("cmd_n"), Name);
+	if (Display.IsEmpty() && Name.RemoveFromEnd(TEXT("server")))
+	{
+		// Server-side commands the client wraps ("sitserver") are named after the client command.
+		Display = Tre->LookupString(TEXT("cmd_n"), Name);
+	}
+	return FText::FromString(Display.IsEmpty() ? CommandName : Display);
+}
+
+namespace
+{
+	const FSlateBrush* MakeStyleBrush(USWGTreSubsystem* Tre, const FSWGUIImageStyle* Style, const FString& CacheKey, TMap<FString, FSlateBrush>& Cache)
+	{
+		UTexture2D* Sheet = (Tre && Style) ? Tre->GetOrLoadTexture(FString::Printf(TEXT("texture/%s.dds"), *Style->Source)) : nullptr;
+		if (!Sheet || Sheet->GetSizeX() <= 0 || Sheet->GetSizeY() <= 0)
+		{
+			return nullptr;
+		}
+
+		// The style's rect is in sheet pixels; the brush wants it as a UV box.
+		const FVector2D SheetSize(Sheet->GetSizeX(), Sheet->GetSizeY());
+		const FBox2D UVRegion(FVector2D(Style->SourceRect.Min) / SheetSize, FVector2D(Style->SourceRect.Max) / SheetSize);
+
+		FSlateBrush Brush;
+		Brush.SetResourceObject(Sheet);
+		Brush.ImageSize = FVector2D(Style->SourceRect.Size());
+		Brush.SetUVRegion(UVRegion);
+		return &Cache.Add(CacheKey, MoveTemp(Brush));
+	}
+}
+
+const FSlateBrush* USWGActionBarWidget::ResolveCommandIcon(const FString& CommandName)
+{
+	if (CommandName.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	// Prefixed so a command can't collide with a style path in the shared cache.
+	const FString Key = TEXT("command:") + CommandName.ToLower();
+	if (const FSlateBrush* Cached = StyleBrushes.Find(Key))
+	{
+		return Cached;
+	}
+
+	USWGTreSubsystem* Tre = GetTre(this);
+	return MakeStyleBrush(Tre, Tre ? Tre->FindCommandIcon(CommandName) : nullptr, Key, StyleBrushes);
+}
+
+const FSlateBrush* USWGActionBarWidget::ResolveStyleBrush(const FString& DottedPath)
+{
+	if (DottedPath.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	const FString Key = DottedPath.ToLower();
+	if (const FSlateBrush* Cached = StyleBrushes.Find(Key))
+	{
+		return Cached;
+	}
+
+	USWGTreSubsystem* Tre = GetTre(this);
+	const FSWGUIStyleSheet* Sheet = Tre ? Tre->GetUIStyleSheet() : nullptr;
+	return MakeStyleBrush(Tre, Sheet ? Sheet->FindImageStyle(Key) : nullptr, Key, StyleBrushes);
 }
 
 int64 USWGActionBarWidget::ResolveTargetId() const

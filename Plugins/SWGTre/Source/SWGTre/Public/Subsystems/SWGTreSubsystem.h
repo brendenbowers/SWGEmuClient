@@ -5,6 +5,7 @@
 #include "TRE/SWGTreArchive.h"
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGStringTableReader.h"
+#include "TRE/SWGUIStyleReader.h"
 #include "SWGTreSubsystem.generated.h"
 
 class UTexture2D;
@@ -89,6 +90,19 @@ public:
 	 */
 	FString ResolveStringId(const FString& Reference);
 
+	// ── UI style sheet (ui/ui_styles.inc) ───────────────────────────────
+
+	/** Loads and caches ui/ui_styles.inc; nullptr if it's missing or unparseable. */
+	const FSWGUIStyleSheet* GetUIStyleSheet();
+
+	/**
+	 * The toolbar icon retail draws for a command: /styles.icon.command.<name>,
+	 * following the sheet's aliases (stand -> icon.posture.upright). Command
+	 * names are matched case-insensitively; a "…server" name ("sitserver")
+	 * also tries its client-side form ("sit"). nullptr when there's no icon.
+	 */
+	const FSWGUIImageStyle* FindCommandIcon(const FString& CommandName);
+
 	/**
 	 * Reads a StringId field ("objectName", "detailedDescription") from a
 	 * shared template, walking the DERV chain up to the base template until
@@ -148,6 +162,10 @@ private:
 
 	/** Table id -> decoded .stf; a null entry records a table that failed to load. See GetStringTable. */
 	TMap<FString, TUniquePtr<FSWGStringTable>> StringTables;
+
+	/** Parsed ui/ui_styles.inc; bLoadedUIStyleSheet records a failed load so it isn't retried. See GetUIStyleSheet. */
+	TUniquePtr<FSWGUIStyleSheet> UIStyleSheet;
+	bool bLoadedUIStyleSheet = false;
 
 	/** Virtual path + flags -> decoded transient UTexture2D. See GetOrLoadTexture. */
 	UPROPERTY()

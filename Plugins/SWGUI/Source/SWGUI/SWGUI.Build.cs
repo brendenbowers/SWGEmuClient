@@ -19,6 +19,7 @@ public class SWGUI : ModuleRules
 			"GameplayTags",
 			"DeveloperSettings",
 			"SWGEmu",
+			"SWGTre",
 			"SWGEmuClient",
 		});
 	}

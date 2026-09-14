@@ -4,6 +4,7 @@
 #include "CommonUserWidget.h"
 #include "Components/Button.h"
 #include "Components/TextBlock.h"
+#include "Components/Image.h"
 #include "SWGActionSlotWidget.generated.h"
 
 class USWGActionBarWidget;
@@ -24,6 +25,12 @@ public:
 	/** Updates the command shown. Empty text for an unassigned slot. */
 	void SetCommandLabel(const FText& InLabel);
 
+	/** Shows Brush as the slot icon, or hides the icon image for a null brush. */
+	void SetCommandIcon(const FSlateBrush* Brush);
+
+	/** The cell background behind the icon; null leaves whatever the Blueprint painted. */
+	void SetFrame(const FSlateBrush* Brush);
+
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|ActionBar")
 	int32 GetSlotIndex() const { return SlotIndex; }
 
@@ -40,6 +47,22 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> CommandLabel;
 
+	/** Retail toolbar icon for the command, behind the labels. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UImage> CommandIcon;
+
+	/** Cell background behind the icon. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UImage> SlotFrame;
+
+	/** Retail's toolbar glyph colour (buttonBar.all NormalIconColor). The sheet's glyphs are white. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
+	FLinearColor IconTint = FLinearColor::FromSRGBColor(FColor(0x54, 0xE4, 0xFE));
+
+	/** Retail's neutral cell colour (icon.neutral.rs_default). */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
+	FLinearColor FrameTint = FLinearColor::FromSRGBColor(FColor(0x00, 0xD6, 0xFB));
+
 	UFUNCTION()
 	void HandleClicked();
 
@@ -52,4 +75,11 @@ private:
 	/** Held until NativeConstruct, since the bar initialises slots before they construct. */
 	FText PendingKeyLabel;
 	FText PendingCommandLabel;
+	FSlateBrush PendingIconBrush;
+	bool bHasPendingIcon = false;
+	FSlateBrush PendingFrameBrush;
+	bool bHasPendingFrame = false;
+
+	void ApplyIcon();
+	void ApplyFrame();
 };

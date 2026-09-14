@@ -22,7 +22,7 @@ struct SWGUI_API FSWGActionSlot
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SWGEmu|ActionBar")
 	FString CommandName;
 
-	/** Shown on the slot. Falls back to CommandName when empty. */
+	/** Overrides the retail name (cmd_n.stf) on the slot. Leave empty to use the resolved name. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SWGEmu|ActionBar")
 	FText Label;
 
@@ -110,6 +110,21 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
 	TSubclassOf<USWGActionSlotWidget> SlotWidgetClass;
 
+	/**
+	 * Slots per visual group. Retail shows 12 as three groups of four; a
+	 * gamepad layout wants two groups of eight (one per shoulder button).
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar", meta = (ClampMin = 1))
+	int32 GroupSize = 4;
+
+	/** Gap between groups, in slate units. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
+	float GroupSpacing = 16.f;
+
+	/** Retail style drawn behind every slot (see ui_styles.inc): the toolbar's neutral cell background. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
+	FString SlotFrameStyle = TEXT("icon.neutral.default.c");
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UPanelWidget> SlotBox;
 
@@ -119,4 +134,16 @@ protected:
 private:
 	/** The player's current target, or 0 when nothing is targeted. */
 	int64 ResolveTargetId() const;
+
+	/** Retail display name from string/<lang>/cmd_n.stf, falling back to the raw command. */
+	FText ResolveCommandName(const FString& CommandName) const;
+
+	/** Brush over the retail icon sheet for the command, or nullptr when the sheet has no icon for it. */
+	const FSlateBrush* ResolveCommandIcon(const FString& CommandName);
+
+	/** Brush for any ui_styles.inc image style ("icon.neutral.default.c"), or nullptr if it or its sheet is missing. */
+	const FSlateBrush* ResolveStyleBrush(const FString& DottedPath);
+
+	/** Style path / command name (lowercase) -> brush, so slots refreshing repeatedly don't rebuild brushes. */
+	TMap<FString, FSlateBrush> StyleBrushes;
 };

@@ -392,3 +392,53 @@ FString USWGTreSubsystem::ResolveTemplateObjectName(uint32 Crc)
 	}
 	return LookupString(Table, Text);
 }
+
+const FSWGUIStyleSheet* USWGTreSubsystem::GetUIStyleSheet()
+{
+	if (bLoadedUIStyleSheet)
+	{
+		return UIStyleSheet.Get();
+	}
+	bLoadedUIStyleSheet = true;
+
+	static const FString VirtualPath = TEXT("ui/ui_styles.inc");
+	if (!FileExists(VirtualPath))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTreSubsystem: %s not found"), *VirtualPath);
+		return nullptr;
+	}
+
+	TUniquePtr<FSWGUIStyleSheet> Sheet = MakeUnique<FSWGUIStyleSheet>();
+	if (!FSWGUIStyleReader::Read(ExtractFile(VirtualPath), *Sheet))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTreSubsystem: failed to parse %s"), *VirtualPath);
+		return nullptr;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGTreSubsystem: parsed %s - %d image styles, %d aliases"),
+		*VirtualPath, Sheet->ImageStyles.Num(), Sheet->Aliases.Num());
+	UIStyleSheet = MoveTemp(Sheet);
+	return UIStyleSheet.Get();
+}
+
+const FSWGUIImageStyle* USWGTreSubsystem::FindCommandIcon(const FString& CommandName)
+{
+	const FSWGUIStyleSheet* Sheet = GetUIStyleSheet();
+	if (!Sheet || CommandName.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	FString Name = CommandName.ToLower();
+	if (const FSWGUIImageStyle* Style = Sheet->FindImageStyle(TEXT("icon.command.") + Name))
+	{
+		return Style;
+	}
+
+	// Server-side commands the client wraps ("sitserver") share the client command's icon.
+	if (Name.RemoveFromEnd(TEXT("server")))
+	{
+		return Sheet->FindImageStyle(TEXT("icon.command.") + Name);
+	}
+	return nullptr;
+}
