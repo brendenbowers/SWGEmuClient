@@ -5,14 +5,9 @@
 	"Description": "",
 	"Modules": [
 		{
-			"Name": "SWGEmuClient",
+			"Name": "SWGEmuClientApp",
 			"Type": "Runtime",
-			"LoadingPhase": "Default",
-			"AdditionalDependencies": [
-				"Engine",
-				"AIModule",
-				"UMG"
-			]
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [

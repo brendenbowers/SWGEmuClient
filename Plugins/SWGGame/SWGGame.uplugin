@@ -1,0 +1,38 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SWG Emu Game",
+	"Description": "Gameplay layer for the Star Wars Galaxies EMU client: client flow, object graph, subsystems, components and world actors. The module keeps its original name (SWGEmuClient) so existing /Script/SWGEmuClient asset references stay valid.",
+	"Category": "Gameplay",
+	"CreatedBy": "SWG Emu Team",
+	"CreatedByURL": "https://github.com/swgemu",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SWGEmuClient",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
+		}
+	],
+	"Plugins": [
+		{ "Name": "SWGEmu", "Enabled": true },
+		{ "Name": "SWGTre", "Enabled": true },
+		{ "Name": "SWGAnimation", "Enabled": true },
+		{ "Name": "CommonUI", "Enabled": true },
+		{ "Name": "StateTree", "Enabled": true },
+		{ "Name": "GameplayStateTree", "Enabled": true },
+		{ "Name": "GeometryScripting", "Enabled": true }
+	]
+}

@@ -25,6 +25,10 @@
 		{
 			"Name": "SWGEmu",
 			"Enabled": true
+		},
+		{
+			"Name": "SWGGame",
+			"Enabled": true
 		}
 	]
 }

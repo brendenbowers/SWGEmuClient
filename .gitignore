@@ -58,9 +58,9 @@ node_modules/
 *.tmp
 *.bak
 .cache/
-/Source/SWGEmuClient/Variant_Combat
-/Source/SWGEmuClient/Variant_Platforming
-/Source/SWGEmuClient/Variant_SideScrolling
+/Plugins/SWGGame/Source/SWGEmuClient/Variant_Combat
+/Plugins/SWGGame/Source/SWGEmuClient/Variant_Platforming
+/Plugins/SWGGame/Source/SWGEmuClient/Variant_SideScrolling
 /DerivedDataCache
 /Content/__ExternalActors__
 /Content/__ExternalObjects__

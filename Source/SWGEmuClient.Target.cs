@@ -10,6 +10,6 @@ public class SWGEmuClientTarget : TargetRules
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.V7;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
-		ExtraModuleNames.Add("SWGEmuClient");
+		ExtraModuleNames.Add("SWGEmuClientApp");
 	}
 }

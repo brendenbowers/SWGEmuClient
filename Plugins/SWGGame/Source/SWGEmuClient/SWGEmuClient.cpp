@@ -3,6 +3,6 @@
 #include "SWGEmuClient.h"
 #include "Modules/ModuleManager.h"
 
-IMPLEMENT_PRIMARY_GAME_MODULE( FDefaultGameModuleImpl, SWGEmuClient, "SWGEmuClient" );
+IMPLEMENT_MODULE(FDefaultModuleImpl, SWGEmuClient)
 
 DEFINE_LOG_CATEGORY(LogSWGEmuClient)

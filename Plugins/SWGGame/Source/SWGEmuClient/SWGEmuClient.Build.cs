@@ -47,20 +47,20 @@ public class SWGEmuClient : ModuleRules
 		}
 
 		PublicIncludePaths.AddRange(new string[] {
-			"SWGEmuClient",
-			"SWGEmuClient/Variant_Platforming",
-			"SWGEmuClient/Variant_Platforming/Animation",
-			"SWGEmuClient/Variant_Combat",
-			"SWGEmuClient/Variant_Combat/AI",
-			"SWGEmuClient/Variant_Combat/Animation",
-			"SWGEmuClient/Variant_Combat/Gameplay",
-			"SWGEmuClient/Variant_Combat/Interfaces",
-			"SWGEmuClient/Variant_Combat/UI",
-			"SWGEmuClient/Variant_SideScrolling",
-			"SWGEmuClient/Variant_SideScrolling/AI",
-			"SWGEmuClient/Variant_SideScrolling/Gameplay",
-			"SWGEmuClient/Variant_SideScrolling/Interfaces",
-			"SWGEmuClient/Variant_SideScrolling/UI"
+			ModuleDirectory,
+			System.IO.Path.Combine(ModuleDirectory, "Variant_Platforming"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_Platforming/Animation"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_Combat"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_Combat/AI"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_Combat/Animation"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_Combat/Gameplay"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_Combat/Interfaces"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_Combat/UI"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_SideScrolling"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_SideScrolling/AI"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_SideScrolling/Gameplay"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_SideScrolling/Interfaces"),
+			System.IO.Path.Combine(ModuleDirectory, "Variant_SideScrolling/UI")
 		});
 
 		// Uncomment if you are using Slate UI
