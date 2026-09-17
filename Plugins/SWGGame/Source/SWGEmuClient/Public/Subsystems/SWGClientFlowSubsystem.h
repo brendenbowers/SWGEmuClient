@@ -61,6 +61,11 @@ public:
 	UFUNCTION(BlueprintPure) TArray<FSWGCharacterInfo> GetCharacters() const { return Context.Characters; }
 	UFUNCTION(BlueprintPure) FText                  GetStatusText() const { return Context.StatusText; }
 
+	// The retail client keys its per-character files (profiles/<account>/<galaxy>/<oid>.*) on these.
+	UFUNCTION(BlueprintPure) FString GetUsername() const { return Context.Username; }
+	UFUNCTION(BlueprintPure) int64   GetSelectedCharacterID() const { return Context.SelectedCharacterID; }
+	UFUNCTION(BlueprintPure) FString GetSelectedGalaxyName() const;
+
 	// ── Internal ─────────────────────────────────────────────────
 
 	void TransitionTo(const ESWGClientState NewState, const TSharedPtr<FSWGTransitionPayload> Payload = nullptr);

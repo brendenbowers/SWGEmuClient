@@ -39,6 +39,9 @@ public:
 	bool LoadArchives(const FString& Directory);
 	bool LoadArchives() { return LoadArchives(TreDirectory); }
 
+	/** The retail client install — the archives, and next to them the profiles/ directory. */
+	const FString& GetTreDirectory() const { return TreDirectory; }
+
 	bool IsLoaded() const { return Archives.Num() > 0; }
 	int32 GetLoadedArchiveCount() const { return Archives.Num(); }
 

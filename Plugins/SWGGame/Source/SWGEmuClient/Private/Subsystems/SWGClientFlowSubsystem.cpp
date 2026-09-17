@@ -198,6 +198,15 @@ void USWGClientFlowSubsystem::BeginLogin(const FString& Host, const FString& Use
 
 	TransitionTo(ESWGClientState::ConnectingToLogin);
 }
+FString USWGClientFlowSubsystem::GetSelectedGalaxyName() const
+{
+	const FSWGGalaxyInfo* Galaxy = Context.Galaxies.FindByPredicate([this](const FSWGGalaxyInfo& Info)
+	{
+		return Info.GalaxyID == Context.SelectedGalaxyID;
+	});
+	return Galaxy ? Galaxy->Name : FString();
+}
+
 void USWGClientFlowSubsystem::SelectGalaxy(int32 GalaxyID)
 {
 	if (CurrentState != ESWGClientState::GalaxySelect)

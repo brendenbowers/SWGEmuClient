@@ -31,6 +31,11 @@ public:
 	/** Server UI window for message/list/input boxes (WBP_SuiBox), pushed on the modal layer. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGSuiBoxWidget> SuiBoxClass;
+
+	/** Damage-number layer put under the HUD while in world. Leave unset for the native USWGFloatingTextWidget. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGFloatingTextWidget> FloatingTextClass;
+
 	/** Inventory window toggled by the player's InventoryKey. Leave unset for the native USWGInventoryWidget. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGInventoryWidget> InventoryClass;

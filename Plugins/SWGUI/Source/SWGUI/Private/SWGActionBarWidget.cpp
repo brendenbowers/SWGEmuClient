@@ -4,7 +4,10 @@
 #include "Subsystems/SWGCommandSubsystem.h"
 #include "Subsystems/SWGCombatSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
+#include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGTreSubsystem.h"
+#include "TRE/SWGUiSettingsReader.h"
+#include "Misc/FileHelper.h"
 #include "Engine/GameInstance.h"
 #include "Engine/Texture2D.h"
 #include "Blueprint/WidgetTree.h"
@@ -47,16 +50,21 @@ void USWGActionBarWidget::NativeConstruct()
 
 	BuildSlotWidgets();
 
-	// Before the ability fill, so attack keeps slot 0 rather than being
-	// pushed along by whatever the player happens to know.
-	if (bSeedDefaultAttackSlot)
+	// The retail toolbar is what the player arranged themselves, so it wins
+	// outright; the seed and ability fill are only for characters without one.
+	if (!(bLoadRetailToolbar && LoadRetailToolbar()))
 	{
-		SeedDefaultAttackSlot();
-	}
+		// Before the ability fill, so attack keeps slot 0 rather than being
+		// pushed along by whatever the player happens to know.
+		if (bSeedDefaultAttackSlot)
+		{
+			SeedDefaultAttackSlot();
+		}
 
-	if (bFillEmptySlotsFromAbilities)
-	{
-		FillEmptySlotsFromAbilities();
+		if (bFillEmptySlotsFromAbilities)
+		{
+			FillEmptySlotsFromAbilities();
+		}
 	}
 
 	RefreshSlotVisuals();
@@ -78,6 +86,63 @@ void USWGActionBarWidget::SeedDefaultAttackSlot()
 	}
 
 	Slots[0].CommandName = AttackCommand;
+}
+
+bool USWGActionBarWidget::LoadRetailToolbar()
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	USWGClientFlowSubsystem* Flow = GameInstance ? GameInstance->GetSubsystem<USWGClientFlowSubsystem>() : nullptr;
+	USWGTreSubsystem* Tre = GetTre(this);
+	if (!Flow || !Tre || Flow->GetSelectedCharacterID() <= 0)
+	{
+		return false;
+	}
+
+	const FString Path = FSWGUiSettingsReader::MakeUiSettingsPath(
+		Tre->GetTreDirectory(), Flow->GetUsername(), Flow->GetSelectedGalaxyName(), Flow->GetSelectedCharacterID());
+
+	TArray<uint8> Data;
+	TArray<FSWGToolbarSlot> RetailSlots;
+	if (!FFileHelper::LoadFileToArray(Data, *Path) || !FSWGUiSettingsReader::ReadToolbar(Data, RetailSlots))
+	{
+		UE_LOG(LogTemp, Log, TEXT("USWGActionBarWidget: no retail toolbar at %s"), *Path);
+		return false;
+	}
+
+	// Retail has six panes of 24; we show the first pane, and as many of its
+	// slots as the layout has room for.
+	Slots.Reset();
+	Slots.SetNum(GetActiveSlotCount());
+
+	int32 LoadedCount = 0;
+	for (const FSWGToolbarSlot& Retail : RetailSlots)
+	{
+		if (Retail.Pane != 0 || !Slots.IsValidIndex(Retail.Slot) || !Retail.IsCommand())
+		{
+			continue;
+		}
+
+		// "/mood sad" -> mood + sad. Retail also stores the leading slash.
+		FString Line = Retail.Text;
+		Line.RemoveFromStart(TEXT("/"));
+		FString Command, Arguments;
+		if (!Line.Split(TEXT(" "), &Command, &Arguments))
+		{
+			Command = Line;
+		}
+		if (Command.IsEmpty())
+		{
+			continue;
+		}
+
+		Slots[Retail.Slot].CommandName = Command;
+		Slots[Retail.Slot].Arguments = Arguments.TrimStartAndEnd();
+		++LoadedCount;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGActionBarWidget: loaded %d slots from retail toolbar %s"), LoadedCount, *Path);
+	bRetailToolbarLoaded = true;
+	return true;
 }
 
 int32 USWGActionBarWidget::FillEmptySlotsFromAbilities()
@@ -164,7 +229,11 @@ void USWGActionBarWidget::SetGamepadLayout(bool bGamepad)
 
 	// The gamepad layout has four more slots than the keyboard one, so there
 	// may be empties to fill the first time it comes up.
-	if (bFillEmptySlotsFromAbilities)
+	if (bRetailToolbarLoaded)
+	{
+		LoadRetailToolbar();
+	}
+	else if (bFillEmptySlotsFromAbilities)
 	{
 		FillEmptySlotsFromAbilities();
 	}
@@ -338,7 +407,12 @@ void USWGActionBarWidget::RefreshSlotVisuals()
 		}
 
 		const FSWGActionSlot& SlotData = Slots[SlotIndex];
-		const FText Label = SlotData.Label.IsEmpty() ? ResolveCommandName(SlotData.CommandName) : SlotData.Label;
+		FText Label = SlotData.Label.IsEmpty() ? ResolveCommandName(SlotData.CommandName) : SlotData.Label;
+		if (SlotData.Label.IsEmpty() && !SlotData.Arguments.IsEmpty())
+		{
+			// "Mood sad", so two mood slots don't read the same.
+			Label = FText::FromString(Label.ToString() + TEXT(" ") + SlotData.Arguments);
+		}
 		const FSlateBrush* Icon = ResolveCommandIcon(SlotData.CommandName);
 		SlotWidget->SetCommandLabel(Label);
 		SlotWidget->SetCommandIcon(Icon);
@@ -445,7 +519,7 @@ bool USWGActionBarWidget::TriggerSlot(int32 SlotIndex)
 		return false;
 	}
 
-	if (!SendCommand(Slots[SlotIndex].CommandName, FString()))
+	if (!SendCommand(Slots[SlotIndex].CommandName, Slots[SlotIndex].Arguments))
 	{
 		return false;
 	}

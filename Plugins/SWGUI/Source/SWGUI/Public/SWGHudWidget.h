@@ -70,6 +70,10 @@ private:
 	/** Swaps the action bar between its keyboard and gamepad layouts as the last-used device changes. */
 	void HandleInputMethodChanged(ECommonInputType InputType);
 
+	/** Damage numbers. Lives on the player screen under the layout, not in this tree, so the Blueprint needn't know about it. */
+	UPROPERTY()
+	TObjectPtr<class USWGFloatingTextWidget> FloatingText;
+
 	TWeakObjectPtr<class ASWGPlayer> HotkeySource;
 	FDelegateHandle InputMethodChangedHandle;
 

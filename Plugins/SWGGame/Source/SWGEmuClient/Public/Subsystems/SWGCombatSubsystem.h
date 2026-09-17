@@ -64,8 +64,43 @@ struct SWGEMUCLIENT_API FSWGCombatEvent
 	bool bLandedOnUs = false;
 };
 
+/** One combat log line, with who it was about so it can be drawn over them. */
+USTRUCT(BlueprintType)
+struct SWGEMUCLIENT_API FSWGCombatSpamEvent
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
+	int64 AttackerId = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
+	int64 DefenderId = 0;
+
+	/** Also filled on a miss — it's the damage that would have landed. Read StringName to tell. */
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
+	int32 Damage = 0;
+
+	/** Entry within cbt_spam ("attack_hit", "attack_miss", "armor_damaged", ...). Empty on a custom line. */
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
+	FString StringName;
+
+	/** The "@file:name" reference resolved through the .stf tables, or the line's own custom text. */
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
+	FString Text;
+
+	/** An ESWGCombatSpamColor: 0 white, 1 auto (green dealt / red taken), 10 red, 11 yellow. */
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
+	uint8 Color = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
+	bool bDealtByUs = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
+	bool bLandedOnUs = false;
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSWGOnCombatEvent, const FSWGCombatEvent&, Event);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FSWGOnCombatSpam, const FString&, Text, int32, Damage, uint8, Color);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSWGOnCombatSpam, const FSWGCombatSpamEvent&, Event);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FSWGOnAttackStopped, ESWGAttackStopReason, Reason, const FString&, Detail);
 
 /**
@@ -119,7 +154,7 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "SWGEmu|Combat")
 	FSWGOnCombatEvent OnCombatAction;
 
-	/** One combat log line. Text is the "@file:name" reference resolved through the .stf tables, or the line's own custom text. */
+	/** One combat log line, ours and other people's. */
 	UPROPERTY(BlueprintAssignable, Category = "SWGEmu|Combat")
 	FSWGOnCombatSpam OnCombatSpam;
 

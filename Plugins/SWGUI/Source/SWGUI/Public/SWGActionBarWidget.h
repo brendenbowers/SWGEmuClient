@@ -11,8 +11,8 @@
  * One toolbar slot. CommandName is the server command ("burstrun", "attack") —
  * the same name Core3 registers, hashed on send.
  *
- * SWG stores the real toolbar server-side, but nothing we decode carries it
- * yet, so slots are filled locally for now.
+ * SWG keeps the toolbar client-side, in the retail profile's .uis file; see
+ * LoadRetailToolbar.
  */
 USTRUCT(BlueprintType)
 struct SWGUI_API FSWGActionSlot
@@ -25,6 +25,10 @@ struct SWGUI_API FSWGActionSlot
 	/** Overrides the retail name (cmd_n.stf) on the slot. Leave empty to use the resolved name. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SWGEmu|ActionBar")
 	FText Label;
+
+	/** Sent along with the command — "sad" for a retail "/mood sad" slot. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SWGEmu|ActionBar")
+	FString Arguments;
 
 	bool IsEmpty() const { return CommandName.IsEmpty(); }
 };
@@ -70,6 +74,16 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|ActionBar")
 	int32 FillEmptySlotsFromAbilities();
+
+	/**
+	 * Fills the slots from the retail client's toolbar for this character —
+	 * pane 0 of profiles/<account>/<galaxy>/<oid>.uis under the TRE directory,
+	 * so the bar matches what the player set up in the original client. Item
+	 * slots are left empty. Returns false if the file is missing or has no
+	 * toolbar.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|ActionBar")
+	bool LoadRetailToolbar();
 
 	/** Re-reads the slots onto their widgets. Call after changing Slots at runtime. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|ActionBar")
@@ -126,7 +140,11 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
 	int32 SlotCount = 12;
 
-	/** Fill leftover slots with whatever abilities the player has, on construct. */
+	/** Take the slots from the retail client's saved toolbar on construct, when it has one. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
+	bool bLoadRetailToolbar = true;
+
+	/** Fill leftover slots with whatever abilities the player has, on construct. Skipped when the retail toolbar loaded. */
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|ActionBar")
 	bool bFillEmptySlotsFromAbilities = true;
 
@@ -204,6 +222,9 @@ protected:
 
 	bool bGamepadLayout = false;
 	int32 ActiveBank = 0;
+
+	/** The slots came from the retail .uis, so a relayout re-reads it rather than ability-filling. */
+	bool bRetailToolbarLoaded = false;
 
 private:
 	/** The player's current target, or 0 when nothing is targeted. */

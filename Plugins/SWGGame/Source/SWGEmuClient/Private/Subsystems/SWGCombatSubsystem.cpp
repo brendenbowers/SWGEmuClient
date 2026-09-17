@@ -579,7 +579,19 @@ void USWGCombatSubsystem::HandleCombatSpam(const FObjControllerMessageIn& Envelo
 		Spam.CustomText.IsEmpty() ? TEXT("") : *FString::Printf(TEXT("\"%s\""), *Spam.CustomText),
 		Spam.Damage);
 
-	OnCombatSpam.Broadcast(StringId.IsEmpty() ? Spam.CustomText : (Tre ? Tre->ResolveStringId(StringId) : StringId), Spam.Damage, Spam.Color);
+	const int64 LocalPlayerId = ObjectGraph ? ObjectGraph->GetLocalPlayerObjectId() : 0;
+
+	FSWGCombatSpamEvent Event;
+	Event.AttackerId  = Spam.AttackerId;
+	Event.DefenderId  = Spam.DefenderId;
+	Event.Damage      = Spam.Damage;
+	Event.StringName  = Spam.StringName;
+	Event.Text        = StringId.IsEmpty() ? Spam.CustomText : (Tre ? Tre->ResolveStringId(StringId) : StringId);
+	Event.Color       = Spam.Color;
+	Event.bDealtByUs  = LocalPlayerId != 0 && Spam.AttackerId == LocalPlayerId;
+	Event.bLandedOnUs = LocalPlayerId != 0 && Spam.DefenderId == LocalPlayerId;
+
+	OnCombatSpam.Broadcast(Event);
 }
 
 void USWGCombatSubsystem::DumpCombatAnimationChain(const FString& ServerAnimationName, uint8 HitResult, uint8 DefenderPosture)

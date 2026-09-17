@@ -1,7 +1,10 @@
 #include "SWGHudWidget.h"
 #include "SWGActionBarWidget.h"
 #include "SWGConditionWidget.h"
+#include "SWGFloatingTextWidget.h"
+#include "SWGGameLayout.h"
 #include "SWGInventoryWidget.h"
+#include "SWGUISettings.h"
 #include "Objects/Player/SWGPlayer.h"
 #include "CommonInputSubsystem.h"
 #include "Components/CanvasPanelSlot.h"
@@ -36,6 +39,17 @@ void USWGHudWidget::NativeConstruct()
 		BarSlot->SetAutoSize(true);
 	}
 
+	// Below the layout (100) so damage numbers never cover a window.
+	if (APlayerController* PlayerController = GetOwningPlayer())
+	{
+		TSubclassOf<USWGFloatingTextWidget> FloatingTextClass = USWGUISettings::Get().FloatingTextClass.LoadSynchronous();
+		FloatingText = CreateWidget<USWGFloatingTextWidget>(PlayerController, FloatingTextClass ? *FloatingTextClass : USWGFloatingTextWidget::StaticClass());
+		if (FloatingText)
+		{
+			FloatingText->AddToPlayerScreen(50);
+		}
+	}
+
 	if (UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetOwningLocalPlayer()))
 	{
 		InputMethodChangedHandle = CommonInput->OnInputMethodChangedNative.AddUObject(this, &USWGHudWidget::HandleInputMethodChanged);
@@ -56,6 +70,12 @@ void USWGHudWidget::NativeDestruct()
 		CommonInput->OnInputMethodChangedNative.Remove(InputMethodChangedHandle);
 	}
 	InputMethodChangedHandle.Reset();
+
+	if (FloatingText)
+	{
+		FloatingText->RemoveFromParent();
+		FloatingText = nullptr;
+	}
 
 	if (ActiveHud.Get() == this)
 	{

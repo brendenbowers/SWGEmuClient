@@ -411,6 +411,7 @@ private:
 	/** .lmg (FORM MLOD > FORM 0000 > one NAME per LOD) -> its highest-detail .mgn. */
 	bool ResolveLmgMeshPath(const FString& LmgPath, FString& OutMgnPath);
 
+public:
 	/**
 	 * CRC -> template -> arrangementDescriptorFilename (walking the DERV chain
 	 * the same way ResolveMeshPathForTemplate does for appearanceFilename —
@@ -433,6 +434,8 @@ private:
 	 * building anything for items equipped there.
 	 */
 	bool IsAnySlotAppearanceRelated(const TArray<FString>& SlotNames);
+
+private:
 
 	/** mg4: FSWGMeshReader::ReadStaticMesh/ReadSkeletalMeshBindPose — intended to run off the game thread, like USWGTerrainSubsystem::BakeHeightmap. */
 	bool ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData, TArray<FSWGMeshData>& OutLodMeshData);
