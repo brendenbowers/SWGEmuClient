@@ -29,6 +29,7 @@
 	"Plugins": [
 		{ "Name": "SWGGame", "Enabled": true },
 		{ "Name": "SWGEmu", "Enabled": true },
-		{ "Name": "CommonUI", "Enabled": true }
+		{ "Name": "CommonUI", "Enabled": true },
+		{ "Name": "ModelWidget", "Enabled": true }
 	]
 }

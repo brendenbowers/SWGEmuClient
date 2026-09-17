@@ -1,0 +1,65 @@
+// Draws one mesh straight into the Slate back buffer for UModelWidget.
+// Vertices are fetched by SV_VertexID from the mesh's own typed SRVs (the same
+// manual-fetch layout the engine's local vertex factory uses), so there is no
+// vertex declaration and nothing is re-uploaded.
+
+#include "/Engine/Public/Platform.ush"
+
+float4x4 ModelViewProjection;
+float4x4 NormalMatrix;
+/** View space, pointing toward the light. */
+float3 LightDirection;
+float4 TintColor;
+float4 TintColor2;
+float Gamma;
+uint NumTexCoords;
+uint bMasked;
+
+/** xyz per vertex. */
+Buffer<float> Positions;
+/** Two entries per vertex: tangent X, then tangent Z (the normal), both signed-normalised. */
+Buffer<float4> Tangents;
+/** NumTexCoords entries per vertex. */
+Buffer<float2> TexCoords;
+
+Texture2D DiffuseTexture;
+SamplerState DiffuseSampler;
+
+void MainVS(
+	uint VertexId : SV_VertexID,
+	out float4 OutPosition : SV_POSITION,
+	out float3 OutNormal : TEXCOORD0,
+	out float2 OutUV : TEXCOORD1)
+{
+	const float3 Position = float3(Positions[VertexId * 3 + 0], Positions[VertexId * 3 + 1], Positions[VertexId * 3 + 2]);
+	const float3 Normal = Tangents[VertexId * 2 + 1].xyz;
+
+	OutPosition = mul(float4(Position, 1.0), ModelViewProjection);
+	OutNormal = mul(Normal, (float3x3)NormalMatrix);
+	OutUV = TexCoords[VertexId * NumTexCoords];
+}
+
+void MainPS(
+	float4 InPosition : SV_POSITION,
+	float3 InNormal : TEXCOORD0,
+	float2 InUV : TEXCOORD1,
+	out float4 OutColor : SV_Target0)
+{
+	const float4 Diffuse = DiffuseTexture.Sample(DiffuseSampler, InUV);
+	if (bMasked && Diffuse.a < 0.5)
+	{
+		clip(-1);
+	}
+
+	// Two-tone tint picked by diffuse alpha; materials without tint
+	// parameters read both as white, leaving the texture as is.
+	const float3 Base = Diffuse.rgb * lerp(TintColor.rgb, TintColor2.rgb, Diffuse.a);
+
+	// Faces are drawn two-sided, so light whichever way the normal points.
+	const float3 Normal = normalize(InNormal);
+	const float Facing = abs(dot(Normal, LightDirection));
+	const float Rim = pow(1.0 - saturate(abs(Normal.z)), 3.0) * 0.2;
+	const float3 Lit = Base * (0.6 + 0.6 * Facing) + Rim;
+
+	OutColor = float4(pow(max(Lit, 0.0), 1.0 / Gamma), 1.0);
+}

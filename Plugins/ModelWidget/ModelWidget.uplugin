@@ -1,0 +1,29 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "3D Model Widget",
+	"Description": "A UMG widget that draws a static or skeletal mesh live into the Slate back buffer through a custom Slate element: a real 3D model in the UI, with no scene capture or render target.",
+	"Category": "User Interface",
+	"CreatedBy": "Brenden Bowers",
+	"CreatedByURL": "https://github.com/brendenbowers/",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "ModelWidget",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
+		}
+	]
+}
