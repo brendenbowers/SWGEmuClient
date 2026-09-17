@@ -21,6 +21,10 @@ class SWGUI_API USWGHudWidget : public UCommonActivatableWidget
 	GENERATED_BODY()
 
 public:
+	/** Opens the inventory window, or closes it if it is up. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HUD")
+	void ToggleInventory();
+
 	/** Fires the action bar slot at this index — the entry point for number-key hotkeys. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HUD")
 	bool TriggerActionSlot(int32 SlotIndex);
@@ -60,6 +64,8 @@ private:
 	void BindHotkeys(APawn* Pawn);
 	void HandleActionSlotHotkey(int32 SlotIndex);
 	void HandleActionBankChanged(int32 BankIndex);
+
+	TWeakObjectPtr<class USWGInventoryWidget> InventoryWindow;
 
 	/** Swaps the action bar between its keyboard and gamepad layouts as the last-used device changes. */
 	void HandleInputMethodChanged(ECommonInputType InputType);

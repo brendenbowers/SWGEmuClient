@@ -176,6 +176,19 @@ AActor* USWGObjectGraphSubsystem::FindActor(int64 ObjectId) const
 	return nullptr;
 }
 
+TArray<int64> USWGObjectGraphSubsystem::FindContainedObjectIds(int64 ContainerId) const
+{
+	TArray<int64> Contained;
+	for (const TPair<int64, int64>& Pair : ContainerByObjectId)
+	{
+		if (Pair.Value == ContainerId)
+		{
+			Contained.Add(Pair.Key);
+		}
+	}
+	return Contained;
+}
+
 void USWGObjectGraphSubsystem::OnZoneLevelLoaded()
 {
 	bLevelReadyForObjects = true;

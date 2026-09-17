@@ -91,6 +91,13 @@ public:
 
 	int32 GetActiveActionBank() const { return bActionBankShifted ? 1 : 0; }
 
+	// Fired by InventoryKey; the HUD opens or closes the inventory window.
+	DECLARE_MULTICAST_DELEGATE(FOnToggleInventory);
+	FOnToggleInventory OnToggleInventory;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Input")
+	FKey InventoryKey = EKeys::I;
+
 	// Gamepad layout: D-pad and face buttons are the eight action slots;
 	// ActionBankShiftKey toggles to the second eight. InteractKey opens
 	// the target's radial menu (the RMB-click equivalent), and holding
@@ -167,6 +174,7 @@ protected:
 	float GamepadZoomRate = 600.0f;
 
 	void ToggleActionBank();
+	void ToggleInventory();
 	void OnZoomModifierPressed();
 	void OnZoomModifierReleased();
 

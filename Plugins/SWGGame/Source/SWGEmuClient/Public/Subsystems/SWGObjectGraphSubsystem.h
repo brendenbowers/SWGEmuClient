@@ -83,6 +83,12 @@ public:
 	/** ObjectId's most recent UpdateContainmentMessage::ContainerId, or null if none has arrived yet. */
 	const int64* FindContainerId(int64 ObjectId) const { return ContainerByObjectId.Find(ObjectId); }
 
+	/** ObjectId's most recent containmentType (see ESWGContainmentType), or null if none has arrived yet. */
+	const int32* FindContainmentType(int64 ObjectId) const { return ContainmentTypeByObjectId.Find(ObjectId); }
+
+	/** Every object whose latest containment puts it directly inside ContainerId — a creature's gear and bags, a bag's contents. */
+	TArray<int64> FindContainedObjectIds(int64 ContainerId) const;
+
 	/**
 	 * ObjectId's cellNumber, or null
 	 */

@@ -21,6 +21,7 @@ public class SWGUI : ModuleRules
 			"SWGEmu",
 			"SWGTre",
 			"SWGEmuClient",
+			"ModelWidget",
 		});
 	}
 }

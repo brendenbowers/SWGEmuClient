@@ -1,6 +1,7 @@
 #include "SWGHudWidget.h"
 #include "SWGActionBarWidget.h"
 #include "SWGConditionWidget.h"
+#include "SWGInventoryWidget.h"
 #include "Objects/Player/SWGPlayer.h"
 #include "CommonInputSubsystem.h"
 #include "Components/CanvasPanelSlot.h"
@@ -75,6 +76,7 @@ void USWGHudWidget::BindHotkeys(APawn* Pawn)
 	{
 		Previous->OnActionSlotHotkey.RemoveAll(this);
 		Previous->OnActionBankChanged.RemoveAll(this);
+		Previous->OnToggleInventory.RemoveAll(this);
 	}
 
 	HotkeySource = Cast<ASWGPlayer>(Pawn);
@@ -82,6 +84,7 @@ void USWGHudWidget::BindHotkeys(APawn* Pawn)
 	{
 		Player->OnActionSlotHotkey.AddUObject(this, &USWGHudWidget::HandleActionSlotHotkey);
 		Player->OnActionBankChanged.AddUObject(this, &USWGHudWidget::HandleActionBankChanged);
+		Player->OnToggleInventory.AddUObject(this, &USWGHudWidget::ToggleInventory);
 		HandleActionBankChanged(Player->GetActiveActionBank());
 	}
 }
@@ -110,4 +113,43 @@ void USWGHudWidget::HandleInputMethodChanged(ECommonInputType InputType)
 bool USWGHudWidget::TriggerActionSlot(int32 SlotIndex)
 {
 	return ActionBar ? ActionBar->TriggerSlot(SlotIndex) : false;
+}
+
+void USWGHudWidget::ToggleInventory()
+{
+	// The window closes itself on Escape too, so "open" means still activated.
+	if (USWGInventoryWidget* Open = InventoryWindow.Get())
+	{
+		const bool bWasOpen = Open->IsActivated();
+		Open->DeactivateWidget();
+		InventoryWindow.Reset();
+		if (bWasOpen)
+		{
+			return;
+		}
+	}
+
+	USWGGameLayout* Layout = USWGGameLayout::GetLayout(this);
+	if (!Layout)
+	{
+		return;
+	}
+
+	TSubclassOf<USWGInventoryWidget> InventoryClass = USWGUISettings::Get().InventoryClass.LoadSynchronous();
+	InventoryWindow = Cast<USWGInventoryWidget>(Layout->PushWidgetToLayerStack(
+		USWGGameLayout::TAG_Layer_Modal, InventoryClass ? *InventoryClass : USWGInventoryWidget::StaticClass()));
+}
+
+namespace
+{
+	FAutoConsoleCommand CmdToggleInventory(
+		TEXT("swg.Inventory"),
+		TEXT("Opens or closes the inventory window, as the inventory key does."),
+		FConsoleCommandDelegate::CreateLambda([]()
+		{
+			if (USWGHudWidget* Hud = USWGHudWidget::GetActiveHud())
+			{
+				Hud->ToggleInventory();
+			}
+		}));
 }
