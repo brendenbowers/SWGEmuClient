@@ -5,6 +5,7 @@
 #include "Flow/SWGClientState.h"
 #include "Subsystems/SWGRadialMenuSubsystem.h"
 #include "Subsystems/SWGSuiSubsystem.h"
+#include "CommonInputTypeEnum.h"
 #include "SWGUISubsystem.generated.h"
 
 class USWGGameLayout;
@@ -25,15 +26,34 @@ public:
 	virtual void Deinitialize() override;
 	virtual void PlayerControllerChanged(APlayerController* NewPlayerController) override;
 
-	/** Opens the inventory window, or closes it if it is up. */
+	/**
+	 * Opens the inventory, or closes it if it is up. Mouse and keyboard get the
+	 * classic floating window; a gamepad gets the docked panel, and the two swap
+	 * if the active device changes while it is open.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
 	void ToggleInventory();
+
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void CloseInventory();
+
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
+	bool IsInventoryOpen() const;
+
+	/** Opens a specific form of the inventory (closing nothing — see ToggleInventory for the usual path). */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void OpenInventory(bool bDocked);
 
 	/** Opens an examine window for the object, or raises the one already showing it. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
 	void OpenExamine(int64 ObjectId);
 
 private:
+	bool IsGamepadActive() const;
+	void HandleInventoryDockClosed();
+	void HandleInputMethodChanged(ECommonInputType InputType);
+	void HandleRadialMenuClosed();
+
 	UFUNCTION()
 	void HandleExamineRequested(int64 ObjectId);
 
@@ -69,6 +89,12 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<class USWGInventoryWidget> InventoryWindow;
+
+	/** The gamepad form; only one of this and InventoryWindow is ever up. */
+	UPROPERTY()
+	TObjectPtr<class USWGInventoryDockWidget> InventoryDock;
+
+	FDelegateHandle InputMethodChangedHandle;
 
 	UPROPERTY()
 	TMap<int64, TObjectPtr<class USWGExamineWidget>> ExamineWindows;

@@ -54,6 +54,7 @@ void USWGRadialMenuWidget::Open(const FSWGRadialMenu& Menu)
 void USWGRadialMenuWidget::Close()
 {
 	RemoveFromParent();
+	OnClosed.Broadcast();
 }
 
 FReply USWGRadialMenuWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)

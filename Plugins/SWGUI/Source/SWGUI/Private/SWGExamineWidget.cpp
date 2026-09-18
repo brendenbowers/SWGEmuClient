@@ -1,27 +1,9 @@
 #include "SWGExamineWidget.h"
 #include "ModelWidget.h"
-#include "Blueprint/WidgetTree.h"
-#include "Components/HorizontalBox.h"
-#include "Components/HorizontalBoxSlot.h"
+#include "SWGExamineLines.h"
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
-#include "Components/VerticalBox.h"
-#include "Components/VerticalBoxSlot.h"
 #include "Engine/GameInstance.h"
-
-namespace
-{
-	UTextBlock* MakeText(UWidgetTree* Tree, int32 Size, FLinearColor Color)
-	{
-		UTextBlock* Block = Tree->ConstructWidget<UTextBlock>();
-		Block->SetColorAndOpacity(FSlateColor(Color));
-		Block->SetAutoWrapText(true);
-		FSlateFontInfo Font = Block->GetFont();
-		Font.Size = Size;
-		Block->SetFont(Font);
-		return Block;
-	}
-}
 
 void USWGExamineWidget::NativeConstruct()
 {
@@ -81,44 +63,7 @@ void USWGExamineWidget::Apply(const FSWGExamineInfo& Info)
 	DescriptionText->SetText(FText::FromString(Info.Description));
 	DescriptionText->SetVisibility(Info.Description.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
 
-	if (!Info.Attributes.IsEmpty())
-	{
-		AttributePanel->ClearChildren();
-		FString LastCategory;
-		for (const FSWGExamineAttribute& Attribute : Info.Attributes)
-		{
-			// Retail prints the group once, above its lines, when it changes.
-			if (Attribute.Category != LastCategory)
-			{
-				LastCategory = Attribute.Category;
-				if (!LastCategory.IsEmpty())
-				{
-					UTextBlock* Header = MakeText(WidgetTree, FontSize, FLinearColor::White);
-					Header->SetText(FText::FromString(LastCategory));
-					if (UVerticalBoxSlot* HeaderSlot = Cast<UVerticalBoxSlot>(AttributePanel->AddChild(Header)))
-					{
-						HeaderSlot->SetPadding(FMargin(0.f, 8.f, 0.f, 2.f));
-					}
-				}
-			}
-
-			UHorizontalBox* Line = WidgetTree->ConstructWidget<UHorizontalBox>();
-
-			UTextBlock* Label = MakeText(WidgetTree, FontSize, LabelColor);
-			Label->SetText(FText::FromString(Attribute.Label + TEXT(":")));
-			Label->SetAutoWrapText(false);
-			UHorizontalBoxSlot* LabelSlot = Line->AddChildToHorizontalBox(Label);
-			LabelSlot->SetPadding(FMargin(Attribute.Category.IsEmpty() ? 0.f : 10.f, 1.f, 8.f, 1.f));
-
-			UTextBlock* Value = MakeText(WidgetTree, FontSize, AttributeColor);
-			Value->SetText(FText::FromString(Attribute.Value));
-			UHorizontalBoxSlot* ValueSlot = Line->AddChildToHorizontalBox(Value);
-			ValueSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-			ValueSlot->SetPadding(FMargin(0.f, 1.f));
-
-			AttributePanel->AddChild(Line);
-		}
-	}
+	SWGExamineLines::Fill(this, AttributePanel, Info);
 }
 
 bool USWGExamineWidget::IsOverSplitter(const FVector2D& ScreenPosition) const

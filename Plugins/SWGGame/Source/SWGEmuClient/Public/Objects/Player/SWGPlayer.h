@@ -111,6 +111,10 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Input|Gamepad")
 	FKey ZoomModifierKey = EKeys::Gamepad_RightTrigger;
 
+	/** Opens the docked inventory; the View/Back button, the one the action layout leaves free. */
+	UPROPERTY(EditDefaultsOnly, Category = "Input|Gamepad")
+	FKey GamepadInventoryKey = EKeys::Gamepad_Special_Left;
+
 protected:
 	virtual void BeginPlay() override;
 

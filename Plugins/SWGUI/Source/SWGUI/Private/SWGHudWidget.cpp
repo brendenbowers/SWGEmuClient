@@ -150,12 +150,23 @@ namespace
 {
 	FAutoConsoleCommand CmdToggleInventory(
 		TEXT("swg.Inventory"),
-		TEXT("Opens or closes the inventory window, as the inventory key does."),
-		FConsoleCommandDelegate::CreateLambda([]()
+		TEXT("Opens or closes the inventory, as the inventory key does. 'swg.Inventory dock' or 'window' forces that form regardless of the input device."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 		{
-			if (USWGHudWidget* Hud = USWGHudWidget::GetActiveHud())
+			USWGHudWidget* Hud = USWGHudWidget::GetActiveHud();
+			USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr;
+			if (!UI)
 			{
-				Hud->ToggleInventory();
+				return;
+			}
+			if (Args.IsEmpty())
+			{
+				UI->ToggleInventory();
+			}
+			else
+			{
+				UI->CloseInventory();
+				UI->OpenInventory(Args[0].Equals(TEXT("dock"), ESearchCase::IgnoreCase));
 			}
 		}));
 }

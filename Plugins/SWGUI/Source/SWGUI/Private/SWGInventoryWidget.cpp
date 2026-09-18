@@ -1,15 +1,9 @@
 #include "SWGInventoryWidget.h"
-#include "Subsystems/SWGObjectGraphSubsystem.h"
-#include "Subsystems/SWGMeshGeneratorSubsystem.h"
-#include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGRadialMenuSubsystem.h"
+#include "SWGInventoryQuery.h"
 #include "SWGInventoryRowWidget.h"
 #include "SWGUISettings.h"
 #include "GameFramework/PlayerController.h"
-#include "Components/SWGTangibleComponent.h"
-#include "Objects/SWGNetworkObjectInterface.h"
-#include "Objects/Tangible/SWGItem.h"
-#include "Network/Objects/Zone/Object/SWGContainmentType.h"
 #include "Components/PanelWidget.h"
 #include "Components/TextBlock.h"
 #include "Engine/GameInstance.h"
@@ -48,7 +42,7 @@ FReply USWGInventoryWidget::NativeOnKeyDown(const FGeometry& InGeometry, const F
 
 void USWGInventoryWidget::Refresh()
 {
-	if (!Gather())
+	if (!SWGInventoryQuery::Gather(GetGameInstance(), Equipped, Contents))
 	{
 		return;
 	}
@@ -59,122 +53,6 @@ void USWGInventoryWidget::Refresh()
 	InventoryHeader->SetText(FText::FromString(FString::Printf(TEXT("Inventory (%d)"), Contents.Num())));
 
 	OnInventoryUpdated();
-}
-
-bool USWGInventoryWidget::Gather()
-{
-	UGameInstance* GameInstance = GetGameInstance();
-	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
-	USWGMeshGeneratorSubsystem* MeshGenerator = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr;
-	const int64 PlayerId = ObjectGraph ? ObjectGraph->GetLocalPlayerObjectId() : 0;
-
-	TArray<FSWGInventoryEntry> NewEquipped;
-	TArray<FSWGInventoryEntry> NewContents;
-
-	if (PlayerId != 0)
-	{
-		for (const int64 ObjectId : ObjectGraph->FindContainedObjectIds(PlayerId))
-		{
-			const int32* ContainmentType = ObjectGraph->FindContainmentType(ObjectId);
-			if (!ContainmentType || !SWGIsSlottedArrangement(*ContainmentType))
-			{
-				continue;
-			}
-
-			FSWGInventoryEntry Entry = DescribeObject(ObjectId);
-
-			// The bags (inventory, datapad, bank, mission_bag) are "equipped"
-			// on the wire too, but sit in slots that never show on the body —
-			// those aren't gear.
-			AActor* Actor = ObjectGraph->FindActor(ObjectId);
-			ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(Actor);
-			TArray<FString> SlotNames;
-			if (NetObject && MeshGenerator && MeshGenerator->ResolveArrangementSlotNames(NetObject->GetObjectCrc(), *ContainmentType, SlotNames))
-			{
-				if (!MeshGenerator->IsAnySlotAppearanceRelated(SlotNames))
-				{
-					continue;
-				}
-				Entry.SlotNames = FString::Join(SlotNames, TEXT(", "));
-			}
-
-			NewEquipped.Add(MoveTemp(Entry));
-		}
-
-		if (const int64 BagId = FindInventoryBagId(PlayerId))
-		{
-			for (const int64 ObjectId : ObjectGraph->FindContainedObjectIds(BagId))
-			{
-				NewContents.Add(DescribeObject(ObjectId));
-			}
-		}
-	}
-
-	NewEquipped.Sort([](const FSWGInventoryEntry& Left, const FSWGInventoryEntry& Right) { return Left.SlotNames < Right.SlotNames; });
-	NewContents.Sort([](const FSWGInventoryEntry& Left, const FSWGInventoryEntry& Right) { return Left.Name < Right.Name; });
-
-	if (NewEquipped == Equipped && NewContents == Contents)
-	{
-		return false;
-	}
-
-	Equipped = MoveTemp(NewEquipped);
-	Contents = MoveTemp(NewContents);
-	return true;
-}
-
-int64 USWGInventoryWidget::FindInventoryBagId(int64 PlayerId) const
-{
-	UGameInstance* GameInstance = GetGameInstance();
-	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
-	USWGTreSubsystem* Tre = GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
-	if (!ObjectGraph || !Tre)
-	{
-		return 0;
-	}
-
-	for (const int64 ObjectId : ObjectGraph->FindContainedObjectIds(PlayerId))
-	{
-		if (ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(ObjectGraph->FindActor(ObjectId)))
-		{
-			if (Tre->ResolveTemplatePath(NetObject->GetObjectCrc()).Contains(TEXT("character_inventory")))
-			{
-				return ObjectId;
-			}
-		}
-	}
-	return 0;
-}
-
-FSWGInventoryEntry USWGInventoryWidget::DescribeObject(int64 ObjectId) const
-{
-	UGameInstance* GameInstance = GetGameInstance();
-	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
-	AActor* Actor = ObjectGraph ? ObjectGraph->FindActor(ObjectId) : nullptr;
-
-	FSWGInventoryEntry Entry;
-	Entry.ObjectId = ObjectId;
-
-	if (const USWGTangibleComponent* Tangible = Actor ? Actor->FindComponentByClass<USWGTangibleComponent>() : nullptr)
-	{
-		Entry.Name = Tangible->GetDisplayName();
-	}
-
-	if (const ASWGItem* Item = Cast<ASWGItem>(Actor); Item && Item->ResourceQuantity > 0)
-	{
-		Entry.Quantity = Item->ResourceQuantity;
-		if (!Item->ResourceName.IsEmpty())
-		{
-			Entry.Name = Item->ResourceName;
-		}
-	}
-
-	if (Entry.Name.IsEmpty())
-	{
-		// Baselines still in flight, or a template with no name at all.
-		Entry.Name = FString::Printf(TEXT("object %lld"), ObjectId);
-	}
-	return Entry;
 }
 
 void USWGInventoryWidget::BuildRows(UPanelWidget* Panel, UWidget* EmptyLabel, const TArray<FSWGInventoryEntry>& Entries)
@@ -195,8 +73,7 @@ void USWGInventoryWidget::BuildRows(UPanelWidget* Panel, UWidget* EmptyLabel, co
 	for (const FSWGInventoryEntry& Entry : Entries)
 	{
 		USWGInventoryRowWidget* Row = CreateWidget<USWGInventoryRowWidget>(this, RowClass);
-		const FString Label = Entry.Quantity > 0 ? FString::Printf(TEXT("%s x%d"), *Entry.Name, Entry.Quantity) : Entry.Name;
-		Row->SetRow(Entry.ObjectId, Label, Entry.SlotNames);
+		Row->SetRow(Entry.ObjectId, Entry.Label(), Entry.SlotNames);
 		Row->SetSelected(Entry.ObjectId == SelectedObjectId);
 		Row->OnPressed.BindUObject(this, &USWGInventoryWidget::HandleRowPressed);
 

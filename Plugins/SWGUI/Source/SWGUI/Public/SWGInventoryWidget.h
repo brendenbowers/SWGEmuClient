@@ -2,37 +2,12 @@
 
 #include "CoreMinimal.h"
 #include "SWGWindowWidget.h"
+#include "SWGInventoryQuery.h"
 #include "SWGInventoryWidget.generated.h"
 
 class UTextBlock;
 class UPanelWidget;
 class USWGInventoryRowWidget;
-
-/** One row of the window, flattened for Blueprint. */
-USTRUCT(BlueprintType)
-struct SWGUI_API FSWGInventoryEntry
-{
-	GENERATED_BODY()
-
-	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Inventory")
-	int64 ObjectId = 0;
-
-	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Inventory")
-	FString Name;
-
-	/** The equip slots it fills ("chest1", "hold_r"), joined with commas. Empty for a bag item. */
-	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Inventory")
-	FString SlotNames;
-
-	/** Stack size for resources, otherwise 0. */
-	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Inventory")
-	int32 Quantity = 0;
-
-	bool operator==(const FSWGInventoryEntry& Other) const
-	{
-		return ObjectId == Other.ObjectId && Name == Other.Name && SlotNames == Other.SlotNames && Quantity == Other.Quantity;
-	}
-};
 
 /**
  * The inventory window: what the player is wearing and wielding, and what is
@@ -89,18 +64,10 @@ protected:
 	TObjectPtr<UWidget> InventoryEmptyText;
 
 private:
-	/** Reads the player's containment tree into Equipped and Contents. True if either list changed. */
-	bool Gather();
-
-	FSWGInventoryEntry DescribeObject(int64 ObjectId) const;
-
 	void BuildRows(UPanelWidget* Panel, UWidget* EmptyLabel, const TArray<FSWGInventoryEntry>& Entries);
 
 	/** Left selects; right asks the server for the item's radial menu, same as right-clicking it in the world. */
 	void HandleRowPressed(int64 ObjectId, FKey Button, FVector2D ScreenPosition);
-
-	/** The player's inventory bag — the volume container under the creature whose template is character_inventory. */
-	int64 FindInventoryBagId(int64 PlayerId) const;
 
 	TArray<FSWGInventoryEntry> Equipped;
 	TArray<FSWGInventoryEntry> Contents;

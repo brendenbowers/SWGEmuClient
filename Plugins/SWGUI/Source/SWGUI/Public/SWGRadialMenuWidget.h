@@ -36,6 +36,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Radial")
 	void Close();
 
+	/** Fired when the menu goes away for any reason, so whatever opened it can take focus back. */
+	FSimpleMulticastDelegate OnClosed;
+
 protected:
 	virtual void NativeConstruct() override;
 	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;

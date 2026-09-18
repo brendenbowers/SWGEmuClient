@@ -40,9 +40,17 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGInventoryWidget> InventoryClass;
 
-	/** One inventory row (WBP_InventoryRow). */
+	/** Gamepad form of the inventory: a panel docked to the screen edge (WBP_InventoryDock), used instead of InventoryClass while a gamepad is the active input. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGInventoryDockWidget> InventoryDockClass;
+
+	/** One inventory row (WBP_InventoryRow), shared by the window and the dock. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGInventoryRowWidget> InventoryRowClass;
+
+	/** One attribute line or category header (WBP_ExamineLine), used by the examine window and the dock's details. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGExamineLineWidget> ExamineLineClass;
 
 	/** Examine window opened from the radial menu. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")

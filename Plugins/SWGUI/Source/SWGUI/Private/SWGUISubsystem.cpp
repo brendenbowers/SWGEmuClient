@@ -5,6 +5,8 @@
 #include "SWGRadialMenuWidget.h"
 #include "SWGSuiBoxWidget.h"
 #include "SWGInventoryWidget.h"
+#include "SWGInventoryDockWidget.h"
+#include "CommonInputSubsystem.h"
 #include "SWGExamineWidget.h"
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
@@ -34,10 +36,18 @@ void USWGUISubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	{
 		Examine->OnExamineRequested.AddDynamic(this, &USWGUISubsystem::HandleExamineRequested);
 	}
+	if (UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetLocalPlayer()))
+	{
+		InputMethodChangedHandle = CommonInput->OnInputMethodChangedNative.AddUObject(this, &USWGUISubsystem::HandleInputMethodChanged);
+	}
 }
 
 void USWGUISubsystem::Deinitialize()
 {
+	if (UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetLocalPlayer()))
+	{
+		CommonInput->OnInputMethodChangedNative.Remove(InputMethodChangedHandle);
+	}
 	if (UGameInstance* GameInstance = GetLocalPlayer() ? GetLocalPlayer()->GetGameInstance() : nullptr)
 	{
 		if (USWGClientFlowSubsystem* Flow = GameInstance->GetSubsystem<USWGClientFlowSubsystem>())
@@ -88,6 +98,7 @@ void USWGUISubsystem::HandleRadialMenuReceived(const FSWGRadialMenu& Menu)
 	{
 		// Above the layout (which sits at 100) so it draws over the HUD.
 		RadialMenu->AddToPlayerScreen(200);
+		RadialMenu->OnClosed.AddUObject(this, &USWGUISubsystem::HandleRadialMenuClosed);
 		RadialMenu->Open(Menu);
 	}
 	UE_LOG(LogTemp, Log, TEXT("USWGUISubsystem: radial menu for %lld at (%.0f, %.0f) -> %s"),
@@ -242,19 +253,64 @@ void USWGUISubsystem::HandleWindowClosed(USWGWindowWidget* Window)
 	}
 }
 
+// ── Inventory ────────────────────────────────────────────────────────────────
+
+bool USWGUISubsystem::IsGamepadActive() const
+{
+	const UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetLocalPlayer());
+	return CommonInput && CommonInput->GetCurrentInputType() == ECommonInputType::Gamepad;
+}
+
+bool USWGUISubsystem::IsInventoryOpen() const
+{
+	return InventoryWindow != nullptr || InventoryDock != nullptr;
+}
+
 void USWGUISubsystem::ToggleInventory()
+{
+	if (IsInventoryOpen())
+	{
+		CloseInventory();
+		return;
+	}
+	OpenInventory(IsGamepadActive());
+}
+
+void USWGUISubsystem::CloseInventory()
 {
 	if (InventoryWindow)
 	{
 		InventoryWindow->Close();
-		return;
 	}
+	if (InventoryDock)
+	{
+		InventoryDock->Close();
+	}
+}
 
+void USWGUISubsystem::OpenInventory(bool bDocked)
+{
 	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
 	if (!PlayerController)
 	{
 		return;
 	}
+
+	if (bDocked)
+	{
+		TSubclassOf<USWGInventoryDockWidget> DockClass = USWGUISettings::Get().InventoryDockClass.LoadSynchronous();
+		if (!DockClass)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: no InventoryDockClass set in Project Settings > SWG UI"));
+			return;
+		}
+		InventoryDock = CreateWidget<USWGInventoryDockWidget>(PlayerController, DockClass);
+		InventoryDock->OnClosed.AddUObject(this, &USWGUISubsystem::HandleInventoryDockClosed);
+		// Same band as the floating windows: over the HUD, under the radial menu.
+		InventoryDock->AddToPlayerScreen(NextWindowZ++);
+		return;
+	}
+
 	TSubclassOf<USWGInventoryWidget> InventoryClass = USWGUISettings::Get().InventoryClass.LoadSynchronous();
 	if (!InventoryClass)
 	{
@@ -265,8 +321,48 @@ void USWGUISubsystem::ToggleInventory()
 	ShowWindow(InventoryWindow);
 }
 
+void USWGUISubsystem::HandleInventoryDockClosed()
+{
+	InventoryDock = nullptr;
+}
+
+void USWGUISubsystem::HandleInputMethodChanged(ECommonInputType InputType)
+{
+	// Picking up the other device while the inventory is up swaps it to that device's form.
+	const bool bGamepad = InputType == ECommonInputType::Gamepad;
+	if ((bGamepad && InventoryWindow) || (!bGamepad && InventoryDock))
+	{
+		CloseInventory();
+		OpenInventory(bGamepad);
+	}
+}
+
+void USWGUISubsystem::HandleRadialMenuClosed()
+{
+	// The dock handed focus to the menu; without this the gamepad would fall through to the world.
+	if (InventoryDock)
+	{
+		InventoryDock->Refocus();
+	}
+}
+
 void USWGUISubsystem::HandleExamineRequested(int64 ObjectId)
 {
+	// On a gamepad the dock's details column is the examine view, for world objects too.
+	if (IsGamepadActive())
+	{
+		if (!InventoryDock)
+		{
+			CloseInventory();
+			OpenInventory(true);
+		}
+		if (InventoryDock)
+		{
+			InventoryDock->AddExamined(ObjectId);
+			InventoryDock->Refocus();
+		}
+		return;
+	}
 	OpenExamine(ObjectId);
 }
 

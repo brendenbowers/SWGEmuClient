@@ -28,15 +28,6 @@ public:
 	int64 GetObjectId() const { return ObjectId; }
 
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Examine")
-	FLinearColor AttributeColor = FLinearColor::FromSRGBColor(FColor(0x96, 0xF4, 0xFC));
-
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Examine")
-	FLinearColor LabelColor = FLinearColor::FromSRGBColor(FColor(0x54, 0xE4, 0xFE));
-
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Examine")
-	int32 FontSize = 13;
-
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Examine")
 	float MinimumDetailsColumnWidth = 120.f;
 
 	/** The viewer never shrinks below this, whatever the column is dragged to. */
