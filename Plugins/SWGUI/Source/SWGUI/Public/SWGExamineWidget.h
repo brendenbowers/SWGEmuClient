@@ -79,19 +79,19 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> DescriptionText;
 
+	/** Sizes the details column; the splitter drags its width override. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<class USizeBox> DetailsWidthBox;
+
+	/** The bar between the columns. Any widget works; it is only a hit region. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UWidget> Splitter;
+
 private:
 	UFUNCTION()
 	void HandleExamineInfo(const FSWGExamineInfo& Info);
 
 	void Apply(const FSWGExamineInfo& Info);
-
-	/** Sizes the details column; the splitter drags its width override. */
-	UPROPERTY()
-	TObjectPtr<class USizeBox> DetailsWidthBox;
-
-	/** The bar between the columns. */
-	UPROPERTY()
-	TObjectPtr<class UBorder> Splitter;
 
 	int64 ObjectId = 0;
 	bool bRotating = false;

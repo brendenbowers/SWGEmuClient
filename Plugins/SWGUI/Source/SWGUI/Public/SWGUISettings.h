@@ -40,6 +40,10 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGInventoryWidget> InventoryClass;
 
+	/** One inventory row (WBP_InventoryRow). Leave unset for the native USWGInventoryRowWidget. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGInventoryRowWidget> InventoryRowClass;
+
 	/** Examine window opened from the radial menu. Leave unset for the native USWGExamineWidget. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGExamineWidget> ExamineClass;

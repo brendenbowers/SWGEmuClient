@@ -70,13 +70,14 @@ TSharedRef<SWidget> USWGWindowWidget::RebuildWidget()
 		PanelSlot->SetHorizontalAlignment(HAlign_Fill);
 		PanelSlot->SetVerticalAlignment(VAlign_Fill);
 
-		ResizeGrip = WidgetTree->ConstructWidget<UTextBlock>();
-		ResizeGrip->SetText(FText::FromString(TEXT("\u25E2")));
-		ResizeGrip->SetColorAndOpacity(FSlateColor(OutlineColor));
-		FSlateFontInfo GripFont = ResizeGrip->GetFont();
+		UTextBlock* Grip = WidgetTree->ConstructWidget<UTextBlock>();
+		Grip->SetText(FText::FromString(TEXT("\u25E2")));
+		Grip->SetColorAndOpacity(FSlateColor(OutlineColor));
+		FSlateFontInfo GripFont = Grip->GetFont();
 		GripFont.Size = 10;
-		ResizeGrip->SetFont(GripFont);
-		UOverlaySlot* GripSlot = Layers->AddChildToOverlay(ResizeGrip);
+		Grip->SetFont(GripFont);
+		ResizeGrip = Grip;
+		UOverlaySlot* GripSlot = Layers->AddChildToOverlay(Grip);
 		GripSlot->SetHorizontalAlignment(HAlign_Right);
 		GripSlot->SetVerticalAlignment(VAlign_Bottom);
 		GripSlot->SetPadding(FMargin(0.f, 0.f, 4.f, 2.f));
@@ -129,6 +130,7 @@ TSharedRef<SWidget> USWGWindowWidget::RebuildWidget()
 		ContentSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 		ContentSlot->SetPadding(FMargin(12.f, 10.f, 12.f, 12.f));
 
+		bNativeChrome = true;
 		BuildContent();
 	}
 	return Super::RebuildWidget();
@@ -148,6 +150,15 @@ void USWGWindowWidget::NativeConstruct()
 	if (TitleText)
 	{
 		TitleText->SetText(Title);
+	}
+	// A Blueprint's frame carries its own size; the code path sized it from WindowSize.
+	if (!bNativeChrome && Frame && Frame->GetWidthOverride() > 0.f && Frame->GetHeightOverride() > 0.f)
+	{
+		WindowSize = FVector2D(Frame->GetWidthOverride(), Frame->GetHeightOverride());
+	}
+	if (RootCanvas)
+	{
+		RootCanvas->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 	}
 	if (!bPositioned)
 	{

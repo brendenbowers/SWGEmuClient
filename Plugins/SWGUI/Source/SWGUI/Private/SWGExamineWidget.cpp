@@ -46,13 +46,14 @@ void USWGExamineWidget::BuildContent()
 	DetailsWidthBox->AddChild(Details);
 
 	// A thin bar between the columns; dragging it trades width between them.
-	Splitter = WidgetTree->ConstructWidget<UBorder>();
-	Splitter->SetBrushColor(FLinearColor(0.11f, 1.f, 1.f, 0.25f));
-	Splitter->SetPadding(FMargin(0.f));
+	UBorder* SplitterBar = WidgetTree->ConstructWidget<UBorder>();
+	SplitterBar->SetBrushColor(FLinearColor(0.11f, 1.f, 1.f, 0.25f));
+	SplitterBar->SetPadding(FMargin(0.f));
 	USizeBox* SplitterWidth = WidgetTree->ConstructWidget<USizeBox>();
 	SplitterWidth->SetWidthOverride(3.f);
-	Splitter->AddChild(SplitterWidth);
-	UHorizontalBoxSlot* SplitterSlot = Row->AddChildToHorizontalBox(Splitter);
+	SplitterBar->AddChild(SplitterWidth);
+	Splitter = SplitterBar;
+	UHorizontalBoxSlot* SplitterSlot = Row->AddChildToHorizontalBox(SplitterBar);
 	SplitterSlot->SetPadding(FMargin(4.f, 8.f, 4.f, 8.f));
 	SplitterSlot->SetVerticalAlignment(VAlign_Fill);
 
@@ -87,7 +88,18 @@ void USWGExamineWidget::BuildContent()
 void USWGExamineWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
-	SetWindowSize(FVector2D(557.f, 395.f));
+	if (bNativeChrome)
+	{
+		SetWindowSize(FVector2D(557.f, 395.f));
+	}
+	if (Model)
+	{
+		Model->SetRotateSpeed(TurntableSpeed);
+	}
+	if (DetailsWidthBox && !bNativeChrome && DetailsWidthBox->GetWidthOverride() > 0.f)
+	{
+		DetailsColumnWidth = DetailsWidthBox->GetWidthOverride();
+	}
 
 	if (UGameInstance* GameInstance = GetGameInstance())
 	{

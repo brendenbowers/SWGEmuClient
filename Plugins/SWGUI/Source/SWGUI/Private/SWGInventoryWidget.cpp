@@ -4,6 +4,7 @@
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGRadialMenuSubsystem.h"
 #include "SWGInventoryRowWidget.h"
+#include "SWGUISettings.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/SWGTangibleComponent.h"
 #include "Objects/SWGNetworkObjectInterface.h"
@@ -42,7 +43,6 @@ void USWGInventoryWidget::BuildContent()
 	{
 		return;
 	}
-	SetTitle(FText::FromString(TEXT("Inventory")));
 
 	Column->AddChildToVerticalBox(MakeText(WidgetTree, TEXT("Equipped"), RowFontSize, FLinearColor::White))
 		->SetPadding(FMargin(0.f, 0.f, 0.f, 4.f));
@@ -67,6 +67,7 @@ void USWGInventoryWidget::BuildContent()
 void USWGInventoryWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+	SetTitle(FText::FromString(TEXT("Inventory")));
 	Refresh();
 
 	if (UWorld* World = GetWorld())
@@ -246,7 +247,8 @@ void USWGInventoryWidget::BuildRows(UPanelWidget* Panel, const TArray<FSWGInvent
 
 	for (const FSWGInventoryEntry& Entry : Entries)
 	{
-		USWGInventoryRowWidget* Row = CreateWidget<USWGInventoryRowWidget>(this, USWGInventoryRowWidget::StaticClass());
+		TSubclassOf<USWGInventoryRowWidget> RowClass = USWGUISettings::Get().InventoryRowClass.LoadSynchronous();
+		USWGInventoryRowWidget* Row = CreateWidget<USWGInventoryRowWidget>(this, RowClass ? *RowClass : USWGInventoryRowWidget::StaticClass());
 		if (!Row)
 		{
 			continue;

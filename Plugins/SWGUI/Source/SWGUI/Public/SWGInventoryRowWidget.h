@@ -58,23 +58,25 @@ protected:
 	virtual void NativeOnMouseEnter(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 	virtual void NativeOnMouseLeave(const FPointerEvent& InMouseEvent) override;
 
+	// A Blueprint row (WBP_InventoryRow) binds these; the code builds them
+	// otherwise. Background is tinted for hover and selection.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UBorder> Background;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UModelWidget> Model;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> NameText;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> SlotText;
+
 private:
 	void ApplyBackground();
 
 	/** Pushes Name / SlotNames / ObjectId onto the text and model widgets. */
 	void ApplyRow();
-
-	UPROPERTY()
-	TObjectPtr<UBorder> Background;
-
-	UPROPERTY()
-	TObjectPtr<UModelWidget> Model;
-
-	UPROPERTY()
-	TObjectPtr<UTextBlock> NameText;
-
-	UPROPERTY()
-	TObjectPtr<UTextBlock> SlotText;
 
 	int64 ObjectId = 0;
 	FString Name;

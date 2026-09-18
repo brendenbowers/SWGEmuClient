@@ -103,20 +103,25 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UButton> CloseButton;
 
+	// A Blueprint lays the chrome out itself by binding these: a full-screen
+	// canvas holding the Frame (a size box the window moves and resizes),
+	// with the Caption and Content inside it.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UCanvasPanel> RootCanvas;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<USizeBox> Frame;
+
+	/** Bottom-right corner glyph; the corner square under it resizes. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UWidget> ResizeGrip;
+
+	/** True when the code-built chrome is in use rather than a Blueprint's. */
+	bool bNativeChrome = false;
+
 private:
 	UFUNCTION()
 	void HandleCloseClicked();
-
-	/** The whole window's slot on the root canvas, moved by dragging. */
-	UPROPERTY()
-	TObjectPtr<UCanvasPanel> RootCanvas;
-
-	UPROPERTY()
-	TObjectPtr<USizeBox> Frame;
-
-	/** Bottom-right corner glyph; dragging it resizes. */
-	UPROPERTY()
-	TObjectPtr<UTextBlock> ResizeGrip;
 
 	FText Title;
 	bool bDragging = false;
