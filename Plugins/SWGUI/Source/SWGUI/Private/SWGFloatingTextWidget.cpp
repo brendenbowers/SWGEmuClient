@@ -22,16 +22,6 @@ namespace
 	constexpr float FadeFraction = 0.4f;
 }
 
-TSharedRef<SWidget> USWGFloatingTextWidget::RebuildWidget()
-{
-	if (!WidgetTree->RootWidget)
-	{
-		Canvas = WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("FloatingTextCanvas"));
-		WidgetTree->RootWidget = Canvas;
-	}
-	return Super::RebuildWidget();
-}
-
 void USWGFloatingTextWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
@@ -122,7 +112,7 @@ FLinearColor USWGFloatingTextWidget::ColorFor(const FSWGCombatSpamEvent& Event) 
 
 void USWGFloatingTextWidget::ShowText(AActor* Anchor, const FString& Text, FLinearColor Color, bool bEmphasis)
 {
-	if (!Anchor || !Canvas)
+	if (!Anchor)
 	{
 		return;
 	}

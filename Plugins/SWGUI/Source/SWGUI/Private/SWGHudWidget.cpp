@@ -41,11 +41,14 @@ void USWGHudWidget::NativeConstruct()
 	// Below the layout (100) so damage numbers never cover a window.
 	if (APlayerController* PlayerController = GetOwningPlayer())
 	{
-		TSubclassOf<USWGFloatingTextWidget> FloatingTextClass = USWGUISettings::Get().FloatingTextClass.LoadSynchronous();
-		FloatingText = CreateWidget<USWGFloatingTextWidget>(PlayerController, FloatingTextClass ? *FloatingTextClass : USWGFloatingTextWidget::StaticClass());
-		if (FloatingText)
+		if (TSubclassOf<USWGFloatingTextWidget> FloatingTextClass = USWGUISettings::Get().FloatingTextClass.LoadSynchronous())
 		{
+			FloatingText = CreateWidget<USWGFloatingTextWidget>(PlayerController, FloatingTextClass);
 			FloatingText->AddToPlayerScreen(50);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGHudWidget: no FloatingTextClass set in Project Settings > SWG UI"));
 		}
 	}
 

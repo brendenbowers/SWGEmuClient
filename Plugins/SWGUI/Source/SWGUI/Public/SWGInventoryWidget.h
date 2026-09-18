@@ -37,13 +37,10 @@ struct SWGUI_API FSWGInventoryEntry
 /**
  * The inventory window: what the player is wearing and wielding, and what is
  * in their inventory bag, read straight from the object graph's containment.
- * Builds its own tree inside the window chrome, so it works with no assets;
- * a Blueprint can bind EquippedPanel / InventoryPanel / InventoryHeader to
- * restyle it. Rows are code-built either way, each with
- * the item's rendered icon (USWGItemIconSubsystem); right-clicking a row
- * opens its radial menu. No drag and drop yet.
+ * WBP_Inventory lays it out; rows are WBP_InventoryRow instances, each with
+ * the item's live model; right-clicking a row opens its radial menu. No drag and drop yet.
  */
-UCLASS()
+UCLASS(Abstract)
 class SWGUI_API USWGInventoryWidget : public USWGWindowWidget
 {
 	GENERATED_BODY()
@@ -67,7 +64,6 @@ public:
 	FKey ToggleKey = EKeys::I;
 
 protected:
-	virtual void BuildContent() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 	virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
@@ -76,23 +72,21 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Inventory")
 	float RefreshInterval = 0.5f;
 
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Inventory")
-	FLinearColor RowTextColor = FLinearColor::FromSRGBColor(FColor(0x54, 0xE4, 0xFE));
-
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Inventory")
-	FLinearColor SlotTextColor = FLinearColor(0.6f, 0.6f, 0.6f);
-
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Inventory")
-	int32 RowFontSize = 14;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> InventoryHeader;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UPanelWidget> EquippedPanel;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UPanelWidget> InventoryPanel;
+
+	/** Shown in place of the rows when the list is empty. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UWidget> EquippedEmptyText;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
+	TObjectPtr<UWidget> InventoryEmptyText;
 
 private:
 	/** Reads the player's containment tree into Equipped and Contents. True if either list changed. */
@@ -100,7 +94,7 @@ private:
 
 	FSWGInventoryEntry DescribeObject(int64 ObjectId) const;
 
-	void BuildRows(UPanelWidget* Panel, const TArray<FSWGInventoryEntry>& Entries, const FString& EmptyText);
+	void BuildRows(UPanelWidget* Panel, UWidget* EmptyLabel, const TArray<FSWGInventoryEntry>& Entries);
 
 	/** Left selects; right asks the server for the item's radial menu, same as right-clicking it in the world. */
 	void HandleRowPressed(int64 ObjectId, FKey Button, FVector2D ScreenPosition);

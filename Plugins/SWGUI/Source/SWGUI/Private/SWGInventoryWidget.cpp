@@ -10,59 +10,10 @@
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Objects/Tangible/SWGItem.h"
 #include "Network/Objects/Zone/Object/SWGContainmentType.h"
-#include "Blueprint/WidgetTree.h"
-#include "Components/Border.h"
-#include "Components/HorizontalBox.h"
-#include "Components/HorizontalBoxSlot.h"
-#include "Components/ScrollBox.h"
-#include "Components/SizeBox.h"
+#include "Components/PanelWidget.h"
 #include "Components/TextBlock.h"
-#include "Components/VerticalBox.h"
-#include "Components/VerticalBoxSlot.h"
 #include "Engine/GameInstance.h"
 #include "TimerManager.h"
-
-namespace
-{
-	UTextBlock* MakeText(UWidgetTree* Tree, const FString& Text, int32 Size, FLinearColor Color)
-	{
-		UTextBlock* Block = Tree->ConstructWidget<UTextBlock>();
-		Block->SetText(FText::FromString(Text));
-		Block->SetColorAndOpacity(FSlateColor(Color));
-		FSlateFontInfo Font = Block->GetFont();
-		Font.Size = Size;
-		Block->SetFont(Font);
-		return Block;
-	}
-}
-
-void USWGInventoryWidget::BuildContent()
-{
-	UVerticalBox* Column = Cast<UVerticalBox>(Content);
-	if (!Column)
-	{
-		return;
-	}
-
-	Column->AddChildToVerticalBox(MakeText(WidgetTree, TEXT("Equipped"), RowFontSize, FLinearColor::White))
-		->SetPadding(FMargin(0.f, 0.f, 0.f, 4.f));
-
-	UScrollBox* EquippedScroll = WidgetTree->ConstructWidget<UScrollBox>();
-	EquippedPanel = EquippedScroll;
-	UVerticalBoxSlot* EquippedSlot = Column->AddChildToVerticalBox(EquippedScroll);
-	EquippedSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-	EquippedSlot->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
-
-	InventoryHeader = MakeText(WidgetTree, TEXT("Inventory"), RowFontSize, FLinearColor::White);
-	Column->AddChildToVerticalBox(InventoryHeader)->SetPadding(FMargin(0.f, 0.f, 0.f, 4.f));
-
-	UScrollBox* InventoryScroll = WidgetTree->ConstructWidget<UScrollBox>();
-	InventoryPanel = InventoryScroll;
-	UVerticalBoxSlot* InventorySlot = Column->AddChildToVerticalBox(InventoryScroll);
-	FSlateChildSize InventorySize(ESlateSizeRule::Fill);
-	InventorySize.Value = 1.5f;
-	InventorySlot->SetSize(InventorySize);
-}
 
 void USWGInventoryWidget::NativeConstruct()
 {
@@ -102,13 +53,10 @@ void USWGInventoryWidget::Refresh()
 		return;
 	}
 
-	BuildRows(EquippedPanel, Equipped, TEXT("Nothing equipped"));
-	BuildRows(InventoryPanel, Contents, TEXT("Empty"));
+	BuildRows(EquippedPanel, EquippedEmptyText, Equipped);
+	BuildRows(InventoryPanel, InventoryEmptyText, Contents);
 
-	if (InventoryHeader)
-	{
-		InventoryHeader->SetText(FText::FromString(FString::Printf(TEXT("Inventory (%d)"), Contents.Num())));
-	}
+	InventoryHeader->SetText(FText::FromString(FString::Printf(TEXT("Inventory (%d)"), Contents.Num())));
 
 	OnInventoryUpdated();
 }
@@ -229,31 +177,24 @@ FSWGInventoryEntry USWGInventoryWidget::DescribeObject(int64 ObjectId) const
 	return Entry;
 }
 
-void USWGInventoryWidget::BuildRows(UPanelWidget* Panel, const TArray<FSWGInventoryEntry>& Entries, const FString& EmptyText)
+void USWGInventoryWidget::BuildRows(UPanelWidget* Panel, UWidget* EmptyLabel, const TArray<FSWGInventoryEntry>& Entries)
 {
-	if (!Panel)
-	{
-		return;
-	}
 	Panel->ClearChildren();
 	// ClearChildren orphaned this panel's rows; the other panel's keep their parent.
 	Rows.RemoveAll([](const TObjectPtr<USWGInventoryRowWidget>& Row) { return !Row || Row->GetParent() == nullptr; });
 
-	if (Entries.IsEmpty())
+	EmptyLabel->SetVisibility(Entries.IsEmpty() ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+
+	TSubclassOf<USWGInventoryRowWidget> RowClass = USWGUISettings::Get().InventoryRowClass.LoadSynchronous();
+	if (!RowClass)
 	{
-		Panel->AddChild(MakeText(WidgetTree, EmptyText, RowFontSize, SlotTextColor));
+		UE_LOG(LogTemp, Error, TEXT("USWGInventoryWidget: SWG UI settings have no InventoryRowClass"));
 		return;
 	}
 
 	for (const FSWGInventoryEntry& Entry : Entries)
 	{
-		TSubclassOf<USWGInventoryRowWidget> RowClass = USWGUISettings::Get().InventoryRowClass.LoadSynchronous();
-		USWGInventoryRowWidget* Row = CreateWidget<USWGInventoryRowWidget>(this, RowClass ? *RowClass : USWGInventoryRowWidget::StaticClass());
-		if (!Row)
-		{
-			continue;
-		}
-
+		USWGInventoryRowWidget* Row = CreateWidget<USWGInventoryRowWidget>(this, RowClass);
 		const FString Label = Entry.Quantity > 0 ? FString::Printf(TEXT("%s x%d"), *Entry.Name, Entry.Quantity) : Entry.Name;
 		Row->SetRow(Entry.ObjectId, Label, Entry.SlotNames);
 		Row->SetSelected(Entry.ObjectId == SelectedObjectId);

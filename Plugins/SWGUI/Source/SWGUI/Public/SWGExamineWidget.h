@@ -14,7 +14,7 @@ class UTextBlock;
  * player can turn by dragging. Name and description show at once; the
  * attribute lines fill in when the server answers.
  */
-UCLASS()
+UCLASS(Abstract)
 class SWGUI_API USWGExamineWidget : public USWGWindowWidget
 {
 	GENERATED_BODY()
@@ -36,10 +36,6 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Examine")
 	int32 FontSize = 13;
 
-	/** Width of the attributes column; the bar between it and the viewer drags to change it. */
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Examine")
-	float DetailsColumnWidth = 220.f;
-
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Examine")
 	float MinimumDetailsColumnWidth = 120.f;
 
@@ -59,7 +55,6 @@ public:
 	float DragPitchPerPixel = 0.3f;
 
 protected:
-	virtual void BuildContent() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
@@ -70,21 +65,21 @@ protected:
 	/** True within a few pixels of the bar between the columns. */
 	bool IsOverSplitter(const FVector2D& ScreenPosition) const;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UModelWidget> Model;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UPanelWidget> AttributePanel;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> DescriptionText;
 
 	/** Sizes the details column; the splitter drags its width override. */
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<class USizeBox> DetailsWidthBox;
 
 	/** The bar between the columns. Any widget works; it is only a hit region. */
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UWidget> Splitter;
 
 private:
@@ -94,6 +89,8 @@ private:
 	void Apply(const FSWGExamineInfo& Info);
 
 	int64 ObjectId = 0;
+	/** Current width of the attributes column; starts from DetailsWidthBox's override, the splitter drags it. */
+	float DetailsColumnWidth = 0.f;
 	bool bRotating = false;
 	bool bSplitting = false;
 	float SplitStartWidth = 0.f;

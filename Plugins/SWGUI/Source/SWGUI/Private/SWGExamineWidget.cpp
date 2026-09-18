@@ -1,11 +1,8 @@
 #include "SWGExamineWidget.h"
 #include "ModelWidget.h"
 #include "Blueprint/WidgetTree.h"
-#include "Components/Border.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
-#include "Components/ScrollBox.h"
-#include "Components/ScrollBoxSlot.h"
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
@@ -26,80 +23,11 @@ namespace
 	}
 }
 
-void USWGExamineWidget::BuildContent()
-{
-	UVerticalBox* Column = Cast<UVerticalBox>(Content);
-	if (!Column)
-	{
-		return;
-	}
-
-	// Retail: 557 x 395, a 220-wide details column, the viewer taking the rest.
-	UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-	Column->AddChildToVerticalBox(Row)->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-
-	DetailsWidthBox = WidgetTree->ConstructWidget<USizeBox>();
-	DetailsWidthBox->SetWidthOverride(DetailsColumnWidth);
-	Row->AddChildToHorizontalBox(DetailsWidthBox);
-
-	UScrollBox* Details = WidgetTree->ConstructWidget<UScrollBox>();
-	DetailsWidthBox->AddChild(Details);
-
-	// A thin bar between the columns; dragging it trades width between them.
-	UBorder* SplitterBar = WidgetTree->ConstructWidget<UBorder>();
-	SplitterBar->SetBrushColor(FLinearColor(0.11f, 1.f, 1.f, 0.25f));
-	SplitterBar->SetPadding(FMargin(0.f));
-	USizeBox* SplitterWidth = WidgetTree->ConstructWidget<USizeBox>();
-	SplitterWidth->SetWidthOverride(3.f);
-	SplitterBar->AddChild(SplitterWidth);
-	Splitter = SplitterBar;
-	UHorizontalBoxSlot* SplitterSlot = Row->AddChildToHorizontalBox(SplitterBar);
-	SplitterSlot->SetPadding(FMargin(4.f, 8.f, 4.f, 8.f));
-	SplitterSlot->SetVerticalAlignment(VAlign_Fill);
-
-	UVerticalBox* Attributes = WidgetTree->ConstructWidget<UVerticalBox>();
-	AttributePanel = Attributes;
-	Details->AddChild(Attributes);
-
-	DescriptionText = MakeText(WidgetTree, FontSize, AttributeColor);
-	UBorder* DescriptionFrame = WidgetTree->ConstructWidget<UBorder>();
-	DescriptionFrame->SetBrushColor(FLinearColor(1.f, 1.f, 1.f, 0.06f));
-	DescriptionFrame->SetPadding(FMargin(6.f));
-	DescriptionFrame->AddChild(DescriptionText);
-	Details->AddChild(DescriptionFrame);
-	if (UScrollBoxSlot* DescriptionSlot = Cast<UScrollBoxSlot>(DescriptionFrame->Slot))
-	{
-		DescriptionSlot->SetPadding(FMargin(0.f, 10.f, 0.f, 0.f));
-	}
-
-	UBorder* ViewerFrame = WidgetTree->ConstructWidget<UBorder>();
-	ViewerFrame->SetBrushColor(FLinearColor(0.f, 0.84f, 0.98f, 0.08f));
-	ViewerFrame->SetPadding(FMargin(4.f));
-	UHorizontalBoxSlot* ViewerSlot = Row->AddChildToHorizontalBox(ViewerFrame);
-	ViewerSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-
-	Model = WidgetTree->ConstructWidget<UModelWidget>();
-	Model->Fill = 0.8f;
-	Model->ViewRotation = FRotator(-12.f, 135.f, 0.f);
-	Model->RotateSpeed = TurntableSpeed;
-	ViewerFrame->AddChild(Model);
-}
-
 void USWGExamineWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
-	if (bNativeChrome)
-	{
-		SetWindowSize(FVector2D(557.f, 395.f));
-	}
-	if (Model)
-	{
-		Model->SetRotateSpeed(TurntableSpeed);
-	}
-	if (DetailsWidthBox && !bNativeChrome && DetailsWidthBox->GetWidthOverride() > 0.f)
-	{
-		DetailsColumnWidth = DetailsWidthBox->GetWidthOverride();
-	}
+	Model->SetRotateSpeed(TurntableSpeed);
+	DetailsColumnWidth = DetailsWidthBox->GetWidthOverride();
 
 	if (UGameInstance* GameInstance = GetGameInstance())
 	{
@@ -134,10 +62,7 @@ bool USWGExamineWidget::SetObject(int64 InObjectId)
 		return false;
 	}
 	Apply(Info);
-	if (Model)
-	{
-		Model->SetObject(ObjectId);
-	}
+	Model->SetObject(ObjectId);
 	return true;
 }
 
@@ -153,13 +78,10 @@ void USWGExamineWidget::Apply(const FSWGExamineInfo& Info)
 {
 	SetTitle(FText::FromString(Info.Name));
 
-	if (DescriptionText)
-	{
-		DescriptionText->SetText(FText::FromString(Info.Description));
-		DescriptionText->SetVisibility(Info.Description.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
-	}
+	DescriptionText->SetText(FText::FromString(Info.Description));
+	DescriptionText->SetVisibility(Info.Description.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
 
-	if (AttributePanel && !Info.Attributes.IsEmpty())
+	if (!Info.Attributes.IsEmpty())
 	{
 		AttributePanel->ClearChildren();
 		FString LastCategory;
@@ -201,10 +123,6 @@ void USWGExamineWidget::Apply(const FSWGExamineInfo& Info)
 
 bool USWGExamineWidget::IsOverSplitter(const FVector2D& ScreenPosition) const
 {
-	if (!Splitter)
-	{
-		return false;
-	}
 	// The bar is 3 px wide; accept a few pixels either side of it.
 	const FGeometry& SplitterGeometry = Splitter->GetCachedGeometry();
 	const FVector2D LocalMouse = SplitterGeometry.AbsoluteToLocal(ScreenPosition);
@@ -229,7 +147,7 @@ FReply USWGExamineWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, c
 {
 	const bool bLeft = InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton;
 
-	if (bLeft && DetailsWidthBox && IsOverSplitter(InMouseEvent.GetScreenSpacePosition()))
+	if (bLeft && IsOverSplitter(InMouseEvent.GetScreenSpacePosition()))
 	{
 		OnPressed.Broadcast(this);
 		bSplitting = true;
@@ -238,8 +156,7 @@ FReply USWGExamineWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, c
 		return FReply::Handled().CaptureMouse(TakeWidget()).SetUserFocus(TakeWidget(), EFocusCause::Mouse);
 	}
 
-	if (bLeft && Model
-		&& Model->GetCachedGeometry().IsUnderLocation(InMouseEvent.GetScreenSpacePosition()))
+	if (bLeft && Model->GetCachedGeometry().IsUnderLocation(InMouseEvent.GetScreenSpacePosition()))
 	{
 		OnPressed.Broadcast(this);
 		bRotating = true;
@@ -252,7 +169,7 @@ FReply USWGExamineWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, c
 
 FReply USWGExamineWidget::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
-	if (bSplitting && DetailsWidthBox)
+	if (bSplitting)
 	{
 		// Screen pixels to slate units, so the column tracks the cursor at any DPI.
 		const float Scale = FMath::Max(InGeometry.Scale, KINDA_SMALL_NUMBER);
@@ -263,7 +180,7 @@ FReply USWGExamineWidget::NativeOnMouseMove(const FGeometry& InGeometry, const F
 		return FReply::Handled();
 	}
 
-	if (bRotating && Model)
+	if (bRotating)
 	{
 		const FVector2D Delta = InMouseEvent.GetScreenSpacePosition() - LastDragPosition;
 		LastDragPosition = InMouseEvent.GetScreenSpacePosition();
@@ -287,10 +204,7 @@ FReply USWGExamineWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, con
 	if (bRotating)
 	{
 		bRotating = false;
-		if (Model)
-		{
-			Model->SetRotateSpeed(TurntableSpeed);
-		}
+		Model->SetRotateSpeed(TurntableSpeed);
 		return FReply::Handled().ReleaseMouseCapture();
 	}
 	return Super::NativeOnMouseButtonUp(InGeometry, InMouseEvent);

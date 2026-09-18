@@ -17,7 +17,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FSWGOnWindowClosed, USWGWindowWidget*);
 /**
  * A floating in-game window in the retail idiom — rounded translucent panel,
  * cyan outline, a caption strip with the title and a close button — that the
- * player can drag by its caption and resize by its bottom-right corner. Subclasses fill Content in BuildContent().
+ * player can drag by its caption and resize by its bottom-right corner. A Blueprint (WBP_*) lays the chrome out and binds the named widgets.
  * Lives on the player screen (USWGUISubsystem adds and stacks them), so any
  * number can be open at once; Escape closes the focused one.
  */
@@ -49,34 +49,11 @@ public:
 	/** Fired on any press inside the window, so the owner can raise it above its siblings. */
 	FSWGOnWindowClosed OnPressed;
 
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Window")
-	FVector2D WindowSize = FVector2D(420.f, 560.f);
-
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Window")
-	float CornerRadius = 8.f;
-
-	/** Retail's back1 / line1 / titletext palette entries. */
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Window")
-	FLinearColor PanelColor = FLinearColor(0.008f, 0.06f, 0.09f, 0.9f);
-
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Window")
-	FLinearColor OutlineColor = FLinearColor::FromSRGBColor(FColor(0x1C, 0xFF, 0xFF, 0x99));
-
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Window")
-	FLinearColor CaptionColor = FLinearColor::FromSRGBColor(FColor(0x00, 0xD6, 0xFB, 0x8C));
-
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Window")
-	FLinearColor TitleTextColor = FLinearColor::FromSRGBColor(FColor(0x00, 0x35, 0x4F));
-
-	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Window")
-	float CaptionHeight = 24.f;
-
 	/** The window can't be dragged smaller than this. */
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Window")
 	FVector2D MinimumSize = FVector2D(240.f, 160.f);
 
 protected:
-	virtual TSharedRef<SWidget> RebuildWidget() override;
 	virtual void NativeConstruct() override;
 	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 	virtual FReply NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
@@ -87,37 +64,34 @@ protected:
 	/** True over the bottom-right corner square that starts a resize. */
 	bool IsOverResizeGrip(const FVector2D& ScreenPosition) const;
 
-	/** Fill Content with the window's own widgets. Runs once, after the chrome exists. */
-	virtual void BuildContent() {}
+	/** Current size of the Frame; starts from the Blueprint's overrides. */
+	FVector2D WindowSize = FVector2D::ZeroVector;
 
-	/** Where subclasses put their widgets: a vertical box inside the panel, below the caption. */
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	/** Where the window's content lives: below the caption, inside the panel. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UPanelWidget> Content;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> TitleText;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UBorder> Caption;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UButton> CloseButton;
 
 	// A Blueprint lays the chrome out itself by binding these: a full-screen
 	// canvas holding the Frame (a size box the window moves and resizes),
 	// with the Caption and Content inside it.
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UCanvasPanel> RootCanvas;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<USizeBox> Frame;
 
 	/** Bottom-right corner glyph; the corner square under it resizes. */
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UWidget> ResizeGrip;
-
-	/** True when the code-built chrome is in use rather than a Blueprint's. */
-	bool bNativeChrome = false;
 
 private:
 	UFUNCTION()

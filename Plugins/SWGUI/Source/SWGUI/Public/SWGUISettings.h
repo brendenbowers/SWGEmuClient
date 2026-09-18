@@ -32,19 +32,19 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGSuiBoxWidget> SuiBoxClass;
 
-	/** Damage-number layer put under the HUD while in world. Leave unset for the native USWGFloatingTextWidget. */
+	/** Damage-number layer put under the HUD while in world. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGFloatingTextWidget> FloatingTextClass;
 
-	/** Inventory window toggled by the player's InventoryKey. Leave unset for the native USWGInventoryWidget. */
+	/** Inventory window toggled by the player's InventoryKey. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGInventoryWidget> InventoryClass;
 
-	/** One inventory row (WBP_InventoryRow). Leave unset for the native USWGInventoryRowWidget. */
+	/** One inventory row (WBP_InventoryRow). */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGInventoryRowWidget> InventoryRowClass;
 
-	/** Examine window opened from the radial menu. Leave unset for the native USWGExamineWidget. */
+	/** Examine window opened from the radial menu. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGExamineWidget> ExamineClass;
 };

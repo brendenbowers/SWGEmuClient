@@ -256,7 +256,12 @@ void USWGUISubsystem::ToggleInventory()
 		return;
 	}
 	TSubclassOf<USWGInventoryWidget> InventoryClass = USWGUISettings::Get().InventoryClass.LoadSynchronous();
-	InventoryWindow = CreateWidget<USWGInventoryWidget>(PlayerController, InventoryClass ? *InventoryClass : USWGInventoryWidget::StaticClass());
+	if (!InventoryClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: no InventoryClass set in Project Settings > SWG UI"));
+		return;
+	}
+	InventoryWindow = CreateWidget<USWGInventoryWidget>(PlayerController, InventoryClass);
 	ShowWindow(InventoryWindow);
 }
 
@@ -279,11 +284,12 @@ void USWGUISubsystem::OpenExamine(int64 ObjectId)
 		return;
 	}
 	TSubclassOf<USWGExamineWidget> ExamineClass = USWGUISettings::Get().ExamineClass.LoadSynchronous();
-	USWGExamineWidget* Window = CreateWidget<USWGExamineWidget>(PlayerController, ExamineClass ? *ExamineClass : USWGExamineWidget::StaticClass());
-	if (!Window)
+	if (!ExamineClass)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: no ExamineClass set in Project Settings > SWG UI"));
 		return;
 	}
+	USWGExamineWidget* Window = CreateWidget<USWGExamineWidget>(PlayerController, ExamineClass);
 	ExamineWindows.Add(ObjectId, Window);
 	ShowWindow(Window);
 

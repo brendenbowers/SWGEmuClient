@@ -14,7 +14,7 @@ struct FSWGCombatSpamEvent;
  * so it needs no Blueprint; the HUD puts one on the player screen under the
  * layout for as long as it is up.
  */
-UCLASS()
+UCLASS(Abstract)
 class SWGUI_API USWGFloatingTextWidget : public UUserWidget
 {
 	GENERATED_BODY()
@@ -49,7 +49,6 @@ public:
 	FLinearColor BystanderColor = FLinearColor(0.85f, 0.85f, 0.85f);
 
 protected:
-	virtual TSharedRef<SWidget> RebuildWidget() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
@@ -74,7 +73,8 @@ private:
 
 	FLinearColor ColorFor(const FSWGCombatSpamEvent& Event) const;
 
-	UPROPERTY()
+	/** Full-screen canvas the labels are placed on (WBP_FloatingText). */
+	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UCanvasPanel> Canvas;
 
 	TArray<FEntry> Entries;
