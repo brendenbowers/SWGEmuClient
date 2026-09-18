@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "CommonActivatableWidget.h"
+#include "SWGWindowWidget.h"
 #include "SWGInventoryWidget.generated.h"
 
 class UTextBlock;
@@ -37,14 +37,14 @@ struct SWGUI_API FSWGInventoryEntry
 /**
  * The inventory window: what the player is wearing and wielding, and what is
  * in their inventory bag, read straight from the object graph's containment.
- * Builds its own tree when the Blueprint provides none, so it works with no
- * assets; a Blueprint can bind TitleText / EquippedPanel / InventoryPanel /
- * InventoryHeader to restyle it. Rows are code-built either way, each with
+ * Builds its own tree inside the window chrome, so it works with no assets;
+ * a Blueprint can bind EquippedPanel / InventoryPanel / InventoryHeader to
+ * restyle it. Rows are code-built either way, each with
  * the item's rendered icon (USWGItemIconSubsystem); right-clicking a row
  * opens its radial menu. No drag and drop yet.
  */
 UCLASS()
-class SWGUI_API USWGInventoryWidget : public UCommonActivatableWidget
+class SWGUI_API USWGInventoryWidget : public USWGWindowWidget
 {
 	GENERATED_BODY()
 
@@ -67,11 +67,10 @@ public:
 	FKey ToggleKey = EKeys::I;
 
 protected:
-	virtual TSharedRef<SWidget> RebuildWidget() override;
+	virtual void BuildContent() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 	virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
-	virtual UWidget* NativeGetDesiredFocusTarget() const override;
 
 	/** Containment changes arrive as separate messages with no "done" — poll instead of chasing each. */
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Inventory")
@@ -85,9 +84,6 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Inventory")
 	int32 RowFontSize = 14;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
-	TObjectPtr<UTextBlock> TitleText;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> InventoryHeader;

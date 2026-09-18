@@ -13,8 +13,6 @@
 #include "Components/Border.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
-#include "Components/Overlay.h"
-#include "Components/OverlaySlot.h"
 #include "Components/ScrollBox.h"
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
@@ -37,54 +35,33 @@ namespace
 	}
 }
 
-TSharedRef<SWidget> USWGInventoryWidget::RebuildWidget()
+void USWGInventoryWidget::BuildContent()
 {
-	// Only when no Blueprint tree exists — a subclass with its own layout
-	// binds the named widgets instead.
-	if (!WidgetTree->RootWidget)
+	UVerticalBox* Column = Cast<UVerticalBox>(Content);
+	if (!Column)
 	{
-		UOverlay* Root = WidgetTree->ConstructWidget<UOverlay>();
-		WidgetTree->RootWidget = Root;
-
-		USizeBox* Frame = WidgetTree->ConstructWidget<USizeBox>();
-		Frame->SetWidthOverride(420.f);
-		Frame->SetHeightOverride(560.f);
-		UOverlaySlot* FrameSlot = Root->AddChildToOverlay(Frame);
-		FrameSlot->SetHorizontalAlignment(HAlign_Right);
-		FrameSlot->SetVerticalAlignment(VAlign_Center);
-		FrameSlot->SetPadding(FMargin(0.f, 0.f, 40.f, 0.f));
-
-		UBorder* Background = WidgetTree->ConstructWidget<UBorder>();
-		Background->SetBrushColor(FLinearColor(0.02f, 0.05f, 0.08f, 0.92f));
-		Background->SetPadding(FMargin(12.f));
-		Frame->AddChild(Background);
-
-		UVerticalBox* Column = WidgetTree->ConstructWidget<UVerticalBox>();
-		Background->AddChild(Column);
-
-		TitleText = MakeText(WidgetTree, TEXT("Inventory"), 18, FLinearColor::White);
-		Column->AddChildToVerticalBox(TitleText)->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
-
-		Column->AddChildToVerticalBox(MakeText(WidgetTree, TEXT("Equipped"), RowFontSize, FLinearColor::White))
-			->SetPadding(FMargin(0.f, 0.f, 0.f, 4.f));
-
-		UScrollBox* EquippedScroll = WidgetTree->ConstructWidget<UScrollBox>();
-		EquippedPanel = EquippedScroll;
-		UVerticalBoxSlot* EquippedSlot = Column->AddChildToVerticalBox(EquippedScroll);
-		EquippedSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-		EquippedSlot->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
-
-		InventoryHeader = MakeText(WidgetTree, TEXT("Inventory"), RowFontSize, FLinearColor::White);
-		Column->AddChildToVerticalBox(InventoryHeader)->SetPadding(FMargin(0.f, 0.f, 0.f, 4.f));
-
-		UScrollBox* InventoryScroll = WidgetTree->ConstructWidget<UScrollBox>();
-		InventoryPanel = InventoryScroll;
-		UVerticalBoxSlot* InventorySlot = Column->AddChildToVerticalBox(InventoryScroll);
-		FSlateChildSize InventorySize(ESlateSizeRule::Fill);
-		InventorySize.Value = 1.5f;
-		InventorySlot->SetSize(InventorySize);
+		return;
 	}
-	return Super::RebuildWidget();
+	SetTitle(FText::FromString(TEXT("Inventory")));
+
+	Column->AddChildToVerticalBox(MakeText(WidgetTree, TEXT("Equipped"), RowFontSize, FLinearColor::White))
+		->SetPadding(FMargin(0.f, 0.f, 0.f, 4.f));
+
+	UScrollBox* EquippedScroll = WidgetTree->ConstructWidget<UScrollBox>();
+	EquippedPanel = EquippedScroll;
+	UVerticalBoxSlot* EquippedSlot = Column->AddChildToVerticalBox(EquippedScroll);
+	EquippedSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+	EquippedSlot->SetPadding(FMargin(0.f, 0.f, 0.f, 8.f));
+
+	InventoryHeader = MakeText(WidgetTree, TEXT("Inventory"), RowFontSize, FLinearColor::White);
+	Column->AddChildToVerticalBox(InventoryHeader)->SetPadding(FMargin(0.f, 0.f, 0.f, 4.f));
+
+	UScrollBox* InventoryScroll = WidgetTree->ConstructWidget<UScrollBox>();
+	InventoryPanel = InventoryScroll;
+	UVerticalBoxSlot* InventorySlot = Column->AddChildToVerticalBox(InventoryScroll);
+	FSlateChildSize InventorySize(ESlateSizeRule::Fill);
+	InventorySize.Value = 1.5f;
+	InventorySlot->SetSize(InventorySize);
 }
 
 void USWGInventoryWidget::NativeConstruct()
@@ -107,17 +84,11 @@ void USWGInventoryWidget::NativeDestruct()
 	Super::NativeDestruct();
 }
 
-UWidget* USWGInventoryWidget::NativeGetDesiredFocusTarget() const
-{
-	return const_cast<USWGInventoryWidget*>(this);
-}
-
 FReply USWGInventoryWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
-	const FKey Key = InKeyEvent.GetKey();
-	if (Key == EKeys::Escape || Key == ToggleKey || Key == EKeys::Gamepad_FaceButton_Right)
+	if (InKeyEvent.GetKey() == ToggleKey)
 	{
-		DeactivateWidget();
+		Close();
 		return FReply::Handled();
 	}
 	return Super::NativeOnKeyDown(InGeometry, InKeyEvent);

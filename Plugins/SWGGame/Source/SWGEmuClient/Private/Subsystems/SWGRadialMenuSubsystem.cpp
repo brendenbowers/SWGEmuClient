@@ -1,4 +1,5 @@
 #include "Subsystems/SWGRadialMenuSubsystem.h"
+#include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Subsystems/SWGCommandSubsystem.h"
@@ -192,11 +193,20 @@ void USWGRadialMenuSubsystem::SelectOption(int64 ObjectId, int32 RadialId)
 		return;
 	}
 
+	if (RadialId == RadialExamine)
+	{
+		if (USWGExamineSubsystem* Examine = GetGameInstance()->GetSubsystem<USWGExamineSubsystem>())
+		{
+			Examine->RequestExamine(ObjectId);
+		}
+		return;
+	}
+
 	const FSWGDataTableData* Table = GetRadialTable();
 	const FString Command = Table ? Table->GetCell(RadialId, TEXT("command")) : FString();
 	if (Command.IsEmpty())
 	{
-		// Examine and friends open client windows retail draws itself; nothing to send yet.
+		// The remaining client options open windows retail draws itself; nothing to send yet.
 		UE_LOG(LogSWGRadial, Log, TEXT("client option %d on %lld has no command — not implemented"), RadialId, ObjectId);
 		return;
 	}

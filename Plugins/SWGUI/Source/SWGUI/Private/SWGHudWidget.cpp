@@ -2,8 +2,7 @@
 #include "SWGActionBarWidget.h"
 #include "SWGConditionWidget.h"
 #include "SWGFloatingTextWidget.h"
-#include "SWGGameLayout.h"
-#include "SWGInventoryWidget.h"
+#include "SWGUISubsystem.h"
 #include "SWGUISettings.h"
 #include "Objects/Player/SWGPlayer.h"
 #include "CommonInputSubsystem.h"
@@ -137,27 +136,11 @@ bool USWGHudWidget::TriggerActionSlot(int32 SlotIndex)
 
 void USWGHudWidget::ToggleInventory()
 {
-	// The window closes itself on Escape too, so "open" means still activated.
-	if (USWGInventoryWidget* Open = InventoryWindow.Get())
+	// Windows belong to the UI subsystem, which stacks them above the layout.
+	if (USWGUISubsystem* UI = ULocalPlayer::GetSubsystem<USWGUISubsystem>(GetOwningLocalPlayer()))
 	{
-		const bool bWasOpen = Open->IsActivated();
-		Open->DeactivateWidget();
-		InventoryWindow.Reset();
-		if (bWasOpen)
-		{
-			return;
-		}
+		UI->ToggleInventory();
 	}
-
-	USWGGameLayout* Layout = USWGGameLayout::GetLayout(this);
-	if (!Layout)
-	{
-		return;
-	}
-
-	TSubclassOf<USWGInventoryWidget> InventoryClass = USWGUISettings::Get().InventoryClass.LoadSynchronous();
-	InventoryWindow = Cast<USWGInventoryWidget>(Layout->PushWidgetToLayerStack(
-		USWGGameLayout::TAG_Layer_Modal, InventoryClass ? *InventoryClass : USWGInventoryWidget::StaticClass()));
 }
 
 namespace

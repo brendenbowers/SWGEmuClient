@@ -362,3 +362,26 @@ TSharedPtr<FModelRenderData> UModelWidget::BuildRenderData() const
 	}
 	return Data->IsValid() ? Data : Abandon(TEXT("no sections"));
 }
+
+void UModelWidget::SetYaw(float InYaw)
+{
+	if (SlateWidget)
+	{
+		SlateWidget->SetYaw(InYaw);
+	}
+}
+
+float UModelWidget::GetYaw() const
+{
+	return SlateWidget ? SlateWidget->GetYaw() : 0.f;
+}
+
+void UModelWidget::SetViewRotation(FRotator InRotation)
+{
+	ViewRotation = InRotation;
+	ViewRotation.Pitch = FMath::Clamp(ViewRotation.Pitch, -85.f, 85.f);
+	if (SlateWidget)
+	{
+		SlateWidget->SetViewRotation(ViewRotation);
+	}
+}

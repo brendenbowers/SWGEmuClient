@@ -39,4 +39,8 @@ public:
 	/** Inventory window toggled by the player's InventoryKey. Leave unset for the native USWGInventoryWidget. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGInventoryWidget> InventoryClass;
+
+	/** Examine window opened from the radial menu. Leave unset for the native USWGExamineWidget. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGExamineWidget> ExamineClass;
 };

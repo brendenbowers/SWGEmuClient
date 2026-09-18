@@ -65,8 +65,6 @@ private:
 	void HandleActionSlotHotkey(int32 SlotIndex);
 	void HandleActionBankChanged(int32 BankIndex);
 
-	TWeakObjectPtr<class USWGInventoryWidget> InventoryWindow;
-
 	/** Swaps the action bar between its keyboard and gamepad layouts as the last-used device changes. */
 	void HandleInputMethodChanged(ECommonInputType InputType);
 

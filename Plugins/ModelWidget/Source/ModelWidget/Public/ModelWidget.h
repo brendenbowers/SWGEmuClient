@@ -50,6 +50,7 @@ public:
 	/** Degrees per second about the model's up axis. 0 stops on the current angle. */
 	void SetRotateSpeed(float InSpeed);
 	void SetYaw(float InYaw);
+	float GetYaw() const { return Yaw; }
 
 	bool HasModel() const { return Model.IsValid(); }
 
@@ -96,6 +97,17 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Model")
 	void SetRotateSpeed(float DegreesPerSecond);
+
+	/** Turntable angle, for a viewer that lets the user drag the model round. */
+	UFUNCTION(BlueprintCallable, Category = "Model")
+	void SetYaw(float InYaw);
+
+	UFUNCTION(BlueprintPure, Category = "Model")
+	float GetYaw() const;
+
+	/** Camera pitch and yaw around the model; pitch is clamped so the camera never goes over the top. */
+	UFUNCTION(BlueprintCallable, Category = "Model")
+	void SetViewRotation(FRotator InRotation);
 
 	UFUNCTION(BlueprintCallable, Category = "Model")
 	void ClearModel();
