@@ -10,6 +10,7 @@
 #include "TRE/SWGClientDataFileReader.h"
 #include "TRE/SWGAppearanceCollisionReader.h"
 #include "TRE/SWGFloorReader.h"
+#include "TRE/SWGShaderReader.h"
 #include "Customization/SWGCustomizationVariables.h"
 #include "Engine/AssetUserData.h"
 #include "SWGMeshGeneratorSubsystem.generated.h"
@@ -246,6 +247,8 @@ class SWGEMUCLIENT_API USWGMeshGeneratorSubsystem : public UGameInstanceSubsyste
 	// — see that class's own header comment for why this wasn't worth
 	// promoting to a public API instead.
 	friend class FSWGSkeletalAnimationPipeline;
+	/** Builds its radial billboard mesh and per-shader materials through the private cache-or-build helpers. */
+	friend class USWGTerrainFloraSubsystem;
 
 public:
 	// Declared (not defaulted) so the SkeletalAnimationPipeline raw-pointer
@@ -283,6 +286,16 @@ public:
 	/** Like RequestMesh(Actor, CrcClass), but for callers that already have the
 	 *  template's virtual path (world-snapshot objects) instead of a CRC. */
 	void RequestMeshForTemplatePath(AActor* Actor, const FString& TemplatePath);
+
+	/**
+	 * Actor-less: resolves a static appearance (.apt/.lod, or a bare .msh)
+	 * straight to its cached UStaticMesh with LODs and one live material
+	 * per section — terrain flora, which has no template and no actor, only
+	 * an appearance name per family child. OnComplete runs on the game
+	 * thread; Mesh is null on any failure. A .sat (skeletal) appearance
+	 * fails here.
+	 */
+	void RequestAppearanceMesh(const FString& AppearancePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)> OnComplete);
 
 	/**
 	 * Walks TemplatePath's DERV inheritance chain looking for
@@ -407,6 +420,9 @@ private:
 
 	/** The path-based half of ResolveMeshPath, factored out so RequestMeshForTemplatePath can skip the CRC->path lookup. */
 	bool ResolveMeshPathForTemplate(const FString& TemplatePath, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, FString& OutAppearancePath, TArray<FSWGLodLevel>* OutLodLevels = nullptr, FString* OutCollisionSourcePath = nullptr);
+
+	/** The appearance-file half of ResolveMeshPathForTemplate (.sat/.apt/.lod onwards). DebugContext only names the caller in log lines. */
+	bool ResolveAppearanceMeshPaths(const FString& AppearancePath, const FString& DebugContext, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, TArray<FSWGLodLevel>* OutLodLevels = nullptr, FString* OutCollisionSourcePath = nullptr);
 
 	/** .lmg (FORM MLOD > FORM 0000 > one NAME per LOD) -> its highest-detail .mgn. */
 	bool ResolveLmgMeshPath(const FString& LmgPath, FString& OutMgnPath);
@@ -678,6 +694,9 @@ private:
 	 */
 	UMaterialInterface* GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr, const FString& ReplaceableTexturePath = FString());
 
+	/** A shader's .eft render states (see FSWGEffectRenderStates), memoized by effect name; defaults (opaque) when the effect is empty or unreadable. */
+	FSWGEffectRenderStates GetOrReadEffectRenderStates(const FString& EffectName);
+
 	/** Resolves an RCNO resource type (e.g. "steel_duralloy") to the decal texture for its resource class. Empty if nothing in its ancestry has an icon. */
 	FString ResolveResourceDecalTexturePath(const FString& ResourceType);
 
@@ -701,6 +720,9 @@ private:
 	/** Shader virtual path (e.g. "shader/dl44_main_as9.sht") -> built MaterialInstanceDynamic. See GetOrBuildObjectMaterial. */
 	UPROPERTY()
 	TMap<FString, TObjectPtr<UMaterialInterface>> ObjectMaterialCache;
+
+	/** Effect virtual path (e.g. "effect/a_punchout.eft") -> its parsed render states. See GetOrReadEffectRenderStates. */
+	TMap<FString, FSWGEffectRenderStates> EffectRenderStateCache;
 
 	/** Resource class tree, converted from resource_tree.iff at init (see SWGResourceClass::BuildDataTable) and loaded here on first use. */
 	UPROPERTY()

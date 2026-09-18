@@ -239,10 +239,77 @@ float FSWGTerrainEvaluator::EvaluateBoundary(const FSWGTerrainBoundary& Boundary
 	}
 }
 
-float FSWGTerrainEvaluator::EvaluateFilter(const FSWGTerrainFilter& Filter, float X, float Y, float Height, const FSWGMapGroup& MapGroup)
+const FVector& FSWGTerrainEvaluator::GetWalkNormal(FFloraWalk& Flora, float X, float Y)
+{
+	if (!Flora.Normal.IsSet())
+	{
+		// Normal from the final ground height at two nearby offsets, the
+		// same as FSWGTerrainFloraPlacer's alignment normal.
+		constexpr float Step = 0.5f;
+		const float HeightHere = GetHeight(Flora.Data, X, Y, Flora.ExtraLayers);
+		const float HeightEast = GetHeight(Flora.Data, X + Step, Y, Flora.ExtraLayers);
+		const float HeightNorth = GetHeight(Flora.Data, X, Y + Step, Flora.ExtraLayers);
+		FVector Normal = FVector::CrossProduct(FVector(Step, 0.0f, HeightEast - HeightHere), FVector(0.0f, Step, HeightNorth - HeightHere)).GetSafeNormal();
+		if (Normal.Z < 0.0f)
+		{
+			Normal = -Normal;
+		}
+		Flora.Normal = Normal;
+	}
+	return Flora.Normal.GetValue();
+}
+
+float FSWGTerrainEvaluator::FeatheredBand(float Value, float Min, float Max, float FeatheringAmount)
+{
+	if (Value < Min || Value > Max)
+	{
+		return 0.0f;
+	}
+	const float HalfBand = (Max - Min) * FeatheringAmount * 0.5f;
+	if (HalfBand <= 0.0f)
+	{
+		return 1.0f;
+	}
+	if (Value < Min + HalfBand)
+	{
+		return (Value - Min) / HalfBand;
+	}
+	if (Value > Max - HalfBand)
+	{
+		return (Max - Value) / HalfBand;
+	}
+	return 1.0f;
+}
+
+float FSWGTerrainEvaluator::EvaluateFilter(const FSWGTerrainFilter& Filter, float X, float Y, float Height, const FSWGMapGroup& MapGroup, FFloraWalk* Flora)
 {
 	switch (Filter.Type)
 	{
+		case ESWGTerrainFilterType::Slope:
+		{
+			if (!Flora) return 1.0f;
+
+			// FilterSlope::process, on the up component: the pass band is
+			// cos(maxAngle) < up < cos(minAngle), feathered at both ends.
+			const float Up = FMath::Abs(GetWalkNormal(*Flora, X, Y).Z);
+			return FeatheredBand(Up, FMath::Cos(FMath::DegreesToRadians(Filter.SlopeMaxAngleDegrees)), FMath::Cos(FMath::DegreesToRadians(Filter.SlopeMinAngleDegrees)), Filter.FeatheringAmount);
+		}
+		case ESWGTerrainFilterType::Direction:
+		{
+			if (!Flora) return 1.0f;
+
+			// The retail client's FilterDirection: the compass direction the
+			// slope faces, atan2(north, east) — flat ground reads 0 and so
+			// passes any band straddling it.
+			const FVector& Normal = GetWalkNormal(*Flora, X, Y);
+			const float AspectDegrees = FMath::RadiansToDegrees(FMath::Atan2(Normal.Y, Normal.X));
+			return FeatheredBand(AspectDegrees, Filter.DirectionMinDegrees, Filter.DirectionMaxDegrees, Filter.FeatheringAmount);
+		}
+		case ESWGTerrainFilterType::Shader:
+		{
+			if (!Flora) return 1.0f;
+			return DominantShaderFamily(Flora->ShaderWeights) == Filter.ShaderFamilyId ? 1.0f : 0.0f;
+		}
 		case ESWGTerrainFilterType::Height:
 		{
 			// Confirmed port of FilterHeight::process — note it only ever looks at
@@ -506,7 +573,41 @@ void FSWGTerrainEvaluator::FindNearestRoadHeight(const FSWGTerrainRoadSegment& S
 	}
 }
 
-float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup)
+void FSWGTerrainEvaluator::ApplyFloraAffector(const FSWGTerrainAffector& Affector, float TransformValue, FFloraWalk& Flora)
+{
+	if (TransformValue <= 0.0f) return;
+
+	if (Affector.bFloraRemoveAll)
+	{
+		Flora.Sample.FamilyId = 0;
+		Flora.Sample.Density = 0.0f;
+		return;
+	}
+
+	// Operation 1 only fills empty ground; 0 overwrites whatever an earlier layer left.
+	if (Affector.FloraOperation == 1 && Flora.Sample.FamilyId != 0)
+	{
+		return;
+	}
+
+	float FamilyDensity = 1.0f;
+	if (Flora.bRadial)
+	{
+		if (const FSWGRadialFamily* Family = Flora.Data.FindRadialFamily(Affector.FloraFamilyId))
+		{
+			FamilyDensity = Family->Density;
+		}
+	}
+	else if (const FSWGFloraFamily* Family = Flora.Data.FindFloraFamily(Affector.FloraFamilyId))
+	{
+		FamilyDensity = Family->Density;
+	}
+
+	Flora.Sample.FamilyId = Affector.FloraFamilyId;
+	Flora.Sample.Density = FMath::Clamp(Affector.bFloraDensityOverride ? Affector.FloraDensity : FamilyDensity, 0.0f, 1.0f);
+}
+
+float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup, FFloraWalk* Flora)
 {
 	float TransformValue = 0.0f;
 	bool bHasEnabledBoundary = false;
@@ -546,7 +647,7 @@ float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X,
 		{
 			if (!Filter.bEnabled) continue;
 
-			float Result = EvaluateFilter(Filter, X, Y, Height, MapGroup);
+			float Result = EvaluateFilter(Filter, X, Y, Height, MapGroup, Flora);
 			Result = CalculateFeathering(Result, Filter.FeatheringType);
 			TransformValue = FMath::Min(TransformValue, Result);
 
@@ -564,17 +665,61 @@ float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X,
 		for (const FSWGTerrainAffector& Affector : Layer.Affectors)
 		{
 			if (!Affector.bEnabled) continue;
+			if (Flora)
+			{
+				if (Affector.Type == Flora->AffectorType)
+				{
+					ApplyFloraAffector(Affector, TransformValue * ParentTransform, *Flora);
+					continue;
+				}
+				// Shader paint is tracked for the shader filter — the same
+				// compositing GetShaderWeights does.
+				if (Affector.Type == ESWGTerrainAffectorType::ShaderConstant || Affector.Type == ESWGTerrainAffectorType::ShaderReplace)
+				{
+					ApplyShaderAffector(Affector, TransformValue * ParentTransform, Flora->ShaderWeights);
+					continue;
+				}
+				if (Affector.Type == ESWGTerrainAffectorType::Road && !Affector.bRoadIsHeightType)
+				{
+					ApplyRoadShaderPaint(Affector, X, Y, TransformValue * ParentTransform, Flora->ShaderWeights);
+					continue;
+				}
+			}
 			ApplyAffector(Affector, X, Y, TransformValue * ParentTransform, Height, MapGroup);
 		}
 
 		for (const FSWGTerrainLayer& Child : Layer.Children)
 		{
 			if (!Child.bEnabled) continue;
-			ProcessLayer(Child, X, Y, Height, ParentTransform * TransformValue, MapGroup);
+			ProcessLayer(Child, X, Y, Height, ParentTransform * TransformValue, MapGroup, Flora);
 		}
 	}
 
 	return TransformValue;
+}
+
+FSWGTerrainFloraSample FSWGTerrainEvaluator::GetFlora(const FSWGTerrainData& Data, float X, float Y, ESWGTerrainFloraTier Tier, TArrayView<const FSWGTerrainLayer> ExtraLayers)
+{
+	FFloraWalk Flora{ Data, ExtraLayers, SWGFloraTierAffectorType(Tier), SWGIsRadialFloraTier(Tier), {}, {}, {} };
+	float Height = 0.0f;
+
+	for (const FSWGTerrainLayer& Layer : Data.TopLevelLayers)
+	{
+		if (Layer.bEnabled)
+		{
+			ProcessLayer(Layer, X, Y, Height, 1.0f, Data.MapGroup, &Flora);
+		}
+	}
+	for (const FSWGTerrainLayer& Layer : ExtraLayers)
+	{
+		if (Layer.bEnabled)
+		{
+			ProcessLayer(Layer, X, Y, Height, 1.0f, Data.MapGroup, &Flora);
+		}
+	}
+
+	Flora.Sample.Height = Height;
+	return Flora.Sample;
 }
 
 float FSWGTerrainEvaluator::GetHeight(const FSWGTerrainData& Data, float X, float Y, TArrayView<const FSWGTerrainLayer> ExtraLayers)
@@ -643,6 +788,51 @@ void FSWGTerrainEvaluator::ApplyShaderAffector(const FSWGTerrainAffector& Affect
 	}
 }
 
+void FSWGTerrainEvaluator::ApplyRoadShaderPaint(const FSWGTerrainAffector& Affector, float X, float Y, float Strength, TMap<int32, float>& OutWeights)
+{
+	// ROAD visual affectors are not height data, but their family ID paints
+	// the authored road surface. The reader already builds Core3-compatible
+	// oriented road rectangles for both ROAD and HDTA variants.
+	if (Affector.ShaderFamilyId < 0 || Strength <= 0.0f)
+	{
+		return;
+	}
+
+	for (const FSWGTerrainRoadRectangle& Rect : Affector.RoadRectangles)
+	{
+		const float DeltaX = Rect.CenterX - X;
+		const float DeltaY = Rect.CenterY - Y;
+		const float LocalX = DeltaX * FMath::Cos(-Rect.Direction) + DeltaY * FMath::Sin(-Rect.Direction);
+		const float LocalY = DeltaX * FMath::Sin(-Rect.Direction) - DeltaY * FMath::Cos(-Rect.Direction);
+		if (FMath::Abs(LocalX) > Rect.Width * 0.5f || FMath::Abs(LocalY) > Rect.Height * 0.5f)
+		{
+			continue;
+		}
+
+		for (TPair<int32, float>& Pair : OutWeights)
+		{
+			Pair.Value *= (1.0f - Strength);
+		}
+		OutWeights.FindOrAdd(Affector.ShaderFamilyId) += Strength;
+		break;
+	}
+}
+
+int32 FSWGTerrainEvaluator::DominantShaderFamily(const TMap<int32, float>& Weights)
+{
+	int32 Dominant = 0;
+	float Best = 0.0f;
+	for (const TPair<int32, float>& Pair : Weights)
+	{
+		if (Pair.Value > Best)
+		{
+			Best = Pair.Value;
+			Dominant = Pair.Key;
+		}
+	}
+	return Dominant;
+}
+
 float FSWGTerrainEvaluator::ProcessShaderLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup, TMap<int32, float>& OutWeights)
 {
 	float TransformValue = 0.0f;
@@ -700,32 +890,9 @@ float FSWGTerrainEvaluator::ProcessShaderLayer(const FSWGTerrainLayer& Layer, fl
 				continue;
 			}
 
-			// ROAD visual affectors are not height data, but their family ID paints
-			// the authored road surface. The reader already builds Core3-compatible
-			// oriented road rectangles for both ROAD and HDTA variants.
-			if (Affector.Type != ESWGTerrainAffectorType::Road || Affector.bRoadIsHeightType || Affector.ShaderFamilyId < 0)
+			if (Affector.Type == ESWGTerrainAffectorType::Road && !Affector.bRoadIsHeightType)
 			{
-				continue;
-			}
-
-			for (const FSWGTerrainRoadRectangle& Rect : Affector.RoadRectangles)
-			{
-				const float DeltaX = Rect.CenterX - X;
-				const float DeltaY = Rect.CenterY - Y;
-				const float LocalX = DeltaX * FMath::Cos(-Rect.Direction) + DeltaY * FMath::Sin(-Rect.Direction);
-				const float LocalY = DeltaX * FMath::Sin(-Rect.Direction) - DeltaY * FMath::Cos(-Rect.Direction);
-				if (FMath::Abs(LocalX) > Rect.Width * 0.5f || FMath::Abs(LocalY) > Rect.Height * 0.5f)
-				{
-					continue;
-				}
-
-				const float Strength = TransformValue * ParentTransform;
-				for (TPair<int32, float>& Pair : OutWeights)
-				{
-					Pair.Value *= (1.0f - Strength);
-				}
-				OutWeights.FindOrAdd(Affector.ShaderFamilyId) += Strength;
-				break;
+				ApplyRoadShaderPaint(Affector, X, Y, TransformValue * ParentTransform, OutWeights);
 			}
 		}
 

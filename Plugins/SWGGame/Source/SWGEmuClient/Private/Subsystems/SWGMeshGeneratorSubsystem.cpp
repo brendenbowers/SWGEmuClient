@@ -694,6 +694,27 @@ void USWGMeshGeneratorSubsystem::RequestItemMesh(uint32 TemplateCrc, int32 Conta
 	PendingRequests.Add(MoveTemp(Request));
 }
 
+void USWGMeshGeneratorSubsystem::RequestAppearanceMesh(const FString& AppearancePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)> OnComplete)
+{
+	if (!OnComplete)
+	{
+		return;
+	}
+
+	// Rides the actor-less item path (OnItemMeshReady) with the appearance
+	// given up front — ProcessNextRequest resolves it straight through
+	// ResolveAppearanceMeshPaths. bStatic keys the cached asset by the
+	// appearance rather than a template.
+	FSWGPendingMeshRequest Request;
+	Request.AppearancePath = AppearancePath;
+	Request.bStatic = true;
+	Request.OnItemMeshReady = [OnComplete = MoveTemp(OnComplete)](UStaticMesh* Mesh, const FSWGMeshData, const TArray<UMaterialInterface*>& Materials)
+		{
+			OnComplete(Mesh, Materials);
+		};
+	PendingRequests.Add(MoveTemp(Request));
+}
+
 void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 {
 	while (PendingRequests.Num() > 0)
@@ -712,11 +733,25 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				// own guard over the same Promise for its own exit paths.
 				TSWGScopedPromiseFulfiller<FSWGMeshGenerationResult> ResultGuard(Request.Promise);
 
+				// An actor-less static request (RequestAppearanceMesh) still
+				// gets its callback on failure, so the caller can stop waiting.
+				auto FailItemRequest = [&Request]()
+					{
+						if (Request.OnItemMeshReady)
+						{
+							AsyncTask(ENamedThreads::GameThread, [OnItemMeshReady = MoveTemp(Request.OnItemMeshReady)]()
+								{
+									OnItemMeshReady(nullptr, FSWGMeshData(), {});
+								});
+						}
+					};
+
 				if (Request.TemplateCrc != 0 && Request.MeshVirtualPaths.IsEmpty())
 				{
 					if (!ResolveMeshPath(Request.TemplateCrc, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath, &Request.LodLevels, &Request.CollisionSourcePath))
 					{
 						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template CRC %08X"), Request.TemplateCrc);
+						FailItemRequest();
 						return;
 					}
 				}
@@ -725,6 +760,16 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 					if (!ResolveMeshPathForTemplate(Request.TemplatePath, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, Request.AppearancePath, &Request.LodLevels, &Request.CollisionSourcePath))
 					{
 						UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: failed to resolve mesh path for template %s"), *Request.TemplatePath);
+						FailItemRequest();
+						return;
+					}
+				}
+				else if (!Request.AppearancePath.IsEmpty() && Request.MeshVirtualPaths.IsEmpty())
+				{
+					if (!ResolveAppearanceMeshPaths(Request.AppearancePath, Request.AppearancePath, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, &Request.LodLevels, &Request.CollisionSourcePath) || Request.bSkeletal)
+					{
+						UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to resolve a static mesh for appearance %s"), *Request.AppearancePath);
+						FailItemRequest();
 						return;
 					}
 				}
@@ -745,6 +790,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				if (Request.MeshVirtualPaths.IsEmpty())
 				{
 					UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: no mesh path to parse for actor %s (template CRC %08X)"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc);
+					FailItemRequest();
 					return;
 				}
 
@@ -758,6 +804,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 					bParsed ? TEXT("true") : TEXT("false"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, MeshData.Submeshes.Num());
 				if (!bParsed)
 				{
+					FailItemRequest();
 					return;
 				}
 
@@ -765,8 +812,11 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				const FString ActorClassName = Request.Actor.IsValid()
 					? Request.Actor->GetClass()->GetName()
 					: (bIsItemRequest ? ASWGItem::StaticClass()->GetName() : TEXT("Unknown"));
+				// A static request is keyed by its template, or by the appearance
+				// itself when it came in without one (RequestAppearanceMesh).
+				const FString& StaticKey = Request.TemplatePath.IsEmpty() ? Request.AppearancePath : Request.TemplatePath;
 				uint32 CacheHash = Request.bStatic
-					? GetTypeHash(Request.TemplatePath)
+					? GetTypeHash(StaticKey)
 					: (GetTypeHash(Request.MeshVirtualPaths) ^ GetTypeHash(ActorClassName));
 				// The saved SM_ asset is the cache and its name is this hash, so
 				// the LOD set and the generator version have to be part of it.
@@ -776,7 +826,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 					CacheHash = HashCombine(CacheHash, GetTypeHash(Level.MeshPath));
 				}
 				const FString DebugName = Request.bStatic
-					? Request.TemplatePath
+					? StaticKey
 					: FString::Printf(TEXT("%s (%s)"), *FString::Join(Request.MeshVirtualPaths, TEXT(", ")), *ActorClassName);
 				const float YawCorrectionDegrees = GetStaticMeshYawCorrection(Request.MeshVirtualPaths);
 				const EComponentMobility::Type Mobility = Request.bStatic ? EComponentMobility::Static : EComponentMobility::Movable;
@@ -885,18 +935,18 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							// skeletal item branch above.
 							TMap<FString, FLinearColor> ItemPaletteTints;
 							TMap<FString, int32> ItemTextureIndices;
-							if (!Request.AppearancePath.IsEmpty())
+							if (!Request.AppearancePath.IsEmpty() && !Request.Customization.Values.IsEmpty())
 							{
 								ItemPaletteTints = ResolveCustomizationPaletteTints(Request.Customization, Request.AppearancePath);
 								ItemTextureIndices = ResolveCustomizationTextureIndices(Request.Customization, Request.AppearancePath);
+								// TEMP diagnostic — see the matching log in the skeletal item branch above.
+								UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: item %s static customization: %d raw value(s), appearancePath='%s' -> %d palette tint(s), %d texture index override(s)"),
+									*DebugName, Request.Customization.Values.Num(), *Request.AppearancePath, ItemPaletteTints.Num(), ItemTextureIndices.Num());
 							}
-							// TEMP diagnostic — see the matching log in the skeletal item branch above.
-							UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: item %s static customization: %d raw value(s), appearancePath='%s' -> %d palette tint(s), %d texture index override(s)"),
-								*DebugName, Request.Customization.Values.Num(), *Request.AppearancePath, ItemPaletteTints.Num(), ItemTextureIndices.Num());
 							const TMap<FString, FLinearColor>* PaletteTintsPtr = ItemPaletteTints.Num() > 0 ? &ItemPaletteTints : nullptr;
 							const TMap<FString, int32>* TextureIndicesPtr = ItemTextureIndices.Num() > 0 ? &ItemTextureIndices : nullptr;
 							TArray<UMaterialInterface*> Materials;
-							UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForItem(), PaletteTintsPtr, TextureIndicesPtr, Materials);
+							UStaticMesh* StaticMesh = BuildItemStaticMeshAssets(MeshData, CacheHash, DebugName, GetPlaceholderColorForItem(), PaletteTintsPtr, TextureIndicesPtr, Materials, FString(), LodMeshData, Request.LodLevels);
 							Request.OnItemMeshReady(StaticMesh, MeshData, Materials);
 							ResultGuard.Succeed(FSWGMeshGenerationResult(StaticMesh, MoveTemp(Materials), MoveTemp(MeshData)));
 							return;
@@ -1120,6 +1170,11 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 	// candidates), so a caller could still resolve customization separately.
 	OutAppearancePath = AppearancePath;
 
+	return ResolveAppearanceMeshPaths(AppearancePath, TemplatePath, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal, OutLodLevels, OutCollisionSourcePath);
+}
+
+bool USWGMeshGeneratorSubsystem::ResolveAppearanceMeshPaths(const FString& AppearancePath, const FString& DebugContext, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, TArray<FSWGLodLevel>* OutLodLevels, FString* OutCollisionSourcePath)
+{
 	const bool bIsSat = AppearancePath.EndsWith(TEXT(".sat"));
 	const bool bIsApt = AppearancePath.EndsWith(TEXT(".apt"));
 	// Buildings' portalLayoutFilename-derived exterior path (see
@@ -1145,7 +1200,7 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 		FSWGIffReader AppearanceReader = TreSubsystem->CreateIffReader(AppearancePath);
 		if (!AppearanceReader.IsValid())
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: failed to open appearance file %s (from template %s)"), *AppearancePath, *TemplatePath);
+			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: failed to open appearance file %s (from %s)"), *AppearancePath, *DebugContext);
 			return false;
 		}
 
@@ -2445,6 +2500,31 @@ FString USWGMeshGeneratorSubsystem::ResolveResourceDecalTexturePath(const FStrin
 	return FString();
 }
 
+FSWGEffectRenderStates USWGMeshGeneratorSubsystem::GetOrReadEffectRenderStates(const FString& EffectName)
+{
+	if (EffectName.IsEmpty())
+	{
+		return FSWGEffectRenderStates();
+	}
+
+	// .sht files spell the reference with backslashes ("effect\a_alpha.eft").
+	FString EffectPath = EffectName;
+	EffectPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+
+	if (const FSWGEffectRenderStates* Cached = EffectRenderStateCache.Find(EffectPath))
+	{
+		return *Cached;
+	}
+
+	FSWGEffectRenderStates States;
+	if (!FSWGShaderReader::ReadEffectRenderStates(TreSubsystem->CreateIffReader(EffectPath), States))
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: effect '%s' not readable — treating as opaque"), *EffectPath);
+	}
+	EffectRenderStateCache.Add(EffectPath, States);
+	return States;
+}
+
 UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, const FString& ReplaceableTexturePath)
 {
 	if (ShaderVirtualPath.IsEmpty())
@@ -2560,12 +2640,20 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 				TEXT("/Game/SWGEmu/Materials/M_SWGObjectTexturedMasked.M_SWGObjectTexturedMasked"));
 		}
 
-		// SWG's "alpha" shaders (fur/hair overlay cards, foliage, etc. — see
-		// FSWGShaderData::NeedsAlphaBlend) render as alpha-masked, not opaque;
-		// using the opaque parent for these leaves their cutout geometry
-		// fully solid, showing as a hard-edged silhouette instead of blending
-		// into the surface underneath.
-		UMaterialInterface* Parent = (ShaderData.NeedsAlphaBlend() && ObjectMaterialParentMasked)
+		// Cutout/blended surfaces (leaf cards, grass billboards, fur overlays)
+		// come from the effect's own render states — alpha test and/or alpha
+		// blend — with the effect-name convention as a fallback for effects
+		// that fail to read. Both render through the masked parent: alpha
+		// blending on foliage sorts badly, and retail alpha-tested its blended
+		// flora too. The threshold is the shader's own reference where the
+		// effect names one (a_punchout: 128), floored at a third for blended
+		// effects whose test is only a near-zero fringe cut (e_radialflora: 7).
+		const FSWGEffectRenderStates EffectStates = GetOrReadEffectRenderStates(ShaderData.EffectName);
+		const bool bCutout = EffectStates.bAlphaTest || EffectStates.bAlphaBlend || ShaderData.NeedsAlphaBlend();
+		const float AlphaThreshold = EffectStates.bAlphaBlend || !EffectStates.bAlphaTest
+			? FMath::Max(EffectStates.ResolveAlphaThreshold(ShaderData, 0.333f), 0.333f)
+			: EffectStates.ResolveAlphaThreshold(ShaderData, 0.5f);
+		UMaterialInterface* Parent = (bCutout && ObjectMaterialParentMasked)
 			? ObjectMaterialParentMasked.Get()
 			: ObjectMaterialParent.Get();
 
@@ -2574,6 +2662,10 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 			if (UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Parent, this))
 			{
 				MID->SetTextureParameterValue(TEXT("Diffuse"), Texture);
+				if (bCutout)
+				{
+					MID->SetScalarParameterValue(TEXT("AlphaThreshold"), AlphaThreshold);
+				}
 				if (NormalTexture)
 				{
 					MID->SetTextureParameterValue(TEXT("Normal"), NormalTexture);

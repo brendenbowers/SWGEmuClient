@@ -205,7 +205,6 @@ public:
 	 */
 	AActor* SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpawnInfo& Info, const FTransform& WorldTransform, AActor* Parent, USWGObjectGraphSubsystem* ObjectGraph, bool bForceInterior = false, TArray<TWeakObjectPtr<AActor>>* OutSpawned = nullptr);
 
-private:
 	/**
 	 * Everything a bake reads, captured by value per job so workers never look
 	 * at subsystem state. The planet data is immutable and shared; the edit
@@ -218,8 +217,29 @@ private:
 		TSharedPtr<const TArray<FSWGTerrainLayer>, ESPMode::ThreadSafe> EditLayers;
 		TArray<FSWGTerrainHole> Holes;
 		int32 EditVersion = 0;
+
+		/** Whether a raw XY lies under any registered hole. */
+		bool IsInHole(const FVector2D& RawPosition) const;
 	};
 
+	/** Snapshot of the current planet + edits for a job to carry. Game thread. Planet is null until the terrain has loaded. */
+	FSWGTerrainBakeSource MakeBakeSource() const;
+
+	bool IsTerrainLoaded() const { return bTerrainDataCached; }
+
+	/** The .trn has parsed and streaming is starting — the planet data is available from here on (before OnTerrainReady). */
+	DECLARE_MULTICAST_DELEGATE(FOnTerrainLoaded);
+	FOnTerrainLoaded OnTerrainLoaded;
+
+	/** The zone is being torn down; anything derived from the planet data goes with it. */
+	DECLARE_MULTICAST_DELEGATE(FOnZoneReset);
+	FOnZoneReset OnZoneReset;
+
+	/** A pad or hole landed or left inside Bounds (raw space); derived content there is stale. */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnTerrainEditsChanged, const FBox2D& /*RawBounds*/);
+	FOnTerrainEditsChanged OnTerrainEditsChanged;
+
+private:
 	/** A pad layer with the object that placed it, so RemoveObjectTerrainEdits can find it. */
 	struct FSWGOwnedTerrainLayer
 	{
@@ -276,8 +296,11 @@ private:
 	/** Worker: parses the .trn and .ws, then hands both to the game thread to start streaming. */
 	void LoadTerrain(const FString& TerrainVirtualPath, const FVector& SpawnPosition);
 
-	/** Creates the outdoor sky, sun, and ambient fill for the active planet. */
+	/** Creates the outdoor sky, sun, and ambient fill for the active planet, coloured from its colour ramp at swg.TimeOfDay. */
 	void SetupPlanetLighting(const FString& TerrainVirtualPath);
+
+	/** terrain/colorramp/<zone>_global0.tga (falling back to the default ramp) — see FSWGColorRamp. */
+	bool LoadPlanetColorRamp(const FString& ZoneName, struct FSWGColorRamp& OutRamp) const;
 
 	/** USWGTreSubsystem::CreateIffReader + FSWGTerrainReader::ReadTerrain — synchronous, cheap. */
 	bool ParseTerrain(const FString& TerrainVirtualPath, FSWGTerrainData& OutTerrainData);
@@ -337,9 +360,6 @@ private:
 	/** Hands a finished build to its component — a mesh move, a material, and an async collision request. Game thread. */
 	void ApplyTerrainTileBuild(const FIntPoint& Coord, FSWGTerrainTile& Tile, FSWGTerrainTileBuild& Build);
 
-	/** Snapshot of the current planet + edits for a job to carry. Game thread. */
-	FSWGTerrainBakeSource MakeBakeSource() const;
-
 	// ── Edits ────────────────────────────────────────────────────────────
 
 	/** Replays everything queued while the terrain was still loading. Game thread, called once the planet data exists. */
@@ -390,6 +410,24 @@ private:
 
 	/** Resolves shader/<FamilyLayerName>.sht and loads its tagged texture slot. */
 	UTexture2D* GetOrLoadShaderTexture(const FString& LayerName, bool bNormalMap = false);
+
+	// ── Water ────────────────────────────────────────────────────────────
+
+	/**
+	 * Spawns the planet's water surfaces once the .trn has parsed: the global
+	 * water table as one plane over the whole map, and every enabled
+	 * rectangle/polygon boundary carrying a local water table as a flat mesh
+	 * of its own shape at its height (Naboo's lakes, Tatooine's oases). Each
+	 * is a UDynamicMeshComponent under WaterActor with an M_SWGWater instance
+	 * textured from the boundary's water shader. Game thread.
+	 */
+	void SpawnWaterBodies();
+
+	/** One flat water mesh: raw-space XY outline (rectangle or polygon), raw height, world-space UVs repeating every ShaderSize metres. */
+	void AddWaterSurface(const TArray<FVector2D>& RawOutline, float RawHeight, const FString& ShaderName, float ShaderSize);
+
+	/** M_SWGWater instance for a water shader (shader/<name>.sht diffuse + normal), memoized by name. */
+	UMaterialInterface* GetOrBuildWaterMaterial(const FString& ShaderName);
 
 	/** Landscape path, kept but unused: spawn one ALandscape actor at the whole grid's min corner (game thread). */
 	ALandscape* SpawnLandscapeActor(const FVector& GridOrigin, float Spacing);
@@ -464,6 +502,18 @@ private:
 	/** Root every tile component attaches to, at the raw-space origin. */
 	UPROPERTY()
 	TObjectPtr<AActor> TerrainMeshActor;
+
+	/** Root every water surface attaches to; destroyed with the zone. */
+	UPROPERTY()
+	TObjectPtr<AActor> WaterActor;
+
+	/** Parent material for GetOrBuildWaterMaterial's per-shader MIDs — translucent, panning diffuse + normal. Plugin content asset. */
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> WaterMaterialParent;
+
+	/** Water shader name -> built MID. See GetOrBuildWaterMaterial. */
+	UPROPERTY()
+	TMap<FString, TObjectPtr<UMaterialInterface>> WaterMaterials;
 
 	/** Components of unloaded tiles, kept registered but empty for the next tile to reuse. */
 	UPROPERTY()

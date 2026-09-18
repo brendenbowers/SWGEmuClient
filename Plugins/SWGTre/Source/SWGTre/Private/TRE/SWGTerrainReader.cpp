@@ -82,11 +82,13 @@ bool FSWGTerrainReader::ReadBoundaryRectangle(const FSWGIffReader& Reader, const
 	OutBoundary.FeatheringType = (int32)ReadUInt32LE(D, 16);
 	OutBoundary.FeatheringAmount = FMath::Clamp(ReadFloatLE(D, 20), 0.0f, 1.0f);
 
-	// v0002 ends here (24 bytes); v0003 adds water-table fields (var7 and shaderSize/shaderName ignored).
-	if (bV3 && DataChunk.DataSize >= 36)
+	// v0002 ends here (24 bytes); v0003 adds [enabled][var7][height][shaderSize][shaderName].
+	if (bV3 && DataChunk.DataSize >= 40)
 	{
 		OutBoundary.bLocalWaterTableEnabled = ReadUInt32LE(D, 24) != 0;
 		OutBoundary.LocalWaterTableHeight = ReadFloatLE(D, 32);
+		OutBoundary.LocalWaterTableShaderSize = ReadFloatLE(D, 36);
+		OutBoundary.LocalWaterTableShader = ReadNullTerminatedStringAt(Reader, DataChunk, 40);
 	}
 
 	return true;
@@ -118,10 +120,18 @@ bool FSWGTerrainReader::ReadBoundaryPolygon(const FSWGIffReader& Reader, const F
 	}
 
 	OutBoundary.FeatheringType = (int32)ReadUInt32LE(D, Offset);
-	OutBoundary.FeatheringAmount = FMath::Clamp(ReadFloatLE(D, Offset + 4), 0.0f, 1.0f);
+	// Unlike the other boundaries' 0..1 fraction, a polygon's feathering is
+	// a distance in metres from its edge (BoundaryPolygon::process divides
+	// the nearest-edge distance by it; Core3 reads it unclamped). Clamping
+	// to 1 turned creature_test's 55 m "flattener" ramp into a 5 m cliff.
+	OutBoundary.FeatheringAmount = FMath::Max(ReadFloatLE(D, Offset + 4), 0.0f);
 	OutBoundary.bLocalWaterTableEnabled = ReadUInt32LE(D, Offset + 8) != 0;
 	OutBoundary.LocalWaterTableHeight = ReadFloatLE(D, Offset + 12);
-	// shaderSize + shaderName follow, not needed for height evaluation.
+	if (DataChunk.DataSize > Offset + 20)
+	{
+		OutBoundary.LocalWaterTableShaderSize = ReadFloatLE(D, Offset + 16);
+		OutBoundary.LocalWaterTableShader = ReadNullTerminatedStringAt(Reader, DataChunk, Offset + 20);
+	}
 
 	return true;
 }
@@ -464,8 +474,36 @@ bool FSWGTerrainReader::ReadAffectorShaderReplace(const FSWGIffReader& Reader, c
 	return true;
 }
 
+bool FSWGTerrainReader::ReadAffectorFlora(const FSWGIffReader& Reader, const FSWGIffChunk& AffectorForm, FSWGIffTag VersionTag, ESWGTerrainAffectorType Type, FSWGTerrainAffector& OutAffector)
+{
+	// Same DATA as Core3's AffectorNoncollideFloraConstant/FloraNonCollidableConstant/
+	// RadialConstant/RadialFarConstant: [familyId][operation][removeAll][densityOverride][density].
+	FSWGIffChunk Version, Ihdr, DataChunk;
+	if (!Reader.FindChildForm(AffectorForm, VersionTag, Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
+
+	FString UnusedName;
+	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
+
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
+	if (DataChunk.DataSize < 20) return false;
+
+	const uint8* D = Reader.GetChunkData(DataChunk);
+	OutAffector.Type = Type;
+	OutAffector.FloraFamilyId = (int32)ReadUInt32LE(D, 0);
+	OutAffector.FloraOperation = (int32)ReadUInt32LE(D, 4);
+	OutAffector.bFloraRemoveAll = ReadUInt32LE(D, 8) != 0;
+	OutAffector.bFloraDensityOverride = ReadUInt32LE(D, 12) != 0;
+	OutAffector.FloraDensity = ReadFloatLE(D, 16);
+	return true;
+}
+
 bool FSWGTerrainReader::ReadAffector(const FSWGIffReader& Reader, const FSWGIffChunk& AffectorForm, FSWGTerrainAffector& OutAffector)
 {
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','F','S','C')) return ReadAffectorFlora(Reader, AffectorForm, SWG_IFF_TAG('0','0','0','4'), ESWGTerrainAffectorType::FloraCollidable, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','F','S','N')) return ReadAffectorFlora(Reader, AffectorForm, SWG_IFF_TAG('0','0','0','4'), ESWGTerrainAffectorType::FloraNonCollidable, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','F','D','N')) return ReadAffectorFlora(Reader, AffectorForm, SWG_IFF_TAG('0','0','0','2'), ESWGTerrainAffectorType::RadialNear, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','F','D','F')) return ReadAffectorFlora(Reader, AffectorForm, SWG_IFF_TAG('0','0','0','2'), ESWGTerrainAffectorType::RadialFar, OutAffector);
 	if (AffectorForm.FormType == SWG_IFF_TAG('A','H','C','N')) return ReadAffectorHeightConstant(Reader, AffectorForm, OutAffector);
 	if (AffectorForm.FormType == SWG_IFF_TAG('A','H','F','R')) return ReadAffectorHeightFractal(Reader, AffectorForm, OutAffector);
 	if (AffectorForm.FormType == SWG_IFF_TAG('A','H','T','R')) return ReadAffectorHeightTerrace(Reader, AffectorForm, OutAffector);
@@ -525,10 +563,73 @@ bool FSWGTerrainReader::ReadFilterFractal(const FSWGIffReader& Reader, const FSW
 	return true;
 }
 
+bool FSWGTerrainReader::ReadFilterSlope(const FSWGIffReader& Reader, const FSWGIffChunk& FslpForm, FSWGTerrainFilter& OutFilter)
+{
+	FSWGIffChunk Version, Ihdr, DataChunk;
+	if (!Reader.FindChildForm(FslpForm, SWG_IFF_TAG('0','0','0','2'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
+
+	FString UnusedName;
+	ReadInformationHeader(Reader, Ihdr, UnusedName, OutFilter.bEnabled);
+
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
+	if (DataChunk.DataSize < 16) return false;
+
+	const uint8* D = Reader.GetChunkData(DataChunk);
+	OutFilter.Type = ESWGTerrainFilterType::Slope;
+	// FilterSlope::setMinAngle/setMaxAngle clamp each to 0..90 degrees.
+	OutFilter.SlopeMinAngleDegrees = FMath::Clamp(ReadFloatLE(D, 0), 0.0f, 90.0f);
+	OutFilter.SlopeMaxAngleDegrees = FMath::Clamp(ReadFloatLE(D, 4), 0.0f, 90.0f);
+	OutFilter.FeatheringType = (int32)ReadUInt32LE(D, 8);
+	OutFilter.FeatheringAmount = FMath::Clamp(ReadFloatLE(D, 12), 0.0f, 1.0f);
+	return true;
+}
+
+bool FSWGTerrainReader::ReadFilterShader(const FSWGIffReader& Reader, const FSWGIffChunk& FshdForm, FSWGTerrainFilter& OutFilter)
+{
+	FSWGIffChunk Version, Ihdr, DataChunk;
+	if (!Reader.FindChildForm(FshdForm, SWG_IFF_TAG('0','0','0','0'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
+
+	FString UnusedName;
+	ReadInformationHeader(Reader, Ihdr, UnusedName, OutFilter.bEnabled);
+
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
+	if (DataChunk.DataSize < 4) return false;
+
+	OutFilter.Type = ESWGTerrainFilterType::Shader;
+	OutFilter.ShaderFamilyId = (int32)ReadUInt32LE(Reader.GetChunkData(DataChunk), 0);
+	return true;
+}
+
+bool FSWGTerrainReader::ReadFilterDirection(const FSWGIffReader& Reader, const FSWGIffChunk& FdirForm, FSWGTerrainFilter& OutFilter)
+{
+	FSWGIffChunk Version, Ihdr, DataChunk;
+	if (!Reader.FindChildForm(FdirForm, SWG_IFF_TAG('0','0','0','0'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
+
+	FString UnusedName;
+	ReadInformationHeader(Reader, Ihdr, UnusedName, OutFilter.bEnabled);
+
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
+	if (DataChunk.DataSize < 16) return false;
+
+	const uint8* D = Reader.GetChunkData(DataChunk);
+	OutFilter.Type = ESWGTerrainFilterType::Direction;
+	OutFilter.DirectionMinDegrees = FMath::Clamp(ReadFloatLE(D, 0), -180.0f, 180.0f);
+	OutFilter.DirectionMaxDegrees = FMath::Clamp(ReadFloatLE(D, 4), -180.0f, 180.0f);
+	OutFilter.FeatheringType = (int32)ReadUInt32LE(D, 8);
+	OutFilter.FeatheringAmount = FMath::Clamp(ReadFloatLE(D, 12), 0.0f, 1.0f);
+	return true;
+}
+
 bool FSWGTerrainReader::ReadFilter(const FSWGIffReader& Reader, const FSWGIffChunk& FilterForm, FSWGTerrainFilter& OutFilter)
 {
+	if (FilterForm.FormType == SWG_IFF_TAG('F','D','I','R')) return ReadFilterDirection(Reader, FilterForm, OutFilter);
 	if (FilterForm.FormType == SWG_IFF_TAG('F','H','G','T')) return ReadFilterHeight(Reader, FilterForm, OutFilter);
 	if (FilterForm.FormType == SWG_IFF_TAG('F','F','R','A')) return ReadFilterFractal(Reader, FilterForm, OutFilter);
+	if (FilterForm.FormType == SWG_IFF_TAG('F','S','L','P')) return ReadFilterSlope(Reader, FilterForm, OutFilter);
+	if (FilterForm.FormType == SWG_IFF_TAG('F','S','H','D')) return ReadFilterShader(Reader, FilterForm, OutFilter);
 	return false;
 }
 
@@ -557,7 +658,7 @@ bool FSWGTerrainReader::ReadLayer(const FSWGIffReader& Reader, const FSWGIffChun
 				OutLayer.Boundaries.Add(MoveTemp(Boundary));
 			}
 		}
-		else if (Child.IsForm() && (Child.FormType == SWG_IFF_TAG('F','H','G','T') || Child.FormType == SWG_IFF_TAG('F','F','R','A')))
+		else if (Child.IsForm() && (Child.FormType == SWG_IFF_TAG('F','H','G','T') || Child.FormType == SWG_IFF_TAG('F','F','R','A') || Child.FormType == SWG_IFF_TAG('F','S','L','P') || Child.FormType == SWG_IFF_TAG('F','S','H','D') || Child.FormType == SWG_IFF_TAG('F','D','I','R')))
 		{
 			FSWGTerrainFilter Filter;
 			if (ReadFilter(Reader, Child, Filter))
@@ -565,7 +666,8 @@ bool FSWGTerrainReader::ReadLayer(const FSWGIffReader& Reader, const FSWGIffChun
 				OutLayer.Filters.Add(MoveTemp(Filter));
 			}
 		}
-		else if (Child.IsForm() && (Child.FormType == SWG_IFF_TAG('A','H','C','N') || Child.FormType == SWG_IFF_TAG('A','H','F','R') || Child.FormType == SWG_IFF_TAG('A','H','T','R') || Child.FormType == SWG_IFF_TAG('A','R','O','A') || Child.FormType == SWG_IFF_TAG('A','S','C','N') || Child.FormType == SWG_IFF_TAG('A','S','R','P')))
+		else if (Child.IsForm() && (Child.FormType == SWG_IFF_TAG('A','H','C','N') || Child.FormType == SWG_IFF_TAG('A','H','F','R') || Child.FormType == SWG_IFF_TAG('A','H','T','R') || Child.FormType == SWG_IFF_TAG('A','R','O','A') || Child.FormType == SWG_IFF_TAG('A','S','C','N') || Child.FormType == SWG_IFF_TAG('A','S','R','P')
+			|| Child.FormType == SWG_IFF_TAG('A','F','S','C') || Child.FormType == SWG_IFF_TAG('A','F','S','N') || Child.FormType == SWG_IFF_TAG('A','F','D','N') || Child.FormType == SWG_IFF_TAG('A','F','D','F')))
 		{
 			FSWGTerrainAffector Affector;
 			if (ReadAffector(Reader, Child, Affector))
@@ -649,6 +751,187 @@ bool FSWGTerrainReader::ReadShadersGroup(const FSWGIffReader& Reader, const FSWG
 		{
 			Family.LayerNames.Add(ReadNullTerminated(Offset));
 			Offset += 4; // layer weight (float) — not needed, we only use layer[0] as the primary texture.
+		}
+
+		OutFamilies.Add(MoveTemp(Family));
+	}
+
+	return true;
+}
+
+namespace
+{
+	/** Sequential little-endian reads over one chunk's bytes; every read past the end yields zero/empty rather than faulting. */
+	struct FSWGChunkCursor
+	{
+		const uint8* Data;
+		int32 Size;
+		int32 Offset = 0;
+
+		FSWGChunkCursor(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk)
+			: Data(Reader.GetChunkData(Chunk)), Size(Reader.GetChunkSize(Chunk)) {}
+
+		bool HasRemaining(int32 Bytes) const { return Offset + Bytes <= Size; }
+
+		int32 ReadInt32()
+		{
+			if (!HasRemaining(4)) { Offset = Size; return 0; }
+			const int32 Value = (int32)ReadUInt32LE(Data, Offset);
+			Offset += 4;
+			return Value;
+		}
+
+		float ReadFloat()
+		{
+			if (!HasRemaining(4)) { Offset = Size; return 0.0f; }
+			const float Value = ReadFloatLE(Data, Offset);
+			Offset += 4;
+			return Value;
+		}
+
+		uint8 ReadByte()
+		{
+			if (!HasRemaining(1)) { Offset = Size; return 0; }
+			return Data[Offset++];
+		}
+
+		FString ReadString()
+		{
+			const int32 Start = Offset;
+			while (Offset < Size && Data[Offset] != 0) { ++Offset; }
+			FString Result = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + Start), Offset - Start);
+			++Offset;
+			return Result;
+		}
+	};
+
+	template <typename TChild>
+	const TChild* PickWeightedChild(const TArray<TChild>& Children, float UnitRoll)
+	{
+		float TotalWeight = 0.0f;
+		for (const TChild& Child : Children)
+		{
+			TotalWeight += FMath::Max(0.0f, Child.Weight);
+		}
+		if (Children.IsEmpty() || TotalWeight <= 0.0f)
+		{
+			return nullptr;
+		}
+
+		float Remaining = FMath::Clamp(UnitRoll, 0.0f, 0.999999f) * TotalWeight;
+		for (const TChild& Child : Children)
+		{
+			Remaining -= FMath::Max(0.0f, Child.Weight);
+			if (Remaining < 0.0f)
+			{
+				return &Child;
+			}
+		}
+		return &Children.Last();
+	}
+}
+
+const FSWGFloraChild* FSWGFloraFamily::PickChild(float UnitRoll) const
+{
+	return PickWeightedChild(Children, UnitRoll);
+}
+
+const FSWGRadialChild* FSWGRadialFamily::PickChild(float UnitRoll) const
+{
+	return PickWeightedChild(Children, UnitRoll);
+}
+
+bool FSWGTerrainReader::ReadFloraGroup(const FSWGIffReader& Reader, const FSWGIffChunk& FgrpForm, TArray<FSWGFloraFamily>& OutFamilies)
+{
+	// FGRP > 0008 holds a flat list of FFAM chunks (Core3 FloraGroup/
+	// FloraFamily): [familyId][name][r,g,b][density:float][floatsOnWater]
+	// [childCount] then per child [appearanceName][weight][shouldSway]
+	// [displacement][period][alignToTerrain][shouldScale][minScale][maxScale].
+	FSWGIffChunk VersionForm;
+	if (!Reader.FindChildForm(FgrpForm, SWG_IFF_TAG('0','0','0','8'), VersionForm)) return false;
+
+	for (const FSWGIffChunk& Child : Reader.ReadChildren(VersionForm))
+	{
+		if (Child.IsForm() || Child.Tag != SWG_IFF_TAG('F','F','A','M'))
+		{
+			continue;
+		}
+
+		FSWGChunkCursor Cursor(Reader, Child);
+		FSWGFloraFamily Family;
+		Family.FamilyId = Cursor.ReadInt32();
+		Family.Name = Cursor.ReadString();
+		Family.Color.R = Cursor.ReadByte();
+		Family.Color.G = Cursor.ReadByte();
+		Family.Color.B = Cursor.ReadByte();
+		Family.Density = Cursor.ReadFloat();
+		Family.bFloatsOnWater = Cursor.ReadInt32() != 0;
+
+		const int32 ChildCount = Cursor.ReadInt32();
+		for (int32 ChildIndex = 0; ChildIndex < ChildCount && Cursor.HasRemaining(1); ++ChildIndex)
+		{
+			FSWGFloraChild FloraChild;
+			FloraChild.AppearanceName = Cursor.ReadString();
+			FloraChild.Weight = Cursor.ReadFloat();
+			FloraChild.bShouldSway = Cursor.ReadInt32() != 0;
+			FloraChild.SwayDisplacement = Cursor.ReadFloat();
+			FloraChild.SwayPeriod = Cursor.ReadFloat();
+			FloraChild.bAlignToTerrain = Cursor.ReadInt32() != 0;
+			FloraChild.bShouldScale = Cursor.ReadInt32() != 0;
+			FloraChild.MinScale = Cursor.ReadFloat();
+			FloraChild.MaxScale = Cursor.ReadFloat();
+			Family.Children.Add(MoveTemp(FloraChild));
+		}
+
+		OutFamilies.Add(MoveTemp(Family));
+	}
+
+	return true;
+}
+
+bool FSWGTerrainReader::ReadRadialGroup(const FSWGIffReader& Reader, const FSWGIffChunk& RgrpForm, TArray<FSWGRadialFamily>& OutFamilies)
+{
+	// RGRP > 0003 holds a flat list of RFAM chunks (Core3 RadialGroup/
+	// RadialFamily): [familyId][name][r,g,b][density:float][childCount] then
+	// per child [shaderName][weight][distance][minWidth][maxWidth]
+	// [maintainAspectRatio][period][displacement][shouldSway][alignToTerrain].
+	// The two floats after maintainAspectRatio read 0.02..0.25 / 0.1..0.4
+	// across every shipped family (including 8-20 m wide far-field palm
+	// sprites), so they are sway parameters, not a height range.
+	FSWGIffChunk VersionForm;
+	if (!Reader.FindChildForm(RgrpForm, SWG_IFF_TAG('0','0','0','3'), VersionForm)) return false;
+
+	for (const FSWGIffChunk& Child : Reader.ReadChildren(VersionForm))
+	{
+		if (Child.IsForm() || Child.Tag != SWG_IFF_TAG('R','F','A','M'))
+		{
+			continue;
+		}
+
+		FSWGChunkCursor Cursor(Reader, Child);
+		FSWGRadialFamily Family;
+		Family.FamilyId = Cursor.ReadInt32();
+		Family.Name = Cursor.ReadString();
+		Family.Color.R = Cursor.ReadByte();
+		Family.Color.G = Cursor.ReadByte();
+		Family.Color.B = Cursor.ReadByte();
+		Family.Density = Cursor.ReadFloat();
+
+		const int32 ChildCount = Cursor.ReadInt32();
+		for (int32 ChildIndex = 0; ChildIndex < ChildCount && Cursor.HasRemaining(1); ++ChildIndex)
+		{
+			FSWGRadialChild RadialChild;
+			RadialChild.ShaderName = Cursor.ReadString();
+			RadialChild.Weight = Cursor.ReadFloat();
+			RadialChild.Distance = Cursor.ReadFloat();
+			RadialChild.MinWidth = Cursor.ReadFloat();
+			RadialChild.MaxWidth = Cursor.ReadFloat();
+			RadialChild.bMaintainAspectRatio = Cursor.ReadInt32() != 0;
+			RadialChild.SwayPeriod = Cursor.ReadFloat();
+			RadialChild.SwayDisplacement = Cursor.ReadFloat();
+			RadialChild.bShouldSway = Cursor.ReadInt32() != 0;
+			RadialChild.bAlignToTerrain = Cursor.ReadInt32() != 0;
+			Family.Children.Add(MoveTemp(RadialChild));
 		}
 
 		OutFamilies.Add(MoveTemp(Family));
@@ -803,15 +1086,13 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 	if (!Reader.FindChildForm(PtatVersionForm, SWG_IFF_TAG('T','G','E','N'), TgenForm)) return false;
 	if (!Reader.FindChildForm(TgenForm, SWG_IFF_TAG('0','0','0','0'), TgenForm0000)) return false;
 
-	// FGRP/RGRP/EGRP (flora/radial/environment groups) are skipped structurally —
-	// not needed until flora rendering is tackled (deferred). SGRP (shader group,
-	// the paintable-texture-family table) IS parsed now — see FSWGShaderFamily.
+	// EGRP (environment group) is skipped structurally. SGRP (shader families),
+	// FGRP (mesh flora families) and RGRP (radial flora families) are parsed —
+	// see FSWGShaderFamily / FSWGFloraFamily / FSWGRadialFamily.
 	// The first MGRP (map group) IS parsed, since AffectorHeightFractal needs it; a
 	// second MGRP occurrence (Core3's "bitmap group") is skipped. Once past the
 	// groups, per TerrainGenerator::parseFromIffStream the next child is either a
 	// single root LAYR or a LYRS wrapper containing multiple top-level LAYR entries.
-	static const TSet<FSWGIffTag> SkippedGroupTags = { SWG_IFF_TAG('F','G','R','P'), SWG_IFF_TAG('R','G','R','P'), SWG_IFF_TAG('E','G','R','P') };
-
 	bool bFoundMapGroup = false;
 
 	for (const FSWGIffChunk& Child : Reader.ReadChildren(TgenForm0000))
@@ -819,12 +1100,24 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 		if (!Child.IsForm())
 			continue;
 
-		if (SkippedGroupTags.Contains(Child.FormType))
+		if (Child.FormType == SWG_IFF_TAG('E','G','R','P'))
 			continue;
 
 		if (Child.FormType == SWG_IFF_TAG('S','G','R','P'))
 		{
 			ReadShadersGroup(Reader, Child, OutData.ShaderFamilies);
+			continue;
+		}
+
+		if (Child.FormType == SWG_IFF_TAG('F','G','R','P'))
+		{
+			ReadFloraGroup(Reader, Child, OutData.FloraFamilies);
+			continue;
+		}
+
+		if (Child.FormType == SWG_IFF_TAG('R','G','R','P'))
+		{
+			ReadRadialGroup(Reader, Child, OutData.RadialFamilies);
 			continue;
 		}
 

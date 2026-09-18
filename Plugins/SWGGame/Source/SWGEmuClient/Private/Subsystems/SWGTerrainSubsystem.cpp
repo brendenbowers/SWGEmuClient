@@ -31,6 +31,8 @@
 #include "Components/StaticMeshComponent.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
+#include "CompGeom/PolygonTriangulation.h"
+#include "TRE/SWGColorRampReader.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/SkyLight.h"
@@ -64,6 +66,22 @@ namespace
 	TAutoConsoleVariable<float> CVarSnapshotSpawnBudgetMs(
 		TEXT("swg.SnapshotSpawnBudgetMs"), 2.0f,
 		TEXT("Game-thread time per frame spent spawning a streamed tile's .ws objects. At least one spawns each frame regardless."));
+
+	TAutoConsoleVariable<int32> CVarSWGLighting(
+		TEXT("swg.SWGLighting"), 1,
+		TEXT("Retail-style lighting: flat colour-ramp ambient everywhere with dynamic GI off. 0 keeps the project's Lumen setup."));
+
+	TAutoConsoleVariable<float> CVarTimeOfDay(
+		TEXT("swg.TimeOfDay"), 0.25f,
+		TEXT("Position through the planet's day cycle (0..1) the colour ramp is sampled at — 0.25 is noon. Takes effect on the next zone load."));
+
+	TAutoConsoleVariable<float> CVarAmbientIntensity(
+		TEXT("swg.AmbientIntensity"), 1.5f,
+		TEXT("Sky light intensity multiplying the colour ramp's ambient colour."));
+
+	TAutoConsoleVariable<float> CVarSunIntensity(
+		TEXT("swg.SunIntensity"), 1.0f,
+		TEXT("Multiplier on the sun's ramp-derived intensity."));
 
 	// Landscape's uint16 height packing represents a fixed +/-256 *local* height
 	// range (LANDSCAPE_ZSCALE is hardcoded regardless of actor Z scale); the
@@ -324,6 +342,8 @@ void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const 
 
 			SetupPlanetLighting(TerrainVirtualPath);
 			SpawnTerrainActor();
+			SpawnWaterBodies();
+			OnTerrainLoaded.Broadcast();
 
 			// The tiles the player lands on; OnTerrainReady waits for exactly these.
 			const FIntPoint SpawnTile = TileCoordAt(SpawnRawPosition);
@@ -386,6 +406,7 @@ void USWGTerrainSubsystem::ResetZone()
 	bTerrainDataCached = false;
 	bInitialTilesReported = false;
 	bHasLastStreamingCenter = false;
+	OnZoneReset.Broadcast();
 
 	// Emptied before the teardown: destroying a building removes its edits,
 	// which would otherwise queue re-bakes for tiles that are about to go.
@@ -405,6 +426,12 @@ void USWGTerrainSubsystem::ResetZone()
 		TerrainMeshActor = nullptr;
 	}
 	PooledTileComponents.Reset();
+	if (IsValid(WaterActor))
+	{
+		WaterActor->Destroy();
+		WaterActor = nullptr;
+	}
+	WaterMaterials.Reset();
 
 	PlanetData.Reset();
 	SnapshotData.Reset();
@@ -472,15 +499,33 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 			Sun->Tags.Add(PlanetLightingTag);
 		}
 	}
+	// Retail's lighting is the planet's colour ramp sampled at the time of
+	// day: a flat ambient that reaches everywhere (shade, interiors), a sun
+	// colour, and a fog colour. See FSWGColorRamp for the row layout.
+	const FString ZoneName = FPaths::GetBaseFilename(TerrainVirtualPath).ToLower();
+	const float DayFraction = FMath::Frac(CVarTimeOfDay.GetValueOnGameThread());
+	FSWGColorRamp Ramp;
+	const bool bHasRamp = LoadPlanetColorRamp(ZoneName, Ramp);
+	const FLinearColor AmbientColor = bHasRamp ? Ramp.Sample(FSWGColorRamp::Ambient, DayFraction) : FLinearColor(0.35f, 0.35f, 0.4f);
+	const FLinearColor SunColor = bHasRamp ? Ramp.Sample(FSWGColorRamp::SunDiffuse, DayFraction) : FLinearColor::White;
+	const FLinearColor FogColor = bHasRamp ? Ramp.Sample(FSWGColorRamp::Fog, DayFraction) : FLinearColor(0.60f, 0.72f, 0.78f);
+
+	// The ramp's sun rises near column 16, peaks at 64 and sets by 128 —
+	// elevation follows that arc, with a low dim light standing in for the
+	// moon the rest of the cycle.
+	const float DayArc = (DayFraction - 0.0625f) / 0.4375f;
+	const float SunElevation = DayArc > 0.0f && DayArc < 1.0f ? FMath::Max(5.0f, 70.0f * FMath::Sin(DayArc * UE_PI)) : 5.0f;
+	const float SunStrength = FMath::Max3(SunColor.R, SunColor.G, SunColor.B);
+
 	if (Sun)
 	{
-		Sun->SetActorRotation(FRotator(-38.0f, -35.0f, 0.0f));
+		Sun->SetActorRotation(FRotator(-SunElevation, -35.0f, 0.0f));
 		UDirectionalLightComponent* SunComponent = Sun->GetComponent();
 		SunComponent->SetMobility(EComponentMobility::Movable);
 		SunComponent->SetAtmosphereSunLight(true);
-		SunComponent->SetUseTemperature(true);
-		SunComponent->SetTemperature(5600.0f);
-		SunComponent->SetIntensity(3.0f);
+		SunComponent->SetUseTemperature(false);
+		SunComponent->SetLightColor(SunStrength > 0.0f ? SunColor / SunStrength : FLinearColor::White);
+		SunComponent->SetIntensity(3.0f * FMath::Max(SunStrength, 0.05f) * CVarSunIntensity.GetValueOnGameThread());
 	}
 
 	ASkyLight* SkyLight = World->SpawnActor<ASkyLight>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
@@ -489,8 +534,29 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 		SkyLight->Tags.Add(PlanetLightingTag);
 		USkyLightComponent* SkyLightComponent = SkyLight->GetLightComponent();
 		SkyLightComponent->SetMobility(EComponentMobility::Movable);
-		SkyLightComponent->SetIntensity(1.0f);
 		SkyLightComponent->SetRealTimeCaptureEnabled(true);
+		// Tinted by the ramp's ambient; the captured sky supplies the shape.
+		// No shadowing: retail's ambient was a constant term, not an
+		// occluded one, which is what keeps shaded ground and rooms lit.
+		SkyLightComponent->SetLightColor(AmbientColor);
+		SkyLightComponent->SetIntensity(CVarAmbientIntensity.GetValueOnGameThread());
+		SkyLightComponent->SetCastShadows(false);
+		SkyLightComponent->bLowerHemisphereIsBlack = false;
+		SkyLightComponent->SetLowerHemisphereColor(AmbientColor);
+	}
+
+	// Lumen would occlude that ambient indoors and in shade, so the SWG look
+	// runs without dynamic GI (screen-space reflections stand in for Lumen's).
+	if (CVarSWGLighting.GetValueOnGameThread() != 0)
+	{
+		if (IConsoleVariable* GIMethod = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DynamicGlobalIlluminationMethod")))
+		{
+			GIMethod->Set(0, ECVF_SetByGameSetting);
+		}
+		if (IConsoleVariable* ReflectionMethod = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ReflectionMethod")))
+		{
+			ReflectionMethod->Set(2, ECVF_SetByGameSetting);
+		}
 	}
 
 	// A SkyAtmosphere is the UE equivalent of SWG's gradient-sky backdrop. The
@@ -513,16 +579,39 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 	{
 		Fog->Tags.Add(PlanetLightingTag);
 		Fog->GetComponent()->SetFogDensity(0.0015f);
-		Fog->GetComponent()->SetFogInscatteringColor(FLinearColor(0.60f, 0.72f, 0.78f));
+		Fog->GetComponent()->SetFogInscatteringColor(FogColor);
 	}
 
-	// TODO: fix this so it determines based on what is in the trn/ws file
-	const FString ZoneName = FPaths::GetBaseFilename(TerrainVirtualPath).ToLower();
-	const FString GradientPath = ZoneName == TEXT("naboo")
-		? TEXT("texture/grad_sky_nboo.dds")
-		: FString::Printf(TEXT("texture/grad_sky_%s.dds"), *ZoneName.Left(4));
-	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %s outdoor lighting active (SWG gradient source: %s; server sun direction not currently present in scene messages)"),
-		*ZoneName, *GradientPath);
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %s lighting at day %.2f from %s — ambient (%.2f, %.2f, %.2f), sun (%.2f, %.2f, %.2f) elevation %.0f, fog (%.2f, %.2f, %.2f)"),
+		*ZoneName, DayFraction, bHasRamp ? TEXT("colour ramp") : TEXT("defaults (no ramp)"),
+		AmbientColor.R, AmbientColor.G, AmbientColor.B, SunColor.R, SunColor.G, SunColor.B, SunElevation, FogColor.R, FogColor.G, FogColor.B);
+}
+
+bool USWGTerrainSubsystem::LoadPlanetColorRamp(const FString& ZoneName, FSWGColorRamp& OutRamp) const
+{
+	if (!TreSubsystem)
+	{
+		return false;
+	}
+
+	// The .trn's EGRP names environments ("global", "mtns", "forests"...);
+	// each maps to terrain/colorramp/<planet>_<env>0.tga. Only the planet-wide
+	// "global" ramp is used for now — per-region environments (the AENV
+	// affector) would blend between them.
+	const TArray<FString> Candidates = {
+		FString::Printf(TEXT("terrain/colorramp/%s_global0.tga"), *ZoneName),
+		FString::Printf(TEXT("terrain/colorramp/%s_%s_global0.tga"), *ZoneName, *ZoneName),
+		TEXT("terrain/colorramp/09_default0.tga"),
+	};
+	for (const FString& Path : Candidates)
+	{
+		if (TreSubsystem->FileExists(Path) && FSWGColorRampReader::ReadTga(TreSubsystem->ExtractFile(Path), OutRamp))
+		{
+			UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: using colour ramp %s"), *Path);
+			return true;
+		}
+	}
+	return false;
 }
 
 TSharedPtr<const FSWGWorldSnapshotData, ESPMode::ThreadSafe> USWGTerrainSubsystem::LoadWorldSnapshot(const FString& TerrainVirtualPath, TMap<FIntPoint, TArray<int32>>& OutNodesByTile)
@@ -1245,6 +1334,19 @@ void USWGTerrainSubsystem::InvalidateTilesOverlapping(const FBox2D& Bounds)
 	}
 
 	PumpBakeQueue();
+	OnTerrainEditsChanged.Broadcast(Bounds);
+}
+
+bool USWGTerrainSubsystem::FSWGTerrainBakeSource::IsInHole(const FVector2D& RawPosition) const
+{
+	for (const FSWGTerrainHole& Hole : Holes)
+	{
+		if (Hole.Contains(RawPosition))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 USWGTerrainSubsystem::FSWGTerrainBakeSource USWGTerrainSubsystem::MakeBakeSource() const
@@ -1419,6 +1521,198 @@ void USWGTerrainSubsystem::BakeShaderWeights(const FSWGTerrainBakeSource& Source
 	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: BakeShaderWeights region origin=(%.1f,%.1f) chosen %d family(ies): %s"),
 		Heightmap.Origin.X, Heightmap.Origin.Y, Heightmap.ChosenShaderFamilyIds.Num(),
 		*FString::JoinBy(Heightmap.ChosenShaderFamilyIds, TEXT(","), [](int32 Id) { return FString::FromInt(Id); }));
+}
+
+// ── Water ────────────────────────────────────────────────────────────────
+
+namespace
+{
+	TAutoConsoleVariable<int32> CVarWater(
+		TEXT("swg.Water"), 1,
+		TEXT("Spawn the planet's water surfaces (global water table + local water-table boundaries)."));
+
+	TAutoConsoleVariable<float> CVarWaterUVScale(
+		TEXT("swg.WaterUVScale"), 8.0f,
+		TEXT("Metres per texture repeat on water, multiplied by the boundary's shader size."));
+
+	void CollectWaterBoundaries(const FSWGTerrainLayer& Layer, TArray<const FSWGTerrainBoundary*>& Out)
+	{
+		if (!Layer.bEnabled) return;
+		for (const FSWGTerrainBoundary& Boundary : Layer.Boundaries)
+		{
+			if (Boundary.bEnabled && Boundary.bLocalWaterTableEnabled
+				&& (Boundary.Type == ESWGTerrainBoundaryType::Rectangle || Boundary.Type == ESWGTerrainBoundaryType::Polygon))
+			{
+				Out.Add(&Boundary);
+			}
+		}
+		for (const FSWGTerrainLayer& Child : Layer.Children)
+		{
+			CollectWaterBoundaries(Child, Out);
+		}
+	}
+}
+
+void USWGTerrainSubsystem::SpawnWaterBodies()
+{
+	check(IsInGameThread());
+	if (!PlanetData || CVarWater.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	WaterActor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, SpawnParams);
+	if (!WaterActor)
+	{
+		return;
+	}
+#if WITH_EDITOR
+	WaterActor->SetActorLabel(TEXT("SWGTerrainWater"));
+#endif
+	USceneComponent* Root = NewObject<USceneComponent>(WaterActor, TEXT("WaterRoot"));
+	WaterActor->SetRootComponent(Root);
+	Root->RegisterComponent();
+
+	const FSWGTerrainHeader& Header = PlanetData->Header;
+	int32 Surfaces = 0;
+	if (Header.bUseGlobalWaterTable)
+	{
+		const float Half = Header.MapSize * 0.5f;
+		AddWaterSurface({ FVector2D(-Half, -Half), FVector2D(Half, -Half), FVector2D(Half, Half), FVector2D(-Half, Half) },
+			Header.GlobalWaterTableHeight, Header.GlobalWaterTableShader, Header.GlobalWaterTableShaderSize);
+		++Surfaces;
+	}
+
+	TArray<const FSWGTerrainBoundary*> Boundaries;
+	for (const FSWGTerrainLayer& Layer : PlanetData->TopLevelLayers)
+	{
+		CollectWaterBoundaries(Layer, Boundaries);
+	}
+	for (const FSWGTerrainBoundary* Boundary : Boundaries)
+	{
+		TArray<FVector2D> Outline;
+		if (Boundary->Type == ESWGTerrainBoundaryType::Rectangle)
+		{
+			const float MinX = FMath::Min(Boundary->X0, Boundary->X1), MaxX = FMath::Max(Boundary->X0, Boundary->X1);
+			const float MinY = FMath::Min(Boundary->Y0, Boundary->Y1), MaxY = FMath::Max(Boundary->Y0, Boundary->Y1);
+			Outline = { FVector2D(MinX, MinY), FVector2D(MaxX, MinY), FVector2D(MaxX, MaxY), FVector2D(MinX, MaxY) };
+		}
+		else
+		{
+			Outline = Boundary->Vertices;
+		}
+		if (Outline.Num() >= 3)
+		{
+			AddWaterSurface(Outline, Boundary->LocalWaterTableHeight, Boundary->LocalWaterTableShader, Boundary->LocalWaterTableShaderSize);
+			++Surfaces;
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %d water surface(s) spawned (global table %s at %.1f, %d local)"),
+		Surfaces, Header.bUseGlobalWaterTable ? TEXT("on") : TEXT("off"), Header.GlobalWaterTableHeight, Boundaries.Num());
+}
+
+void USWGTerrainSubsystem::AddWaterSurface(const TArray<FVector2D>& RawOutline, float RawHeight, const FString& ShaderName, float ShaderSize)
+{
+	if (!IsValid(WaterActor) || RawOutline.Num() < 3)
+	{
+		return;
+	}
+
+	TArray<FVector2d> Polygon;
+	Polygon.Reserve(RawOutline.Num());
+	for (const FVector2D& Point : RawOutline)
+	{
+		Polygon.Add(FVector2d(Point.X, Point.Y));
+	}
+	TArray<UE::Geometry::FIndex3i> Triangles;
+	PolygonTriangulation::TriangulateSimplePolygon<double>(Polygon, Triangles, false);
+	if (Triangles.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: water outline with %d vertices didn't triangulate (shader %s)"), RawOutline.Num(), *ShaderName);
+		return;
+	}
+
+	// UVs repeat in world space so adjacent bodies and the panner line up.
+	const float MetresPerRepeat = FMath::Max(0.25f, CVarWaterUVScale.GetValueOnGameThread() * FMath::Max(ShaderSize, 0.5f));
+
+	UE::Geometry::FDynamicMesh3 Mesh;
+	Mesh.EnableAttributes();
+	Mesh.Attributes()->SetNumUVLayers(1);
+	UE::Geometry::FDynamicMeshUVOverlay* UVs = Mesh.Attributes()->PrimaryUV();
+	UE::Geometry::FDynamicMeshNormalOverlay* Normals = Mesh.Attributes()->PrimaryNormals();
+	TArray<int32> VertexIds, UVIds, NormalIds;
+	for (const FVector2D& Point : RawOutline)
+	{
+		VertexIds.Add(Mesh.AppendVertex(FVector3d(SWGToUnrealSpace(FVector(Point.X, Point.Y, RawHeight)))));
+		UVIds.Add(UVs->AppendElement(FVector2f(Point.X / MetresPerRepeat, Point.Y / MetresPerRepeat)));
+		NormalIds.Add(Normals->AppendElement(FVector3f::UpVector));
+	}
+	for (const UE::Geometry::FIndex3i& Triangle : Triangles)
+	{
+		const int32 TriangleId = Mesh.AppendTriangle(VertexIds[Triangle.A], VertexIds[Triangle.B], VertexIds[Triangle.C]);
+		if (TriangleId < 0) continue;
+		UVs->SetTriangle(TriangleId, UE::Geometry::FIndex3i(UVIds[Triangle.A], UVIds[Triangle.B], UVIds[Triangle.C]));
+		Normals->SetTriangle(TriangleId, UE::Geometry::FIndex3i(NormalIds[Triangle.A], NormalIds[Triangle.B], NormalIds[Triangle.C]));
+	}
+	// Retail outlines are authored in either winding and the raw->UE axis
+	// swap mirrors them again; the surface has to face up either way.
+	if (Mesh.TriangleCount() > 0 && Mesh.GetTriNormal(*Mesh.TriangleIndicesItr().begin()).Z < 0.0)
+	{
+		Mesh.ReverseOrientation(false);
+	}
+
+	UDynamicMeshComponent* Component = NewObject<UDynamicMeshComponent>(WaterActor, NAME_None, RF_Transactional);
+	Component->SetupAttachment(WaterActor->GetRootComponent());
+	Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Component->SetCastShadow(false);
+	Component->RegisterComponent();
+	Component->SetMesh(MoveTemp(Mesh));
+	if (UMaterialInterface* Material = GetOrBuildWaterMaterial(ShaderName))
+	{
+		Component->SetMaterial(0, Material);
+	}
+}
+
+UMaterialInterface* USWGTerrainSubsystem::GetOrBuildWaterMaterial(const FString& ShaderName)
+{
+	if (TObjectPtr<UMaterialInterface>* Existing = WaterMaterials.Find(ShaderName))
+	{
+		return *Existing;
+	}
+
+	if (!WaterMaterialParent)
+	{
+		WaterMaterialParent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGWater.M_SWGWater"));
+		if (!WaterMaterialParent)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: M_SWGWater not found — water surfaces get the default material"));
+			return nullptr;
+		}
+	}
+
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(WaterMaterialParent, this);
+	if (!ShaderName.IsEmpty())
+	{
+		if (UTexture2D* Diffuse = GetOrLoadShaderTexture(ShaderName, false))
+		{
+			MID->SetTextureParameterValue(TEXT("Diffuse"), Diffuse);
+		}
+		if (UTexture2D* Normal = GetOrLoadShaderTexture(ShaderName, true))
+		{
+			MID->SetTextureParameterValue(TEXT("Normal"), Normal);
+		}
+	}
+	WaterMaterials.Add(ShaderName, MID);
+	return MID;
 }
 
 UTexture2D* USWGTerrainSubsystem::GetOrLoadShaderTexture(const FString& LayerName, bool bNormalMap)

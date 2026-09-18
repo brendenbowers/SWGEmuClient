@@ -19,7 +19,44 @@ enum class ESWGTerrainAffectorType : uint8
 	Road,
 	ShaderConstant,
 	ShaderReplace,
+	/** AFSC / AFSN / AFDN / AFDF — see FSWGTerrainAffector's flora fields. */
+	FloraCollidable,
+	FloraNonCollidable,
+	RadialNear,
+	RadialFar,
 };
+
+/**
+ * The four vegetation tiers the retail client streamed independently, each
+ * with its own header parameters (FSWGTerrainHeader::FVegetationTier), its
+ * own affector tag, and its own family table: the two flora tiers place
+ * FSWGFloraFamily meshes, the two radial tiers place FSWGRadialFamily
+ * billboards.
+ */
+enum class ESWGTerrainFloraTier : uint8
+{
+	Collidable,
+	NonCollidable,
+	RadialNear,
+	RadialFar,
+	Count
+};
+
+inline bool SWGIsRadialFloraTier(ESWGTerrainFloraTier Tier)
+{
+	return Tier == ESWGTerrainFloraTier::RadialNear || Tier == ESWGTerrainFloraTier::RadialFar;
+}
+
+inline ESWGTerrainAffectorType SWGFloraTierAffectorType(ESWGTerrainFloraTier Tier)
+{
+	switch (Tier)
+	{
+		case ESWGTerrainFloraTier::Collidable: return ESWGTerrainAffectorType::FloraCollidable;
+		case ESWGTerrainFloraTier::NonCollidable: return ESWGTerrainAffectorType::FloraNonCollidable;
+		case ESWGTerrainFloraTier::RadialNear: return ESWGTerrainAffectorType::RadialNear;
+		default: return ESWGTerrainAffectorType::RadialFar;
+	}
+}
 
 /** Port of Core3's Segment (terrain/layer/Segment.h) — one road's baked, hand-authored height profile along its path (X,Z,Y wire order, matching every other position field in this format). */
 struct FSWGTerrainRoadPoint
@@ -58,6 +95,17 @@ enum class ESWGTerrainFilterType : uint8
 	Unknown,
 	Height,
 	Fractal,
+	/**
+	 * FSLP / FSHD — only evaluated on the flora walk (FSWGTerrainEvaluator::
+	 * GetFlora), where the ground's final slope and painted shader are
+	 * knowable; the height walk passes them through, since a height layer
+	 * gated by the slope of the height it is producing has no per-point
+	 * answer (retail evaluated it against the chunk's running height buffer).
+	 */
+	Slope,
+	Shader,
+	/** FDIR — the compass direction a slope faces; flora-walk only, like Slope. */
+	Direction,
 };
 
 /** Fields are a union across the MVP affector types — only the ones relevant to Type are meaningful. */
@@ -107,6 +155,24 @@ struct FSWGTerrainAffector
 	int32 ShaderNewFamilyId = 0;      // ShaderReplace: family replacing it.
 	int32 ShaderFeatheringType = 0;
 	float ShaderFeatheringAmount = 0.0f;
+
+	/**
+	 * FloraCollidable/FloraNonCollidable/RadialNear/RadialFar (AFSC/AFSN v0004,
+	 * AFDN/AFDF v0002) — same five-field DATA for all four. Core3 parses the
+	 * chunk but names the last two "featheringType/featheringAmount", which
+	 * the shipped data contradicts: the float is exactly 1.0 whenever the
+	 * flag is 0 and a 0..1 fraction whenever it is 1, and the flag never
+	 * exceeds 1 — a density override, matching the retail terrain editor's
+	 * fields. Where the layer's transform is > 0: bFloraRemoveAll clears the
+	 * tier's family at that point, otherwise FloraFamilyId is written
+	 * (operation 1 = only where nothing is set yet; 0 = unconditionally)
+	 * with FloraDensity or the family's own density.
+	 */
+	int32 FloraFamilyId = 0;
+	int32 FloraOperation = 0;
+	bool bFloraRemoveAll = false;
+	bool bFloraDensityOverride = false;
+	float FloraDensity = 1.0f;
 };
 
 /** Fields are a union across the MVP boundary types — only the ones relevant to Type are meaningful. */
@@ -126,6 +192,9 @@ struct FSWGTerrainBoundary
 	/** Rectangle / Polygon (version-dependent — absent on older Rectangle v0002) */
 	bool bLocalWaterTableEnabled = false;
 	float LocalWaterTableHeight = 0.0f;
+	/** Bare shader name for the water surface (e.g. "wter_spec" -> shader/wter_spec.sht) and its UV tiling size in metres. */
+	FString LocalWaterTableShader;
+	float LocalWaterTableShaderSize = 0.0f;
 
 	/** Polygon / Polyline */
 	TArray<FVector2D> Vertices;
@@ -157,6 +226,22 @@ struct FSWGTerrainFilter
 	float Min = 0.0f;
 	float Max = 0.0f;
 	float Scale = 0.0f;
+
+	/** Slope only — the ground's angle from horizontal must fall within [Min,Max] degrees (FilterSlope's own clamping to 0..90 applied on read). */
+	float SlopeMinAngleDegrees = 0.0f;
+	float SlopeMaxAngleDegrees = 90.0f;
+
+	/** Shader only — the family painted at the point (FSWGTerrainEvaluator::GetShaderWeights' dominant id) must be this one. */
+	int32 ShaderFamilyId = 0;
+
+	/**
+	 * Direction only — atan2(north, east) of the ground normal, in degrees
+	 * (-180..180; flat ground reads 0), must fall within [Min,Max]. The
+	 * shipped values are degrees (Tatooine: -140..140, -45..45); Core3's
+	 * FilterDirection clamps them as if radians, which is a bug there.
+	 */
+	float DirectionMinDegrees = -180.0f;
+	float DirectionMaxDegrees = 180.0f;
 };
 
 struct FSWGTerrainLayer
@@ -257,6 +342,74 @@ struct FSWGTerrainHeader
 	FVegetationTier RadialFar;
 };
 
+/** One appearance a flora family can place — a child of FSWGFloraFamily. */
+struct FSWGFloraChild
+{
+	/** Bare file name (e.g. "succ_tatt_hubba_lrg.apt", occasionally a ".prt" particle effect), under appearance/. */
+	FString AppearanceName;
+	/** Relative pick weight among the family's children. */
+	float Weight = 1.0f;
+	bool bShouldSway = false;
+	float SwayDisplacement = 0.0f;
+	float SwayPeriod = 0.0f;
+	/** Tilt the instance to the ground normal instead of standing it straight up. */
+	bool bAlignToTerrain = false;
+	bool bShouldScale = false;
+	float MinScale = 1.0f;
+	float MaxScale = 1.0f;
+};
+
+/**
+ * FGRP > 0008 > FFAM — one mesh-flora family (trees, rocks, shrubs),
+ * referenced by AFSC/AFSN affectors' FloraFamilyId. Confirmed against the
+ * shipped data: children carry real .apt names, weights, and 0.x..2.0 scale
+ * ranges. Core3's FloraFamily only names the fields var1..var8.
+ */
+struct FSWGFloraFamily
+{
+	int32 FamilyId = 0;
+	FString Name;
+	FColor Color = FColor::White;
+	/** Chance (0..1) a placement slot inside this family's area holds a plant, unless the affector overrides it. */
+	float Density = 1.0f;
+	bool bFloatsOnWater = false;
+	TArray<FSWGFloraChild> Children;
+
+	/** Weighted pick by a 0..1 roll; null if the family has no children. */
+	const FSWGFloraChild* PickChild(float UnitRoll) const;
+};
+
+/** One billboard a radial family can place — a child of FSWGRadialFamily. */
+struct FSWGRadialChild
+{
+	/** Bare shader name (e.g. "radl_grss_dsrt_tuft") — shader/<name>.sht, whose texture is texture/<name>.dds. */
+	FString ShaderName;
+	float Weight = 1.0f;
+	/** Retail's per-child fade distance; every shipped entry reads 10. */
+	float Distance = 0.0f;
+	float MinWidth = 1.0f;
+	float MaxWidth = 1.0f;
+	/** Height follows the texture's aspect ratio; otherwise the billboard is as tall as it is wide. */
+	bool bMaintainAspectRatio = false;
+	float SwayPeriod = 0.0f;
+	float SwayDisplacement = 0.0f;
+	bool bShouldSway = false;
+	bool bAlignToTerrain = false;
+};
+
+/** RGRP > 0003 > RFAM — one billboard-flora family (grass tufts, flowers, far-field tree sprites), referenced by AFDN/AFDF affectors' FloraFamilyId. */
+struct FSWGRadialFamily
+{
+	int32 FamilyId = 0;
+	FString Name;
+	FColor Color = FColor::White;
+	float Density = 1.0f;
+	TArray<FSWGRadialChild> Children;
+
+	/** Weighted pick by a 0..1 roll; null if the family has no children. */
+	const FSWGRadialChild* PickChild(float UnitRoll) const;
+};
+
 struct FSWGTerrainData
 {
 	FSWGTerrainHeader Header;
@@ -274,15 +427,40 @@ struct FSWGTerrainData
 	{
 		return ShaderFamilies.FindByPredicate([FamilyId](const FSWGShaderFamily& F) { return F.FamilyId == FamilyId; });
 	}
+
+	/** From FGRP (AFSC/AFSN FloraFamilyId) and RGRP (AFDN/AFDF FloraFamilyId). */
+	TArray<FSWGFloraFamily> FloraFamilies;
+	TArray<FSWGRadialFamily> RadialFamilies;
+
+	const FSWGFloraFamily* FindFloraFamily(int32 FamilyId) const
+	{
+		return FloraFamilies.FindByPredicate([FamilyId](const FSWGFloraFamily& Family) { return Family.FamilyId == FamilyId; });
+	}
+
+	const FSWGRadialFamily* FindRadialFamily(int32 FamilyId) const
+	{
+		return RadialFamilies.FindByPredicate([FamilyId](const FSWGRadialFamily& Family) { return Family.FamilyId == FamilyId; });
+	}
+
+	const FSWGTerrainHeader::FVegetationTier& GetVegetationTier(ESWGTerrainFloraTier Tier) const
+	{
+		switch (Tier)
+		{
+			case ESWGTerrainFloraTier::Collidable: return Header.FloraCollidable;
+			case ESWGTerrainFloraTier::NonCollidable: return Header.FloraNonCollidable;
+			case ESWGTerrainFloraTier::RadialNear: return Header.RadialNear;
+			default: return Header.RadialFar;
+		}
+	}
 };
 
 /**
  * Parses SWG's .trn procedural terrain format (FORM PTAT) into an engine-agnostic
  * Layer/Boundary/Affector tree, mirroring Core3's terrain/layer/* class hierarchy
  * directly (confirmed field-for-field against Core3's parseFromIffStream methods —
- * see world-object-plan.html "Terrain rendering"). SGRP/FGRP/RGRP/EGRP (shader,
- * flora, radial, environment groups) are structurally skipped — not needed until
- * shader/flora rendering is tackled (explicitly deferred). The first MGRP (map
+ * see world-object-plan.html "Terrain rendering"). SGRP/FGRP/RGRP (shader,
+ * flora, radial family tables) are parsed; EGRP (environment group) is
+ * structurally skipped. The first MGRP (map
  * group) IS parsed, into FSWGTerrainData::MapGroup, since AffectorHeightFractal
  * needs it; a second MGRP occurrence (Core3's "bitmap group", a different,
  * bitmap-affector-only structure) is skipped. This class only extracts the graph
@@ -340,6 +518,12 @@ private:
 	static bool ReadFilter(const FSWGIffReader& Reader, const FSWGIffChunk& FilterForm, FSWGTerrainFilter& OutFilter);
 	static bool ReadFilterHeight(const FSWGIffReader& Reader, const FSWGIffChunk& FhgtForm, FSWGTerrainFilter& OutFilter);
 	static bool ReadFilterFractal(const FSWGIffReader& Reader, const FSWGIffChunk& FfraForm, FSWGTerrainFilter& OutFilter);
+	/** FSLP v0002: [minAngle:deg][maxAngle:deg][featheringType][featheringAmount] — Core3 FilterSlope. */
+	static bool ReadFilterSlope(const FSWGIffReader& Reader, const FSWGIffChunk& FslpForm, FSWGTerrainFilter& OutFilter);
+	/** FSHD v0000: [shaderFamilyId] — Core3 FilterShader. */
+	static bool ReadFilterShader(const FSWGIffReader& Reader, const FSWGIffChunk& FshdForm, FSWGTerrainFilter& OutFilter);
+	/** FDIR v0000: [minDegrees][maxDegrees][featheringType][featheringAmount] — Core3 FilterDirection. */
+	static bool ReadFilterDirection(const FSWGIffReader& Reader, const FSWGIffChunk& FdirForm, FSWGTerrainFilter& OutFilter);
 
 	static bool ReadAffectorHeightConstant(const FSWGIffReader& Reader, const FSWGIffChunk& AhcnForm, FSWGTerrainAffector& OutAffector);
 	static bool ReadAffectorHeightFractal(const FSWGIffReader& Reader, const FSWGIffChunk& AhfrForm, FSWGTerrainAffector& OutAffector);
@@ -347,6 +531,9 @@ private:
 	static bool ReadAffectorRoad(const FSWGIffReader& Reader, const FSWGIffChunk& AroaForm, FSWGTerrainAffector& OutAffector);
 	static bool ReadAffectorShaderConstant(const FSWGIffReader& Reader, const FSWGIffChunk& AscnForm, FSWGTerrainAffector& OutAffector);
 	static bool ReadAffectorShaderReplace(const FSWGIffReader& Reader, const FSWGIffChunk& AsrpForm, FSWGTerrainAffector& OutAffector);
+
+	/** AFSC/AFSN (v0004) and AFDN/AFDF (v0002) share one DATA layout — see FSWGTerrainAffector's flora fields. */
+	static bool ReadAffectorFlora(const FSWGIffReader& Reader, const FSWGIffChunk& AffectorForm, FSWGIffTag VersionTag, ESWGTerrainAffectorType Type, FSWGTerrainAffector& OutAffector);
 
 	/** Port of Segment::createRoadwayHeights — smooths a road's raw authored height samples via a sliding 3-point average before it's used for lookups. */
 	static void BuildRoadwayHeights(FSWGTerrainRoadSegment& Segment);
@@ -358,4 +545,10 @@ private:
 
 	/** FORM SGRP > version form > SFAM(*) chunks — see swg.DumpShaderFamilies' original diagnostic for the confirmed wire layout this ports. */
 	static bool ReadShadersGroup(const FSWGIffReader& Reader, const FSWGIffChunk& SgrpForm, TArray<FSWGShaderFamily>& OutFamilies);
+
+	/** FORM FGRP > 0008 > FFAM(*) chunks — Core3's FloraGroup/FloraFamily wire layout, see FSWGFloraFamily for what the fields are. */
+	static bool ReadFloraGroup(const FSWGIffReader& Reader, const FSWGIffChunk& FgrpForm, TArray<FSWGFloraFamily>& OutFamilies);
+
+	/** FORM RGRP > 0003 > RFAM(*) chunks — Core3's RadialGroup/RadialFamily wire layout, see FSWGRadialFamily. */
+	static bool ReadRadialGroup(const FSWGIffReader& Reader, const FSWGIffChunk& RgrpForm, TArray<FSWGRadialFamily>& OutFamilies);
 };

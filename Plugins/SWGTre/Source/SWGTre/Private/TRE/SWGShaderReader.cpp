@@ -158,5 +158,115 @@ bool FSWGShaderReader::ReadShader(const FSWGIffReader& Reader, FSWGShaderData& O
 		}
 	}
 
+	// FORM ARVS > CHUNK 0000: repeated [4-byte reversed tag][uint8 reference].
+	FSWGIffChunk ArvsForm;
+	if (Reader.FindChildForm(Form0000, SWG_IFF_TAG('A','R','V','S'), ArvsForm))
+	{
+		for (const FSWGIffChunk& Child : Reader.ReadChildren(ArvsForm))
+		{
+			if (Child.IsForm())
+			{
+				continue;
+			}
+
+			const uint8* Data = Reader.GetChunkData(Child);
+			const int32 Size = Reader.GetChunkSize(Child);
+			for (int32 Offset = 0; Offset + 5 <= Size; Offset += 5)
+			{
+				OutShader.AlphaReferenceValues.Add(ReadReversedTag(Data + Offset), Data[Offset + 4]);
+			}
+		}
+	}
+
 	return OutShader.Textures.Num() > 0;
+}
+
+float FSWGEffectRenderStates::ResolveAlphaThreshold(const FSWGShaderData& Shader, float Fallback) const
+{
+	if (AlphaReferenceLiteral.IsSet())
+	{
+		return AlphaReferenceLiteral.GetValue() / 255.0f;
+	}
+	if (const uint8* Reference = Shader.AlphaReferenceValues.Find(AlphaReferenceTag))
+	{
+		return *Reference / 255.0f;
+	}
+	return Fallback;
+}
+
+bool FSWGShaderReader::ReadEffectRenderStates(const FSWGIffReader& Reader, FSWGEffectRenderStates& OutStates)
+{
+	OutStates = FSWGEffectRenderStates();
+	if (!Reader.IsValid())
+	{
+		return false;
+	}
+
+	FSWGIffChunk EfctForm;
+	if (!Reader.FindForm(SWG_IFF_TAG('E','F','C','T'), EfctForm))
+	{
+		return false;
+	}
+	const TArray<FSWGIffChunk> VersionForms = Reader.FindChildForms(EfctForm);
+	if (VersionForms.IsEmpty())
+	{
+		return false;
+	}
+
+	bool bFoundPass = false;
+	bool bFirstPass = true;
+	for (const FSWGIffChunk& ImplForm : Reader.ReadChildren(VersionForms[0]))
+	{
+		if (!ImplForm.IsForm() || ImplForm.FormType != SWG_IFF_TAG('I','M','P','L')) continue;
+		for (const FSWGIffChunk& ImplVersion : Reader.FindChildForms(ImplForm))
+		{
+			// Only the base pass decides the surface: a_2blend_*/decal/dirt
+			// effects follow an opaque base with blended overlay passes, and
+			// reading those made every skin and machinery shader a cutout.
+			bool bReadBasePass = false;
+			for (const FSWGIffChunk& PassForm : Reader.ReadChildren(ImplVersion))
+			{
+				if (bReadBasePass) break;
+				if (!PassForm.IsForm() || PassForm.FormType != SWG_IFF_TAG('P','A','S','S')) continue;
+				for (const FSWGIffChunk& PassVersion : Reader.FindChildForms(PassForm))
+				{
+					if (bReadBasePass) break;
+					FSWGIffChunk DataChunk;
+					if (!Reader.FindChildChunk(PassVersion, SWGIffTags::Data, DataChunk) || DataChunk.DataSize < 18)
+					{
+						continue;
+					}
+					const uint8* Data = Reader.GetChunkData(DataChunk);
+					bFoundPass = true;
+					bReadBasePass = true;
+
+					// Depth write follows the best (first-listed) implementation only.
+					if (bFirstPass)
+					{
+						OutStates.bWritesDepth = Data[5] != 0;
+						bFirstPass = false;
+					}
+					OutStates.bAlphaBlend |= Data[7] != 0;
+					if (Data[11] != 0)
+					{
+						OutStates.bAlphaTest = true;
+						const FString Tag = ReadReversedTag(Data + 12);
+						if (OutStates.AlphaReferenceTag.IsEmpty() && !OutStates.AlphaReferenceLiteral.IsSet())
+						{
+							if (Tag.Len() == 4 && Tag[0] == TEXT('A') && FChar::IsDigit(Tag[1]) && FChar::IsDigit(Tag[2]) && FChar::IsDigit(Tag[3]))
+							{
+								OutStates.AlphaReferenceLiteral = (uint8)FMath::Clamp(FCString::Atoi(*Tag.Mid(1)), 0, 255);
+							}
+							else
+							{
+								OutStates.AlphaReferenceTag = Tag;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return bFoundPass;
 }
