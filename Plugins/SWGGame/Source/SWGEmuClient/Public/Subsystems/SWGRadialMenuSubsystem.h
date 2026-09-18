@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Network/Messages/Zone/Object/ObjectMenuRequest.h"
+#include "TRE/SWGDataTableReader.h"
 #include "SWGRadialMenuSubsystem.generated.h"
 
 class USWGNetworkSubsystem;
@@ -10,7 +11,6 @@ class USWGObjectGraphSubsystem;
 class USWGCommandSubsystem;
 class USWGTreSubsystem;
 struct FSWGNetMessage;
-struct FSWGDataTableData;
 
 /** One option of a radial menu, resolved for display. */
 USTRUCT(BlueprintType)

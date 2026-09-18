@@ -544,6 +544,10 @@ void USWGCombatSubsystem::HandleCombatAction(const FObjControllerMessageIn& Enve
 			{
 				PlayCombatAnimations(*Animation, Action.AttackerId, Defender.ObjectId, Action.WeaponId);
 			}
+			else
+			{
+				UE_LOG(LogSWGCombat, Warning, TEXT("entry '%s' has no arm for hit=%u posture=%u"), *Entry->Key, Defender.Hit, Defender.Posture);
+			}
 		}
 
 		FSWGCombatEvent Event;
@@ -555,8 +559,9 @@ void USWGCombatSubsystem::HandleCombatAction(const FObjControllerMessageIn& Enve
 		Event.InitialDamage = Defender.InitialDamage;
 		Event.bLandedOnUs   = LocalPlayerId != 0 && Defender.ObjectId == LocalPlayerId;
 
-		UE_LOG(LogSWGCombat, Log, TEXT("CombatAction %lld -> %lld hit=%u dmg=%u anim=%08X"),
-			Event.AttackerId, Event.DefenderId, Event.Hit, Event.InitialDamage, Action.AnimationCrc);
+		UE_LOG(LogSWGCombat, Log, TEXT("CombatAction %lld -> %lld hit=%u dmg=%u posture=%u anim=%08X '%s'"),
+			Event.AttackerId, Event.DefenderId, Event.Hit, Event.InitialDamage, Defender.Posture,
+			Action.AnimationCrc, Entry ? *Entry->Key : TEXT("(no entry)"));
 
 		OnCombatAction.Broadcast(Event);
 	}

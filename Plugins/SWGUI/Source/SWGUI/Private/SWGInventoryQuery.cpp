@@ -1,35 +1,12 @@
 #include "SWGInventoryQuery.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
-#include "Subsystems/SWGTreSubsystem.h"
+#include "Subsystems/SWGItemTransferSubsystem.h"
 #include "Components/SWGTangibleComponent.h"
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Objects/Tangible/SWGItem.h"
 #include "Network/Objects/Zone/Object/SWGContainmentType.h"
 #include "Engine/GameInstance.h"
-
-namespace
-{
-	/** The player's inventory bag — the volume container under the creature whose template is character_inventory. */
-	int64 FindInventoryBagId(USWGObjectGraphSubsystem* ObjectGraph, USWGTreSubsystem* Tre, int64 PlayerId)
-	{
-		if (!Tre)
-		{
-			return 0;
-		}
-		for (const int64 ObjectId : ObjectGraph->FindContainedObjectIds(PlayerId))
-		{
-			if (ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(ObjectGraph->FindActor(ObjectId)))
-			{
-				if (Tre->ResolveTemplatePath(NetObject->GetObjectCrc()).Contains(TEXT("character_inventory")))
-				{
-					return ObjectId;
-				}
-			}
-		}
-		return 0;
-	}
-}
 
 FSWGInventoryEntry SWGInventoryQuery::Describe(UGameInstance* GameInstance, int64 ObjectId)
 {
@@ -65,7 +42,7 @@ bool SWGInventoryQuery::Gather(UGameInstance* GameInstance, TArray<FSWGInventory
 {
 	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
 	USWGMeshGeneratorSubsystem* MeshGenerator = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr;
-	USWGTreSubsystem* Tre = GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
+	USWGItemTransferSubsystem* Transfer = GameInstance ? GameInstance->GetSubsystem<USWGItemTransferSubsystem>() : nullptr;
 	const int64 PlayerId = ObjectGraph ? ObjectGraph->GetLocalPlayerObjectId() : 0;
 
 	TArray<FSWGInventoryEntry> NewEquipped;
@@ -101,7 +78,7 @@ bool SWGInventoryQuery::Gather(UGameInstance* GameInstance, TArray<FSWGInventory
 			NewEquipped.Add(MoveTemp(Entry));
 		}
 
-		if (const int64 BagId = FindInventoryBagId(ObjectGraph, Tre, PlayerId))
+		if (const int64 BagId = Transfer ? Transfer->FindInventoryBagId() : 0)
 		{
 			for (const int64 ObjectId : ObjectGraph->FindContainedObjectIds(BagId))
 			{

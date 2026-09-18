@@ -426,6 +426,13 @@ public:
 	bool ResolveArrangementSlotNames(uint32 TemplateCrc, int32 ContainmentType, TArray<FString>& OutSlotNames);
 
 	/**
+	 * Every ARG group of the template's ARGD (the DERV walk above), one slot-name
+	 * list per group. False, with OutGroups empty, when the template has no
+	 * arrangement descriptor — i.e. it is not something that can be equipped.
+	 */
+	bool ResolveArrangementGroups(uint32 TemplateCrc, TArray<TArray<FString>>& OutGroups);
+
+	/**
 	 * True if any of SlotNames has bIsAppearanceRelated set in
 	 * abstract/slot/slot_definition/slot_definitions.iff (parsed once and
 	 * cached — see SlotAppearanceRelatedByName). Non-appearance slots

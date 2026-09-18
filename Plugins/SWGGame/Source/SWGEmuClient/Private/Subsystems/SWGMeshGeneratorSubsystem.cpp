@@ -1504,6 +1504,27 @@ bool USWGMeshGeneratorSubsystem::ResolveArrangementSlotNames(uint32 TemplateCrc,
 		return false;
 	}
 
+	TArray<FSWGArrangementGroup> Groups;
+	if (!ResolveArrangementGroups(TemplateCrc, Groups))
+	{
+		return false;
+	}
+
+	const int32 GroupIndex = SWGGetArrangementGroupIndex(ContainmentType);
+	if (!Groups.IsValidIndex(GroupIndex))
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: template %08x has %d arrangement group(s), but containmentType %d selects out-of-range group %d"), TemplateCrc, Groups.Num(), ContainmentType, GroupIndex);
+		return false;
+	}
+
+	OutSlotNames = Groups[GroupIndex];
+	return !OutSlotNames.IsEmpty();
+}
+
+bool USWGMeshGeneratorSubsystem::ResolveArrangementGroups(uint32 TemplateCrc, TArray<FSWGArrangementGroup>& OutGroups)
+{
+	OutGroups.Reset();
+
 	const FString TemplatePath = TreSubsystem->ResolveTemplatePath(TemplateCrc);
 	if (TemplatePath.IsEmpty())
 	{
@@ -1575,22 +1596,12 @@ bool USWGMeshGeneratorSubsystem::ResolveArrangementSlotNames(uint32 TemplateCrc,
 		return false;
 	}
 
-	TArray<FSWGArrangementGroup> Groups;
-	if (!FSWGArrangementDescriptorReader::Read(ArgdReader, Groups))
+	if (!FSWGArrangementDescriptorReader::Read(ArgdReader, OutGroups))
 	{
 		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: failed to parse ARGD %s (from template %s)"), *ArrangementPath, *TemplatePath);
 		return false;
 	}
-
-	const int32 GroupIndex = SWGGetArrangementGroupIndex(ContainmentType);
-	if (!Groups.IsValidIndex(GroupIndex))
-	{
-		UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: ARGD %s has %d group(s), but containmentType %d selects out-of-range group %d"), *ArrangementPath, Groups.Num(), ContainmentType, GroupIndex);
-		return false;
-	}
-
-	OutSlotNames = Groups[GroupIndex];
-	return !OutSlotNames.IsEmpty();
+	return !OutGroups.IsEmpty();
 }
 
 bool USWGMeshGeneratorSubsystem::IsAnySlotAppearanceRelated(const TArray<FString>& SlotNames)

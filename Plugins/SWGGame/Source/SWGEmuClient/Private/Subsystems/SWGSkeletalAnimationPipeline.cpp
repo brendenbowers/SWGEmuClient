@@ -335,6 +335,7 @@ void FSWGSkeletalAnimationPipeline::UpdatePostureDrivenAnimations()
 		// superseded loop start once its timer elapsed, showing the wrong
 		// posture until the new blend space landed.
 		Playing.PendingBlendSpace.Reset();
+		Playing.bCombatActionPending = false;
 
 		// The clip the .ash authors for this particular posture change, if it
 		// has one — see UpdatePendingTransitions for how it's sequenced ahead
@@ -422,6 +423,7 @@ void FSWGSkeletalAnimationPipeline::BeginLoopPlayback(USkeletalMeshComponent& Me
 	}
 
 	Record->PendingBlendSpace.Reset();
+	Record->bCombatActionPending = false;
 	if (UAnimSingleNodeInstance* AnimInstance = Cast<UAnimSingleNodeInstance>(MeshComponent.GetAnimInstance()))
 	{
 		Record->AnimInstance = AnimInstance;
@@ -508,31 +510,56 @@ bool FSWGSkeletalAnimationPipeline::PlayCombatAction(AActor& Actor, const FStrin
 
 	if (!Playing || !MeshComponent)
 	{
+		UE_LOG(LogTemp, Log, TEXT("FSWGSkeletalAnimationPipeline: %s can't play '%s' — no generated animation is running on it yet"), *Actor.GetName(), *ActionName);
 		return false;
 	}
 
 	// A posture change is already sequencing a clip and a loop behind it.
 	// Cutting in would leave that loop pending against the wrong clip length.
-	if (Playing->PendingBlendSpace.IsValid() || Playing->bSwapInFlight)
+	// A pending combat action is different: swings arrive faster than the
+	// clips run, and the newest one is the one that should show.
+	const bool bPostureTransitionPending = Playing->PendingBlendSpace.IsValid() && !Playing->bCombatActionPending;
+	if (bPostureTransitionPending || Playing->bSwapInFlight)
 	{
+		UE_LOG(LogTemp, Log, TEXT("FSWGSkeletalAnimationPipeline: %s can't play '%s' — a posture transition is still in flight"), *Actor.GetName(), *ActionName);
 		return false;
 	}
 
 	// Taken from what is actually playing, not rebuilt from the clip set, so
-	// the resume matches what was interrupted. Its absence means this actor
-	// is in some state a one-shot shouldn't interrupt.
-	UAnimSingleNodeInstance* AnimInstance = Cast<UAnimSingleNodeInstance>(MeshComponent->GetAnimInstance());
-	UBlendSpace* ResumeBlendSpace = AnimInstance ? Cast<UBlendSpace>(AnimInstance->GetAnimationAsset()) : nullptr;
+	// the resume matches what was interrupted. While an earlier combat action
+	// is on the component, the loop it will return to is the pending one.
+	UBlendSpace* ResumeBlendSpace = Playing->PendingBlendSpace.Get();
 	if (!ResumeBlendSpace)
 	{
+		UAnimSingleNodeInstance* AnimInstance = Cast<UAnimSingleNodeInstance>(MeshComponent->GetAnimInstance());
+		ResumeBlendSpace = AnimInstance ? Cast<UBlendSpace>(AnimInstance->GetAnimationAsset()) : nullptr;
+		if (!ResumeBlendSpace)
+		{
+			UE_LOG(LogTemp, Log, TEXT("FSWGSkeletalAnimationPipeline: %s can't play '%s' — not on a locomotion blend space (playing '%s')"),
+				*Actor.GetName(), *ActionName,
+				AnimInstance && AnimInstance->GetAnimationAsset() ? *AnimInstance->GetAnimationAsset()->GetName() : TEXT("nothing"));
+			return false;
+		}
+	}
+
+	FString Trace;
+	FString ClipPath = ResolveCombatActionClip(Actor, ActionName, WeaponStateName, &Trace);
+
+	// No .ash defines attack_low_center_*, though the server sends it; the
+	// mid-height swing in the same direction is the nearest authored clip.
+	if (ClipPath.IsEmpty() && ActionName.StartsWith(TEXT("attack_low_center_")))
+	{
+		const FString FallbackAction = ActionName.Replace(TEXT("attack_low_center_"), TEXT("attack_mid_center_"));
+		ClipPath = ResolveCombatActionClip(Actor, FallbackAction, WeaponStateName, &Trace);
+	}
+
+	if (ClipPath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalAnimationPipeline: %s can't play '%s' — %s"), *Actor.GetName(), *ActionName, *Trace);
 		return false;
 	}
 
-	const FString ClipPath = ResolveCombatActionClip(Actor, ActionName, WeaponStateName);
-	if (ClipPath.IsEmpty())
-	{
-		return false;
-	}
+	UE_LOG(LogTemp, Log, TEXT("FSWGSkeletalAnimationPipeline: %s playing '%s' -> %s"), *Actor.GetName(), *ActionName, *ClipPath);
 
 	const TWeakObjectPtr<USkeletalMeshComponent> MeshComponentWeak = MeshComponent;
 	const TWeakObjectPtr<UBlendSpace> ResumeBlendSpaceWeak = ResumeBlendSpace;
@@ -555,7 +582,7 @@ bool FSWGSkeletalAnimationPipeline::PlayCombatAction(AActor& Actor, const FStrin
 
 				// The posture swap may have started while the clip was
 				// building; it owns the component now.
-				if (Record->PendingBlendSpace.IsValid() || Record->bSwapInFlight)
+				if ((Record->PendingBlendSpace.IsValid() && !Record->bCombatActionPending) || Record->bSwapInFlight)
 				{
 					return;
 				}
@@ -569,6 +596,7 @@ bool FSWGSkeletalAnimationPipeline::PlayCombatAction(AActor& Actor, const FStrin
 				// Same mechanism the posture transition uses: Tick restarts
 				// the loop once the clip's length has elapsed.
 				Record->PendingBlendSpace = ResumeTo;
+				Record->bCombatActionPending = true;
 				Record->PendingBlendSpaceStartTime = Component->GetWorld()
 					? Component->GetWorld()->GetTimeSeconds() + ActionSequence->GetPlayLength()
 					: 0.0f;

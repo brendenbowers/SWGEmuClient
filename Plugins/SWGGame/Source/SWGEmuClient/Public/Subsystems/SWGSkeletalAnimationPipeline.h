@@ -75,6 +75,9 @@ struct FSWGPlayingAnimation
 	TWeakObjectPtr<UBlendSpace> PendingBlendSpace;
 	float PendingBlendSpaceStartTime = 0.0f;
 
+	/** The pending one-shot is a combat action, not a posture transition — a newer combat action may cut it short. */
+	bool bCombatActionPending = false;
+
 	/**
 	 * Current terrain-alignment tilt, in the actor's local space, interpolated
 	 * toward the ground normal every tick — see

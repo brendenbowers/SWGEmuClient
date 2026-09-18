@@ -1,5 +1,6 @@
 #include "Subsystems/SWGRadialMenuSubsystem.h"
 #include "Subsystems/SWGExamineSubsystem.h"
+#include "Subsystems/SWGItemTransferSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Subsystems/SWGCommandSubsystem.h"
@@ -95,6 +96,8 @@ namespace
 	// datatables/player/radial_menu.iff rows, by index (== Core3 RadialOptions).
 	constexpr int32 RadialCombatAttack = 3;
 	constexpr int32 RadialExamine = 7;
+	constexpr int32 RadialItemEquip = 11;
+	constexpr int32 RadialItemUnequip = 12;
 	constexpr int32 RadialItemUse = 20;
 
 	/** Retail names the standard options as @ui_radial:<row caption, lowercased>. */
@@ -177,6 +180,24 @@ void USWGRadialMenuSubsystem::SelectOption(int64 ObjectId, int32 RadialId)
 	if (!Item)
 	{
 		UE_LOG(LogSWGRadial, Warning, TEXT("SelectOption: no option %d in the menu for %lld"), RadialId, ObjectId);
+		return;
+	}
+
+	// Equip and Unequip are client commands in retail (the table's "equip" /
+	// "unequip" never reach the server), and Use on a wearable means equip —
+	// Core3's WearableObjectMenuComponent does nothing with ITEM_USE; the
+	// retail client sends a transferItem* instead.
+	USWGItemTransferSubsystem* Transfer = GetGameInstance()->GetSubsystem<USWGItemTransferSubsystem>();
+	if (Transfer && (RadialId == RadialItemEquip || RadialId == RadialItemUnequip || RadialId == RadialItemUse) && Transfer->IsEquippable(ObjectId))
+	{
+		if (Transfer->IsEquipped(ObjectId))
+		{
+			Transfer->UnequipItem(ObjectId);
+		}
+		else
+		{
+			Transfer->EquipItem(ObjectId);
+		}
 		return;
 	}
 
@@ -303,6 +324,11 @@ void USWGRadialMenuSubsystem::AppendClientDefaults(int64 ObjectId, TArray<FSWGRa
 	if (Creature && !bIsSelf)
 	{
 		AddDefault(RadialCombatAttack);
+	}
+	// Wearables and weapons: Equip / Unequip are the client's to offer (see SelectOption).
+	if (const USWGItemTransferSubsystem* Transfer = GetGameInstance()->GetSubsystem<USWGItemTransferSubsystem>(); Transfer && Transfer->IsEquippable(ObjectId))
+	{
+		AddDefault(Transfer->IsEquipped(ObjectId) ? RadialItemUnequip : RadialItemEquip);
 	}
 	AddDefault(RadialExamine);
 }

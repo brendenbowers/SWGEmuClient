@@ -1,9 +1,9 @@
 #include "SWGActionBarWidget.h"
-#include "Components/SWGCombatStateComponent.h"
 #include "Components/SWGSkillComponent.h"
 #include "Subsystems/SWGCommandSubsystem.h"
 #include "Subsystems/SWGCombatSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
+#include "Subsystems/SWGTargetSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "TRE/SWGUiSettingsReader.h"
@@ -41,6 +41,12 @@ namespace
 	{
 		UGameInstance* GameInstance = Widget ? Widget->GetGameInstance() : nullptr;
 		return GameInstance ? GameInstance->GetSubsystem<USWGCombatSubsystem>() : nullptr;
+	}
+
+	USWGTargetSubsystem* GetTargeting(const UWidget* Widget)
+	{
+		UGameInstance* GameInstance = Widget ? Widget->GetGameInstance() : nullptr;
+		return GameInstance ? GameInstance->GetSubsystem<USWGTargetSubsystem>() : nullptr;
 	}
 }
 
@@ -500,16 +506,11 @@ const FSlateBrush* USWGActionBarWidget::ResolveStyleBrush(const FString& DottedP
 
 int64 USWGActionBarWidget::ResolveTargetId() const
 {
-	USWGObjectGraphSubsystem* ObjectGraph = GetObjectGraph(this);
-	if (!ObjectGraph)
-	{
-		return 0;
-	}
-
-	const USWGCombatStateComponent* CombatState =
-		ObjectGraph->FindComponent<USWGCombatStateComponent>(ObjectGraph->GetLocalPlayerObjectId());
-
-	return CombatState ? CombatState->TargetId : 0;
+	// Not the CREO6 TargetId: the server never echoes our own selection into
+	// that field, so it goes stale and an attack would fire at (and retarget
+	// to) whatever the server last remembered.
+	const USWGTargetSubsystem* Targeting = GetTargeting(this);
+	return Targeting ? Targeting->GetTargetId() : 0;
 }
 
 bool USWGActionBarWidget::TriggerSlot(int32 SlotIndex)
