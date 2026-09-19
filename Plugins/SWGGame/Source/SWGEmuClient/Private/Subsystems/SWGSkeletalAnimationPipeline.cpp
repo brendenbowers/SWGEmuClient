@@ -302,6 +302,7 @@ void FSWGSkeletalAnimationPipeline::UpdatePostureDrivenAnimations()
 		// whose clips fail to resolve) doesn't re-walk the hierarchy every
 		// single tick from here on.
 		const ESWGPosture PreviousPosture = Playing.Posture;
+		const int64 PreviousStateBitmask = Playing.StateBitmask;
 		Playing.Posture = Posture;
 		Playing.StateBitmask = StateBitmask;
 
@@ -341,7 +342,7 @@ void FSWGSkeletalAnimationPipeline::UpdatePostureDrivenAnimations()
 		// has one — see UpdatePendingTransitions for how it's sequenced ahead
 		// of the destination loop.
 		const FString TransitionClipPath = SWGLocomotion::ResolveTransitionClip(
-			Source->Hierarchy, Source->Lat, PreviousPosture, Posture, StateBitmask);
+			Source->Hierarchy, Source->Lat, PreviousPosture, PreviousStateBitmask, Posture, StateBitmask);
 		const FString SkeletonPathCopy = Playing.SkeletonPath;
 		const TArray<FString> MeshPathsCopy = Playing.MeshVirtualPaths;
 		const FSWGSkeletonData SkeletonCopy = Playing.Skeleton;

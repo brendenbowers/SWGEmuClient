@@ -100,6 +100,11 @@ namespace SWGLocomotion
 	 * Played once, unlooped, before the destination's loop starts: the clip is
 	 * authored to begin in the source pose and end in the destination one, so
 	 * it carries the change rather than hiding it behind a cross-fade.
+	 *
+	 * Both ends take their own state bitmask because the two usually change
+	 * together: death arrives as "Combat cleared" and "posture Dead" in one
+	 * packet, and resolving the source with the new bitmask would put it at
+	 * the destination already and find no change to animate.
 	 */
-	SWGEMUCLIENT_API FString ResolveTransitionClip(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, ESWGPosture FromPosture, ESWGPosture ToPosture, int64 StateBitmask);
+	SWGEMUCLIENT_API FString ResolveTransitionClip(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, ESWGPosture FromPosture, int64 FromStateBitmask, ESWGPosture ToPosture, int64 ToStateBitmask);
 }

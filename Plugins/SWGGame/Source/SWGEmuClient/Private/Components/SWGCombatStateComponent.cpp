@@ -39,6 +39,13 @@ void USWGCombatStateComponent::ApplyDelta3(const FCreatureObjectDelta& Delta)
 	BroadcastIfPostureOrStateChanged(PreviousPosture, PreviousStateBitmask);
 }
 
+void USWGCombatStateComponent::ApplyPostureUpdate(uint8 NewPosture)
+{
+	const uint8 PreviousPosture = Posture;
+	Posture = NewPosture;
+	BroadcastIfPostureOrStateChanged(PreviousPosture, StateBitmask);
+}
+
 void USWGCombatStateComponent::ApplyDelta6(const FCreatureObjectDelta& Delta)
 {
 	if (Delta.WeaponId.IsSet()) { WeaponId = *Delta.WeaponId; }

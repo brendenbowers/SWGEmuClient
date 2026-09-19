@@ -210,7 +210,19 @@ const FSWGAnimationState* SWGLocomotion::ResolveState(const FSWGAnimationStateHi
 		return Node;
 	}
 
-	TryDescend(Hierarchy, Node, PostureStateName(Posture, StateBitmask));
+	// The combat and weapon subtrees don't repeat every posture: all_b.ash
+	// has "incapacitated_face_down" (Dead) only at the root, so a creature
+	// that dies before its Combat bit clears would otherwise stay on the
+	// combat-standing loop. A posture missing here is looked for up the
+	// ancestors before giving up and keeping the context node.
+	const FString PostureName = PostureStateName(Posture, StateBitmask);
+	for (const FSWGAnimationState* Ancestor = Node; Ancestor && !PostureName.IsEmpty(); Ancestor = Hierarchy.States.IsValidIndex(Ancestor->ParentIndex) ? &Hierarchy.States[Ancestor->ParentIndex] : nullptr)
+	{
+		if (const FSWGAnimationState* PostureNode = Hierarchy.FindChildOf(*Ancestor, PostureName))
+		{
+			return PostureNode;
+		}
+	}
 	return Node;
 }
 
@@ -233,18 +245,28 @@ FString SWGLocomotion::ResolveActionClip(const FSWGAnimationStateHierarchy& Hier
 	return Entry ? IdlePathOf(*Entry) : FString();
 }
 
-FString SWGLocomotion::ResolveTransitionClip(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, ESWGPosture FromPosture, ESWGPosture ToPosture, int64 StateBitmask)
+FString SWGLocomotion::ResolveTransitionClip(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, ESWGPosture FromPosture, int64 FromStateBitmask, ESWGPosture ToPosture, int64 ToStateBitmask)
 {
-	const FSWGAnimationState* FromState = ResolveState(Hierarchy, FromPosture, StateBitmask);
-	const FSWGAnimationState* ToState = ResolveState(Hierarchy, ToPosture, StateBitmask);
+	const FSWGAnimationState* FromState = ResolveState(Hierarchy, FromPosture, FromStateBitmask);
+	const FSWGAnimationState* ToState = ResolveState(Hierarchy, ToPosture, ToStateBitmask);
 	if (!FromState || !ToState || FromState == ToState)
 	{
 		return FString();
 	}
 
 	const TArray<FString> DestinationPath = Hierarchy.PathTo(*ToState);
-	const FSWGAnimationStateLink* Link = FromState->Links.FindByPredicate(
-		[&DestinationPath](const FSWGAnimationStateLink& Candidate) { return Candidate.DestinationPath == DestinationPath; });
+	const auto LeadsToDestination = [&DestinationPath](const FSWGAnimationStateLink& Candidate) { return Candidate.DestinationPath == DestinationPath; };
+
+	// Links are authored per node, and a destination that lives higher up
+	// the tree may only be linked from up there: root links to
+	// incapacitated_face_down with the fall-forward clip, root/combat
+	// doesn't link to it at all. An ancestor's link is the same change from
+	// a near-enough pose (combat standing vs standing), so it stands in.
+	const FSWGAnimationStateLink* Link = nullptr;
+	for (const FSWGAnimationState* Source = FromState; Source && !Link; Source = Hierarchy.States.IsValidIndex(Source->ParentIndex) ? &Hierarchy.States[Source->ParentIndex] : nullptr)
+	{
+		Link = Source->Links.FindByPredicate(LeadsToDestination);
+	}
 
 	if (!Link || Link->TransitionAnimationName.IsEmpty())
 	{

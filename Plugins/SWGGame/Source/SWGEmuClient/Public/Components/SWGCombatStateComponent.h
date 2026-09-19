@@ -49,6 +49,22 @@ public:
 	ESWGPosture GetPosture() const { return (ESWGPosture)Posture; }
 	bool HasState(ESWGState State) const { return SWGHasState(StateBitmask, State); }
 
+	// There is no separate "dead" flag on the wire: a corpse is the same CREO
+	// with its posture set to Dead, until the server destroys the object. The
+	// posture is the corpse marker.
+	bool IsIncapacitated() const { return GetPosture() == ESWGPosture::Incapacitated; }
+	bool IsDead() const { return GetPosture() == ESWGPosture::Dead; }
+	/** Incapacitated or dead — the two postures nothing (attacks, movement) gets a creature out of by itself. */
+	bool IsDowned() const { return IsIncapacitated() || IsDead(); }
+
+	/**
+	 * ObjController PostureUpdate (0x131) — the server's "animate this posture
+	 * change now". Its delta3 twin usually lands in the same packet, so this
+	 * is mostly a no-op after the diff; it matters when the delta is delayed
+	 * or never sent (see FPostureUpdateIn).
+	 */
+	void ApplyPostureUpdate(uint8 NewPosture);
+
 	// Split: CREO base3's Posture/FactionRank come before the CreatureLinkId/
 	// Height/ShockWounds fields, StateBitmask comes after — see
 	// SWGCreatureBaselineParser::ParseBase3.

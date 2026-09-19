@@ -505,11 +505,9 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 
 	// Diagnostic — forces the local player's CREO posture without waiting for
 	// the server to send a delta, so a posture-specific animation bug can be
-	// reproduced on demand. Writes the field directly rather than going
-	// through ApplyDelta3, which means OnPostureOrStateChanged does NOT fire
-	// and the movement component's speed shaping won't follow — the animation
-	// pipeline polls posture every tick, so the clip swap still happens, which
-	// is the part worth reproducing.
+	// reproduced on demand. The posture goes through ApplyPostureUpdate (the
+	// 0x131 path) so movement follows it too; the state bitmask is written
+	// directly, which the animation pipeline's per-tick poll still picks up.
 	static FAutoConsoleCommand SetPostureCmd(
 		TEXT("swg.SetPosture"),
 		TEXT("swg.SetPosture <postureValue> [stateBitmask] — forces the local player's posture (0=Upright, 1=Crouched, 2=Prone, 8=Sitting, ...) for animation debugging."),
@@ -532,11 +530,11 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 					return;
 				}
 
-				CombatState->Posture = (uint8)FCString::Atoi(*Args[0]);
 				if (Args.Num() >= 2)
 				{
 					CombatState->StateBitmask = FCString::Atoi64(*Args[1]);
 				}
+				CombatState->ApplyPostureUpdate((uint8)FCString::Atoi(*Args[0]));
 
 				UE_LOG(LogTemp, Warning, TEXT("swg.SetPosture: %s posture=%d states=0x%llx"),
 					*Pawn->GetName(), CombatState->Posture, CombatState->StateBitmask);

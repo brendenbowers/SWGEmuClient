@@ -22,6 +22,7 @@
 #include "Network/Messages/Zone/UpdateTransformWithParentMessage.h"
 #include "Network/Messages/Zone/ObjControllerMessageIn.h"
 #include "Network/Messages/Zone/Object/TeleportAck.h"
+#include "Network/Messages/Zone/Object/PostureUpdateIn.h"
 
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
@@ -682,6 +683,26 @@ void USWGObjectGraphSubsystem::ApplyNetworkTransform(AActor* Actor, int64 Object
 
 void USWGObjectGraphSubsystem::HandleObjControllerMessage(const FObjControllerMessageIn& Msg)
 {
+	// Addressed to whichever creature changed posture, not just to us —
+	// a dying NPC's arrives with its own ObjectId.
+	if (Msg.GetSubOp() == ESWGObjControllerOp::PostureUpdate)
+	{
+		FSWGPacket Payload = Msg.AsPayloadPacket();
+		FPostureUpdateIn Update;
+		if (!Update.Parse(Payload))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGObjectGraphSubsystem: malformed PostureUpdate for %lld (%d payload bytes)"), Msg.ObjectId, Msg.RawPayload.Num());
+			return;
+		}
+
+		if (USWGCombatStateComponent* CombatState = FindComponent<USWGCombatStateComponent>(Msg.ObjectId))
+		{
+			UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: PostureUpdate %lld -> posture %u"), Msg.ObjectId, Update.Posture);
+			CombatState->ApplyPostureUpdate(Update.Posture);
+		}
+		return;
+	}
+
 	// A server-pushed DataTransform (WithParent when we're in a cell) is
 	// zone-in or a bounce-back correction, both of which re-arm
 	// PlayerObject::isTeleporting; acking one that didn't is a harmless no-op.

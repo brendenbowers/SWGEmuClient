@@ -15,6 +15,7 @@ enum class ESWGObjControllerOp : uint32
 	DataTransformWithParent = 0xF1u, // Same, for a player inside a cell — also needs the ack
 	CombatAction       = 0xCCu,  // Who swung at whom, with what, and whether it landed
 	CommandQueueRemove = 0x117u, // The reply to our CommandQueueEnqueue: cooldown + error
+	PostureUpdate      = 0x131u, // A posture change to animate now — how incapacitation and death arrive
 	CombatSpam         = 0x134u, // One line of the combat log
 	ObjectMenuRequest  = 0x146u, // Client: what can I do with this object? (radial menu)
 	ObjectMenuResponse = 0x147u, // The radial menu items the server offers for it
