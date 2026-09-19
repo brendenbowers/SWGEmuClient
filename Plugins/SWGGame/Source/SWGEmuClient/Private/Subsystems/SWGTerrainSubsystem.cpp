@@ -33,6 +33,16 @@
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "CompGeom/PolygonTriangulation.h"
 #include "TRE/SWGColorRampReader.h"
+#include "TRE/SWGDataTableReader.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Kismet/GameplayStatics.h"
+#include "Camera/PlayerCameraManager.h"
+#include "TRE/SWGIffTags.h"
+#include "Subsystems/SWGNetworkSubsystem.h"
+#include "Network/Messages/SWGMessageOp.h"
+#include "Network/Messages/Zone/ServerTimeMessage.h"
+#include "Network/Messages/Zone/CmdStartSceneMessage.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/SkyLight.h"
@@ -72,16 +82,103 @@ namespace
 		TEXT("Retail-style lighting: flat colour-ramp ambient everywhere with dynamic GI off. 0 keeps the project's Lumen setup."));
 
 	TAutoConsoleVariable<float> CVarTimeOfDay(
-		TEXT("swg.TimeOfDay"), 0.25f,
-		TEXT("Position through the planet's day cycle (0..1) the colour ramp is sampled at — 0.25 is noon. Takes effect on the next zone load."));
+		TEXT("swg.TimeOfDay"), -1.0f,
+		TEXT("Pins the day cycle position (0..1, 0.25 = noon, ~0.6 = night) for testing. Negative (default) follows the server's galactic time."));
+
+	TAutoConsoleVariable<float> CVarDayOffset(
+		TEXT("swg.DayOffset"), 0.85f,
+		TEXT("Phase added to (galacticTime / TimeCycle) before sampling the ramps. 0.85 fitted to retail on Tatooine (2026-09-18): suns high at galactic 152253 s, sunset with the primary sun at the ridge at ~160000 s."));
+
+	TAutoConsoleVariable<float> CVarTimeScale(
+		TEXT("swg.TimeScale"), 1.0f,
+		TEXT("Speed the local clock advances between server time syncs — 60 runs a full day in a few minutes for testing."));
 
 	TAutoConsoleVariable<float> CVarAmbientIntensity(
-		TEXT("swg.AmbientIntensity"), 1.5f,
+		TEXT("swg.AmbientIntensity"), 1.1f,
 		TEXT("Sky light intensity multiplying the colour ramp's ambient colour."));
 
 	TAutoConsoleVariable<float> CVarSunIntensity(
 		TEXT("swg.SunIntensity"), 1.0f,
 		TEXT("Multiplier on the sun's ramp-derived intensity."));
+
+	TAutoConsoleVariable<float> CVarFogDensityScale(
+		TEXT("swg.FogDensityScale"), 1.0f,
+		TEXT("Multiplier on the environment table's fog density."));
+
+	TAutoConsoleVariable<float> CVarSkyFlipV(
+		TEXT("swg.SkyFlipV"), 1.0f,
+		TEXT("Gradient sky row order — 1 (confirmed against retail 2026-09-18) puts the DDS's first row at the zenith. Next zone load."));
+
+	constexpr float CloudPlaneExtentMetres = 30000.0f;
+
+	TAutoConsoleVariable<float> CVarCloudTileScale(
+		TEXT("swg.CloudTileScale"), 30.0f,
+		TEXT("Metres per cloud texture repeat = the environment table's shader size times this. Next zone load."));
+
+	TAutoConsoleVariable<float> CVarStarIntensity(
+		TEXT("swg.StarIntensity"), 1.5f,
+		TEXT("Brightness of the night star field."));
+
+	TAutoConsoleVariable<float> CVarCloudOpacity(
+		TEXT("swg.CloudOpacity"), 0.3f,
+		TEXT("Cloud layer opacity multiplier. Next zone load."));
+
+	TAutoConsoleVariable<float> CVarSkyLatitude(
+		TEXT("swg.SkyLatitude"), 35.0f,
+		TEXT("Tilt of the celestial pole above the northern horizon, degrees — sets how high the sun and moons climb."));
+
+	TAutoConsoleVariable<float> CVarSunsetFraction(
+		TEXT("swg.SunsetFraction"), 0.5f,
+		TEXT("Day-cycle fraction the sun sets at (the sphere's hour angle reaches 90 here)."));
+
+	TAutoConsoleVariable<float> CVarSunriseFraction(
+		TEXT("swg.SunriseFraction"), 0.86f,
+		TEXT("Day-cycle fraction the sun rises at (hour angle -90). Retail Tatooine 2026-09-18: sunset 0.50, sunrise 0.86."));
+
+	TAutoConsoleVariable<float> CVarMoonHourOffset(
+		TEXT("swg.MoonHourOffset"), -170.0f,
+		TEXT("Where the moon sits on the sun's track, degrees of hour angle (negative = behind the sun). -170 fits retail Tatooine (2026-09-18): moon near its peak at day 0.60, setting at 0.84."));
+
+	// Retail's moons and props subtend roughly size x 40 degrees (a 0.3 moon ~12 degrees across).
+	TAutoConsoleVariable<float> CVarMoonSpriteScale(
+		TEXT("swg.MoonSpriteScale"), 0.7f,
+		TEXT("Apparent size of the moon sprites (environment file size times this)."));
+
+	TAutoConsoleVariable<float> CVarPropSpriteScale(
+		TEXT("swg.PropSpriteScale"), 0.7f,
+		TEXT("Apparent size of fixed celestial props such as star destroyers (environment file size times this)."));
+
+	TAutoConsoleVariable<float> CVarCelestialYawOffset(
+		TEXT("swg.CelestialYawOffset"), 180.0f,
+		TEXT("Degrees added to CELS azimuths to map the environment file's compass onto UE yaw."));
+
+	TAutoConsoleVariable<bool> CVarCelestialSpriteMirror(
+		TEXT("swg.CelestialSpriteMirror"), true,
+		TEXT("Mirror sky sprites vertically (their textures load with V flipped, like the gradient sky)."));
+
+	TAutoConsoleVariable<float> CVarMoonHideSunElevation(
+		TEXT("swg.MoonHideSunElevation"), 3.0f,
+		TEXT("Sun elevation (degrees) above which moon sprites are hidden."));
+
+	TAutoConsoleVariable<float> CVarCelestialSpriteRoll(
+		TEXT("swg.CelestialSpriteRoll"), 0.0f,
+		TEXT("Base roll (degrees) applied to every sky sprite, for lining the plane's texture-up with the sky."));
+
+	TAutoConsoleVariable<float> CVarNightAmbientBoost(
+		TEXT("swg.NightAmbientBoost"), 2.5f,
+		TEXT("Multiplier on the ramp's ambient once the sun is down — retail nights read brighter than the ramp alone gives."));
+
+	TAutoConsoleVariable<float> CVarSunDiscIntensity(
+		TEXT("swg.SunDiscIntensity"), 0.8f,
+		TEXT("Emissive strength of the sun disc sprites (additive; over ~1 blooms out)."));
+
+	TAutoConsoleVariable<float> CVarSunGlowIntensity(
+		TEXT("swg.SunGlowIntensity"), 0.45f,
+		TEXT("Emissive strength of the sun ray-glow sprites."));
+
+	TAutoConsoleVariable<float> CVarSunSpriteScale(
+		TEXT("swg.SunSpriteScale"), 0.65f,
+		TEXT("Apparent size of the sun sprites: the environment file's size times this, as a fraction of the sprite's distance."));
 
 	// Landscape's uint16 height packing represents a fixed +/-256 *local* height
 	// range (LANDSCAPE_ZSCALE is hardcoded regardless of actor Z scale); the
@@ -267,11 +364,65 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	TreSubsystem = Cast<USWGTreSubsystem>(Collection.InitializeDependency(USWGTreSubsystem::StaticClass()));
 	MeshGenerator = Cast<USWGMeshGeneratorSubsystem>(Collection.InitializeDependency(USWGMeshGeneratorSubsystem::StaticClass()));
+	Network = Cast<USWGNetworkSubsystem>(Collection.InitializeDependency(USWGNetworkSubsystem::StaticClass()));
+	if (Network)
+	{
+		MessageHandle = Network->OnMessageReceived.AddUObject(this, &USWGTerrainSubsystem::HandleMessageReceived);
+	}
 }
 
 void USWGTerrainSubsystem::Deinitialize()
 {
+	if (Network && MessageHandle.IsValid())
+	{
+		Network->OnMessageReceived.Remove(MessageHandle);
+		MessageHandle.Reset();
+	}
 	ResetZone();
+}
+
+void USWGTerrainSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> Msg)
+{
+	if (!Msg)
+	{
+		return;
+	}
+	if (Msg->Opcode == static_cast<uint32>(ESWGMessageOp::ServerTime))
+	{
+		SetGalacticTime(static_cast<const FServerTimeMessage*>(Msg.Get())->GalacticTime);
+	}
+	else if (Msg->Opcode == static_cast<uint32>(ESWGMessageOp::CmdStartScene))
+	{
+		SetGalacticTime(static_cast<const FCmdStartSceneMessage*>(Msg.Get())->GalacticTime);
+	}
+}
+
+void USWGTerrainSubsystem::SetGalacticTime(int64 Seconds)
+{
+	check(IsInGameThread());
+	GalacticTimeAtSync = static_cast<double>(Seconds);
+	LocalTimeAtSync = FPlatformTime::Seconds();
+	bHasGalacticTime = true;
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: galactic time %lld s (day %.3f)"), Seconds, GetDayFraction());
+}
+
+float USWGTerrainSubsystem::GetDayFraction() const
+{
+	// swg.TimeOfDay >= 0 pins the clock for testing; otherwise the server's
+	// galactic time advanced locally since the last sync, wrapped by the
+	// planet's own cycle length (FSWGTerrainHeader::TimeCycle).
+	const float Pinned = CVarTimeOfDay.GetValueOnGameThread();
+	if (Pinned >= 0.0f)
+	{
+		return FMath::Frac(Pinned);
+	}
+	if (!bHasGalacticTime)
+	{
+		return 0.25f;
+	}
+	const double Cycle = PlanetData && PlanetData->Header.TimeCycle > 1.0f ? PlanetData->Header.TimeCycle : 3600.0;
+	const double Now = GalacticTimeAtSync + (FPlatformTime::Seconds() - LocalTimeAtSync) * FMath::Max(0.0f, CVarTimeScale.GetValueOnGameThread());
+	return static_cast<float>(FMath::Frac(FMath::Fmod(Now, Cycle) / Cycle + CVarDayOffset.GetValueOnGameThread()));
 }
 
 void USWGTerrainSubsystem::BeginLoadTerrain(const FString TerrainVirtualPath, const FVector& SpawnPosition)
@@ -432,6 +583,18 @@ void USWGTerrainSubsystem::ResetZone()
 		WaterActor = nullptr;
 	}
 	WaterMaterials.Reset();
+	// The lights themselves are replaced by the next SetupPlanetLighting.
+	SunLight = nullptr;
+	AmbientLight = nullptr;
+	HeightFog = nullptr;
+	bHasColorRamp = false;
+	SkyDomeMaterial = nullptr;
+	SkyActor = nullptr;
+	StarFieldMaterial = nullptr;
+	StarDome = nullptr;
+	CelestialSprites.Reset();
+	CloudLayers.Reset();
+	CloudMaterials.Reset();
 
 	PlanetData.Reset();
 	SnapshotData.Reset();
@@ -448,6 +611,13 @@ void USWGTerrainSubsystem::ResetZone()
 void USWGTerrainSubsystem::Tick(float DeltaTime)
 {
 	SpawnPendingSnapshotObjects();
+
+	// The day moves continuously; a full cycle is a few hours so per-frame
+	// steps are imperceptible, and the sun's atmosphere responds live.
+	if (IsValid(SunLight))
+	{
+		ApplyTimeOfDay(GetDayFraction());
+	}
 
 	TimeUntilNextSweep -= DeltaTime;
 	if (TimeUntilNextSweep > 0.0f)
@@ -501,48 +671,35 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 	}
 	// Retail's lighting is the planet's colour ramp sampled at the time of
 	// day: a flat ambient that reaches everywhere (shade, interiors), a sun
-	// colour, and a fog colour. See FSWGColorRamp for the row layout.
+	// colour, and a fog colour. See FSWGColorRamp for the row layout. The
+	// components are kept so ApplyTimeOfDay can move the day along each tick.
+	// datatables/environment/<planet>.iff names the ramp, the gradient sky
+	// and the fog for each environment family and weather state.
 	const FString ZoneName = FPaths::GetBaseFilename(TerrainVirtualPath).ToLower();
-	const float DayFraction = FMath::Frac(CVarTimeOfDay.GetValueOnGameThread());
-	FSWGColorRamp Ramp;
-	const bool bHasRamp = LoadPlanetColorRamp(ZoneName, Ramp);
-	const FLinearColor AmbientColor = bHasRamp ? Ramp.Sample(FSWGColorRamp::Ambient, DayFraction) : FLinearColor(0.35f, 0.35f, 0.4f);
-	const FLinearColor SunColor = bHasRamp ? Ramp.Sample(FSWGColorRamp::SunDiffuse, DayFraction) : FLinearColor::White;
-	const FLinearColor FogColor = bHasRamp ? Ramp.Sample(FSWGColorRamp::Fog, DayFraction) : FLinearColor(0.60f, 0.72f, 0.78f);
+	Environment = LoadPlanetEnvironment(ZoneName);
+	bHasColorRamp = LoadPlanetColorRamp(ZoneName, ColorRamp);
 
-	// The ramp's sun rises near column 16, peaks at 64 and sets by 128 —
-	// elevation follows that arc, with a low dim light standing in for the
-	// moon the rest of the cycle.
-	const float DayArc = (DayFraction - 0.0625f) / 0.4375f;
-	const float SunElevation = DayArc > 0.0f && DayArc < 1.0f ? FMath::Max(5.0f, 70.0f * FMath::Sin(DayArc * UE_PI)) : 5.0f;
-	const float SunStrength = FMath::Max3(SunColor.R, SunColor.G, SunColor.B);
-
+	SunLight = Sun;
 	if (Sun)
 	{
-		Sun->SetActorRotation(FRotator(-SunElevation, -35.0f, 0.0f));
 		UDirectionalLightComponent* SunComponent = Sun->GetComponent();
 		SunComponent->SetMobility(EComponentMobility::Movable);
 		SunComponent->SetAtmosphereSunLight(true);
 		SunComponent->SetUseTemperature(false);
-		SunComponent->SetLightColor(SunStrength > 0.0f ? SunColor / SunStrength : FLinearColor::White);
-		SunComponent->SetIntensity(3.0f * FMath::Max(SunStrength, 0.05f) * CVarSunIntensity.GetValueOnGameThread());
 	}
 
 	ASkyLight* SkyLight = World->SpawnActor<ASkyLight>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	AmbientLight = SkyLight;
 	if (SkyLight)
 	{
 		SkyLight->Tags.Add(PlanetLightingTag);
 		USkyLightComponent* SkyLightComponent = SkyLight->GetLightComponent();
 		SkyLightComponent->SetMobility(EComponentMobility::Movable);
 		SkyLightComponent->SetRealTimeCaptureEnabled(true);
-		// Tinted by the ramp's ambient; the captured sky supplies the shape.
 		// No shadowing: retail's ambient was a constant term, not an
 		// occluded one, which is what keeps shaded ground and rooms lit.
-		SkyLightComponent->SetLightColor(AmbientColor);
-		SkyLightComponent->SetIntensity(CVarAmbientIntensity.GetValueOnGameThread());
 		SkyLightComponent->SetCastShadows(false);
 		SkyLightComponent->bLowerHemisphereIsBlack = false;
-		SkyLightComponent->SetLowerHemisphereColor(AmbientColor);
 	}
 
 	// Lumen would occlude that ambient indoors and in shade, so the SWG look
@@ -559,32 +716,711 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 		}
 	}
 
-	// A SkyAtmosphere is the UE equivalent of SWG's gradient-sky backdrop. The
-	// selected Naboo texture is retained as the planet's data source while the
-	// original effect's proprietary shader is still being ported.
-	AActor* AtmosphereActor = World->SpawnActor<AActor>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
-	if (AtmosphereActor)
+	// Retail's sky is the environment's gradient texture (256 day columns x
+	// 32 elevation rows, effect gradient_sky.eft) on a dome; a SkyAtmosphere
+	// only stands in when the planet has no gradient.
+	SkyDomeMaterial = nullptr;
+	CelestialSprites.Reset();
+	CloudLayers.Reset();
+	CloudMaterials.Reset();
+	SkyActor = World->SpawnActor<AActor>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	if (SkyActor)
 	{
-		AtmosphereActor->Tags.Add(PlanetLightingTag);
-		USceneComponent* Root = NewObject<USceneComponent>(AtmosphereActor, TEXT("SWGSkyRoot"));
-		AtmosphereActor->SetRootComponent(Root);
-		Root->RegisterComponent();
-		USkyAtmosphereComponent* Atmosphere = NewObject<USkyAtmosphereComponent>(AtmosphereActor, TEXT("SWGSkyAtmosphere"));
-		Atmosphere->SetupAttachment(Root);
-		Atmosphere->RegisterComponent();
+		SkyActor->Tags.Add(PlanetLightingTag);
+#if WITH_EDITOR
+		SkyActor->SetActorLabel(TEXT("SWGSky"));
+#endif
+		USceneComponent* SkyRoot = NewObject<USceneComponent>(SkyActor, TEXT("SWGSkyRoot"));
+		SkyActor->SetRootComponent(SkyRoot);
+		SkyRoot->RegisterComponent();
+	}
+	UTexture2D* GradientTexture = Environment.GradientSkyTexture.IsEmpty() ? nullptr : LoadGradientSkyTexture(Environment.GradientSkyTexture);
+	if (GradientTexture && SkyActor)
+	{
+		UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/EngineSky/SM_SkySphere.SM_SkySphere"));
+		UMaterialInterface* SkyParent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGGradientSky.M_SWGGradientSky"));
+		if (SphereMesh && SkyParent)
+		{
+			UStaticMeshComponent* Dome = NewObject<UStaticMeshComponent>(SkyActor, TEXT("SWGSkyDome"));
+			Dome->SetupAttachment(SkyActor->GetRootComponent());
+			Dome->SetStaticMesh(SphereMesh);
+			// SM_SkySphere spans 4096 cm; 100 km keeps it past every tile at any position on the 16 km map.
+			Dome->SetWorldScale3D(FVector(2500.0f));
+			Dome->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Dome->SetCastShadow(false);
+			Dome->bAffectDistanceFieldLighting = false;
+			SkyDomeMaterial = UMaterialInstanceDynamic::Create(SkyParent, this);
+			SkyDomeMaterial->SetTextureParameterValue(TEXT("Gradient"), GradientTexture);
+			SkyDomeMaterial->SetScalarParameterValue(TEXT("FlipV"), CVarSkyFlipV.GetValueOnGameThread());
+			Dome->SetMaterial(0, SkyDomeMaterial);
+			Dome->RegisterComponent();
+		}
+	}
+	SpawnCelestialSprites(LoadPlanetCelestials(ZoneName));
+	SpawnCloudLayers();
+	// No star dome: the extra sphere showed through the sky. Stars are still to be done another way.
+	if (!SkyDomeMaterial)
+	{
+		AActor* AtmosphereActor = World->SpawnActor<AActor>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+		if (AtmosphereActor)
+		{
+			AtmosphereActor->Tags.Add(PlanetLightingTag);
+			USceneComponent* Root = NewObject<USceneComponent>(AtmosphereActor, TEXT("SWGSkyRoot"));
+			AtmosphereActor->SetRootComponent(Root);
+			Root->RegisterComponent();
+			USkyAtmosphereComponent* Atmosphere = NewObject<USkyAtmosphereComponent>(AtmosphereActor, TEXT("SWGSkyAtmosphere"));
+			Atmosphere->SetupAttachment(Root);
+			Atmosphere->RegisterComponent();
+		}
 	}
 
 	AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	HeightFog = Fog;
 	if (Fog)
 	{
 		Fog->Tags.Add(PlanetLightingTag);
-		Fog->GetComponent()->SetFogDensity(0.0015f);
-		Fog->GetComponent()->SetFogInscatteringColor(FogColor);
+		// The table's minimum density is the clear-weather value; heavier
+		// weather states raise it towards the maximum.
+		const float Density = Environment.bFogEnabled ? Environment.MinFogDensity : 0.0f;
+		Fog->GetComponent()->SetFogDensity(Density * CVarFogDensityScale.GetValueOnGameThread());
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %s lighting at day %.2f from %s — ambient (%.2f, %.2f, %.2f), sun (%.2f, %.2f, %.2f) elevation %.0f, fog (%.2f, %.2f, %.2f)"),
-		*ZoneName, DayFraction, bHasRamp ? TEXT("colour ramp") : TEXT("defaults (no ramp)"),
-		AmbientColor.R, AmbientColor.G, AmbientColor.B, SunColor.R, SunColor.G, SunColor.B, SunElevation, FogColor.R, FogColor.G, FogColor.B);
+	ApplyTimeOfDay(GetDayFraction(), /*bLog=*/true);
+}
+
+FVector USWGTerrainSubsystem::CelestialPole()
+{
+	const float Latitude = FMath::DegreesToRadians(CVarSkyLatitude.GetValueOnGameThread());
+	return FVector(FMath::Cos(Latitude), 0.0f, FMath::Sin(Latitude));
+}
+
+float USWGTerrainSubsystem::HourAngleForDayFraction(float DayFraction)
+{
+	// Retail's day is longer than its night on the clock (Tatooine: sunset
+	// at 0.50, sunrise at 0.86), so the sphere turns through its day half
+	// (-90..90) over one span and its night half (90..270) over the other.
+	const float Sunset = FMath::Frac(CVarSunsetFraction.GetValueOnGameThread());
+	const float Sunrise = FMath::Frac(CVarSunriseFraction.GetValueOnGameThread());
+	const float NightSpan = FMath::Max(0.05f, FMath::Frac(Sunrise - Sunset + 1.0f));
+	const float DaySpan = FMath::Max(0.05f, 1.0f - NightSpan);
+	const float SinceSunset = FMath::Frac(DayFraction - Sunset + 1.0f);
+	if (SinceSunset < NightSpan)
+	{
+		return 90.0f + 180.0f * SinceSunset / NightSpan;
+	}
+	return -90.0f + 180.0f * (SinceSunset - NightSpan) / DaySpan;
+}
+
+FVector USWGTerrainSubsystem::CelestialDirection(float HourAngleDegrees, float DeclinationDegrees, float)
+{
+	// Pole P over the northern horizon; E0 the meridian point of the
+	// equator (south, tilted up); E1 = P x E0 points west, so a growing hour
+	// angle carries a body from the east across the meridian to the west.
+	const FVector Pole = CelestialPole();
+	const FVector Meridian(-Pole.Z, 0.0f, Pole.X);
+	const FVector West = FVector::CrossProduct(Pole, Meridian);
+	const float Hour = FMath::DegreesToRadians(HourAngleDegrees);
+	const float Declination = FMath::DegreesToRadians(DeclinationDegrees);
+	return (Meridian * FMath::Cos(Hour) + West * FMath::Sin(Hour)) * FMath::Cos(Declination) + Pole * FMath::Sin(Declination);
+}
+
+float USWGTerrainSubsystem::RampFractionForHourAngle(float HourAngle)
+{
+	// The ramps and gradient sky are authored on their own clock: sunrise
+	// at column 16, noon 64, sunset 128, so the night half is the wide one.
+	// Sample them by where the sun is, not the raw day fraction.
+	if (HourAngle < 0.0f)
+	{
+		return FMath::Lerp(0.0625f, 0.25f, (HourAngle + 90.0f) / 90.0f);
+	}
+	if (HourAngle <= 90.0f)
+	{
+		return FMath::Lerp(0.25f, 0.5f, HourAngle / 90.0f);
+	}
+	return FMath::Frac(FMath::Lerp(0.5f, 1.0625f, (HourAngle - 90.0f) / 180.0f));
+}
+
+FVector USWGTerrainSubsystem::OffsetSkyDirection(const FVector& Base, float YawDegrees, float PitchDegrees)
+{
+	// SSUN/SMOO/CELS-moon offsets are azimuth and elevation from the body
+	// they follow (Tatooine's second sun: 10 up, 18 to the north at dawn).
+	const float Azimuth = FMath::RadiansToDegrees(FMath::Atan2(Base.Y, Base.X));
+	const float Elevation = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(Base.Z, -1.0f, 1.0f)));
+	return FRotator(Elevation + PitchDegrees, Azimuth + YawDegrees, 0.0f).Vector();
+}
+
+void USWGTerrainSubsystem::ApplyTimeOfDay(float DayFraction, bool bLog)
+{
+	// Retail's sky is one rotating celestial sphere: the sun sits on its
+	// equator and everything else (second sun, moons) at a fixed offset from
+	// it, so they all track the same arc — the hour angle turns with the day
+	// (noon at 0.25, sunset 0.5, midnight 0.75, sunrise 1.0) about a polar
+	// axis tilted by swg.SkyLatitude. Sunrise is in the east (UE +Y).
+	const float HourAngle = HourAngleForDayFraction(DayFraction);
+	const float RampFraction = RampFractionForHourAngle(HourAngle);
+	const FLinearColor AmbientColor = bHasColorRamp ? ColorRamp.Sample(FSWGColorRamp::Ambient, RampFraction) : FLinearColor(0.35f, 0.35f, 0.4f);
+	const FLinearColor SunColor = bHasColorRamp ? ColorRamp.Sample(FSWGColorRamp::SunDiffuse, RampFraction) : FLinearColor::White;
+	const FLinearColor FogColor = bHasColorRamp ? ColorRamp.Sample(FSWGColorRamp::Fog, RampFraction) : FLinearColor(0.60f, 0.72f, 0.78f);
+	const FVector SunDirection = CelestialDirection(HourAngle, 0.0f, 0.0f);
+	const float TrueSunElevation = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(SunDirection.Z, -1.0f, 1.0f)));
+	const bool bDaytime = TrueSunElevation > 0.0f;
+	// The light itself never drops below a low angle: at night it stands in for the moon.
+	const float SunElevation = FMath::Max(5.0f, TrueSunElevation);
+	// The light travels away from the sun, so its yaw is the opposite of the sun's.
+	const float SunYaw = FMath::RadiansToDegrees(FMath::Atan2(-SunDirection.Y, -SunDirection.X));
+	const float SunStrength = FMath::Max3(SunColor.R, SunColor.G, SunColor.B);
+
+	if (IsValid(SunLight))
+	{
+		SunLight->SetActorRotation(FRotator(-SunElevation, SunYaw, 0.0f));
+		UDirectionalLightComponent* SunComponent = SunLight->GetComponent();
+		SunComponent->SetLightColor(SunStrength > 0.0f ? SunColor / SunStrength : FLinearColor::White);
+		SunComponent->SetIntensity(3.0f * FMath::Max(SunStrength, 0.05f) * CVarSunIntensity.GetValueOnGameThread());
+	}
+	if (IsValid(AmbientLight))
+	{
+		// Tinted by the ramp's ambient; the captured sky supplies the shape.
+		USkyLightComponent* SkyLightComponent = AmbientLight->GetLightComponent();
+		SkyLightComponent->SetLightColor(AmbientColor);
+		// The ramp's night ambient is dim on its own; retail nights stay readable.
+		const float NightWeight = 1.0f - FMath::Clamp(SunStrength * 3.0f, 0.0f, 1.0f);
+		SkyLightComponent->SetIntensity(CVarAmbientIntensity.GetValueOnGameThread() * FMath::Lerp(1.0f, CVarNightAmbientBoost.GetValueOnGameThread(), NightWeight));
+		SkyLightComponent->SetLowerHemisphereColor(AmbientColor);
+	}
+	if (IsValid(HeightFog))
+	{
+		HeightFog->GetComponent()->SetFogInscatteringColor(FogColor);
+	}
+	if (IsValid(SkyDomeMaterial))
+	{
+		SkyDomeMaterial->SetScalarParameterValue(TEXT("DayFraction"), RampFraction);
+	}
+	if (IsValid(StarDome))
+	{
+		StarDome->SetWorldRotation(FQuat(CelestialPole(), FMath::DegreesToRadians(-HourAngle)));
+	}
+	if (IsValid(StarFieldMaterial))
+	{
+		// Stars come out as the sun drops below the horizon and are full a few degrees under it.
+		const float SunBelowHorizon = -TrueSunElevation;
+		StarFieldMaterial->SetScalarParameterValue(TEXT("Intensity"), FMath::Clamp((SunBelowHorizon + 2.0f) / 8.0f, 0.0f, 1.0f) * CVarStarIntensity.GetValueOnGameThread());
+	}
+
+	// Celestial sprites sit a fixed distance from the camera (inside the
+	// dome) and face it. Suns follow the true day arc — below the horizon at
+	// night even though the light itself is floored; moons ride the opposite
+	// arc; props (star destroyers, planets) are pinned at their azimuth and
+	// elevation. Glows brighten as the view lines up with them, standing in
+	// for retail's lens flare.
+	const UWorld* World = GetWorld();
+	const APlayerCameraManager* Camera = World ? UGameplayStatics::GetPlayerCameraManager(World, 0) : nullptr;
+	const FVector CameraLocation = Camera ? Camera->GetCameraLocation() : FVector::ZeroVector;
+	const FVector ViewDirection = Camera ? Camera->GetCameraRotation().Vector() : FVector::ForwardVector;
+	if (!CelestialSprites.IsEmpty())
+	{
+		constexpr float SpriteDistance = 6.0e6f;
+		const float CelestialYawOffset = CVarCelestialYawOffset.GetValueOnGameThread();
+		const float MoonOffset = CVarMoonHourOffset.GetValueOnGameThread();
+		for (const FSWGCelestialSprite& Celestial : CelestialSprites)
+		{
+			FVector Direction;
+			switch (Celestial.Kind)
+			{
+				case ESWGCelestialKind::Sun:
+					Direction = OffsetSkyDirection(SunDirection, Celestial.YawDegrees, Celestial.PitchDegrees);
+					break;
+				case ESWGCelestialKind::Moon:
+					// On the sun's track at swg.MoonHourOffset behind it; companions offset from it.
+					Direction = OffsetSkyDirection(CelestialDirection(HourAngle + MoonOffset, 0.0f, 0.0f), Celestial.YawDegrees, Celestial.PitchDegrees);
+					break;
+				default:
+					Direction = FRotator(Celestial.PitchDegrees, Celestial.YawDegrees + CelestialYawOffset, 0.0f).Vector();
+					break;
+			}
+			// Moons wash out once the sun is a few degrees up (retail's small moon
+			// is still there at dawn, gone shortly after).
+			const bool bDaylightHidesIt = Celestial.Kind == ESWGCelestialKind::Moon && TrueSunElevation > CVarMoonHideSunElevation.GetValueOnGameThread();
+			const bool bVisible = Direction.Z > -0.05f && !bDaylightHidesIt;
+			const float SpriteScale = Celestial.Kind == ESWGCelestialKind::Sun ? CVarSunSpriteScale.GetValueOnGameThread()
+				: Celestial.Kind == ESWGCelestialKind::Moon ? CVarMoonSpriteScale.GetValueOnGameThread()
+				: CVarPropSpriteScale.GetValueOnGameThread();
+			const FVector Location = CameraLocation + Direction * SpriteDistance;
+			// Image-up stays sky-up, then the authored roll about the view axis.
+			const FQuat FacingQuat = FRotationMatrix::MakeFromZY(-Direction, FVector::UpVector).ToQuat()
+				* FQuat(FVector::ZAxisVector, FMath::DegreesToRadians(Celestial.RollDegrees + CVarCelestialSpriteRoll.GetValueOnGameThread()));
+			const FRotator Facing = FacingQuat.Rotator();
+			auto Place = [&](UStaticMeshComponent* Sprite, float Size)
+				{
+					if (!IsValid(Sprite)) return;
+					// The engine plane is 100 cm; Size is the sprite's width as a fraction of its distance.
+					const float Scale = SpriteDistance * Size * SpriteScale / 100.0f;
+					// The sprite textures load with V flipped like the gradient sky
+					// (swg.SkyFlipV), so the plane is mirrored vertically to compensate.
+					const float Mirror = CVarCelestialSpriteMirror.GetValueOnGameThread() ? -1.0f : 1.0f;
+					Sprite->SetWorldTransform(FTransform(Facing, Location, FVector(Scale, Scale * Mirror, Scale)));
+					Sprite->SetVisibility(bVisible);
+				};
+			Place(Celestial.Glow, Celestial.GlowSize);
+			Place(Celestial.Disc, Celestial.Size);
+			// Retail draws the disc and its ray glow flat — no flare when looked at.
+			if (Celestial.Kind == ESWGCelestialKind::Sun)
+			{
+				if (IsValid(Celestial.DiscMaterial))
+				{
+					Celestial.DiscMaterial->SetScalarParameterValue(TEXT("Intensity"), CVarSunDiscIntensity.GetValueOnGameThread());
+				}
+				if (IsValid(Celestial.GlowMaterial))
+				{
+					Celestial.GlowMaterial->SetScalarParameterValue(TEXT("Intensity"), CVarSunGlowIntensity.GetValueOnGameThread());
+				}
+			}
+			else if (IsValid(Celestial.GlowMaterial))
+			{
+				Celestial.GlowMaterial->SetScalarParameterValue(TEXT("Intensity"), 1.0f);
+			}
+		}
+	}
+
+	// Clouds: keep the planes centred over the camera and lit by the ramp the
+	// way cloudlayer.eft lights them — cloudtile_*.sht MATL is ambient 0.153,
+	// diffuse 1.0, so they are pale by day and all but vanish at night.
+	const FLinearColor CloudTint = AmbientColor * 0.153f + SunColor;
+	for (int32 Index = 0; Index < CloudLayers.Num(); ++Index)
+	{
+		if (IsValid(CloudLayers[Index]))
+		{
+			const FVector Current = CloudLayers[Index]->GetComponentLocation();
+			CloudLayers[Index]->SetWorldLocation(FVector(CameraLocation.X, CameraLocation.Y, Current.Z));
+		}
+		if (CloudMaterials.IsValidIndex(Index) && IsValid(CloudMaterials[Index]))
+		{
+			CloudMaterials[Index]->SetVectorParameterValue(TEXT("Tint"), CloudTint);
+		}
+	}
+
+	if (bLog)
+	{
+		UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: lighting at day %.3f from %s — ambient (%.2f, %.2f, %.2f), sun (%.2f, %.2f, %.2f) elevation %.0f, fog (%.2f, %.2f, %.2f)"),
+			DayFraction, bHasColorRamp ? TEXT("colour ramp") : TEXT("defaults (no ramp)"),
+			AmbientColor.R, AmbientColor.G, AmbientColor.B, SunColor.R, SunColor.G, SunColor.B, SunElevation, FogColor.R, FogColor.G, FogColor.B);
+	}
+}
+
+USWGTerrainSubsystem::FSWGPlanetEnvironment USWGTerrainSubsystem::LoadPlanetEnvironment(const FString& ZoneName) const
+{
+	FSWGPlanetEnvironment Result;
+	const FString TablePath = FString::Printf(TEXT("datatables/environment/%s.iff"), *ZoneName);
+	FSWGDataTableData Table;
+	if (!TreSubsystem || !TreSubsystem->FileExists(TablePath) || !FSWGDataTableReader::ReadDataTable(TreSubsystem->CreateIffReader(TablePath), Table))
+	{
+		UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: no environment table at %s"), *TablePath);
+		return Result;
+	}
+
+	// One row per (environment family, weather index). The planet-wide
+	// "global" family in clear weather (index 0) for now; per-region
+	// families come from the .trn's AENV affector, weather from the server.
+	const int32 FamilyColumn = Table.GetColumnIndex(TEXT("Environment Family Name"));
+	const int32 WeatherColumn = Table.GetColumnIndex(TEXT("Weather Index"));
+	const FSWGDataTableRow* Row = Table.Rows.FindByPredicate([&](const FSWGDataTableRow& Candidate)
+		{
+			return Candidate.Cells.IsValidIndex(FamilyColumn) && Candidate.Cells[FamilyColumn] == TEXT("global")
+				&& Candidate.Cells.IsValidIndex(WeatherColumn) && FCString::Atoi(*Candidate.Cells[WeatherColumn]) == 0;
+		});
+	if (!Row)
+	{
+		Row = Table.Rows.Num() > 0 ? &Table.Rows[0] : nullptr;
+	}
+	if (!Row)
+	{
+		return Result;
+	}
+
+	auto Cell = [&](const TCHAR* Column) -> FString
+		{
+			const int32 Index = Table.GetColumnIndex(Column);
+			return Row->Cells.IsValidIndex(Index) ? Row->Cells[Index] : FString();
+		};
+	Result.bValid = true;
+	Result.GradientSkyTexture = Cell(TEXT("Gradient Sky Texture (256x256 dds)")).Replace(TEXT("\\"), TEXT("/"));
+	Result.ColorRampPath = Cell(TEXT("Lighting Color Ramps (256x8 tga)")).Replace(TEXT("\\"), TEXT("/"));
+	Result.bFogEnabled = FCString::Atoi(*Cell(TEXT("Fog Enabled"))) != 0;
+	Result.MinFogDensity = FCString::Atof(*Cell(TEXT("Minimum Fog Density")));
+	Result.MaxFogDensity = FCString::Atof(*Cell(TEXT("Maximum Fog Density")));
+	Result.DayEnvironmentMap = Cell(TEXT("Day Environment Map (dds)")).Replace(TEXT("\\"), TEXT("/"));
+	Result.NightEnvironmentMap = Cell(TEXT("Night Environment Map (dds)")).Replace(TEXT("\\"), TEXT("/"));
+	Result.CloudTopShader = Cell(TEXT("Cloud Layer Top Shader (sht)")).Replace(TEXT("\\"), TEXT("/"));
+	Result.CloudTopShaderSize = FCString::Atof(*Cell(TEXT("Cloud Layer Top Shader Size")));
+	Result.CloudTopSpeed = FCString::Atof(*Cell(TEXT("Cloud Layer Top Speed")));
+	Result.CloudBottomShader = Cell(TEXT("Cloud Layer Bottom Shader (sht)")).Replace(TEXT("\\"), TEXT("/"));
+	Result.CloudBottomShaderSize = FCString::Atof(*Cell(TEXT("Cloud Layer Bottom Shader Size")));
+	Result.CloudBottomSpeed = FCString::Atof(*Cell(TEXT("Cloud Layer Bottom Speed")));
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: environment '%s' — sky %s, ramp %s, fog %s %.4f..%.4f, clouds %s"),
+		*ZoneName, *Result.GradientSkyTexture, *Result.ColorRampPath, Result.bFogEnabled ? TEXT("on") : TEXT("off"), Result.MinFogDensity, Result.MaxFogDensity, *Result.CloudTopShader);
+	return Result;
+}
+
+TArray<USWGTerrainSubsystem::FSWGCelestialDefinition> USWGTerrainSubsystem::LoadPlanetCelestials(const FString& ZoneName) const
+{
+	// FORM ENVM > FORM 0000 > chunks — see FSWGCelestialDefinition for the layout.
+	TArray<FSWGCelestialDefinition> Celestials;
+	const FString Path = FString::Printf(TEXT("terrain/environment/%s.iff"), *ZoneName);
+	if (!TreSubsystem || !TreSubsystem->FileExists(Path))
+	{
+		return Celestials;
+	}
+	const FSWGIffReader Reader = TreSubsystem->CreateIffReader(Path);
+	FSWGIffChunk EnvmForm;
+	if (!Reader.IsValid() || !Reader.FindForm(SWG_IFF_TAG('E','N','V','M'), EnvmForm))
+	{
+		return Celestials;
+	}
+	const TArray<FSWGIffChunk> Versions = Reader.FindChildForms(EnvmForm);
+	if (Versions.IsEmpty())
+	{
+		return Celestials;
+	}
+
+	for (const FSWGIffChunk& Chunk : Reader.ReadChildren(Versions[0]))
+	{
+		if (Chunk.IsForm())
+		{
+			continue;
+		}
+		const bool bSun = Chunk.Tag == SWG_IFF_TAG('S','U','N',' ');
+		const bool bSecondSun = Chunk.Tag == SWG_IFF_TAG('S','S','U','N');
+		const bool bMoon = Chunk.Tag == SWG_IFF_TAG('M','O','O','N');
+		const bool bSecondMoon = Chunk.Tag == SWG_IFF_TAG('S','M','O','O');
+		const bool bFixed = Chunk.Tag == SWG_IFF_TAG('C','E','L','S');
+		if (!bSun && !bSecondSun && !bMoon && !bSecondMoon && !bFixed)
+		{
+			continue;
+		}
+		const uint8* Data = Reader.GetChunkData(Chunk);
+		const int32 Size = Reader.GetChunkSize(Chunk);
+		int32 Offset = 0;
+		auto ReadString = [&]() -> FString
+			{
+				const int32 Start = Offset;
+				while (Offset < Size && Data[Offset] != 0) { ++Offset; }
+				FString Result = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + Start), Offset - Start);
+				++Offset;
+				return Result.Replace(TEXT("\\"), TEXT("/"));
+			};
+		auto ReadFloat = [&]() -> float
+			{
+				if (Offset + 4 > Size) { return 0.0f; }
+				float Value;
+				FMemory::Memcpy(&Value, Data + Offset, 4);
+				Offset += 4;
+				return Value;
+			};
+
+		FSWGCelestialDefinition Celestial;
+		Celestial.Kind = (bSun || bSecondSun) ? ESWGCelestialKind::Sun : (bMoon || bSecondMoon) ? ESWGCelestialKind::Moon : ESWGCelestialKind::Fixed;
+		Celestial.Shader = ReadString();
+		Celestial.Size = ReadFloat();
+		Celestial.GlowShader = ReadString();
+		Celestial.GlowSize = ReadFloat();
+		if (bSecondSun || bSecondMoon || bFixed)
+		{
+			Celestial.YawDegrees = ReadFloat();
+			Celestial.PitchDegrees = ReadFloat();
+		}
+		if (bFixed)
+		{
+			// The flag is 1/-1 on the moon-textured props and 0 on the ships; in
+			// retail all of them stay put (Tatooine's small moon sits under its
+			// star destroyers at azimuth 0 all night), so it is not an orbit flag.
+			Celestial.OrbitFlag = ReadFloat();
+			Celestial.RollDegrees = ReadFloat();
+		}
+		Celestials.Add(MoveTemp(Celestial));
+	}
+	return Celestials;
+}
+
+UStaticMeshComponent* USWGTerrainSubsystem::CreateSkySprite(const FString& ShaderName, bool bAdditive)
+{
+	UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+	UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, bAdditive
+		? TEXT("/Game/SWGEmu/Materials/M_SWGSkySprite.M_SWGSkySprite")
+		: TEXT("/Game/SWGEmu/Materials/M_SWGSkySpriteAlpha.M_SWGSkySpriteAlpha"));
+	if (!IsValid(SkyActor) || !Plane || !Parent)
+	{
+		return nullptr;
+	}
+
+	UStaticMeshComponent* Sprite = NewObject<UStaticMeshComponent>(SkyActor);
+	Sprite->SetupAttachment(SkyActor->GetRootComponent());
+	Sprite->SetStaticMesh(Plane);
+	Sprite->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Sprite->SetCastShadow(false);
+	Sprite->bAffectDistanceFieldLighting = false;
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Parent, this);
+	if (UTexture2D* Texture = GetOrLoadShaderTexture(FPaths::GetBaseFilename(ShaderName), false))
+	{
+		MID->SetTextureParameterValue(TEXT("Diffuse"), Texture);
+	}
+	Sprite->SetMaterial(0, MID);
+	Sprite->RegisterComponent();
+	return Sprite;
+}
+
+void USWGTerrainSubsystem::SpawnCelestialSprites(const TArray<FSWGCelestialDefinition>& Celestials)
+{
+	for (const FSWGCelestialDefinition& Celestial : Celestials)
+	{
+		FSWGCelestialSprite Sprite;
+		Sprite.Kind = Celestial.Kind;
+		// Suns and their glows add light; moons and props are alpha cutouts.
+		const bool bAdditive = Celestial.Kind == ESWGCelestialKind::Sun;
+		Sprite.Glow = Celestial.GlowShader.IsEmpty() ? nullptr : CreateSkySprite(Celestial.GlowShader, true);
+		Sprite.GlowMaterial = Sprite.Glow ? Cast<UMaterialInstanceDynamic>(Sprite.Glow->GetMaterial(0)) : nullptr;
+		Sprite.Disc = CreateSkySprite(Celestial.Shader, bAdditive);
+		Sprite.DiscMaterial = Sprite.Disc ? Cast<UMaterialInstanceDynamic>(Sprite.Disc->GetMaterial(0)) : nullptr;
+		Sprite.Size = Celestial.Size;
+		Sprite.GlowSize = Celestial.GlowSize;
+		Sprite.YawDegrees = Celestial.YawDegrees;
+		Sprite.PitchDegrees = Celestial.PitchDegrees;
+		Sprite.RollDegrees = Celestial.RollDegrees;
+		if (Sprite.Disc || Sprite.Glow)
+		{
+			CelestialSprites.Add(Sprite);
+		}
+	}
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %d celestial sprite(s) in the sky"), CelestialSprites.Num());
+}
+
+void USWGTerrainSubsystem::SpawnCloudLayers()
+{
+	UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+	UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGCloudLayer.M_SWGCloudLayer"));
+	if (!IsValid(SkyActor) || !Plane || !Parent)
+	{
+		return;
+	}
+
+	struct FLayer { const FString* Shader; float Size; float Speed; float AltitudeMetres; };
+	const FLayer Layers[] = {
+		{ &Environment.CloudBottomShader, Environment.CloudBottomShaderSize, Environment.CloudBottomSpeed, 900.0f },
+		{ &Environment.CloudTopShader, Environment.CloudTopShaderSize, Environment.CloudTopSpeed, 1400.0f },
+	};
+	for (const FLayer& Layer : Layers)
+	{
+		if (Layer.Shader->IsEmpty())
+		{
+			continue;
+		}
+		UTexture2D* Texture = GetOrLoadShaderTexture(FPaths::GetBaseFilename(*Layer.Shader), false);
+		if (!Texture)
+		{
+			continue;
+		}
+
+		// The plane follows the camera in XY (see ApplyTimeOfDay) so the
+		// world-space UVs make it look like the clouds are what's moving.
+		UStaticMeshComponent* Cloud = NewObject<UStaticMeshComponent>(SkyActor);
+		Cloud->SetupAttachment(SkyActor->GetRootComponent());
+		Cloud->SetStaticMesh(Plane);
+		Cloud->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Cloud->SetCastShadow(false);
+		Cloud->bAffectDistanceFieldLighting = false;
+		Cloud->SetWorldScale3D(FVector(CloudPlaneExtentMetres * 2.0f));
+		Cloud->SetWorldLocation(FVector(0.0f, 0.0f, SWGToUnrealSpace(Layer.AltitudeMetres)));
+		UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Parent, this);
+		MID->SetTextureParameterValue(TEXT("Diffuse"), Texture);
+		// The table's "shader size" is far smaller than one visible cloud
+		// repeat — retail projected it onto a dome — so it is scaled up here.
+		MID->SetScalarParameterValue(TEXT("TileSize"), SWGToUnrealSpace(FMath::Max(Layer.Size, 1.0f) * CVarCloudTileScale.GetValueOnGameThread()));
+		MID->SetScalarParameterValue(TEXT("Speed"), Layer.Speed);
+		MID->SetScalarParameterValue(TEXT("Opacity"), CVarCloudOpacity.GetValueOnGameThread());
+		Cloud->SetMaterial(0, MID);
+		Cloud->RegisterComponent();
+		CloudLayers.Add(Cloud);
+		CloudMaterials.Add(MID);
+	}
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %d cloud layer(s)"), CloudLayers.Num());
+}
+
+FString USWGTerrainSubsystem::LoadStarPalettePath(const FString& ZoneName) const
+{
+	const FString Path = FString::Printf(TEXT("terrain/environment/%s.iff"), *ZoneName);
+	if (!TreSubsystem || !TreSubsystem->FileExists(Path))
+	{
+		return FString();
+	}
+	const FSWGIffReader Reader = TreSubsystem->CreateIffReader(Path);
+	FSWGIffChunk EnvmForm;
+	if (!Reader.IsValid() || !Reader.FindForm(SWG_IFF_TAG('E','N','V','M'), EnvmForm))
+	{
+		return FString();
+	}
+	const TArray<FSWGIffChunk> Versions = Reader.FindChildForms(EnvmForm);
+	if (Versions.IsEmpty())
+	{
+		return FString();
+	}
+	for (const FSWGIffChunk& Chunk : Reader.ReadChildren(Versions[0]))
+	{
+		if (!Chunk.IsForm() && Chunk.Tag == SWG_IFF_TAG('S','T','A','R'))
+		{
+			// [palette path\0][float] — the float reads 0 on every planet.
+			const uint8* Data = Reader.GetChunkData(Chunk);
+			int32 Length = 0;
+			while (Length < Chunk.DataSize && Data[Length] != 0) { ++Length; }
+			return FString::ConstructFromPtrSize((const ANSICHAR*)Data, Length).Replace(TEXT("\\"), TEXT("/"));
+		}
+	}
+	return FString();
+}
+
+void USWGTerrainSubsystem::SpawnStarField(const FString& ZoneName)
+{
+	StarFieldMaterial = nullptr;
+	UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/EngineSky/SM_SkySphere.SM_SkySphere"));
+	UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGStarField.M_SWGStarField"));
+	if (!IsValid(SkyActor) || !SphereMesh || !Parent || !TreSubsystem)
+	{
+		return;
+	}
+
+	// Palette: an uncompressed 32-bit TGA, one row of star tints.
+	TArray<FColor> Palette;
+	const FString PalettePath = LoadStarPalettePath(ZoneName);
+	if (!PalettePath.IsEmpty() && TreSubsystem->FileExists(PalettePath))
+	{
+		const TArray<uint8> Bytes = TreSubsystem->ExtractFile(PalettePath);
+		if (Bytes.Num() > 18 && Bytes[2] == 2 && (Bytes[16] == 32 || Bytes[16] == 24))
+		{
+			const int32 Width = Bytes[12] | (Bytes[13] << 8);
+			const int32 BytesPerPixel = Bytes[16] / 8;
+			const int32 Start = 18 + Bytes[0];
+			for (int32 Index = 0; Index < Width && Start + (Index + 1) * BytesPerPixel <= Bytes.Num(); ++Index)
+			{
+				const uint8* Pixel = Bytes.GetData() + Start + Index * BytesPerPixel;
+				Palette.Add(FColor(Pixel[2], Pixel[1], Pixel[0], 255));
+			}
+		}
+	}
+	if (Palette.IsEmpty())
+	{
+		Palette.Add(FColor(200, 210, 255));
+	}
+
+	// Equirectangular star map: a few thousand points, brighter ones a
+	// little larger, tinted from the palette. Seeded by planet so the
+	// same sky comes back every visit.
+	constexpr int32 Width = 2048, Height = 1024, StarCount = 3500;
+	TArray<FColor> Pixels;
+	Pixels.Init(FColor::Black, Width * Height);
+	FRandomStream Random((int32)GetTypeHash(ZoneName));
+	for (int32 Star = 0; Star < StarCount; ++Star)
+	{
+		// Uniform on the sphere, so the poles don't crowd.
+		const float Longitude = Random.FRand();
+		const float Latitude = FMath::Acos(1.0f - 2.0f * Random.FRand()) / UE_PI;
+		const int32 X = FMath::Clamp((int32)(Longitude * Width), 0, Width - 1);
+		const int32 Y = FMath::Clamp((int32)(Latitude * Height), 0, Height - 1);
+		const FColor Tint = Palette[Random.RandRange(0, Palette.Num() - 1)];
+		const float Brightness = FMath::Pow(Random.FRand(), 3.0f);
+		const FColor Colour(
+			(uint8)(Tint.R * (0.35f + 0.65f * Brightness)),
+			(uint8)(Tint.G * (0.35f + 0.65f * Brightness)),
+			(uint8)(Tint.B * (0.35f + 0.65f * Brightness)), 255);
+		Pixels[Y * Width + X] = Colour;
+		if (Brightness > 0.6f)
+		{
+			// A small cross for the bright ones.
+			const FColor Halo(Colour.R / 2, Colour.G / 2, Colour.B / 2, 255);
+			if (X + 1 < Width) Pixels[Y * Width + X + 1] = Halo;
+			if (X > 0) Pixels[Y * Width + X - 1] = Halo;
+			if (Y + 1 < Height) Pixels[(Y + 1) * Width + X] = Halo;
+			if (Y > 0) Pixels[(Y - 1) * Width + X] = Halo;
+		}
+	}
+
+	UTexture2D* Texture = UTexture2D::CreateTransient(Width, Height, PF_B8G8R8A8, TEXT("SWGStarField"));
+	if (!Texture)
+	{
+		return;
+	}
+	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
+	void* Dest = Mip.BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memcpy(Dest, Pixels.GetData(), Pixels.Num() * sizeof(FColor));
+	Mip.BulkData.Unlock();
+	Texture->SRGB = true;
+	Texture->AddressX = TA_Wrap;
+	Texture->AddressY = TA_Clamp;
+	Texture->Filter = TF_Bilinear;
+	Texture->UpdateResource();
+
+	// Just inside the gradient dome so the stars draw over it.
+	UStaticMeshComponent* Dome = NewObject<UStaticMeshComponent>(SkyActor, TEXT("SWGStarDome"));
+	StarDome = Dome;
+	Dome->SetupAttachment(SkyActor->GetRootComponent());
+	Dome->SetStaticMesh(SphereMesh);
+	Dome->SetWorldScale3D(FVector(2400.0f));
+	Dome->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Dome->SetCastShadow(false);
+	Dome->bAffectDistanceFieldLighting = false;
+	StarFieldMaterial = UMaterialInstanceDynamic::Create(Parent, this);
+	StarFieldMaterial->SetTextureParameterValue(TEXT("Stars"), Texture);
+	StarFieldMaterial->SetScalarParameterValue(TEXT("Intensity"), 0.0f);
+	Dome->SetMaterial(0, StarFieldMaterial);
+	Dome->RegisterComponent();
+	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: star field from %s (%d tints)"), *PalettePath, Palette.Num());
+}
+
+UTexture2D* USWGTerrainSubsystem::LoadGradientSkyTexture(const FString& VirtualPath) const
+{
+	// The gradient skies are plain uncompressed 24-bit DDS files, which the
+	// engine's DDS parser has no pixel format for — small enough to expand to
+	// BGRA by hand. Header: height @12, width @16, bit count @88, data @128.
+	if (!TreSubsystem || !TreSubsystem->FileExists(VirtualPath))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: gradient sky %s not found"), *VirtualPath);
+		return nullptr;
+	}
+	const TArray<uint8> Bytes = TreSubsystem->ExtractFile(VirtualPath);
+	auto ReadU32 = [&Bytes](int32 Offset) -> uint32 { return Bytes[Offset] | (Bytes[Offset + 1] << 8) | (Bytes[Offset + 2] << 16) | (Bytes[Offset + 3] << 24); };
+	if (Bytes.Num() < 128 || ReadU32(0) != 0x20534444)
+	{
+		return nullptr;
+	}
+	const int32 Height = ReadU32(12);
+	const int32 Width = ReadU32(16);
+	const int32 BitCount = ReadU32(88);
+	const int32 BytesPerPixel = BitCount / 8;
+	if (Width <= 0 || Height <= 0 || (BitCount != 24 && BitCount != 32) || Bytes.Num() < 128 + Width * Height * BytesPerPixel)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: gradient sky %s is %dx%d @ %d bpp — expected uncompressed 24/32-bit"), *VirtualPath, Width, Height, BitCount);
+		return nullptr;
+	}
+
+	UTexture2D* Texture = UTexture2D::CreateTransient(Width, Height, PF_B8G8R8A8, FName(*VirtualPath));
+	if (!Texture)
+	{
+		return nullptr;
+	}
+	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
+	uint8* Dest = static_cast<uint8*>(Mip.BulkData.Lock(LOCK_READ_WRITE));
+	const uint8* Source = Bytes.GetData() + 128;
+	for (int32 Pixel = 0; Pixel < Width * Height; ++Pixel)
+	{
+		Dest[Pixel * 4 + 0] = Source[Pixel * BytesPerPixel + 0];
+		Dest[Pixel * 4 + 1] = Source[Pixel * BytesPerPixel + 1];
+		Dest[Pixel * 4 + 2] = Source[Pixel * BytesPerPixel + 2];
+		Dest[Pixel * 4 + 3] = 255;
+	}
+	Mip.BulkData.Unlock();
+	Texture->SRGB = true;
+	// U is the day cycle (wraps); V is elevation (clamps at the horizon and zenith).
+	Texture->AddressX = TA_Wrap;
+	Texture->AddressY = TA_Clamp;
+	Texture->Filter = TF_Bilinear;
+	Texture->UpdateResource();
+	return Texture;
 }
 
 bool USWGTerrainSubsystem::LoadPlanetColorRamp(const FString& ZoneName, FSWGColorRamp& OutRamp) const
@@ -594,18 +1430,17 @@ bool USWGTerrainSubsystem::LoadPlanetColorRamp(const FString& ZoneName, FSWGColo
 		return false;
 	}
 
-	// The .trn's EGRP names environments ("global", "mtns", "forests"...);
-	// each maps to terrain/colorramp/<planet>_<env>0.tga. Only the planet-wide
-	// "global" ramp is used for now — per-region environments (the AENV
-	// affector) would blend between them.
+	// The environment table names the ramp; the naming-convention guesses
+	// below only cover planets without a table.
 	const TArray<FString> Candidates = {
+		Environment.ColorRampPath,
 		FString::Printf(TEXT("terrain/colorramp/%s_global0.tga"), *ZoneName),
 		FString::Printf(TEXT("terrain/colorramp/%s_%s_global0.tga"), *ZoneName, *ZoneName),
 		TEXT("terrain/colorramp/09_default0.tga"),
 	};
 	for (const FString& Path : Candidates)
 	{
-		if (TreSubsystem->FileExists(Path) && FSWGColorRampReader::ReadTga(TreSubsystem->ExtractFile(Path), OutRamp))
+		if (!Path.IsEmpty() && TreSubsystem->FileExists(Path) && FSWGColorRampReader::ReadTga(TreSubsystem->ExtractFile(Path), OutRamp))
 		{
 			UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: using colour ramp %s"), *Path);
 			return true;

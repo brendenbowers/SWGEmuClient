@@ -1,4 +1,5 @@
 #include "Components/SWGEquipmentComponent.h"
+#include "Common/SWGLightingChannels.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Network/SWGPacket.h"
 #include "Customization/SWGCustomizationVariables.h"
@@ -366,6 +367,7 @@ void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkelet
 	if (!WearableComponent)
 	{
 		WearableComponent = NewObject<USkeletalMeshComponent>(GetOwner());
+		SWGSetInteriorLightingChannel(*WearableComponent, /*bAlsoWorld*/ true);
 		WearableComponent->SetRelativeTransform(FTransform::Identity);
 		WearableComponent->RegisterComponent();
 		WearableComponent->AttachToComponent(BodyMesh, FAttachmentTransformRules::KeepRelativeTransform);

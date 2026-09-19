@@ -11,6 +11,8 @@
 #include "TRE/SWGDoorStyleRow.h"
 #include "Engine/DataTable.h"
 #include "Components/PointLightComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Common/SWGLightingChannels.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
 #include "Engine/StaticMesh.h"
@@ -19,9 +21,127 @@
 #include "Subsystems/SWGInteriorStreamingSubsystem.h"
 #include "Common/SWGWorldScale.h"
 #include "Objects/SWGNetworkObjectInterface.h"
+#include "Async/Async.h"
 
 namespace
 {
+	/**
+	 * A mesh request that fails resolves its promise on the worker thread,
+	 * and TFuture::Next runs inline there — the actor work these
+	 * continuations do (Destroy, attach, components) is game-thread only.
+	 */
+	TFunction<void(const FSWGMeshGenerationResult&)> OnGameThread(TFunction<void(const FSWGMeshGenerationResult&)> Continuation)
+	{
+		return [Continuation = MoveTemp(Continuation)](const FSWGMeshGenerationResult& Result)
+			{
+				if (IsInGameThread())
+				{
+					Continuation(Result);
+					return;
+				}
+				AsyncTask(ENamedThreads::GameThread, [Continuation, Result]()
+					{
+						Continuation(Result);
+					});
+			};
+	}
+
+	// One unit of POB light colour in the scene's exposure, before the live
+	// swg.RoomLightScale multiplier ASWGCell applies (retail saturates its
+	// vertex lighting, so the authored sum reads darker than a linear one).
+	constexpr float RoomLightScale = 1.0f;
+
+	// Point lights in the POB fall off as 1/(linear*d), d in metres. Inverse
+	// square matched at this distance: I = colour * PointMatchDistance^2 /
+	// (linear * PointMatchDistance), in candela once scaled.
+	constexpr float PointMatchDistanceMetres = 2.0f;
+	constexpr float PointRadiusPerUnitColour = 800.0f; // cm of reach per unit of colour, before clamping
+	constexpr float PointRadiusMin = 500.0f;
+	constexpr float PointRadiusMax = 2500.0f;
+
+	// UE has no per-room ambient. A shadowless, near-constant point light at
+	// the room's centre is the nearest thing: walls, floor and ceiling all
+	// face the middle of the room, so N.L is close to 1 where it matters.
+	constexpr float AmbientFalloffExponent = 0.5f;
+	constexpr float AmbientBoost = 1.0f;
+
+	/**
+	 * The room's lights as the POB authored them (Sheet 00 §00.6). The LGHT
+	 * colour is already multiplied through: (3.0; 3.0, 2.94, 2.44) is
+	 * (1, 0.98, 0.81) at intensity 3, so alpha is ignored. Everything lands
+	 * on channel 1, off until ASWGBuilding turns the player's room on.
+	 */
+	void BuildRoomLights(ASWGCell* CellActor, const FSWGPobCell& CellData)
+	{
+		USceneComponent* Root = CellActor ? CellActor->GetRootComponent() : nullptr;
+		if (!Root)
+		{
+			return;
+		}
+
+		FVector BoundsCenter, BoundsExtent;
+		CellActor->GetActorBounds(false, BoundsCenter, BoundsExtent);
+		const float CircumRadius = FMath::Max(BoundsExtent.Size(), 300.0f);
+
+		for (const FSWGPobLight& LightData : CellData.Lights)
+		{
+			const float Strength = FMath::Max3(LightData.DiffuseColor.R, LightData.DiffuseColor.G, LightData.DiffuseColor.B);
+			if (Strength <= KINDA_SMALL_NUMBER)
+			{
+				continue;
+			}
+			const FLinearColor Colour = FLinearColor(LightData.DiffuseColor.R, LightData.DiffuseColor.G, LightData.DiffuseColor.B) / Strength;
+
+			ULightComponent* Light = nullptr;
+			switch (LightData.Type)
+			{
+			case ESWGPobLightType::Parallel:
+			{
+				UDirectionalLightComponent* Directional = NewObject<UDirectionalLightComponent>(CellActor);
+				Directional->SetIntensity(RoomLightScale * Strength);
+				Directional->SetAtmosphereSunLight(false);
+				// Light travels along the POB frame's forward, which the reader
+				// maps to UE +X — a directional light's own emit axis.
+				Directional->SetRelativeRotation(LightData.Transform.GetRotation());
+				Light = Directional;
+				break;
+			}
+			case ESWGPobLightType::Point:
+			{
+				UPointLightComponent* Point = NewObject<UPointLightComponent>(CellActor);
+				const float Linear = FMath::Max(LightData.LinearAttenuation, KINDA_SMALL_NUMBER);
+				Point->SetIntensityUnits(ELightUnits::Candelas);
+				Point->SetIntensity(RoomLightScale * Strength * PointMatchDistanceMetres / Linear);
+				Point->SetAttenuationRadius(FMath::Clamp(Strength * PointRadiusPerUnitColour / Linear, PointRadiusMin, PointRadiusMax));
+				Point->SetRelativeLocation(LightData.Transform.GetLocation());
+				Light = Point;
+				break;
+			}
+			case ESWGPobLightType::Ambient:
+			{
+				UPointLightComponent* Ambient = NewObject<UPointLightComponent>(CellActor);
+				Ambient->bUseInverseSquaredFalloff = false;
+				Ambient->LightFalloffExponent = AmbientFalloffExponent;
+				Ambient->SetIntensity(RoomLightScale * Strength * AmbientBoost);
+				Ambient->SetAttenuationRadius(CircumRadius * 2.0f);
+				Ambient->SetRelativeLocation(Root->GetComponentTransform().InverseTransformPosition(BoundsCenter));
+				Light = Ambient;
+				break;
+			}
+			default:
+				continue;
+			}
+
+			Light->SetLightColor(Colour);
+			Light->SetCastShadows(false);
+			Light->SetVisibility(false);
+			SWGSetInteriorLightingChannel(*Light);
+			Light->SetupAttachment(Root);
+			Light->RegisterComponent();
+			CellActor->AddRoomLight(Light);
+		}
+	}
+
 	// How far below the building origin a floor must sit before its terrain is
 	// cut, in raw units. Rooms at entrance height keep theirs — a hole there is
 	// only somewhere to fall through until the cell's floor collision arrives.
@@ -421,42 +541,34 @@ namespace
 			return;
 		}
 
-		// Salted: the saved SM_Collision_* asset is the cache, and the floor
-		// mesh now carries its wall barriers too.
-		const uint32 CacheHash = HashCombine(GetTypeHash(CellData.CollisionFloorPath), GetTypeHash(FString(TEXT("barriers-1"))));
+		// Two colliders, salted separately (the saved SM_Collision_* asset is
+		// the cache). The floor is one-sided: a doorway's raised sill is a
+		// step, and a capsule already nosing under its edge has to be able to
+		// step up through it rather than be caught from below. The barriers
+		// along every uncrossable edge are walls with no winding to trust and
+		// stay double-sided. Portal edges are crossable and get none — the
+		// doorway stays open.
+		TArray<int32> FloorIndices;
+		FSWGFloorReader::AppendFloorTriangles(FloorData, FloorIndices);
+		const uint32 FloorHash = HashCombine(GetTypeHash(CellData.CollisionFloorPath), GetTypeHash(FString(TEXT("floor-onesided-2"))));
+		UStaticMeshComponent* FloorCollisionComp = MeshGeneratorSubsystem->AddCollisionMeshComponent(*Actor, *Actor->GetRootComponent(), FloorHash,
+			CellData.CollisionFloorPath, FloorData.Vertices, FloorIndices, /*bDoubleSided*/ false);
 
-		TArray<FVector> FloorVertices = FloorData.Vertices;
-		TArray<int32> FlatIndices;
-		FlatIndices.Reserve(FloorData.Triangles.Num() * 3);
-		for (const FSWGFloorTriangle& Tri : FloorData.Triangles)
+		TArray<FVector> BarrierVertices;
+		TArray<int32> BarrierIndices;
+		const int32 Barriers = FSWGFloorReader::AppendBarrierMesh(FloorData, FloorBarrierHeight, BarrierVertices, BarrierIndices);
+		if (Barriers > 0)
 		{
-			FlatIndices.Add(Tri.CornerIndex1);
-			FlatIndices.Add(Tri.CornerIndex2);
-			FlatIndices.Add(Tri.CornerIndex3);
+			const uint32 BarrierHash = HashCombine(GetTypeHash(CellData.CollisionFloorPath), GetTypeHash(FString(TEXT("barriers-2"))));
+			MeshGeneratorSubsystem->AddCollisionMeshComponent(*Actor, *Actor->GetRootComponent(), BarrierHash,
+				CellData.CollisionFloorPath + TEXT(" [barriers]"), BarrierVertices, BarrierIndices);
 		}
-
-		// The room's walls: the floor stops at them and flags the edge, so a
-		// barrier along every uncrossable edge is what keeps a player inside.
-		// Portal edges are crossable and get none — the doorway stays open.
-		const int32 Barriers = FSWGFloorReader::AppendBarrierMesh(FloorData, FloorBarrierHeight, FloorVertices, FlatIndices);
-		UE_LOG(LogTemp, Log, TEXT("CreateCollisionForCell: cell %d '%s' floor %s — %d tri(s), %d wall barrier(s)"),
-			CellData.CellIndex, *CellData.CellName, *CellData.CollisionFloorPath, FloorData.Triangles.Num(), Barriers);
-
-		UStaticMesh* CollisionMesh = MeshGeneratorSubsystem->GetOrBuildGeneratedCollisionMesh(CacheHash, CellData.CollisionFloorPath, FloorVertices, FlatIndices);
-		if (!CollisionMesh)
+		UE_LOG(LogTemp, Log, TEXT("CreateCollisionForCell: cell %d '%s' floor %s — %d tri(s), %d wall barrier(s)%s"),
+			CellData.CellIndex, *CellData.CellName, *CellData.CollisionFloorPath, FloorData.Triangles.Num(), Barriers, FloorCollisionComp ? TEXT("") : TEXT(" — floor FAILED"));
+		if (!FloorCollisionComp)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("CreateCollisionForCell: failed to get/build cached collision mesh for cell %s floor %s"), *CellData.CellName, *CellData.CollisionFloorPath);
 			return;
 		}
-
-		UStaticMeshComponent* FloorCollisionComp = NewObject<UStaticMeshComponent>(Actor);
-		FloorCollisionComp->SetupAttachment(Actor->GetRootComponent());
-		FloorCollisionComp->SetStaticMesh(CollisionMesh);
-		FloorCollisionComp->SetVisibility(false);
-		FloorCollisionComp->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-		FloorCollisionComp->SetCollisionObjectType(ECC_WorldStatic);
-		FloorCollisionComp->SetCollisionResponseToAllChannels(ECR_Block);
-		FloorCollisionComp->RegisterComponent();
 
 		if (ASWGCell* CellActor = Cast<ASWGCell>(Actor))
 		{
@@ -520,12 +632,13 @@ void FSWGCellSpawnHandler::SpawnInteriorLayout(ASWGCell* CellActor, ASWGBuilding
 			continue;
 		}
 
-		AActor* Prop = World->SpawnActor<ASWGStaticProp>(ASWGStaticProp::StaticClass(), Node.Transform * CellTransform, SpawnParams);
+		ASWGStaticProp* Prop = World->SpawnActor<ASWGStaticProp>(ASWGStaticProp::StaticClass(), Node.Transform * CellTransform, SpawnParams);
 		if (!Prop)
 		{
 			continue;
 		}
 
+		Prop->bInteriorLighting = true;
 		CellActor->InteriorActors.Add(Prop);
 		MeshGeneratorSubsystem->RequestMeshForTemplatePath(Prop, Node.TemplatePath);
 	}
@@ -761,12 +874,18 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 
 	const FSWGPobCell& CellData = BuildingActor->PortalData.Cells[CellIndex];
 
+	UGameInstance* GameInstance = CellActor->GetWorld() ? CellActor->GetWorld()->GetGameInstance() : nullptr;
+	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+
 	// Every room waits for USWGInteriorStreamingSubsystem, which calls back
 	// through ASWGBuilding::LoadRoom with bForceInterior once the player is
 	// close enough (and, for a room visible from outside, looking this way).
-	if (!bForceInterior)
+	// Except the room the local player zoned in inside: streaming judges by
+	// the player's position, which isn't real until this cell is finished
+	// and USWGObjectGraphSubsystem::ApplyContainment can compose it.
+	const bool bHoldsLocalPlayer = ObjectGraph && ObjectGraph->IsLocalPlayerContainedIn(CellActor->GetObjectId());
+	if (!bForceInterior && !bHoldsLocalPlayer)
 	{
-		UGameInstance* GameInstance = CellActor->GetWorld() ? CellActor->GetWorld()->GetGameInstance() : nullptr;
 		USWGInteriorStreamingSubsystem* Streaming = GameInstance ? GameInstance->GetSubsystem<USWGInteriorStreamingSubsystem>() : nullptr;
 		if (Streaming && !Streaming->ShouldLoadRoom(*BuildingActor, CellIndex))
 		{
@@ -791,10 +910,16 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 	BuildingActor->Cells.Add(CellActor);
 	CellActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
 
+	// The cell now has a real transform: place whoever was waiting in it.
+	if (ObjectGraph)
+	{
+		ObjectGraph->NotifyCellFinished(CellActor->GetObjectId());
+	}
+
 	SpawnInteriorLayout(CellActor, BuildingActor, CellData, MeshGeneratorSubsystem);
 
 	TWeakObjectPtr<ASWGCell> CellActorWeakPtr = CellActor;
-	MeshGeneratorSubsystem->RequestMesh(CellActor, CellMeshPath).Next([CellActorWeakPtr, TreSubsystem, MeshGeneratorSubsystem](const FSWGMeshGenerationResult& Result)
+	MeshGeneratorSubsystem->RequestMesh(CellActor, CellMeshPath).Next(OnGameThread([CellActorWeakPtr, TreSubsystem, MeshGeneratorSubsystem](const FSWGMeshGenerationResult& Result)
 		{
 			if (!CellActorWeakPtr.IsValid())
 			{
@@ -826,38 +951,16 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 			// component
 			CellActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepWorldTransform);
 
-			for (int i = 0; i < CellData.Lights.Num(); ++i)
+			// The room's geometry is lit by its own lights only — see
+			// BuildRoomLights and SWGInteriorLightingChannel.
+			if (UPrimitiveComponent* RoomMesh = Cast<UPrimitiveComponent>(CellActor->GetRootComponent()))
 			{
-				FSWGPobLight& LightData = CellData.Lights[i];
-
-				ULightComponent* LightComp = nullptr;
-
-				if (LightData.Type == ESWGPobLightType::Point)
-				{
-					UPointLightComponent* PointLight = NewObject<UPointLightComponent>(CellActor);
-
-					FVector BoxCenter, BoxExtent;
-					CellActor->GetActorBounds(false, BoxCenter, BoxExtent);
-					const float CircumRadius = BoxExtent.Size();
-					const float LightToCenter = (LightData.Transform.GetLocation() - BoxCenter).Size();
-					const float AttenuationRadius = LightToCenter + CircumRadius;
-
-					PointLight->AttenuationRadius = AttenuationRadius;
-					LightComp = PointLight;
-				}
-				else
-				{
-					continue; // Skip non-point lights for now
-				}
-
-				LightComp->SetRelativeTransform(LightData.Transform);
-				LightComp->SetLightColor(LightData.DiffuseColor);
-				LightComp->RegisterComponent();
-				LightComp->AttachToComponent(CellActor->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
+				SWGSetInteriorLightingChannel(*RoomMesh, /*bAlsoWorld*/ false);
 			}
+			BuildRoomLights(CellActor, CellData);
 			CreateCollisionForCell(TreSubsystem, MeshGeneratorSubsystem, CellActor, CellData);
 			BuildingActor->RegisterCellTrigger(CellActor, CellData.CanSeeParent);
-		});
+		}));
 
 	SpawnCellDoors(BuildingActor, CellData.CellName, CellData.Portals, MeshGeneratorSubsystem);
 }
@@ -891,10 +994,31 @@ void FSWGCellSpawnHandler::SpawnCellDoors(ASWGBuilding* BuildingActor, const FSt
 			continue;
 		}
 
-		FString DoorMeshPath;
-		if (!MeshGeneratorSubsystem->ResolveLodMeshPath(TEXT("appearance/lod/") + PortalRef.DoorStyle + TEXT(".lod"), DoorMeshPath) || DoorMeshPath.IsEmpty())
+		// The style name is a row key, not an appearance name: cantina_door
+		// and door_cantina_up both draw appearance/cantina_door.apt, and no
+		// row's appearance sits under appearance/lod/.
+		const FSWGDoorStyleRow* StyleRow = nullptr;
+		if (TWeakObjectPtr<UDataTable> DoorStyleTable = GetDoorStyleTable(); DoorStyleTable.IsValid())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::SpawnCellDoors: portal %d has no usable mesh path for door style %s"), PortalRef.PortalNumber, *PortalRef.DoorStyle);
+			StyleRow = DoorStyleTable->FindRow<FSWGDoorStyleRow>(FName(*PortalRef.DoorStyle), TEXT("FSWGCellSpawnHandler::SpawnCellDoors"), false);
+		}
+		if (!StyleRow || StyleRow->DoorAppearance.IsEmpty())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::SpawnCellDoors: cell %s portal %d door style '%s' has no door_style.iff row or no doorAppearance"),
+				*CellName, PortalRef.PortalNumber, *PortalRef.DoorStyle);
+			continue;
+		}
+		if (!StyleRow->DoorAppearance2.IsEmpty())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::SpawnCellDoors: door style '%s' is a double door (%s) — second leaf not spawned yet"),
+				*PortalRef.DoorStyle, *StyleRow->DoorAppearance2);
+		}
+
+		FString DoorMeshPath;
+		if (!MeshGeneratorSubsystem->ResolveAppearanceStaticMeshPath(StyleRow->DoorAppearance, DoorMeshPath) || DoorMeshPath.IsEmpty())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::SpawnCellDoors: portal %d door style %s: appearance %s resolved to no mesh"),
+				PortalRef.PortalNumber, *PortalRef.DoorStyle, *StyleRow->DoorAppearance);
 			continue;
 		}
 
@@ -904,9 +1028,11 @@ void FSWGCellSpawnHandler::SpawnCellDoors(ASWGBuilding* BuildingActor, const FSt
 		DoorActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
 		DoorActor->SetActorRelativeTransform(PortalRef.DoorHardpoint);
 
+		// Copied: the table row pointer isn't guaranteed to outlive the request.
+		const FSWGDoorStyleRow StyleCopy = *StyleRow;
 		TWeakObjectPtr<ASWGDoor> DoorActorWeakPtr = DoorActor;
 		TWeakObjectPtr<ASWGBuilding> OwningBuilding = BuildingActor;
-		MeshGeneratorSubsystem->RequestMesh(DoorActor, DoorMeshPath).Next([DoorActorWeakPtr, PortalRef, OwningBuilding](const FSWGMeshGenerationResult& Result)
+		MeshGeneratorSubsystem->RequestMesh(DoorActor, DoorMeshPath).Next(OnGameThread([DoorActorWeakPtr, StyleCopy, OwningBuilding](const FSWGMeshGenerationResult& Result)
 			{
 				if (!DoorActorWeakPtr.IsValid() || !OwningBuilding.IsValid())
 				{
@@ -921,14 +1047,8 @@ void FSWGCellSpawnHandler::SpawnCellDoors(ASWGBuilding* BuildingActor, const FSt
 				}
 
 				DoorActorWeakPtr->AttachToActor(OwningBuilding.Get(), FAttachmentTransformRules::KeepWorldTransform);
-
-				const FSWGDoorStyleRow* StyleRow = nullptr;
-				if (TWeakObjectPtr<UDataTable> DoorStyleTable = FSWGCellSpawnHandler::GetDoorStyleTable(); DoorStyleTable.IsValid())
-				{
-					StyleRow = DoorStyleTable->FindRow<FSWGDoorStyleRow>(FName(*PortalRef.DoorStyle), TEXT("FSWGCellSpawnHandler::SpawnCellDoors"), false);
-				}
-				DoorActorWeakPtr->InitializeDoorStyle(StyleRow);
-			});
+				DoorActorWeakPtr->InitializeDoorStyle(&StyleCopy);
+			}));
 	}
 }
 

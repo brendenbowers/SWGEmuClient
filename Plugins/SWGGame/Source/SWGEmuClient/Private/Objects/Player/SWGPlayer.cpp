@@ -639,7 +639,12 @@ void ASWGPlayer::SendDataTransformUpdate()
 		return;
 	}
 
-	const FVector RawPosition = SWGToRawSpace(GetActorLocation());
+	// Feet, not the capsule centre: the wire Z is ground level everywhere
+	// (GroundedLocationFor adds the half height on the way in), and Core3
+	// bounces a cell change whose Z is more than 25 cm off the floor.
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	const FVector FeetLocation = GetActorLocation() - FVector(0.0f, 0.0f, Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 0.0f);
+	const FVector RawPosition = SWGToRawSpace(FeetLocation);
 	const FQuat RawDirection = SWGCharacterHeadingToNativeRotation(GetActorRotation());
 	const uint32 RawTimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
 	const int32 RawMoveCount = ++TransformMovementCounter;
@@ -665,7 +670,7 @@ void ASWGPlayer::SendDataTransformUpdate()
 	{
 		const ASWGBuilding* OwningBuilding = CurrentCell->OwningBuilding.Get();
 		const FVector BuildingLocalPosition = OwningBuilding
-			? SWGToRawSpace(OwningBuilding->GetActorTransform().InverseTransformPosition(GetActorLocation()))
+			? SWGToRawSpace(OwningBuilding->GetActorTransform().InverseTransformPosition(FeetLocation))
 			: RawPosition;
 
 		FDataTransformWithParent DTMessage(SWGObjectId);
@@ -731,6 +736,14 @@ ASWGCell* ASWGPlayer::ResolveCurrentCell() const
 		{
 			return Cell;
 		}
+	}
+
+	// Zoned in inside a room whose trigger hasn't been built yet: keep
+	// reporting relative to it rather than walk ourselves out of the building
+	// server-side. Once the trigger exists, the overlap above is the truth.
+	if (ASWGCell* Placed = PlacedInCell.Get(); Placed && !Placed->TriggerVolume)
+	{
+		return Placed;
 	}
 
 	return nullptr;

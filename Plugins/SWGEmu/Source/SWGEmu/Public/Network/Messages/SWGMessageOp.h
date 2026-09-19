@@ -56,6 +56,7 @@ enum class ESWGMessageOp : uint32
 	// ── Other Messages ────────────────────────────────────────
 	ParametersMessage = 0x487652DAu,
 	UnkByteFlag = 0x7102B15Fu,
+	ServerTime = 0x2EBC3BD9u,            // Server: galactic time (seconds), every 60 s
 	AttributeListMessage = 0xf3f12f2au,
 
 	// ── Radial menu & server UI (SUI) ─────────────────────────

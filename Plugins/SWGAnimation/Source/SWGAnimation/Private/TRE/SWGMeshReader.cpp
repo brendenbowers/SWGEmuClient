@@ -315,8 +315,12 @@ bool FSWGMeshReader::ReadMshSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 	// dump against a real .msh (thm_all_elevator_panel_down_s02_l0.msh).
 	// INDX sits under the *inner* wrapper form, not directly under
 	// SubmeshForm — that mismatch was why every submesh failed to parse.
-	FSWGIffChunk Wrapper0001, Vtxa, F0003, InfoChunk, DataChunk, IndxChunk;
-	if (!Reader.FindChildForm(SubmeshForm, SWG_IFF_TAG('0','0','0','1'), Wrapper0001)) return false;
+	// The wrapper is "0001" in FORM MESH 0005 files and "0000" in the older
+	// 0004 ones (appearance/mesh/cantina_door.msh); same contents either way.
+	const TArray<FSWGIffChunk> WrapperForms = Reader.FindChildForms(SubmeshForm);
+	if (WrapperForms.Num() == 0) return false;
+	const FSWGIffChunk& Wrapper0001 = WrapperForms[0];
+	FSWGIffChunk Vtxa, F0003, InfoChunk, DataChunk, IndxChunk;
 	if (!Reader.FindChildForm(Wrapper0001, SWG_IFF_TAG('V','T','X','A'), Vtxa)) return false;
 	if (!Reader.FindChildForm(Vtxa, SWG_IFF_TAG('0','0','0','3'), F0003)) return false;
 	if (!Reader.FindChildChunk(F0003, SWGIffTags::Info, InfoChunk)) return false;
@@ -369,14 +373,21 @@ bool FSWGMeshReader::ReadMshSubmesh(const FSWGIffReader& Reader, const FSWGIffCh
 	// SWG's front faces are wound the opposite way to UE's, so every triangle
 	// is stored with its last two corners swapped (same for the static-mesh
 	// index chunks below).
+	// Indices are uint16 in 0005 files and int32 in the older 0004 ones.
 	FSWGIFFChunkReader IndxReader(IndxChunk, Reader);
 	const uint32 TriIndexCount = IndxReader.ReadValueLE<uint32>();
+	if (TriIndexCount == 0) return false;
+	const bool bWideIndices = (IndxChunk.DataSize - 4) / (int32)TriIndexCount >= 4;
+	auto ReadIndex = [&IndxReader, bWideIndices]() -> int32
+	{
+		return bWideIndices ? IndxReader.ReadValueLE<int32>() : (int32)IndxReader.ReadValueLE<uint16>();
+	};
 	OutSubmesh.Triangles.Reserve((int32)TriIndexCount);
 	for (uint32 i = 0; i + 2 < TriIndexCount; i += 3)
 	{
-		const int32 CornerA = (int32)IndxReader.ReadValueLE<uint16>();
-		const int32 CornerB = (int32)IndxReader.ReadValueLE<uint16>();
-		const int32 CornerC = (int32)IndxReader.ReadValueLE<uint16>();
+		const int32 CornerA = ReadIndex();
+		const int32 CornerB = ReadIndex();
+		const int32 CornerC = ReadIndex();
 		OutSubmesh.Triangles.Add(CornerA);
 		OutSubmesh.Triangles.Add(CornerC);
 		OutSubmesh.Triangles.Add(CornerB);

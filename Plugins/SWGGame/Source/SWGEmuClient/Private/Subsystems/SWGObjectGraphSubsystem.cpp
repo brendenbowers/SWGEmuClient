@@ -19,6 +19,7 @@
 #include "Network/Messages/Zone/CmdStartSceneMessage.h"
 #include "Network/Messages/Zone/UpdateContainmentMessage.h"
 #include "Network/Messages/Zone/UpdateTransformMessage.h"
+#include "Network/Messages/Zone/UpdateTransformWithParentMessage.h"
 #include "Network/Messages/Zone/ObjControllerMessageIn.h"
 #include "Network/Messages/Zone/Object/TeleportAck.h"
 
@@ -256,6 +257,10 @@ void USWGObjectGraphSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> 
 	else if (Opcode == static_cast<uint32>(ESWGMessageOp::UpdateTransformMessage))
 	{
 		HandleUpdateTransform(*static_cast<const FUpdateTransformMessage*>(Msg.Get()));
+	}
+	else if (Opcode == static_cast<uint32>(ESWGMessageOp::UpdateTransformMessageWithParent))
+	{
+		HandleUpdateTransformWithParent(*static_cast<const FUpdateTransformWithParentMessage*>(Msg.Get()));
 	}
 	else if (Opcode == static_cast<uint32>(ESWGMessageOp::ObjControllerMessage))
 	{
@@ -570,13 +575,13 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	// feet/ground-level; GroundedLocationFor corrects for ACharacter's capsule
 	// center being the actual actor origin (see its own comment / the header's).
 	// Raw wire position -> UE space at this boundary, same as the initial spawn.
-	const FVector OldLocation = Actor->GetActorLocation();
 	const FVector NewLocation = GroundedLocationFor(Actor, SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ)));
 
 	// This message is world space, so the transform no longer needs composing into a cell.
 	if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor))
 	{
 		Creature->bAwaitingCellPlacement = false;
+		Creature->PlacedInCell = nullptr;
 	}
 
 	// DirectionAngle is Quaternion::getSpecialDegrees() — a full turn is 100,
@@ -585,6 +590,58 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	// SWGWorldScale.h), so the heading is used as-is.
 	const float YawDegrees = (Msg.DirectionAngle / 100.0f) * 360.0f;
 
+	ApplyNetworkTransform(Actor, Msg.ObjectId, NewLocation, YawDegrees);
+}
+
+void USWGObjectGraphSubsystem::HandleUpdateTransformWithParent(const FUpdateTransformWithParentMessage& Msg)
+{
+	AActor* Actor = FindActor(Msg.ObjectId);
+	if (!Actor)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: UpdateTransformWithParentMessage for unknown object %lld"), Msg.ObjectId);
+		return;
+	}
+
+	// Cell-relative, which is building-relative — the same composition
+	// ApplyContainment does once for a creature spawned inside.
+	ASWGCell* Cell = Cast<ASWGCell>(FindActor(Msg.ParentId));
+	ASWGBuilding* Building = Cell ? Cell->OwningBuilding.Get() : nullptr;
+	const FVector RelativeLocation = SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ));
+	const float RelativeYaw = (Msg.DirectionAngle / 100.0f) * 360.0f;
+	ASWGCreature* Creature = Cast<ASWGCreature>(Actor);
+
+	if (!Building)
+	{
+		// The room isn't finished (or the cell hasn't arrived): park the
+		// relative transform on the actor and let ApplyContainment compose it
+		// when NotifyCellFinished fires, exactly like a spawn inside a cell.
+		if (Creature)
+		{
+			Creature->bAwaitingCellPlacement = true;
+		}
+		Actor->SetActorLocation(GroundedLocationFor(Actor, RelativeLocation));
+		FRotator Rotation = Actor->GetActorRotation();
+		Rotation.Yaw = RelativeYaw;
+		Actor->SetActorRotation(Rotation);
+		return;
+	}
+
+	const FTransform& BuildingTransform = Building->GetActorTransform();
+	const FVector NewLocation = GroundedLocationFor(Actor, BuildingTransform.TransformPosition(RelativeLocation));
+	const float YawDegrees = FRotator::NormalizeAxis(BuildingTransform.Rotator().Yaw + RelativeYaw);
+
+	if (Creature)
+	{
+		Creature->bAwaitingCellPlacement = false;
+		Creature->PlacedInCell = Cell;
+	}
+
+	ApplyNetworkTransform(Actor, Msg.ObjectId, NewLocation, YawDegrees);
+}
+
+void USWGObjectGraphSubsystem::ApplyNetworkTransform(AActor* Actor, int64 ObjectId, const FVector& NewLocation, float YawDegrees)
+{
+	const FVector OldLocation = Actor->GetActorLocation();
 	ACharacter* Character = Cast<ACharacter>(Actor);
 	USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr;
 
@@ -595,7 +652,7 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	// to read. Three cases still land immediately: static objects with no
 	// movement component, the client-authoritative local pawn, and a jump too
 	// far to walk — a teleport or zone-in rather than locomotion.
-	const bool bIsLocalPlayer = Msg.ObjectId == LocalPlayerObjectId;
+	const bool bIsLocalPlayer = ObjectId == LocalPlayerObjectId;
 	const bool bTeleport = FVector::Dist2D(OldLocation, NewLocation) > MaxSmoothedMoveDistance;
 
 	if (Movement && !bIsLocalPlayer && !bTeleport)
@@ -694,6 +751,18 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ContainerId
 	if (bContainedInCell && bIsCreature)
 	{
 		ASWGCreature* Creature = CastChecked<ASWGCreature>(Actor);
+
+		// A network cell whose room hasn't streamed yet exists but sits at
+		// the origin, unattached — composing against it put a zoning-in
+		// player at cell-local coordinates in the sky. Wait for
+		// NotifyCellFinished; the local player's room is forced through
+		// FSWGCellSpawnHandler::FinishCell so this never stalls.
+		if (Creature->bAwaitingCellPlacement && !ContainerCell->OwningBuilding.IsValid())
+		{
+			UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: %s waits for cell %lld to finish before placement"), *Actor->GetName(), ContainerId);
+			return;
+		}
+
 		if (Creature->bAwaitingCellPlacement)
 		{
 			Creature->bAwaitingCellPlacement = false;
@@ -828,6 +897,26 @@ void USWGObjectGraphSubsystem::RegisterStaticObject(int64 ObjectId, AActor* Acto
 			}
 		}
 	}
+}
+
+void USWGObjectGraphSubsystem::NotifyCellFinished(int64 CellObjectId)
+{
+	if (CellObjectId == 0)
+	{
+		return;
+	}
+	for (const TPair<int64, int64>& Pair : ContainerByObjectId)
+	{
+		if (Pair.Value == CellObjectId && ReadyObjects.Contains(Pair.Key))
+		{
+			ApplyContainment(FindActor(Pair.Key), CellObjectId);
+		}
+	}
+}
+
+bool USWGObjectGraphSubsystem::IsLocalPlayerContainedIn(int64 ContainerId) const
+{
+	return LocalPlayerObjectId != 0 && ContainerId != 0 && ContainerByObjectId.FindRef(LocalPlayerObjectId) == ContainerId;
 }
 
 AActor* USWGObjectGraphSubsystem::ResolveMessageActor(int64 ObjectId, ESWGObjectType ObjectType)

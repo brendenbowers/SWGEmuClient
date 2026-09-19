@@ -8,6 +8,10 @@
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Network/Messages/Zone/CmdSceneReadyMessage.h"
 #include "Network/Messages/Zone/Object/DataTransform.h"
+#include "Network/Messages/Zone/Object/DataTransformWithParent.h"
+#include "Objects/World/SWGCell.h"
+#include "Objects/World/SWGBuilding.h"
+#include "Objects/Creature/SWGCreature.h"
 #include "Network/Messages/Zone/Object/TeleportAck.h"
 #include "Common/SWGWorldScale.h"
 #include "Engine/GameInstance.h"
@@ -99,19 +103,59 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 
 				if (const AActor* PlayerActor = ObjectGraph->FindActor(PlayerObjectId))
 				{
-					FDataTransform Transform(PlayerObjectId);
-					// Server expects raw (pre-scale) wire-space coordinates, same as
-					// every position it sends us — convert before sending, same as
-					// ASWGPlayer::SendDataTransformUpdate.
-					Transform.Position = SWGToRawSpace(PlayerActor->GetActorLocation());
-					Transform.Direction = SWGCharacterHeadingToNativeRotation(PlayerActor->GetActorRotation());
-					Transform.TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
-					Transform.MoveCount = 1;
-					Transform.Speed = 0.0f;
+					const uint32 TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
+					const FQuat Direction = SWGCharacterHeadingToNativeRotation(PlayerActor->GetActorRotation());
 
-					UIStateMachine.Network->SendMessage(Transform.Serialize());
-					UE_LOG(LogTemp, Log, TEXT("FSWGInWorldState::Enter: sent DataTransform for object %lld at %s"),
-						PlayerObjectId, *Transform.Position.ToString());
+					// Zoned in inside a building: the server holds us in a cell, and a
+					// world-space report would walk us out of it. Report relative to
+					// the cell instead — cell-local is building-local. Until
+					// ApplyContainment has composed the actor into the world, its
+					// location still is the baseline's cell-relative one.
+					const int64* ContainerId = ObjectGraph->FindContainerId(PlayerObjectId);
+					const ASWGCell* Cell = ContainerId ? Cast<ASWGCell>(ObjectGraph->FindActor(*ContainerId)) : nullptr;
+					const ASWGCreature* Creature = Cast<ASWGCreature>(PlayerActor);
+					if (Cell)
+					{
+						FDataTransformWithParent Transform(PlayerObjectId);
+						Transform.ParentId = (uint64)*ContainerId;
+						const ASWGBuilding* Building = Cell->OwningBuilding.Get();
+						const bool bPlaced = Creature && !Creature->bAwaitingCellPlacement && Building;
+						// Feet, not capsule centre: Core3 bounces a cell report whose Z
+						// is more than 25 cm off the floor. LastNetworkZ is the wire Z
+						// (cell-relative until placement, world after).
+						FVector Feet = PlayerActor->GetActorLocation();
+						if (Creature)
+						{
+							Feet.Z = Creature->LastNetworkZ;
+						}
+						Transform.Position = SWGToRawSpace(bPlaced
+							? Building->GetActorTransform().InverseTransformPosition(Feet)
+							: Feet);
+						Transform.Direction = Direction;
+						Transform.TimeStamp = TimeStamp;
+						Transform.MoveCount = 1;
+						Transform.Speed = 0.0f;
+
+						UIStateMachine.Network->SendMessage(Transform.Serialize());
+						UE_LOG(LogTemp, Log, TEXT("FSWGInWorldState::Enter: sent DataTransformWithParent for object %lld in cell %lld at %s"),
+							PlayerObjectId, *ContainerId, *Transform.Position.ToString());
+					}
+					else
+					{
+						FDataTransform Transform(PlayerObjectId);
+						// Server expects raw (pre-scale) wire-space coordinates, same as
+						// every position it sends us — convert before sending, same as
+						// ASWGPlayer::SendDataTransformUpdate.
+						Transform.Position = SWGToRawSpace(PlayerActor->GetActorLocation());
+						Transform.Direction = Direction;
+						Transform.TimeStamp = TimeStamp;
+						Transform.MoveCount = 1;
+						Transform.Speed = 0.0f;
+
+						UIStateMachine.Network->SendMessage(Transform.Serialize());
+						UE_LOG(LogTemp, Log, TEXT("FSWGInWorldState::Enter: sent DataTransform for object %lld at %s"),
+							PlayerObjectId, *Transform.Position.ToString());
+					}
 				}
 				else
 				{

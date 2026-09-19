@@ -139,6 +139,10 @@ private:
 
 	void SetExteriorShellHidden(bool bShouldHide);
 
+	/** Only the room the player stands in has its POB lights on (ASWGCell::RoomLights); null = none. */
+	void SetLitRoom(ASWGCell* Cell);
+	TWeakObjectPtr<ASWGCell> LitRoom;
+
 	/** Counted, not a bool, so straddling two triggers in a doorway doesn't reveal the shell early. */
 	int32 NonSeeThroughOverlapCount = 0;
 

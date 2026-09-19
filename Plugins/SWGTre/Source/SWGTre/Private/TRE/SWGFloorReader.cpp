@@ -89,6 +89,27 @@ bool FSWGFloorReader::ReadFloor(const FSWGIffReader& Reader, FSWGFloorData& OutF
 }
 
 
+void FSWGFloorReader::AppendFloorTriangles(const FSWGFloorData& Floor, TArray<int32>& OutIndices)
+{
+	OutIndices.Reserve(OutIndices.Num() + Floor.Triangles.Num() * 3);
+	for (const FSWGFloorTriangle& Triangle : Floor.Triangles)
+	{
+		if (!Floor.Vertices.IsValidIndex(Triangle.CornerIndex1) || !Floor.Vertices.IsValidIndex(Triangle.CornerIndex2) || !Floor.Vertices.IsValidIndex(Triangle.CornerIndex3))
+		{
+			continue;
+		}
+		const FVector& CornerA = Floor.Vertices[Triangle.CornerIndex1];
+		const FVector& CornerB = Floor.Vertices[Triangle.CornerIndex2];
+		const FVector& CornerC = Floor.Vertices[Triangle.CornerIndex3];
+		// Chaos treats (C-A)x(B-A) as the front — verified in-game: the other
+		// way round, floors blocked from below and were air from above.
+		const bool bFacesUp = FVector::CrossProduct(CornerB - CornerA, CornerC - CornerA).Z <= 0.0;
+		OutIndices.Add(Triangle.CornerIndex1);
+		OutIndices.Add(bFacesUp ? Triangle.CornerIndex2 : Triangle.CornerIndex3);
+		OutIndices.Add(bFacesUp ? Triangle.CornerIndex3 : Triangle.CornerIndex2);
+	}
+}
+
 int32 FSWGFloorReader::AppendBarrierMesh(const FSWGFloorData& Floor, float Height, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
 {
 	int32 Barriers = 0;

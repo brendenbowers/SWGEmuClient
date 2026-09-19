@@ -26,6 +26,7 @@ struct FDeltasMessage;
 struct FCmdStartSceneMessage;
 struct FUpdateContainmentMessage;
 struct FUpdateTransformMessage;
+struct FUpdateTransformWithParentMessage;
 struct FObjControllerMessageIn;
 class USWGTerrainSubsystem;
 
@@ -110,6 +111,16 @@ public:
 	/** Forgets a static object's registry entries without touching its actor — ASWGBuilding::UnloadRoom destroys that itself. */
 	void UnregisterStaticObject(int64 ObjectId);
 
+	/**
+	 * A network cell just got its building (FSWGCellSpawnHandler::FinishCell):
+	 * place whatever zoned in inside it and has been waiting for a real
+	 * transform to compose against.
+	 */
+	void NotifyCellFinished(int64 CellObjectId);
+
+	/** Whether the local player's server-side container is ContainerId (a cell, usually). */
+	bool IsLocalPlayerContainedIn(int64 ContainerId) const;
+
 	/** Fired once SceneEndBaselines confirms an object's baselines are complete. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnObjectReady, int64 /*ObjectId*/);
 	FOnObjectReady OnObjectReady;
@@ -187,6 +198,9 @@ private:
 	void HandleDeltas(const FDeltasMessage& Msg);
 	void HandleUpdateContainment(const FUpdateContainmentMessage& Msg);
 	void HandleUpdateTransform(const FUpdateTransformMessage& Msg);
+	void HandleUpdateTransformWithParent(const FUpdateTransformWithParentMessage& Msg);
+	/** Smoothed (or immediate for teleports and the local pawn) move to a world-space destination — shared by both transform messages. */
+	void ApplyNetworkTransform(AActor* Actor, int64 ObjectId, const FVector& NewLocation, float YawDegrees);
 	void HandleObjControllerMessage(const FObjControllerMessageIn& Msg);
 
 	/**

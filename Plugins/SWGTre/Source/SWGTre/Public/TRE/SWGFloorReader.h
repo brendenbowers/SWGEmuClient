@@ -79,6 +79,14 @@ public:
 	 */
 	static int32 AppendBarrierMesh(const FSWGFloorData& Floor, float Height, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 
+	/**
+	 * The walkable triangles as an index list wound so the up-facing side is
+	 * the front face (Chaos: (C-A)x(B-A) points out of the front). For a
+	 * one-sided floor collider — every .flr triangle is walkable from above
+	 * and nothing should ever be stopped by one from below.
+	 */
+	static void AppendFloorTriangles(const FSWGFloorData& Floor, TArray<int32>& OutIndices);
+
 private:
 	FSWGFloorReader() = default;
 };

@@ -46,6 +46,13 @@ void ASWGBuilding::OnCellTriggerBeginOverlap(UPrimitiveComponent* OverlappedComp
 
 	++InteriorOverlapCount;
 
+	// The trigger is owned by its cell (FSWGCellSpawnHandler's
+	// CreateCollisionForCell); light the room the player just stepped into.
+	if (ASWGCell* EnteredCell = OverlappedComponent ? Cast<ASWGCell>(OverlappedComponent->GetOwner()) : nullptr)
+	{
+		SetLitRoom(EnteredCell);
+	}
+
 	const bool* bCanSeeParent = CellSeeParentByTrigger.Find(OverlappedComponent);
 	if (bCanSeeParent && !*bCanSeeParent)
 	{
@@ -53,6 +60,23 @@ void ASWGBuilding::OnCellTriggerBeginOverlap(UPrimitiveComponent* OverlappedComp
 		{
 			SetExteriorShellHidden(true);
 		}
+	}
+}
+
+void ASWGBuilding::SetLitRoom(ASWGCell* Cell)
+{
+	if (LitRoom == Cell)
+	{
+		return;
+	}
+	if (ASWGCell* Previous = LitRoom.Get())
+	{
+		Previous->SetRoomLightsEnabled(false);
+	}
+	LitRoom = Cell;
+	if (Cell)
+	{
+		Cell->SetRoomLightsEnabled(true);
 	}
 }
 
@@ -64,6 +88,13 @@ void ASWGBuilding::OnCellTriggerEndOverlap(UPrimitiveComponent* OverlappedCompon
 	}
 
 	InteriorOverlapCount = FMath::Max(0, InteriorOverlapCount - 1);
+
+	// Leaving the lit room for the outdoors; a doorway into the next room
+	// overlaps both, and that room's begin already took the lights over.
+	if (InteriorOverlapCount == 0 && OverlappedComponent && LitRoom.Get() == OverlappedComponent->GetOwner())
+	{
+		SetLitRoom(nullptr);
+	}
 
 	const bool* bCanSeeParent = CellSeeParentByTrigger.Find(OverlappedComponent);
 	if (bCanSeeParent && !*bCanSeeParent)

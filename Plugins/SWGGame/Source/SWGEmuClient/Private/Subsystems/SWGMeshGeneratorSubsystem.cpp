@@ -48,6 +48,8 @@
 #include "Misc/Optional.h"
 #include "Objects/World/SWGBuilding.h"
 #include "Objects/World/SWGStaticProp.h"
+#include "Objects/World/SWGCell.h"
+#include "Common/SWGLightingChannels.h"
 #include "Objects/World/SWGInstallation.h"
 #include "Objects/Tangible/SWGItem.h"
 #include "Objects/Player/SWGPlayer.h"
@@ -1550,6 +1552,25 @@ bool USWGMeshGeneratorSubsystem::ResolveLodMeshPath(const FString& LodOrMeshPath
 	return true;
 }
 
+bool USWGMeshGeneratorSubsystem::ResolveAppearanceStaticMeshPath(const FString& AppearancePath, FString& OutMeshPath)
+{
+	if (AppearancePath.EndsWith(TEXT(".msh")))
+	{
+		OutMeshPath = AppearancePath;
+		return true;
+	}
+
+	TArray<FString> MeshPaths;
+	TMap<FString, FString> AnimationLatPaths;
+	bool bSkeletal = false;
+	if (!ResolveAppearanceMeshPaths(AppearancePath, AppearancePath, MeshPaths, AnimationLatPaths, bSkeletal) || bSkeletal || MeshPaths.IsEmpty())
+	{
+		return false;
+	}
+	OutMeshPath = MeshPaths[0];
+	return true;
+}
+
 bool USWGMeshGeneratorSubsystem::ResolveArrangementSlotNames(uint32 TemplateCrc, int32 ContainmentType, TArray<FString>& OutSlotNames)
 {
 	OutSlotNames.Reset();
@@ -2956,7 +2977,7 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedStaticMesh(uint32 Ca
 #endif
 }
 
-UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedCollisionMesh(uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices)
+UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedCollisionMesh(uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices, bool bDoubleSided)
 {
 	const FString AssetName = FString::Printf(TEXT("SM_Collision_%u"), CacheHash);
 	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
@@ -2968,9 +2989,9 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedCollisionMesh(uint32
 	{
 		// Assets saved before the flag existed are fixed up on load rather
 		// than rebuilt — see where it's set below for why it matters.
-		if (UBodySetup* BodySetup = Existing->GetBodySetup(); BodySetup && !BodySetup->bDoubleSidedGeometry)
+		if (UBodySetup* BodySetup = Existing->GetBodySetup(); BodySetup && BodySetup->bDoubleSidedGeometry != bDoubleSided)
 		{
-			BodySetup->bDoubleSidedGeometry = true;
+			BodySetup->bDoubleSidedGeometry = bDoubleSided;
 			BodySetup->InvalidatePhysicsData();
 			BodySetup->CreatePhysicsMeshes();
 		}
@@ -3031,7 +3052,10 @@ UStaticMesh* USWGMeshGeneratorSubsystem::GetOrBuildGeneratedCollisionMesh(uint32
 		// CMSH extents — has no consistent winding, so a one-sided mesh is a
 		// wall from one direction and air from the other: exactly the
 		// walk-through-the-room-wall symptom. Sheets have no inside anyway.
-		BodySetup->bDoubleSidedGeometry = true;
+		// Floors are the exception (one-sided, top face up): a capsule whose
+		// bottom has slipped under a step's edge must not be caught from
+		// below when it tries to step up — that pinned players in doorways.
+		BodySetup->bDoubleSidedGeometry = bDoubleSided;
 		BodySetup->InvalidatePhysicsData();
 		BodySetup->CreatePhysicsMeshes();
 	}
@@ -3112,6 +3136,22 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 
 	UStaticMeshComponent* MeshComponent = NewObject<UStaticMeshComponent>(&Actor, NAME_None, RF_Transactional);
 	MeshComponent->SetStaticMesh(StaticMesh);
+
+	// Rooms and what's placed in them are lit by the room's own lights;
+	// characters by those inside and the sun outside (SWGLightingChannels.h).
+	const ASWGStaticProp* Prop = Cast<ASWGStaticProp>(&Actor);
+	if (Actor.IsA<ASWGCell>() || (Prop && Prop->bInteriorLighting))
+	{
+		SWGSetInteriorLightingChannel(*MeshComponent, /*bAlsoWorld*/ false);
+	}
+	else if (ACharacter* CharacterActor = Cast<ACharacter>(&Actor))
+	{
+		SWGSetInteriorLightingChannel(*MeshComponent, /*bAlsoWorld*/ true);
+		if (USkeletalMeshComponent* AnimatedMesh = CharacterActor->GetMesh())
+		{
+			SWGSetInteriorLightingChannel(*AnimatedMesh, /*bAlsoWorld*/ true);
+		}
+	}
 
 	for (int32 i = 0; i < Materials.Num(); ++i)
 	{
@@ -3299,9 +3339,9 @@ bool USWGMeshGeneratorSubsystem::ResolveAppearanceCollision(const FSWGPendingMes
 	return bFound;
 }
 
-UStaticMeshComponent* USWGMeshGeneratorSubsystem::AddCollisionMeshComponent(AActor& Actor, USceneComponent& Parent, uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices)
+UStaticMeshComponent* USWGMeshGeneratorSubsystem::AddCollisionMeshComponent(AActor& Actor, USceneComponent& Parent, uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices, bool bDoubleSided)
 {
-	UStaticMesh* CollisionMesh = GetOrBuildGeneratedCollisionMesh(CacheHash, DebugName, Vertices, Indices);
+	UStaticMesh* CollisionMesh = GetOrBuildGeneratedCollisionMesh(CacheHash, DebugName, Vertices, Indices, bDoubleSided);
 	if (!CollisionMesh)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to build collision mesh for %s"), *DebugName);
@@ -3415,22 +3455,24 @@ void USWGMeshGeneratorSubsystem::BuildAppearanceCollision(AActor& Actor, USceneC
 
 	if (Floor)
 	{
-		TArray<FVector> FloorVertices = Floor->Vertices;
-		TArray<int32> FlatIndices;
-		FlatIndices.Reserve(Floor->Triangles.Num() * 3);
-		for (const FSWGFloorTriangle& Triangle : Floor->Triangles)
-		{
-			FlatIndices.Add(Triangle.CornerIndex1);
-			FlatIndices.Add(Triangle.CornerIndex2);
-			FlatIndices.Add(Triangle.CornerIndex3);
-		}
+		// One-sided walkable surface, same split as a cell's floor (see
+		// CreateCollisionForCell): never a wall from below.
+		TArray<int32> FloorIndices;
+		FSWGFloorReader::AppendFloorTriangles(*Floor, FloorIndices);
+		const uint32 FloorHash = HashCombine(GetTypeHash(Collision.FloorPath), GetTypeHash(FString(TEXT("floor-onesided-2"))));
+		AddCollisionMeshComponent(Actor, Parent, FloorHash, Collision.FloorPath, Floor->Vertices, FloorIndices, /*bDoubleSided*/ false);
+
 		// Its uncrossable edges are the railings and drop-offs the floor's
 		// author fenced; a bridge deck's edges keep you on the deck the way
 		// a room's keep you in the room.
 		constexpr float BarrierHeight = 300.0f;
-		FSWGFloorReader::AppendBarrierMesh(*Floor, BarrierHeight, FloorVertices, FlatIndices);
-		const uint32 FloorHash = HashCombine(GetTypeHash(Collision.FloorPath), GetTypeHash(FString(TEXT("barriers-1"))));
-		AddCollisionMeshComponent(Actor, Parent, FloorHash, Collision.FloorPath, FloorVertices, FlatIndices);
+		TArray<FVector> BarrierVertices;
+		TArray<int32> BarrierIndices;
+		if (FSWGFloorReader::AppendBarrierMesh(*Floor, BarrierHeight, BarrierVertices, BarrierIndices) > 0)
+		{
+			const uint32 BarrierHash = HashCombine(GetTypeHash(Collision.FloorPath), GetTypeHash(FString(TEXT("barriers-2"))));
+			AddCollisionMeshComponent(Actor, Parent, BarrierHash, Collision.FloorPath + TEXT(" [barriers]"), BarrierVertices, BarrierIndices);
+		}
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("USWGMeshGeneratorSubsystem: %s collision — %d primitive(s), %d mesh(es)%s"),

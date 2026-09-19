@@ -32,6 +32,7 @@ FString GetMessageOpName(uint32 Opcode)
 		case ESWGMessageOp::ErrorMessage: return TEXT("ErrorMessage");
 		case ESWGMessageOp::ParametersMessage: return TEXT("ParametersMessage");
 		case ESWGMessageOp::UnkByteFlag: return TEXT("UnkByteFlag");
+		case ESWGMessageOp::ServerTime: return TEXT("ServerTime");
 		case ESWGMessageOp::AttributeListMessage: return TEXT("AttributeListMessage");
 		default:
 			return FString::Printf(TEXT("Unknown (0x%08X)"), Opcode);

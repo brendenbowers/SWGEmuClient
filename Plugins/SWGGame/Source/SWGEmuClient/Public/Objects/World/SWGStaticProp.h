@@ -22,4 +22,7 @@ public:
 	FSWGStringId ObjectName;
 	FString      CustomName;
 	bool bHasBase3 = false;
+
+	/** Placed inside a room by its interior layout: lit by the room's lights (channel 1), not the sun. */
+	bool bInteriorLighting = false;
 };

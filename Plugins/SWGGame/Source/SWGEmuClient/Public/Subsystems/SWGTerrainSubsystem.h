@@ -5,15 +5,22 @@
 #include "Tickable.h"
 #include "TRE/SWGTerrainReader.h"
 #include "TRE/SWGWorldSnapshotReader.h"
+#include "TRE/SWGColorRampReader.h"
 #include "SWGTerrainSubsystem.generated.h"
 
 class USWGTreSubsystem;
 class USWGMeshGeneratorSubsystem;
 class USWGObjectGraphSubsystem;
 class ALandscape;
+class ADirectionalLight;
+class ASkyLight;
+class AExponentialHeightFog;
+class USWGNetworkSubsystem;
+struct FSWGNetMessage;
 class UDataTable;
 class UTexture2D;
 class UMaterialInterface;
+class UMaterialInstanceDynamic;
 class UDynamicMeshComponent;
 
 namespace UE::Geometry { class FDynamicMesh3; }
@@ -299,8 +306,101 @@ private:
 	/** Creates the outdoor sky, sun, and ambient fill for the active planet, coloured from its colour ramp at swg.TimeOfDay. */
 	void SetupPlanetLighting(const FString& TerrainVirtualPath);
 
-	/** terrain/colorramp/<zone>_global0.tga (falling back to the default ramp) — see FSWGColorRamp. */
+	/**
+	 * One row of datatables/environment/<planet>.iff — what an environment
+	 * family looks like in one weather state: its gradient sky, colour ramp,
+	 * fog range, clouds, and reflection maps.
+	 */
+	struct FSWGPlanetEnvironment
+	{
+		bool bValid = false;
+		FString GradientSkyTexture;
+		FString ColorRampPath;
+		bool bFogEnabled = true;
+		float MinFogDensity = 0.0f;
+		float MaxFogDensity = 0.0f;
+		FString DayEnvironmentMap;
+		FString NightEnvironmentMap;
+		FString CloudTopShader;
+		float CloudTopShaderSize = 0.0f;
+		float CloudTopSpeed = 0.0f;
+		FString CloudBottomShader;
+		float CloudBottomShaderSize = 0.0f;
+		float CloudBottomSpeed = 0.0f;
+	};
+
+	/** The planet's "global" family in clear weather from its environment table; bValid false when the planet has none. */
+	FSWGPlanetEnvironment LoadPlanetEnvironment(const FString& ZoneName) const;
+
+	/** How a celestial sprite moves: with the sun's arc, with the moon's (opposite) arc, or pinned to the sky. */
+	enum class ESWGCelestialKind : uint8 { Sun, Moon, Fixed };
+
+	/**
+	 * One sky object from terrain/environment/<planet>.iff. Every chunk is
+	 * [shader][size][glowShader][glowSize] and then, per tag: SUN nothing;
+	 * SSUN and SMOO an azimuth/elevation offset (degrees) from the sun/moon; CELS
+	 * azimuth, elevation, a flag and a roll — CELS props are pinned to the
+	 * sky at that azimuth/elevation whatever the flag. Sizes are the
+	 * sprite's width as a fraction of its distance. Read off the shipped
+	 * files (Tatooine: SSUN -18/+10, star destroyers at 0/45 roll 10 and
+	 * 7/53 roll 30, the small earthy moon flag 1 at +15 pitch).
+	 */
+	struct FSWGCelestialDefinition
+	{
+		ESWGCelestialKind Kind = ESWGCelestialKind::Sun;
+		FString Shader;
+		float Size = 0.5f;
+		FString GlowShader;
+		float GlowSize = 0.0f;
+		float YawDegrees = 0.0f;
+		float PitchDegrees = 0.0f;
+		/** CELS only — the sprite's roll about the view axis, degrees. */
+		float RollDegrees = 0.0f;
+		/** CELS only — 1/-1 on the moon-textured props, 0 on ships; meaning unconfirmed, kept for reference. */
+		float OrbitFlag = 0.0f;
+	};
+
+	/** Everything the environment file puts in the sky: SUN/SSUN, MOON/SMOO, CELS. Empty when the file is missing. */
+	TArray<FSWGCelestialDefinition> LoadPlanetCelestials(const FString& ZoneName) const;
+
+	/** Creates the disc/glow sprites for every celestial under SkyActor. */
+	void SpawnCelestialSprites(const TArray<FSWGCelestialDefinition>& Celestials);
+
+	/** One camera-facing sprite in the sky on the engine plane — additive (M_SWGSkySprite) for suns/glows, alpha (M_SWGSkySpriteAlpha) for moons and props. */
+	UStaticMeshComponent* CreateSkySprite(const FString& ShaderName, bool bAdditive);
+
+	/** The environment's cloud layers: camera-following planes high above the ground with a scrolling cloud texture (M_SWGCloudLayer). */
+	void SpawnCloudLayers();
+
+	/**
+	 * The night sky's stars: the environment file's STAR chunk names a
+	 * palette (terrain/colorramp/stars_<planet>.tga, 64 star tints) and
+	 * retail scattered points from it. A star texture is generated from that
+	 * palette (equirectangular, seeded per planet) and drawn on its own dome
+	 * (M_SWGStarField), faded in by ApplyTimeOfDay as the sun sets.
+	 */
+	void SpawnStarField(const FString& ZoneName);
+
+	/** The STAR chunk's palette path from terrain/environment/<planet>.iff, or empty. */
+	FString LoadStarPalettePath(const FString& ZoneName) const;
+
+	/** The environment's ramp (terrain/colorramp/*.tga), falling back to <zone>_global0 and the default ramp — see FSWGColorRamp. */
 	bool LoadPlanetColorRamp(const FString& ZoneName, struct FSWGColorRamp& OutRamp) const;
+
+	/** An uncompressed 24/32-bit gradient sky DDS (256 day columns x 32 elevation rows) as a transient BGRA texture. */
+	UTexture2D* LoadGradientSkyTexture(const FString& VirtualPath) const;
+
+	/** Points the sun and colours sun/ambient/fog from the ramp at a 0..1 position through the day. Every tick. */
+	void ApplyTimeOfDay(float DayFraction, bool bLog = false);
+
+	/** ServerTime and CmdStartScene carry the zone's galactic time; everything else is ignored here. */
+	void HandleMessageReceived(TSharedPtr<FSWGNetMessage> Msg);
+
+	/** Re-syncs the day clock to the server's galactic time (seconds). */
+	void SetGalacticTime(int64 Seconds);
+
+	/** 0..1 through the planet's day cycle right now — see GetDayFraction's comment for the swg.TimeOfDay override. */
+	float GetDayFraction() const;
 
 	/** USWGTreSubsystem::CreateIffReader + FSWGTerrainReader::ReadTerrain — synchronous, cheap. */
 	bool ParseTerrain(const FString& TerrainVirtualPath, FSWGTerrainData& OutTerrainData);
@@ -506,6 +606,80 @@ private:
 	/** Root every water surface attaches to; destroyed with the zone. */
 	UPROPERTY()
 	TObjectPtr<AActor> WaterActor;
+
+	// ── Day cycle ───────────────────────────────────────────────────────
+
+	UPROPERTY()
+	TObjectPtr<USWGNetworkSubsystem> Network;
+	FDelegateHandle MessageHandle;
+
+	/** The planet's lights, re-coloured each tick by ApplyTimeOfDay. Tagged SWGPlanetLighting and rebuilt per zone. */
+	UPROPERTY()
+	TObjectPtr<ADirectionalLight> SunLight;
+	UPROPERTY()
+	TObjectPtr<ASkyLight> AmbientLight;
+	UPROPERTY()
+	TObjectPtr<AExponentialHeightFog> HeightFog;
+
+	FSWGColorRamp ColorRamp;
+	bool bHasColorRamp = false;
+	FSWGPlanetEnvironment Environment;
+
+	/** The gradient sky dome's instance; DayFraction is pushed to it each tick. Null when the planet has no gradient (SkyAtmosphere instead). */
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> SkyDomeMaterial;
+
+	/** Owns the dome and the celestial sprites. Tagged SWGPlanetLighting. */
+	UPROPERTY()
+	TObjectPtr<AActor> SkyActor;
+
+	/** A celestial's two sprites and where it sits — see FSWGCelestialDefinition. */
+	struct FSWGCelestialSprite
+	{
+		ESWGCelestialKind Kind = ESWGCelestialKind::Sun;
+		TObjectPtr<UStaticMeshComponent> Disc;
+		TObjectPtr<UStaticMeshComponent> Glow;
+		TObjectPtr<UMaterialInstanceDynamic> GlowMaterial;
+		TObjectPtr<UMaterialInstanceDynamic> DiscMaterial;
+		float Size = 0.5f;
+		float GlowSize = 0.0f;
+		float YawDegrees = 0.0f;
+		float PitchDegrees = 0.0f;
+		float RollDegrees = 0.0f;
+	};
+	TArray<FSWGCelestialSprite> CelestialSprites;
+
+	/** The star dome's instance; Intensity follows the night. */
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> StarFieldMaterial;
+	UPROPERTY()
+	TObjectPtr<UStaticMeshComponent> StarDome;
+
+	/** The celestial pole's direction (UE space) for swg.SkyLatitude. */
+	static FVector CelestialPole();
+
+	/** Hour angle of the sun for a day-cycle fraction: -90 at swg.SunriseFraction, 90 at swg.SunsetFraction, uniform in between on each side. */
+	static float HourAngleForDayFraction(float DayFraction);
+
+	/** A point on the rotating celestial sphere: hour angle along the equator (0 = on the meridian at noon), declination above it. */
+	static FVector CelestialDirection(float HourAngleDegrees, float DeclinationDegrees, float Unused = 0.0f);
+
+	/** Column (0..1) of the colour ramps / gradient sky for a sun hour angle (sunrise 16, noon 64, sunset 128 of 256). */
+	static float RampFractionForHourAngle(float HourAngleDegrees);
+
+	/** Base turned by an azimuth (yaw) and elevation (pitch) offset, degrees. */
+	static FVector OffsetSkyDirection(const FVector& Base, float YawDegrees, float PitchDegrees);
+
+	/** Cloud planes and their instances, re-tinted each tick from the ramp. */
+	UPROPERTY()
+	TArray<TObjectPtr<UStaticMeshComponent>> CloudLayers;
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> CloudMaterials;
+
+	/** The server's galactic time at the last sync and the local clock then, so the day advances between the once-a-minute updates. */
+	double GalacticTimeAtSync = 0.0;
+	double LocalTimeAtSync = 0.0;
+	bool bHasGalacticTime = false;
 
 	/** Parent material for GetOrBuildWaterMaterial's per-shader MIDs — translucent, panning diffuse + normal. Plugin content asset. */
 	UPROPERTY()

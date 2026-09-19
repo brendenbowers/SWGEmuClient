@@ -6,6 +6,7 @@
 
 class ASWGBuilding;
 class UPrimitiveComponent;
+class ULightComponent;
 
 UCLASS()
 class SWGEMUCLIENT_API ASWGCell : public ASWGObject
@@ -42,4 +43,18 @@ public:
 	// destroyed with it by ASWGBuilding::UnloadRoom. Unattached: the cell's
 	// root is replaced when its mesh lands.
 	TArray<TWeakObjectPtr<AActor>> InteriorActors;
+
+	/**
+	 * The room's own lights from the POB (ambient, parallels, points), on
+	 * lighting channel 1 with the room's geometry. Retail lit a room only by
+	 * its own set, so ASWGBuilding switches on just the room the player is in.
+	 */
+	UPROPERTY(VisibleAnywhere, Category = "SWGEmu")
+	TArray<TObjectPtr<ULightComponent>> RoomLights;
+
+	/** As built from the POB, before swg.RoomLightScale — parallel to RoomLights. */
+	TArray<float> RoomLightBaseIntensity;
+
+	void AddRoomLight(ULightComponent* Light);
+	void SetRoomLightsEnabled(bool bEnabled);
 };

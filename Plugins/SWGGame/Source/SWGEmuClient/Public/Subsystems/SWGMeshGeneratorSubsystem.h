@@ -320,13 +320,20 @@ public:
 	 */
 	bool ResolveLodMeshPath(const FString& LodOrMeshPath, FString& OutMeshPath);
 
+	/**
+	 * A static appearance (.apt, .lod or bare .msh) to its nearest mesh —
+	 * door_style.iff's doorAppearance column, which is always an .apt. False
+	 * for skeletal appearances.
+	 */
+	bool ResolveAppearanceStaticMeshPath(const FString& AppearancePath, FString& OutMeshPath);
+
 	/** Every level of a .lod, nearest first — its CHLD meshes joined to the INFO distance bands by child id. */
 	bool ResolveLodLevels(const FString& LodPath, TArray<FSWGLodLevel>& OutLevels);
 
 	/**
 	 * Cache-or-build a collision-only UStaticMesh from raw triangle geometry
 	 */
-	UStaticMesh* GetOrBuildGeneratedCollisionMesh(uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices);
+	UStaticMesh* GetOrBuildGeneratedCollisionMesh(uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices, bool bDoubleSided = true);
 
 	/**
 	 * Attaches an appearance's authored collision under Parent as invisible
@@ -339,7 +346,7 @@ public:
 	void BuildAppearanceCollision(AActor& Actor, USceneComponent& Parent, const FSWGAppearanceCollision& Collision, const FSWGFloorData* Floor, const FString& DebugName);
 
 	/** Complex-as-simple collision from raw triangles (a cell's CMSH walls, a .flr floor), attached invisible under Parent. Game thread. */
-	UStaticMeshComponent* AddCollisionMeshComponent(AActor& Actor, USceneComponent& Parent, uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices);
+	UStaticMeshComponent* AddCollisionMeshComponent(AActor& Actor, USceneComponent& Parent, uint32 CacheHash, const FString& DebugName, const TArray<FVector>& Vertices, const TArray<int32>& Indices, bool bDoubleSided = true);
 
 	/**
 	 * Reads the collision block for a request: CollisionSourcePath first,
