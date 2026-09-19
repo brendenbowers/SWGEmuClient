@@ -46,6 +46,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/SkyLight.h"
+#include "Engine/TextureCube.h"
 #include "Engine/ExponentialHeightFog.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
@@ -79,7 +80,7 @@ namespace
 
 	TAutoConsoleVariable<int32> CVarSWGLighting(
 		TEXT("swg.SWGLighting"), 1,
-		TEXT("Retail-style lighting: flat colour-ramp ambient everywhere with dynamic GI off. 0 keeps the project's Lumen setup."));
+		TEXT("Retail-style lighting from the planet's colour ramp. 1 keeps Lumen for GI (see swg.SkylightLeaking for shade); 2 also forces dynamic GI off for a flat ambient everywhere; 0 leaves the project's rendering settings alone."));
 
 	TAutoConsoleVariable<float> CVarTimeOfDay(
 		TEXT("swg.TimeOfDay"), -1.0f,
@@ -94,7 +95,7 @@ namespace
 		TEXT("Speed the local clock advances between server time syncs — 60 runs a full day in a few minutes for testing."));
 
 	TAutoConsoleVariable<float> CVarAmbientIntensity(
-		TEXT("swg.AmbientIntensity"), 1.1f,
+		TEXT("swg.AmbientIntensity"), 1.0f,
 		TEXT("Sky light intensity multiplying the colour ramp's ambient colour."));
 
 	TAutoConsoleVariable<float> CVarSunIntensity(
@@ -165,8 +166,8 @@ namespace
 		TEXT("Base roll (degrees) applied to every sky sprite, for lining the plane's texture-up with the sky."));
 
 	TAutoConsoleVariable<float> CVarNightAmbientBoost(
-		TEXT("swg.NightAmbientBoost"), 2.5f,
-		TEXT("Multiplier on the ramp's ambient once the sun is down — retail nights read brighter than the ramp alone gives."));
+		TEXT("swg.NightAmbientBoost"), 1.0f,
+		TEXT("Multiplier on the ramp's ambient once the sun is down, for tuning; 1 trusts the ramp."));
 
 	TAutoConsoleVariable<float> CVarSunDiscIntensity(
 		TEXT("swg.SunDiscIntensity"), 0.8f,
@@ -358,6 +359,33 @@ namespace
 		}
 		return Packed;
 	}
+}
+
+// Dev: rebuilds the active planet's sky and lights so lighting code changes show without re-zoning.
+static FAutoConsoleCommand SWGRelightPlanetCmd(
+	TEXT("swg.RelightPlanet"),
+	TEXT("Rebuilds the current planet's sun, ambient, fog and sky from its colour ramp."),
+	FConsoleCommandDelegate::CreateLambda([]()
+		{
+			for (TObjectIterator<USWGTerrainSubsystem> It; It; ++It)
+			{
+				if (IsValid(*It) && It->GetGameInstance())
+				{
+					It->RelightPlanet();
+					return;
+				}
+			}
+			UE_LOG(LogTemp, Warning, TEXT("swg.RelightPlanet: no live terrain subsystem"));
+		}));
+
+void USWGTerrainSubsystem::RelightPlanet()
+{
+	if (ActiveTerrainVirtualPath.IsEmpty() || !bTerrainDataCached)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("swg.RelightPlanet: no planet loaded"));
+		return;
+	}
+	SetupPlanetLighting(ActiveTerrainVirtualPath);
 }
 
 void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -695,25 +723,41 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 		SkyLight->Tags.Add(PlanetLightingTag);
 		USkyLightComponent* SkyLightComponent = SkyLight->GetLightComponent();
 		SkyLightComponent->SetMobility(EComponentMobility::Movable);
-		SkyLightComponent->SetRealTimeCaptureEnabled(true);
-		// No shadowing: retail's ambient was a constant term, not an
-		// occluded one, which is what keeps shaded ground and rooms lit.
+		// A uniform white cubemap rather than a capture of the dome: retail's
+		// ambient was a constant term, so it must not scale with how bright the
+		// gradient sky happens to be (near-black at night).
+		SkyLightComponent->SetRealTimeCaptureEnabled(false);
+		SkyLightComponent->SourceType = SLS_SpecifiedCubemap;
+		SkyLightComponent->SetCubemap(MakeUniformCubemap());
+		// No shadowing either: an occluded ambient would darken shaded ground and rooms.
 		SkyLightComponent->SetCastShadows(false);
 		SkyLightComponent->bLowerHemisphereIsBlack = false;
 	}
 
-	// Lumen would occlude that ambient indoors and in shade, so the SWG look
-	// runs without dynamic GI (screen-space reflections stand in for Lumen's).
-	if (CVarSWGLighting.GetValueOnGameThread() != 0)
+	// SetByCode outranks DefaultEngine.ini's ProjectSetting; a lower priority
+	// is silently ignored.
+	auto SetRenderCVar = [](const TCHAR* Name, int32 Value)
+		{
+			if (IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(Name))
+			{
+				Variable->Set(Value, ECVF_SetByCode);
+			}
+		};
+	const int32 LightingMode = CVarSWGLighting.GetValueOnGameThread();
+	if (LightingMode != 0)
 	{
-		if (IConsoleVariable* GIMethod = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DynamicGlobalIlluminationMethod")))
-		{
-			GIMethod->Set(0, ECVF_SetByGameSetting);
-		}
-		if (IConsoleVariable* ReflectionMethod = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ReflectionMethod")))
-		{
-			ReflectionMethod->Set(2, ECVF_SetByGameSetting);
-		}
+		// No screen-space AO: retail meshes make leaf cards two-sided by
+		// duplicating each triangle with the winding flipped, so the back copies
+		// carry normals facing away from the camera and SSAO occludes them to
+		// black. Retail had no AO on its flat ambient.
+		SetRenderCVar(TEXT("r.AmbientOcclusionLevels"), 0);
+	}
+	if (LightingMode >= 2)
+	{
+		// Lumen occludes the ambient indoors and in shade; the flat mode runs
+		// without dynamic GI (screen-space reflections stand in for Lumen's).
+		SetRenderCVar(TEXT("r.DynamicGlobalIlluminationMethod"), 0);
+		SetRenderCVar(TEXT("r.ReflectionMethod"), 2);
 	}
 
 	// Retail's sky is the environment's gradient texture (256 day columns x
@@ -882,7 +926,6 @@ void USWGTerrainSubsystem::ApplyTimeOfDay(float DayFraction, bool bLog)
 		// Tinted by the ramp's ambient; the captured sky supplies the shape.
 		USkyLightComponent* SkyLightComponent = AmbientLight->GetLightComponent();
 		SkyLightComponent->SetLightColor(AmbientColor);
-		// The ramp's night ambient is dim on its own; retail nights stay readable.
 		const float NightWeight = 1.0f - FMath::Clamp(SunStrength * 3.0f, 0.0f, 1.0f);
 		SkyLightComponent->SetIntensity(CVarAmbientIntensity.GetValueOnGameThread() * FMath::Lerp(1.0f, CVarNightAmbientBoost.GetValueOnGameThread(), NightWeight));
 		SkyLightComponent->SetLowerHemisphereColor(AmbientColor);
@@ -1004,6 +1047,22 @@ void USWGTerrainSubsystem::ApplyTimeOfDay(float DayFraction, bool bLog)
 			DayFraction, bHasColorRamp ? TEXT("colour ramp") : TEXT("defaults (no ramp)"),
 			AmbientColor.R, AmbientColor.G, AmbientColor.B, SunColor.R, SunColor.G, SunColor.B, SunElevation, FogColor.R, FogColor.G, FogColor.B);
 	}
+}
+
+UTextureCube* USWGTerrainSubsystem::MakeUniformCubemap()
+{
+	UTextureCube* Cube = UTextureCube::CreateTransient(4, 4, PF_B8G8R8A8, TEXT("SWGAmbientCube"));
+	if (!Cube)
+	{
+		return nullptr;
+	}
+	FTexture2DMipMap& Mip = Cube->GetPlatformData()->Mips[0];
+	void* Dest = Mip.BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memset(Dest, 0xFF, Mip.BulkData.GetBulkDataSize());
+	Mip.BulkData.Unlock();
+	Cube->SRGB = false;
+	Cube->UpdateResource();
+	return Cube;
 }
 
 USWGTerrainSubsystem::FSWGPlanetEnvironment USWGTerrainSubsystem::LoadPlanetEnvironment(const FString& ZoneName) const

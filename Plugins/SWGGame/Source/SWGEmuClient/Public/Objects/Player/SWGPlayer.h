@@ -66,6 +66,9 @@ public:
 	// even for a differently-sized character.
 	void UpdateCameraHeight();
 
+	/** Writes swg.SkylightLeaking into the follow camera's Lumen post-process settings. */
+	void ApplySkylightLeaking();
+
 	// Switches to MOVE_Walking on possession now that terrain has real
 	// collision (USWGTerrainSubsystem) — the default pre-possession movement
 	// mode is whatever ACharacter starts with, which isn't guaranteed to be

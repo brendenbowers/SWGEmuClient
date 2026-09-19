@@ -32,6 +32,22 @@
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "EngineUtils.h"
 
+namespace
+{
+	// Lumen occludes the colour ramp's ambient under tree canopies; retail's
+	// ambient reached everywhere, so some of the sky light is let through.
+	TAutoConsoleVariable<float> CVarSkylightLeaking(
+		TEXT("swg.SkylightLeaking"), 0.6f,
+		TEXT("Fraction of sky light Lumen lets through where it would occlude it (0..1), applied to the player camera's post process."),
+		FConsoleVariableDelegate::CreateLambda([](IConsoleVariable*)
+			{
+				for (TObjectIterator<ASWGPlayer> It; It; ++It)
+				{
+					It->ApplySkylightLeaking();
+				}
+			}));
+}
+
 ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -82,6 +98,7 @@ ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("ASWGPlayer: M_TargetOutline not found — the target will have no outline"));
 	}
+	ApplySkylightLeaking();
 
 	// Capsule starts at ACharacter's default size (88 half-height) here, before
 	// any real mesh exists — USWGMeshGeneratorSubsystem resizes it to the
@@ -707,6 +724,20 @@ void ASWGPlayer::SendDataTransformUpdate()
 	//Transform.Speed = GetVelocity().Size();
 
 	//Network->SendMessage(Transform.Serialize());
+}
+
+void ASWGPlayer::ApplySkylightLeaking()
+{
+	if (!FollowCamera)
+	{
+		return;
+	}
+	FPostProcessSettings& PostProcess = FollowCamera->PostProcessSettings;
+	PostProcess.bOverride_LumenSkylightLeaking = true;
+	PostProcess.LumenSkylightLeaking = FMath::Clamp(CVarSkylightLeaking.GetValueOnGameThread(), 0.0f, 1.0f);
+	// Full leaking out to this distance; the engine default (1 m) only helps right at the camera.
+	PostProcess.bOverride_LumenFullSkylightLeakingDistance = true;
+	PostProcess.LumenFullSkylightLeakingDistance = 2000.0f;
 }
 
 void ASWGPlayer::BeginPlay()

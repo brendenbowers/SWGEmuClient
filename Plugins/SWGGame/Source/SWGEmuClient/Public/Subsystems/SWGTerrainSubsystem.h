@@ -14,6 +14,7 @@ class USWGObjectGraphSubsystem;
 class ALandscape;
 class ADirectionalLight;
 class ASkyLight;
+class UTextureCube;
 class AExponentialHeightFog;
 class USWGNetworkSubsystem;
 struct FSWGNetMessage;
@@ -234,6 +235,9 @@ public:
 
 	bool IsTerrainLoaded() const { return bTerrainDataCached; }
 
+	/** Tears down and rebuilds the active planet's lighting (swg.RelightPlanet). */
+	void RelightPlanet();
+
 	/** The .trn has parsed and streaming is starting — the planet data is available from here on (before OnTerrainReady). */
 	DECLARE_MULTICAST_DELEGATE(FOnTerrainLoaded);
 	FOnTerrainLoaded OnTerrainLoaded;
@@ -392,6 +396,9 @@ private:
 
 	/** Points the sun and colours sun/ambient/fog from the ramp at a 0..1 position through the day. Every tick. */
 	void ApplyTimeOfDay(float DayFraction, bool bLog = false);
+
+	/** A tiny solid-white cubemap so the sky light is a flat ambient term independent of the sky dome. */
+	static UTextureCube* MakeUniformCubemap();
 
 	/** ServerTime and CmdStartScene carry the zone's galactic time; everything else is ignored here. */
 	void HandleMessageReceived(TSharedPtr<FSWGNetMessage> Msg);
