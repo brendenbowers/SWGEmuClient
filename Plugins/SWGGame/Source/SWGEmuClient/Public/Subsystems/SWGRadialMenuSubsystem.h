@@ -62,6 +62,9 @@ struct SWGEMUCLIENT_API FSWGRadialMenu
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSWGOnRadialMenuReceived, const FSWGRadialMenu&, Menu);
 
+/** Fired when the player picks "Use" on a mission terminal — see USWGRadialMenuSubsystem::SelectOption. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSWGOnMissionTerminalUsed, int64, TerminalObjectId);
+
 /**
  * The object radial menu: asks the server what can be done with an object
  * (ObjectMenuRequest 0x146), hands the merged menu to the UI, and turns a
@@ -94,11 +97,17 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "SWGEmu|Radial")
 	FSWGOnRadialMenuReceived OnMenuReceived;
 
+	UPROPERTY(BlueprintAssignable, Category = "SWGEmu|Radial")
+	FSWGOnMissionTerminalUsed OnMissionTerminalUsed;
+
 private:
 	void HandleMessageReceived(TSharedPtr<FSWGNetMessage> Message);
 
 	/** The client-side options retail offers for every object of this kind. */
 	void AppendClientDefaults(int64 ObjectId, TArray<FSWGRadialMenuItem>& Items) const;
+
+	/** Whether ObjectId's template is one of the object/tangible/terminal/shared_terminal_mission*.iff variants. */
+	bool IsMissionTerminal(int64 ObjectId) const;
 
 	FText ResolveLabel(const FSWGRadialMenuEntry& Entry) const;
 

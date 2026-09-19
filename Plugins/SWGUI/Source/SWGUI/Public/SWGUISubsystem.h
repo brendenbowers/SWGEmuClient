@@ -74,6 +74,12 @@ private:
 	UFUNCTION()
 	void HandleSuiPageClosed(int32 PageId);
 
+	UFUNCTION()
+	void HandleMissionWindowRequested(int64 TerminalObjectId);
+
+	UFUNCTION()
+	void HandleMissionListChanged();
+
 	USWGGameLayout* EnsureLayout();
 
 	UPROPERTY()
@@ -82,6 +88,15 @@ private:
 	/** Open SUI windows by page id, so a server force-close can take them down. */
 	UPROPERTY()
 	TMap<int32, TObjectPtr<class USWGSuiBoxWidget>> SuiWindows;
+
+	UPROPERTY()
+	TObjectPtr<class USWGMissionBrowserWidget> MissionWindow;
+
+	/** The gamepad form; only one of this and MissionWindow is ever up. */
+	UPROPERTY()
+	TObjectPtr<class USWGMissionBrowserDockWidget> MissionDock;
+
+	void HandleMissionDockClosed();
 
 	/** Floating windows (inventory, examine...) on the player screen, above the layout. */
 	UPROPERTY()

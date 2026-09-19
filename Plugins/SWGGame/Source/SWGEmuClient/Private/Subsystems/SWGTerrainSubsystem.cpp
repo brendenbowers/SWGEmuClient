@@ -8,6 +8,7 @@
 #include "SpawnHandlers/SWGBuildingSpawnHanlder.h"
 #include "Subsystems/SWGInteriorStreamingSubsystem.h"
 #include "Objects/SWGNetworkObjectInterface.h"
+#include "Objects/SWGObject.h"
 #include "Objects/World/SWGBuilding.h"
 #include "Objects/World/SWGCell.h"
 #include "TRE/SWGTerrainReader.h"
@@ -1800,6 +1801,11 @@ AActor* USWGTerrainSubsystem::SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpaw
 	const ISWGNetworkObjectInterface* ParentObject = Cast<ISWGNetworkObjectInterface>(Parent);
 	const int64 ParentObjectId = ParentObject ? ParentObject->GetObjectId() : 0;
 	ASWGCell* Cell = Cast<ASWGCell>(Actor);
+
+	if (ASWGObject* SWGObject = Cast<ASWGObject>(Actor))
+	{
+		SWGObject->StaticTemplatePath = Info.TemplateName;
+	}
 
 	// A cell registers only once FinishCell has attached it to its building:
 	// registering re-applies containment for whatever is already in the room,

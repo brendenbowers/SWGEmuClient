@@ -25,6 +25,18 @@ public:
 	uint32 SWGObjectCRC = 0;
 	bool   bBaselinesComplete = false;
 
+	/**
+	 * The .iff template path, for a .ws world-snapshot object only (a
+	 * building's static dressing — a terminal, a static prop). Core3 never
+	 * sends SceneCreateObjectByCrc for these (BuildingObjectImplementation::
+	 * sendTo: "static in the client"), so SWGObjectCRC is never set for them
+	 * and there's no CRC to resolve through USWGTreSubsystem — the .ws parse
+	 * already had the path as a string, so USWGTerrainSubsystem just keeps it
+	 * here. Empty for every network-spawned object, which should resolve its
+	 * template through SWGObjectCRC instead.
+	 */
+	FString StaticTemplatePath;
+
 	virtual int64 GetObjectId() const override { return SWGObjectId; }
 	virtual void SetObjectId(int64 NewObjectId) override { SWGObjectId = NewObjectId; }
 

@@ -361,15 +361,35 @@ void USWGItemIconSubsystem::RequestItemModel(int64 ObjectId, TFunction<void(UObj
 {
 	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
 	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
-	USWGMeshGeneratorSubsystem* MeshGenerator = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr;
 	AActor* Actor = ObjectGraph ? ObjectGraph->FindActor(ObjectId) : nullptr;
 	ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(Actor);
-	if (!NetObject || !MeshGenerator || NetObject->GetObjectCrc() == 0 || !OnReady)
+	if (!NetObject || NetObject->GetObjectCrc() == 0 || !OnReady)
 	{
 		return;
 	}
 
-	const uint32 TemplateCrc = NetObject->GetObjectCrc();
+	// Volume-contained: the slot check inside RequestItemMesh is skipped, so a
+	// bag item builds even though it isn't on a body.
+	const USWGTangibleComponent* Tangible = Actor->FindComponentByClass<USWGTangibleComponent>();
+	const FSWGCustomizationVariables Customization = Tangible ? Tangible->GetEffectiveCustomization() : FSWGCustomizationVariables();
+
+	RequestModelForTemplateCrcImpl(NetObject->GetObjectCrc(), Customization, MoveTemp(OnReady));
+}
+
+void USWGItemIconSubsystem::RequestModelForTemplateCrc(uint32 TemplateCrc, TFunction<void(UObject*, const TArray<UMaterialInterface*>&)> OnReady)
+{
+	RequestModelForTemplateCrcImpl(TemplateCrc, FSWGCustomizationVariables(), MoveTemp(OnReady));
+}
+
+void USWGItemIconSubsystem::RequestModelForTemplateCrcImpl(uint32 TemplateCrc, const FSWGCustomizationVariables& Customization, TFunction<void(UObject*, const TArray<UMaterialInterface*>&)> OnReady)
+{
+	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	USWGMeshGeneratorSubsystem* MeshGenerator = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr;
+	if (!MeshGenerator || TemplateCrc == 0 || !OnReady)
+	{
+		return;
+	}
+
 	if (const FSWGCachedItemModel* Cached = ModelsByTemplateCrc.Find(TemplateCrc))
 	{
 		TArray<UMaterialInterface*> Materials;
@@ -388,11 +408,6 @@ void USWGItemIconSubsystem::RequestItemModel(int64 ObjectId, TFunction<void(UObj
 		// A build is already in flight for this template.
 		return;
 	}
-
-	// Volume-contained: the slot check inside RequestItemMesh is skipped, so a
-	// bag item builds even though it isn't on a body.
-	const USWGTangibleComponent* Tangible = Actor->FindComponentByClass<USWGTangibleComponent>();
-	const FSWGCustomizationVariables Customization = Tangible ? Tangible->GetEffectiveCustomization() : FSWGCustomizationVariables();
 
 	TWeakObjectPtr<USWGItemIconSubsystem> WeakThis(this);
 	const auto Deliver = [WeakThis, TemplateCrc](UObject* Mesh, const TArray<UMaterialInterface*>& Materials)

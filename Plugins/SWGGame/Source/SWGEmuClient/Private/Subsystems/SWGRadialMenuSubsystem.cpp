@@ -11,7 +11,10 @@
 #include "Network/Messages/Zone/ObjControllerMessageIn.h"
 #include "Network/Messages/Zone/Object/ObjectMenuResponseIn.h"
 #include "Network/Messages/Zone/ObjectMenuSelectMessage.h"
+#include "Components/SWGTerminalComponent.h"
 #include "Objects/Creature/SWGCreature.h"
+#include "Objects/SWGNetworkObjectInterface.h"
+#include "Objects/SWGObject.h"
 #include "Objects/Tangible/SWGItem.h"
 #include "Objects/World/SWGInstallation.h"
 #include "TRE/SWGDataTableReader.h"
@@ -171,6 +174,28 @@ bool USWGRadialMenuSubsystem::RequestMenu(int64 ObjectId, FVector2D ScreenPositi
 	return true;
 }
 
+bool USWGRadialMenuSubsystem::IsMissionTerminal(int64 ObjectId) const
+{
+	if (!ObjectGraph)
+	{
+		return false;
+	}
+	AActor* Actor = ObjectGraph->FindActor(ObjectId);
+	if (!Actor)
+	{
+		return false;
+	}
+
+	// FSWGTerminalSpawnHandler already classified this at spawn time — see
+	// USWGTerminalComponent for why that beats re-deriving the template path
+	// (and its SWGObjectCRC-is-zero-for-.ws-statics wrinkle) on every click.
+	const USWGTerminalComponent* Terminal = Actor->FindComponentByClass<USWGTerminalComponent>();
+	const bool bIsMission = Terminal && Terminal->TerminalType == ESWGTerminalType::Mission;
+	UE_LOG(LogSWGRadial, Verbose, TEXT("IsMissionTerminal: %lld terminal=%s -> %s"), ObjectId,
+		Terminal ? TEXT("yes") : TEXT("no"), bIsMission ? TEXT("true") : TEXT("false"));
+	return bIsMission;
+}
+
 void USWGRadialMenuSubsystem::SelectOption(int64 ObjectId, int32 RadialId)
 {
 	const FSWGRadialMenu* Menu = ReceivedMenus.Find(ObjectId);
@@ -180,6 +205,19 @@ void USWGRadialMenuSubsystem::SelectOption(int64 ObjectId, int32 RadialId)
 	if (!Item)
 	{
 		UE_LOG(LogSWGRadial, Warning, TEXT("SelectOption: no option %d in the menu for %lld"), RadialId, ObjectId);
+		return;
+	}
+
+	// MissionTerminalImplementation never answers ITEM_USE server-side — the
+	// retail client instead special-cases "Use" on a mission terminal exactly
+	// like Equip on a wearable, firing MissionListRequest directly instead of
+	// ObjectMenuSelect. See FMissionListRequest.
+	if (RadialId == RadialItemUse && IsMissionTerminal(ObjectId))
+	{
+		// USWGMissionSubsystem sends FMissionListRequest itself, from this — it
+		// also owns AcceptMission/RefreshMissionList, so one place tracks the
+		// request seq every mission's RefreshCounter gets checked against.
+		OnMissionTerminalUsed.Broadcast(ObjectId);
 		return;
 	}
 

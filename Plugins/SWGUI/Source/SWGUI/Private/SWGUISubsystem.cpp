@@ -4,12 +4,15 @@
 #include "SWGStateTransitionConfig.h"
 #include "SWGRadialMenuWidget.h"
 #include "SWGSuiBoxWidget.h"
+#include "SWGMissionBrowserWidget.h"
+#include "SWGMissionBrowserDockWidget.h"
 #include "SWGInventoryWidget.h"
 #include "SWGInventoryDockWidget.h"
 #include "CommonInputSubsystem.h"
 #include "SWGExamineWidget.h"
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
+#include "Subsystems/SWGMissionSubsystem.h"
 #include "Engine/DataTable.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
@@ -35,6 +38,11 @@ void USWGUISubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	if (USWGExamineSubsystem* Examine = GameInstance->GetSubsystem<USWGExamineSubsystem>())
 	{
 		Examine->OnExamineRequested.AddDynamic(this, &USWGUISubsystem::HandleExamineRequested);
+	}
+	if (USWGMissionSubsystem* Missions = GameInstance->GetSubsystem<USWGMissionSubsystem>())
+	{
+		Missions->OnMissionWindowRequested.AddDynamic(this, &USWGUISubsystem::HandleMissionWindowRequested);
+		Missions->OnMissionListChanged.AddDynamic(this, &USWGUISubsystem::HandleMissionListChanged);
 	}
 	if (UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetLocalPlayer()))
 	{
@@ -66,6 +74,11 @@ void USWGUISubsystem::Deinitialize()
 		if (USWGExamineSubsystem* Examine = GameInstance->GetSubsystem<USWGExamineSubsystem>())
 		{
 			Examine->OnExamineRequested.RemoveAll(this);
+		}
+		if (USWGMissionSubsystem* Missions = GameInstance->GetSubsystem<USWGMissionSubsystem>())
+		{
+			Missions->OnMissionWindowRequested.RemoveAll(this);
+			Missions->OnMissionListChanged.RemoveAll(this);
 		}
 	}
 
@@ -137,6 +150,80 @@ void USWGUISubsystem::HandleSuiPageClosed(int32 PageId)
 	if (SuiWindows.RemoveAndCopyValue(PageId, Window) && Window && Window->IsActivated())
 	{
 		Window->DeactivateWidget();
+	}
+}
+
+void USWGUISubsystem::HandleMissionWindowRequested(int64 TerminalObjectId)
+{
+	if (MissionWindow || MissionDock)
+	{
+		// Already up (re-used the terminal, or a second terminal) — raise it and let HandleMissionListChanged refresh it.
+		if (MissionWindow)
+		{
+			HandleWindowPressed(MissionWindow);
+		}
+		HandleMissionListChanged();
+		return;
+	}
+
+	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	// Same split as the inventory: a gamepad gets the docked, D-pad-driven form
+	// instead of a floating, mouse-dragged window.
+	if (IsGamepadActive())
+	{
+		TSubclassOf<USWGMissionBrowserDockWidget> DockClass = USWGUISettings::Get().MissionBrowserDockClass.LoadSynchronous();
+		if (!DockClass)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: mission dock for %lld dropped — no MissionBrowserDockClass set in Project Settings > SWG UI"), TerminalObjectId);
+			return;
+		}
+		MissionDock = CreateWidget<USWGMissionBrowserDockWidget>(PlayerController, DockClass);
+		MissionDock->OnClosed.AddUObject(this, &USWGUISubsystem::HandleMissionDockClosed);
+		MissionDock->AddToPlayerScreen(NextWindowZ++);
+		MissionDock->SetFocus();
+		HandleMissionListChanged();
+		return;
+	}
+
+	TSubclassOf<USWGMissionBrowserWidget> BrowserClass = USWGUISettings::Get().MissionBrowserClass.LoadSynchronous();
+	if (!BrowserClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: mission window for %lld dropped — no MissionBrowserClass set in Project Settings > SWG UI"), TerminalObjectId);
+		return;
+	}
+
+	MissionWindow = CreateWidget<USWGMissionBrowserWidget>(PlayerController, BrowserClass);
+	ShowWindow(MissionWindow);
+	MissionWindow->CenterOnScreen();
+	HandleMissionListChanged();
+}
+
+void USWGUISubsystem::HandleMissionDockClosed()
+{
+	MissionDock = nullptr;
+}
+
+void USWGUISubsystem::HandleMissionListChanged()
+{
+	UGameInstance* GameInstance = GetLocalPlayer() ? GetLocalPlayer()->GetGameInstance() : nullptr;
+	USWGMissionSubsystem* Missions = GameInstance ? GameInstance->GetSubsystem<USWGMissionSubsystem>() : nullptr;
+	if (!Missions)
+	{
+		return;
+	}
+
+	if (MissionWindow)
+	{
+		MissionWindow->SetMissions(Missions->GetMissions());
+	}
+	if (MissionDock)
+	{
+		MissionDock->SetMissions(Missions->GetMissions());
 	}
 }
 
@@ -243,6 +330,10 @@ void USWGUISubsystem::HandleWindowClosed(USWGWindowWidget* Window)
 	if (Window == InventoryWindow)
 	{
 		InventoryWindow = nullptr;
+	}
+	if (Window == MissionWindow)
+	{
+		MissionWindow = nullptr;
 	}
 	for (auto It = ExamineWindows.CreateIterator(); It; ++It)
 	{

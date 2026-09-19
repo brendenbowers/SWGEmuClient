@@ -32,6 +32,14 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGSuiBoxWidget> SuiBoxClass;
 
+	/** Mission terminal browser (WBP_MissionBrowser), pushed on the modal layer. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGMissionBrowserWidget> MissionBrowserClass;
+
+	/** Gamepad form of the mission browser (WBP_MissionBrowserDock), used instead of MissionBrowserClass while a gamepad is the active input. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGMissionBrowserDockWidget> MissionBrowserDockClass;
+
 	/** Damage-number layer put under the HUD while in world. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGFloatingTextWidget> FloatingTextClass;

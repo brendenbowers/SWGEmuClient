@@ -65,6 +65,14 @@ public:
 	 */
 	void RequestItemModel(int64 ObjectId, TFunction<void(UObject* Mesh, const TArray<UMaterialInterface*>& Materials)> OnReady);
 
+	/**
+	 * Same as RequestItemModel, but for a template that has no live object —
+	 * a mission's target lair/camp, say, known only by TargetTemplateCrc.
+	 * Built with default (uncustomized) appearance, since there's no instance
+	 * to read variables from.
+	 */
+	void RequestModelForTemplateCrc(uint32 TemplateCrc, TFunction<void(UObject* Mesh, const TArray<UMaterialInterface*>& Materials)> OnReady);
+
 	/** Drops every cached icon and model; the next request builds afresh. */
 	void ClearCache();
 
@@ -82,6 +90,8 @@ public:
 private:
 	/** Spawns the stage on first use. False if the world can't host it. */
 	bool EnsureStage();
+
+	void RequestModelForTemplateCrcImpl(uint32 TemplateCrc, const struct FSWGCustomizationVariables& Customization, TFunction<void(UObject* Mesh, const TArray<UMaterialInterface*>& Materials)> OnReady);
 
 	struct FPendingCapture
 	{
