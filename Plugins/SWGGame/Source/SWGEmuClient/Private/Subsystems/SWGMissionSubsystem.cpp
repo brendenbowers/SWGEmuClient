@@ -215,6 +215,32 @@ TArray<FSWGMissionEntry> USWGMissionSubsystem::GetMissions() const
 	return Result;
 }
 
+TArray<FSWGMissionEntry> USWGMissionSubsystem::GetMissionsWithWaypoints() const
+{
+	// No containment/BagId check: unlike GetMissions() (which needs FindMissionBagId
+	// to tell one terminal's offers apart from another's), a MISO baseline/delta only
+	// ever arrives for something already in the local player's own mission_bag — the
+	// server has no reason to send one otherwise. FindMissionBagId also depends on
+	// the bag itself having a spawned actor (to read its template CRC), which bags
+	// apparently never get, so relying on it here would just always come up empty.
+	TArray<FSWGMissionEntry> Result;
+	for (const TPair<int64, FSWGMissionEntry>& Pair : Entries)
+	{
+		if (Pair.Value.bHasWaypoint)
+		{
+			Result.Add(Pair.Value);
+		}
+	}
+	return Result;
+}
+
+TArray<FSWGMissionEntry> USWGMissionSubsystem::GetAllTrackedMissions() const
+{
+	TArray<FSWGMissionEntry> Result;
+	Entries.GenerateValueArray(Result);
+	return Result;
+}
+
 bool USWGMissionSubsystem::RefreshMissionList()
 {
 	return SendMissionListRequest(ActiveTerminalId);
@@ -281,6 +307,22 @@ void USWGMissionSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> Mess
 					Entry.TargetTemplateName = FText::FromString(Tre->ResolveTemplateObjectName(Baseline.TargetTemplateCrc));
 				}
 			}
+			// WaypointObjectId alone isn't a reliable "has a real waypoint" signal — the
+			// baseline's "no waypoint yet" placeholder (every mission_bag slot starts
+			// this way, offered or not) still carries a non-zero id and a plausible-
+			// looking WaypointName (the mission's own type string). WaypointActive is
+			// what retail actually keys "was this waypoint granted" on: a mission
+			// doesn't get an active waypoint until it's accepted.
+			Entry.bHasWaypoint = Baseline.WaypointActive != 0;
+			if (Entry.bHasWaypoint)
+			{
+				Entry.WaypointObjectId = Baseline.WaypointObjectId;
+				Entry.WaypointName = Baseline.WaypointName;
+				Entry.WaypointPlanetCrc = static_cast<int32>(Baseline.WaypointPlanetCrc);
+				Entry.WaypointColor = Baseline.WaypointColor;
+				Entry.bWaypointActive = true;
+				Entry.WaypointRawPosition = Baseline.WaypointPosition;
+			}
 
 			OnMissionListChanged.Broadcast();
 			break;
@@ -329,6 +371,18 @@ void USWGMissionSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> Mess
 				Entry.StartPositionRaw = *Delta.StartPosition;
 				Entry.bHasStartPosition = true;
 			}
+			// See the BaselinesMessage case above: WaypointActive, not a non-zero
+			// WaypointObjectId, is the real "has a granted waypoint" signal.
+			if (Delta.WaypointActive.IsSet())
+			{
+				Entry.bHasWaypoint = *Delta.WaypointActive != 0;
+				Entry.bWaypointActive = Entry.bHasWaypoint;
+			}
+			if (Delta.WaypointObjectId.IsSet())  { Entry.WaypointObjectId = *Delta.WaypointObjectId; }
+			if (Delta.WaypointName.IsSet())      { Entry.WaypointName = *Delta.WaypointName; }
+			if (Delta.WaypointPlanetCrc.IsSet()) { Entry.WaypointPlanetCrc = static_cast<int32>(*Delta.WaypointPlanetCrc); }
+			if (Delta.WaypointColor.IsSet())     { Entry.WaypointColor = *Delta.WaypointColor; }
+			if (Delta.WaypointPosition.IsSet())  { Entry.WaypointRawPosition = *Delta.WaypointPosition; }
 
 			OnMissionListChanged.Broadcast();
 			break;

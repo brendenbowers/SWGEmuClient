@@ -9,6 +9,7 @@ class USWGConditionWidget;
 class USWGActionBarWidget;
 class USWGTargetBoxWidget;
 class USWGCommandQueueWidget;
+class USWGWaypointMarkerWidget;
 
 /**
  * In-world HUD root, pushed onto the layout's HUD layer once the player is in
@@ -24,6 +25,10 @@ public:
 	/** Opens the inventory window, or closes it if it is up. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HUD")
 	void ToggleInventory();
+
+	/** Opens the waypoint list window, or closes it if it is up. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HUD")
+	void ToggleWaypointList();
 
 	/** Fires the action bar slot at this index — the entry point for number-key hotkeys. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HUD")
@@ -56,6 +61,10 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
 	TObjectPtr<USWGCommandQueueWidget> CommandQueue;
+
+	/** Pins active waypoints over the 3D world and draws an off-screen arrow for the rest — see USWGWaypointMarkerWidget. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<USWGWaypointMarkerWidget> WaypointMarkers;
 
 private:
 	UFUNCTION()

@@ -3140,6 +3140,12 @@ FBox2D USWGTerrainSubsystem::TileBounds(const FIntPoint& Coord)
 	return FBox2D(Min, Min + FVector2D(HeightmapWorldExtent, HeightmapWorldExtent));
 }
 
+bool USWGTerrainSubsystem::IsPositionStreamed(const FVector2D& RawPosition) const
+{
+	const FSWGTerrainTile* Tile = Tiles.Find(TileCoordAt(RawPosition));
+	return Tile && Tile->Component;
+}
+
 bool USWGTerrainSubsystem::IsTileOnMap(const FIntPoint& Coord) const
 {
 	const float HalfMap = PlanetData.IsValid() ? PlanetData->Header.MapSize * 0.5f : 8192.0f;

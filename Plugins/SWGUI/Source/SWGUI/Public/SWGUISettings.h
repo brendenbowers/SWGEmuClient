@@ -63,4 +63,8 @@ public:
 	/** Examine window opened from the radial menu. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGExamineWidget> ExamineClass;
+
+	/** Datapad waypoint list, toggled by the player's WaypointListKey. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGWaypointListWidget> WaypointListClass;
 };

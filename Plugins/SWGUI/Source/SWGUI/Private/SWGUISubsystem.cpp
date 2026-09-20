@@ -10,6 +10,7 @@
 #include "SWGInventoryDockWidget.h"
 #include "CommonInputSubsystem.h"
 #include "SWGExamineWidget.h"
+#include "SWGWaypointListWidget.h"
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
@@ -335,6 +336,10 @@ void USWGUISubsystem::HandleWindowClosed(USWGWindowWidget* Window)
 	{
 		MissionWindow = nullptr;
 	}
+	if (Window == WaypointWindow)
+	{
+		WaypointWindow = nullptr;
+	}
 	for (auto It = ExamineWindows.CreateIterator(); It; ++It)
 	{
 		if (It->Value == Window)
@@ -487,5 +492,33 @@ void USWGUISubsystem::OpenExamine(int64 ObjectId)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: nothing known about %lld to examine"), ObjectId);
 		Window->Close();
+	}
+}
+
+void USWGUISubsystem::ToggleWaypointList()
+{
+	if (IsWaypointListOpen())
+	{
+		CloseWaypointList();
+		return;
+	}
+
+	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
+	TSubclassOf<USWGWaypointListWidget> WaypointListClass = USWGUISettings::Get().WaypointListClass.LoadSynchronous();
+	if (!PlayerController || !WaypointListClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: no WaypointListClass set in Project Settings > SWG UI"));
+		return;
+	}
+	WaypointWindow = CreateWidget<USWGWaypointListWidget>(PlayerController, WaypointListClass);
+	ShowWindow(WaypointWindow);
+	WaypointWindow->CenterOnScreen();
+}
+
+void USWGUISubsystem::CloseWaypointList()
+{
+	if (WaypointWindow)
+	{
+		WaypointWindow->Close();
 	}
 }

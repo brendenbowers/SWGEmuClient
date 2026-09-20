@@ -14,10 +14,10 @@
 
 namespace
 {
-	bool IsCursorUp(const FKey& Key)   { return Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_LeftStick_Up || Key == EKeys::Up; }
-	bool IsCursorDown(const FKey& Key) { return Key == EKeys::Gamepad_DPad_Down || Key == EKeys::Gamepad_LeftStick_Down || Key == EKeys::Down; }
+	bool IsMissionDockCursorUp(const FKey& Key)   { return Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_LeftStick_Up || Key == EKeys::Up; }
+	bool IsMissionDockCursorDown(const FKey& Key) { return Key == EKeys::Gamepad_DPad_Down || Key == EKeys::Gamepad_LeftStick_Down || Key == EKeys::Down; }
 
-	bool IsOwnedGamepadKey(const FKey& Key)
+	bool IsMissionDockOwnedGamepadKey(const FKey& Key)
 	{
 		return Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_DPad_Down || Key == EKeys::Gamepad_LeftStick_Up || Key == EKeys::Gamepad_LeftStick_Down
 			|| Key == EKeys::Gamepad_FaceButton_Bottom || Key == EKeys::Gamepad_FaceButton_Top || Key == EKeys::Gamepad_FaceButton_Right
@@ -55,12 +55,12 @@ FReply USWGMissionBrowserDockWidget::NativeOnFocusReceived(const FGeometry& InGe
 FReply USWGMissionBrowserDockWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
 	const FKey Key = InKeyEvent.GetKey();
-	if (IsCursorUp(Key))
+	if (IsMissionDockCursorUp(Key))
 	{
 		MoveCursor(-1);
 		return FReply::Handled();
 	}
-	if (IsCursorDown(Key))
+	if (IsMissionDockCursorDown(Key))
 	{
 		MoveCursor(1);
 		return FReply::Handled();
@@ -80,7 +80,7 @@ FReply USWGMissionBrowserDockWidget::NativeOnKeyDown(const FGeometry& InGeometry
 		Close();
 		return FReply::Handled();
 	}
-	if (IsOwnedGamepadKey(Key))
+	if (IsMissionDockOwnedGamepadKey(Key))
 	{
 		return FReply::Handled();
 	}
@@ -89,7 +89,7 @@ FReply USWGMissionBrowserDockWidget::NativeOnKeyDown(const FGeometry& InGeometry
 
 FReply USWGMissionBrowserDockWidget::NativeOnKeyUp(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
-	return IsOwnedGamepadKey(InKeyEvent.GetKey()) ? FReply::Handled() : Super::NativeOnKeyUp(InGeometry, InKeyEvent);
+	return IsMissionDockOwnedGamepadKey(InKeyEvent.GetKey()) ? FReply::Handled() : Super::NativeOnKeyUp(InGeometry, InKeyEvent);
 }
 
 void USWGMissionBrowserDockWidget::MoveCursor(int32 Delta)

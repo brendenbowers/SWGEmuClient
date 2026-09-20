@@ -101,6 +101,13 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
 	FKey InventoryKey = EKeys::I;
 
+	// Fired by WaypointListKey; the HUD opens or closes the waypoint list window.
+	DECLARE_MULTICAST_DELEGATE(FOnToggleWaypointList);
+	FOnToggleWaypointList OnToggleWaypointList;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Input")
+	FKey WaypointListKey = EKeys::L;
+
 	// Gamepad layout: D-pad and face buttons are the eight action slots;
 	// ActionBankShiftKey toggles to the second eight. InteractKey opens
 	// the target's radial menu (the RMB-click equivalent), and holding
@@ -182,6 +189,7 @@ protected:
 
 	void ToggleActionBank();
 	void ToggleInventory();
+	void ToggleWaypointList();
 	void OnZoomModifierPressed();
 	void OnZoomModifierReleased();
 
@@ -241,6 +249,19 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	TObjectPtr<USWGStomachComponent> StomachComponent;
+
+	/**
+	 * Tells the navigation system to keep Recast tiles generated in a radius
+	 * around the player as they move — see DefaultEngine.ini's
+	 * bGenerateNavigationOnlyAroundNavigationInvokers, the supported way to
+	 * get runtime navmesh over a streamed world with no placed
+	 * NavMeshBoundsVolume. Radii are tuned to track the terrain's own
+	 * swg.TerrainLoadRadius/UnloadRadius streaming rings (see
+	 * USWGTerrainSubsystem), so navmesh exists wherever there's loaded
+	 * terrain to walk on and is dropped again once that terrain unloads.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<class UNavigationInvokerComponent> NavInvoker;
 
 	// IA_Move is mapped to both WASD and the left gamepad stick by IMC_Default.
 	UPROPERTY(EditDefaultsOnly, Category = "Input")

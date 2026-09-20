@@ -87,6 +87,36 @@ struct SWGEMUCLIENT_API FSWGMissionEntry
 	 */
 	UPROPERTY()
 	uint32 RefreshCounter = 0;
+
+	/**
+	 * This mission's granted waypoint — MissionObjectMessage3 field index
+	 * 0x10, already decoded by FMissionObjectBaseline/FMissionObjectDelta.
+	 * "Almost always the no-waypoint shape at baseline time" (see that
+	 * struct's own comment): bHasWaypoint only goes true once a delta
+	 * actually sets one, matching retail (a mission grants its waypoint on
+	 * accept, not before).
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Mission")
+	bool bHasWaypoint = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Mission")
+	int64 WaypointObjectId = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Mission")
+	FString WaypointName;
+
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Mission")
+	int32 WaypointPlanetCrc = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Mission")
+	uint8 WaypointColor = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Mission")
+	bool bWaypointActive = false;
+
+	/** Raw (x east, y north, z up) position — same frame as StartPositionRaw. */
+	UPROPERTY()
+	FVector WaypointRawPosition = FVector::ZeroVector;
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSWGOnMissionWindowRequested, int64, TerminalObjectId);
@@ -124,6 +154,20 @@ public:
 	/** Every mission currently in the player's mission_bag, populated or not. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Mission")
 	TArray<FSWGMissionEntry> GetMissions() const;
+
+	/**
+	 * Every mission_bag entry with a granted waypoint (bHasWaypoint), regardless
+	 * of RefreshCounter/terminal scoping — an accepted mission isn't tied to any
+	 * particular terminal's last request the way GetMissions()'s browser view is,
+	 * so that filter would wrongly hide it the moment no terminal is open.
+	 * See USWGWaypointSubsystem::GetMissionWaypoints.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Mission")
+	TArray<FSWGMissionEntry> GetMissionsWithWaypoints() const;
+
+	/** Every MISO this client has ever seen a baseline/delta for, regardless of mission_bag containment or terminal scoping — swg.DumpAllMissions's raw view, for ruling out client-side filtering when diagnosing "why is X missing". */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Mission")
+	TArray<FSWGMissionEntry> GetAllTrackedMissions() const;
 
 	/** The terminal id from the most recent OnMissionWindowRequested, or 0. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Mission")

@@ -48,6 +48,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
 	void OpenExamine(int64 ObjectId);
 
+	/** Opens the waypoint list, or closes it if it is up. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void ToggleWaypointList();
+
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void CloseWaypointList();
+
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
+	bool IsWaypointListOpen() const { return WaypointWindow != nullptr; }
+
 private:
 	bool IsGamepadActive() const;
 	void HandleInventoryDockClosed();
@@ -104,6 +114,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<class USWGInventoryWidget> InventoryWindow;
+
+	UPROPERTY()
+	TObjectPtr<class USWGWaypointListWidget> WaypointWindow;
 
 	/** The gamepad form; only one of this and InventoryWindow is ever up. */
 	UPROPERTY()

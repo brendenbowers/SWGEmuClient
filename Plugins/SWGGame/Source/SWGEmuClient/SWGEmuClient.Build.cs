@@ -27,7 +27,8 @@ public class SWGEmuClient : ModuleRules
 			"GeometryScriptingCore",
 			"SWGEmu",
 			"SWGTre",
-			"SWGAnimation"
+			"SWGAnimation",
+			"NavigationSystem"
         });
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

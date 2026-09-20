@@ -235,6 +235,14 @@ public:
 
 	bool IsTerrainLoaded() const { return bTerrainDataCached; }
 
+	/**
+	 * Whether the tile covering a raw-space XY position is currently streamed
+	 * in with a live mesh component — a waypoint (or anything else placing a
+	 * world-space marker) outside this is too far from the player to have
+	 * ground loaded under it yet.
+	 */
+	bool IsPositionStreamed(const FVector2D& RawPosition) const;
+
 	/** Tears down and rebuilds the active planet's lighting (swg.RelightPlanet). */
 	void RelightPlanet();
 

@@ -99,6 +99,7 @@ void USWGHudWidget::BindHotkeys(APawn* Pawn)
 		Previous->OnActionSlotHotkey.RemoveAll(this);
 		Previous->OnActionBankChanged.RemoveAll(this);
 		Previous->OnToggleInventory.RemoveAll(this);
+		Previous->OnToggleWaypointList.RemoveAll(this);
 	}
 
 	HotkeySource = Cast<ASWGPlayer>(Pawn);
@@ -107,6 +108,7 @@ void USWGHudWidget::BindHotkeys(APawn* Pawn)
 		Player->OnActionSlotHotkey.AddUObject(this, &USWGHudWidget::HandleActionSlotHotkey);
 		Player->OnActionBankChanged.AddUObject(this, &USWGHudWidget::HandleActionBankChanged);
 		Player->OnToggleInventory.AddUObject(this, &USWGHudWidget::ToggleInventory);
+		Player->OnToggleWaypointList.AddUObject(this, &USWGHudWidget::ToggleWaypointList);
 		HandleActionBankChanged(Player->GetActiveActionBank());
 	}
 }
@@ -146,6 +148,14 @@ void USWGHudWidget::ToggleInventory()
 	}
 }
 
+void USWGHudWidget::ToggleWaypointList()
+{
+	if (USWGUISubsystem* UI = ULocalPlayer::GetSubsystem<USWGUISubsystem>(GetOwningLocalPlayer()))
+	{
+		UI->ToggleWaypointList();
+	}
+}
+
 namespace
 {
 	FAutoConsoleCommand CmdToggleInventory(
@@ -167,6 +177,18 @@ namespace
 			{
 				UI->CloseInventory();
 				UI->OpenInventory(Args[0].Equals(TEXT("dock"), ESearchCase::IgnoreCase));
+			}
+		}));
+
+	FAutoConsoleCommand CmdToggleWaypoints(
+		TEXT("swg.Waypoints"),
+		TEXT("Opens or closes the waypoint list, as the waypoint list key does."),
+		FConsoleCommandDelegate::CreateLambda([]()
+		{
+			USWGHudWidget* Hud = USWGHudWidget::GetActiveHud();
+			if (USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr)
+			{
+				UI->ToggleWaypointList();
 			}
 		}));
 }

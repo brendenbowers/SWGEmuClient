@@ -1183,14 +1183,18 @@ bool USWGMeshGeneratorSubsystem::ResolveAppearanceMeshPaths(const FString& Appea
 	// either way, just skip straight to the mesh-group loop below with this
 	// one path instead of opening/parsing an .apt first.
 	const bool bIsLod = AppearancePath.EndsWith(TEXT(".lod"));
-	if (!bIsSat && !bIsApt && !bIsLod)
+	// A handful of assets (retail's own tutorial path-arrow among them) are
+	// referenced directly by their .msh with no .apt/.lod wrapper at all —
+	// same one-mesh-group shape as the bare-.lod case below.
+	const bool bIsMsh = AppearancePath.EndsWith(TEXT(".msh"));
+	if (!bIsSat && !bIsApt && !bIsLod && !bIsMsh)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: unrecognized appearanceFilename extension: %s"), *AppearancePath);
 		return false;
 	}
 
 	TArray<FString> MeshGroupPaths;
-	if (bIsLod)
+	if (bIsLod || bIsMsh)
 	{
 		MeshGroupPaths = { AppearancePath };
 		bOutSkeletal = false;

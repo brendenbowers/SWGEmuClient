@@ -31,6 +31,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "EngineUtils.h"
+#include "NavigationInvokerComponent.h"
 
 namespace
 {
@@ -70,6 +71,13 @@ ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	CraftingComponent = CreateDefaultSubobject<USWGCraftingComponent>(TEXT("CraftingComponent"));
 	SocialComponent = CreateDefaultSubobject<USWGSocialComponent>(TEXT("SocialComponent"));
 	StomachComponent = CreateDefaultSubobject<USWGStomachComponent>(TEXT("StomachComponent"));
+
+	// Radii in UE units (raw meters * SWGWorldScale): a little past the terrain's
+	// own load/unload rings (2 and 3 tiles of 512 raw m each) so navmesh tiles
+	// are never missing under ground the player can already stand on, and aren't
+	// torn down right at that same edge.
+	NavInvoker = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavInvoker"));
+	NavInvoker->SetGenerationRadii(2.5f * 512.0f * SWGWorldScale, 3.5f * 512.0f * SWGWorldScale);
 
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(GetCapsuleComponent());
@@ -230,6 +238,7 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	PlayerInputComponent->BindKey(InteractKey, IE_Pressed, this, &ASWGPlayer::OnGamepadInteract);
 	PlayerInputComponent->BindKey(InventoryKey, IE_Pressed, this, &ASWGPlayer::ToggleInventory);
 	PlayerInputComponent->BindKey(GamepadInventoryKey, IE_Pressed, this, &ASWGPlayer::ToggleInventory);
+	PlayerInputComponent->BindKey(WaypointListKey, IE_Pressed, this, &ASWGPlayer::ToggleWaypointList);
 
 	// Action bar hotkeys: 1-9, 0, then hyphen and equals — SWG's twelve-slot
 	// bank. Bound the same legacy way as the mouse keys above rather than
@@ -270,6 +279,11 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 void ASWGPlayer::ToggleInventory()
 {
 	OnToggleInventory.Broadcast();
+}
+
+void ASWGPlayer::ToggleWaypointList()
+{
+	OnToggleWaypointList.Broadcast();
 }
 
 void ASWGPlayer::ToggleActionBank()

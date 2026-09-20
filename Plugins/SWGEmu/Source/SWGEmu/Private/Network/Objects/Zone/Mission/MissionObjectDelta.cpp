@@ -40,16 +40,22 @@ namespace SWGMissionDeltaParser
 				case 0x0D: Out.RefreshCounter = P.ReadUInt32(); return true;
 				case 0x0E: Out.TypeCRC = P.ReadUInt32(); return true;
 				case 0x0F: Out.TargetName = P.ReadAsciiString(); return true;
-				case 0x10: // waypoint — not needed for the mission list, just consume it
-					P.ReadInt32();
-					P.ReadFloat(); P.ReadFloat(); P.ReadFloat();
-					P.ReadInt64();
-					P.ReadUInt32();
-					P.ReadUnicodeString();
-					P.ReadInt64();
-					P.ReadByte();
-					P.ReadByte();
+				case 0x10: // the mission's granted waypoint — see FMissionObjectBaseline's own Waypoint* fields for the shape
+				{
+					Out.WaypointUnknown = P.ReadInt32();
+					FVector Position;
+					Position.X = P.ReadFloat();
+					Position.Z = P.ReadFloat();
+					Position.Y = P.ReadFloat();
+					Out.WaypointPosition = Position;
+					Out.WaypointTargetId = P.ReadInt64();
+					Out.WaypointPlanetCrc = P.ReadUInt32();
+					Out.WaypointName = P.ReadUnicodeString();
+					Out.WaypointObjectId = P.ReadInt64();
+					Out.WaypointColor = P.ReadByte();
+					Out.WaypointActive = P.ReadByte();
 					return true;
+				}
 				default: return false;
 			}
 		});

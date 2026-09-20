@@ -23,6 +23,16 @@ struct SWGEMU_API FMissionObjectDelta
 	TOptional<uint32>       RefreshCounter;
 	TOptional<uint32>       TypeCRC;
 	TOptional<FString>      TargetName;
+
+	// idx10 — the mission's granted waypoint; see FMissionObjectBaseline's own Waypoint* fields for the shape.
+	TOptional<int32>        WaypointUnknown;
+	TOptional<FVector>      WaypointPosition; // x, z, y
+	TOptional<int64>        WaypointTargetId;
+	TOptional<uint32>       WaypointPlanetCrc;
+	TOptional<FString>      WaypointName;
+	TOptional<int64>        WaypointObjectId;
+	TOptional<uint8>        WaypointColor;
+	TOptional<uint8>        WaypointActive;
 };
 
 namespace SWGMissionDeltaParser
