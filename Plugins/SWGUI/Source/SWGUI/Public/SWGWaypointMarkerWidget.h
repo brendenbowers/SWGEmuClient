@@ -65,4 +65,10 @@ private:
 	void HandleWaypointListChanged();
 
 	TMap<int64, FMarkerWidgets> Markers;
+
+	/** Resolved once per widget; a UPROPERTY so GC keeps its sheet texture alive for as long as the brush is used. */
+	UPROPERTY(Transient)
+	FSlateBrush IconBrush;
+
+	bool bResolvedIconBrush = false;
 };

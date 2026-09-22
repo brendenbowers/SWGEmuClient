@@ -1323,6 +1323,22 @@ bool USWGMeshGeneratorSubsystem::ResolveAppearanceMeshPaths(const FString& Appea
 	return !OutMeshVirtualPaths.IsEmpty();
 }
 
+UMaterialInstanceDynamic* USWGMeshGeneratorSubsystem::CreateOwnedMaterialCopy(UMaterialInterface* Source, UObject* Outer)
+{
+	UMaterialInstanceDynamic* SourceMID = Cast<UMaterialInstanceDynamic>(Source);
+	if (!SourceMID)
+	{
+		return Source ? UMaterialInstanceDynamic::Create(Source, Outer) : nullptr;
+	}
+
+	UMaterialInstanceDynamic* Copy = UMaterialInstanceDynamic::Create(SourceMID->Parent, Outer);
+	if (Copy)
+	{
+		Copy->CopyParameterOverrides(SourceMID);
+	}
+	return Copy;
+}
+
 FString USWGMeshGeneratorSubsystem::VehicleBodyAppearancePath(const FString& SkeletalAppearancePath)
 {
 	const FString BaseName = FPaths::GetBaseFilename(SkeletalAppearancePath);

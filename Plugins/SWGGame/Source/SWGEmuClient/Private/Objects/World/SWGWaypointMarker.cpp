@@ -89,7 +89,7 @@ void ASWGWaypointMarker::BeginPlay()
 		Marker->BreadcrumbMIDs.Reset();
 		for (int32 Index = 0; Index < Materials.Num(); ++Index)
 		{
-			UMaterialInstanceDynamic* MID = Materials[Index] ? UMaterialInstanceDynamic::Create(Materials[Index], Marker) : nullptr;
+			UMaterialInstanceDynamic* MID = USWGMeshGeneratorSubsystem::CreateOwnedMaterialCopy(Materials[Index], Marker);
 			if (MID)
 			{
 				Marker->Breadcrumbs->SetMaterial(Index, MID);

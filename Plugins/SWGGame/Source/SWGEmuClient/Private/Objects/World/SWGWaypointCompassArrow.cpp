@@ -53,7 +53,7 @@ void ASWGWaypointCompassArrow::BeginPlay()
 		CompassArrow->ArrowMIDs.Reset();
 		for (int32 Index = 0; Index < Materials.Num(); ++Index)
 		{
-			UMaterialInstanceDynamic* MID = Materials[Index] ? UMaterialInstanceDynamic::Create(Materials[Index], CompassArrow) : nullptr;
+			UMaterialInstanceDynamic* MID = USWGMeshGeneratorSubsystem::CreateOwnedMaterialCopy(Materials[Index], CompassArrow);
 			if (MID)
 			{
 				CompassArrow->Arrow->SetMaterial(Index, MID);

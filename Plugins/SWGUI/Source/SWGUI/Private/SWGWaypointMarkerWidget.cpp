@@ -16,14 +16,8 @@
 namespace
 {
 	/** Best-effort retail icon for a waypoint pin; falls back to a plain tinted square when the style sheet has nothing under these paths. */
-	const FSlateBrush* FindWaypointIconBrush(USWGTreSubsystem* Tre, TMap<FString, FSlateBrush>& Cache)
+	FSlateBrush ResolveWaypointIconBrush(USWGTreSubsystem* Tre)
 	{
-		static const FString CacheKey = TEXT("waypoint_icon");
-		if (const FSlateBrush* Cached = Cache.Find(CacheKey))
-		{
-			return Cached;
-		}
-
 		if (Tre)
 		{
 			const FSWGUIStyleSheet* Sheet = Tre->GetUIStyleSheet();
@@ -48,7 +42,7 @@ namespace
 						Brush.SetResourceObject(Sheet2D);
 						Brush.ImageSize = FVector2D(Style->SourceRect.Size());
 						Brush.SetUVRegion(FBox2D(FVector2D(Style->SourceRect.Min) / SheetSize, FVector2D(Style->SourceRect.Max) / SheetSize));
-						return &Cache.Add(CacheKey, MoveTemp(Brush));
+						return Brush;
 					}
 				}
 			}
@@ -57,10 +51,8 @@ namespace
 		FSlateBrush Fallback = *FCoreStyle::Get().GetBrush("WhiteBrush");
 		Fallback.DrawAs = ESlateBrushDrawType::Box;
 		Fallback.Tiling = ESlateBrushTileType::NoTile;
-		return &Cache.Add(CacheKey, MoveTemp(Fallback));
+		return Fallback;
 	}
-
-	TMap<FString, FSlateBrush> GBrushCache;
 }
 
 void USWGWaypointMarkerWidget::NativeConstruct()
@@ -206,8 +198,11 @@ void USWGWaypointMarkerWidget::NativeTick(const FGeometry& MyGeometry, float InD
 		return;
 	}
 
-	USWGTreSubsystem* Tre = GameInstance->GetSubsystem<USWGTreSubsystem>();
-	const FSlateBrush* IconBrush = FindWaypointIconBrush(Tre, GBrushCache);
+	if (!bResolvedIconBrush)
+	{
+		IconBrush = ResolveWaypointIconBrush(GameInstance->GetSubsystem<USWGTreSubsystem>());
+		bResolvedIconBrush = true;
+	}
 
 	const TArray<FSWGWaypointEntry> Active = Waypoints->GetActiveWaypoints();
 	const FVector2D ViewportSize = UWidgetLayoutLibrary::GetViewportSize(this);
@@ -218,10 +213,7 @@ void USWGWaypointMarkerWidget::NativeTick(const FGeometry& MyGeometry, float InD
 	{
 		Seen.Add(Entry.WaypointObjectId);
 		FMarkerWidgets& Marker = FindOrCreateMarker(Entry.WaypointObjectId);
-		if (IconBrush)
-		{
-			Marker.Icon->SetBrush(*IconBrush);
-		}
+		Marker.Icon->SetBrush(IconBrush);
 		UpdateMarker(Marker, Entry, ViewportSize);
 	}
 
