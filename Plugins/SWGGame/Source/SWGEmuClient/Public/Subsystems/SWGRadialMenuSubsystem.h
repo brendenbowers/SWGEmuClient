@@ -103,6 +103,22 @@ public:
 private:
 	void HandleMessageReceived(TSharedPtr<FSWGNetMessage> Message);
 
+	struct FSWGClientRadialRule
+	{
+		int32 RadialId = 0;
+		TFunction<bool(int64 ObjectId)> ShouldOffer;
+		bool bSeedInRequest = false;
+		TFunction<bool(int64 ObjectId)> OnSelected;
+	};
+
+	/** Every client-drawn option, built once (lambdas capture this — mirrors GetRadialTable's lazy-init). */
+	const TArray<FSWGClientRadialRule>& GetClientRadialRules() const;
+
+	int32 ResolveRadialId(const FString& Name) const;
+
+	/** Shared by the Equip/Unequip rules and the Use rule's equip-toggle fallback. */
+	bool ToggleEquip(int64 ObjectId) const;
+
 	/** The client-side options retail offers for every object of this kind. */
 	void AppendClientDefaults(int64 ObjectId, TArray<FSWGRadialMenuItem>& Items) const;
 
@@ -138,4 +154,7 @@ private:
 
 	mutable TUniquePtr<FSWGDataTableData> RadialTable;
 	mutable bool bTriedRadialTable = false;
+
+	mutable TArray<FSWGClientRadialRule> ClientRadialRules;
+	mutable bool bBuiltClientRadialRules = false;
 };

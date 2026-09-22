@@ -75,6 +75,44 @@ static FAutoConsoleCommandWithWorldAndArgs GSWGDumpMissionsCommand(
 		}
 	}));
 
+// swg.DumpAllMissions — every MISO ever seen a baseline/delta for, bypassing mission_bag
+// containment and terminal-request scoping entirely. Use this to tell apart "the server
+// never sent it" from "the client is filtering it out somewhere."
+static FAutoConsoleCommandWithWorldAndArgs GSWGDumpAllMissionsCommand(
+	TEXT("swg.DumpAllMissions"),
+	TEXT("Logs every tracked MISO, unfiltered, including waypoint state."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (GEngine && (!World || !World->IsGameWorld()))
+		{
+			for (const FWorldContext& Context : GEngine->GetWorldContexts())
+			{
+				if (Context.World() && Context.World()->IsGameWorld())
+				{
+					World = Context.World();
+					break;
+				}
+			}
+		}
+		UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+		USWGMissionSubsystem* Missions = GameInstance ? GameInstance->GetSubsystem<USWGMissionSubsystem>() : nullptr;
+		if (!Missions)
+		{
+			UE_LOG(LogSWGMission, Warning, TEXT("swg.DumpAllMissions: no live mission subsystem — not in a session yet"));
+			return;
+		}
+
+		const TArray<FSWGMissionEntry> All = Missions->GetAllTrackedMissions();
+		UE_LOG(LogSWGMission, Log, TEXT("swg.DumpAllMissions: %d tracked entr%s"), All.Num(), All.Num() == 1 ? TEXT("y") : TEXT("ies"));
+		for (const FSWGMissionEntry& Entry : All)
+		{
+			UE_LOG(LogSWGMission, Log, TEXT("  %lld: populated=%d refresh=%u target='%s' hasWaypoint=%d wpActive=%d wpId=%lld wpName='%s' wpColor=%d wpRaw=(%.1f,%.1f,%.1f)"),
+				Entry.ObjectId, Entry.bPopulated, Entry.RefreshCounter, *Entry.TargetName,
+				Entry.bHasWaypoint, Entry.bWaypointActive, Entry.WaypointObjectId, *Entry.WaypointName, Entry.WaypointColor,
+				Entry.WaypointRawPosition.X, Entry.WaypointRawPosition.Y, Entry.WaypointRawPosition.Z);
+		}
+	}));
+
 void USWGMissionSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);

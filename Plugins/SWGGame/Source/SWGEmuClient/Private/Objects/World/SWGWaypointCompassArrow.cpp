@@ -10,7 +10,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogSWGWaypointCompassArrow, Log, All);
 namespace
 {
 	// Same retail asset ASWGWaypointMarker's ground trail uses.
-	const TCHAR* PathArrowAppearancePath = TEXT("appearance/path_arrow.msh");
+	const TCHAR* CompassArrowAppearancePath = TEXT("appearance/path_arrow.msh");
 }
 
 ASWGWaypointCompassArrow::ASWGWaypointCompassArrow()
@@ -39,7 +39,7 @@ void ASWGWaypointCompassArrow::BeginPlay()
 	}
 
 	TWeakObjectPtr<ASWGWaypointCompassArrow> WeakThis(this);
-	MeshGenerator->RequestAppearanceMesh(PathArrowAppearancePath, [WeakThis](UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)
+	MeshGenerator->RequestAppearanceMesh(CompassArrowAppearancePath, [WeakThis](UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)
 	{
 		ASWGWaypointCompassArrow* CompassArrow = WeakThis.Get();
 		if (!CompassArrow || !Mesh)

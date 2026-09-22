@@ -169,6 +169,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Mission")
 	TArray<FSWGMissionEntry> GetAllTrackedMissions() const;
 
+	const FSWGMissionEntry* FindMission(int64 ObjectId) const { return Entries.Find(ObjectId); }
+
 	/** The terminal id from the most recent OnMissionWindowRequested, or 0. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Mission")
 	int64 GetActiveTerminalId() const { return ActiveTerminalId; }

@@ -100,6 +100,7 @@ void USWGHudWidget::BindHotkeys(APawn* Pawn)
 		Previous->OnActionBankChanged.RemoveAll(this);
 		Previous->OnToggleInventory.RemoveAll(this);
 		Previous->OnToggleWaypointList.RemoveAll(this);
+		Previous->OnToggleDatapad.RemoveAll(this);
 	}
 
 	HotkeySource = Cast<ASWGPlayer>(Pawn);
@@ -109,6 +110,7 @@ void USWGHudWidget::BindHotkeys(APawn* Pawn)
 		Player->OnActionBankChanged.AddUObject(this, &USWGHudWidget::HandleActionBankChanged);
 		Player->OnToggleInventory.AddUObject(this, &USWGHudWidget::ToggleInventory);
 		Player->OnToggleWaypointList.AddUObject(this, &USWGHudWidget::ToggleWaypointList);
+		Player->OnToggleDatapad.AddUObject(this, &USWGHudWidget::ToggleDatapad);
 		HandleActionBankChanged(Player->GetActiveActionBank());
 	}
 }
@@ -156,6 +158,14 @@ void USWGHudWidget::ToggleWaypointList()
 	}
 }
 
+void USWGHudWidget::ToggleDatapad()
+{
+	if (USWGUISubsystem* UI = ULocalPlayer::GetSubsystem<USWGUISubsystem>(GetOwningLocalPlayer()))
+	{
+		UI->ToggleDatapad();
+	}
+}
+
 namespace
 {
 	FAutoConsoleCommand CmdToggleInventory(
@@ -189,6 +199,18 @@ namespace
 			if (USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr)
 			{
 				UI->ToggleWaypointList();
+			}
+		}));
+
+	FAutoConsoleCommand CmdToggleDatapad(
+		TEXT("swg.Datapad"),
+		TEXT("Opens or closes the datapad, as the datapad key does."),
+		FConsoleCommandDelegate::CreateLambda([]()
+		{
+			USWGHudWidget* Hud = USWGHudWidget::GetActiveHud();
+			if (USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr)
+			{
+				UI->ToggleDatapad();
 			}
 		}));
 }

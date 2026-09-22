@@ -11,24 +11,31 @@ bool FSWGSkeletonReader::ReadSkeleton(const FSWGIffReader& Reader, FSWGSkeletonD
 	}
 
 	const TArray<FSWGIffChunk> TopLevel = Reader.ReadChunks();
-	if (TopLevel.Num() == 0 || !TopLevel[0].IsForm() || TopLevel[0].FormType != SWG_IFF_TAG('S','L','O','D'))
+	if (TopLevel.Num() == 0 || !TopLevel[0].IsForm())
 		return false;
 
-	const FSWGIffChunk& SlodForm = TopLevel[0];
-
-	// Same version-tag-drift pattern as FSWGMeshReader's FORM MESH/SKMG outer
-	// wrapper — take whichever single version-tagged form is present rather
-	// than hardcode "0000".
-	const TArray<FSWGIffChunk> SlodVersionForms = Reader.FindChildForms(SlodForm);
-	if (SlodVersionForms.Num() == 0) return false;
-	const FSWGIffChunk& Form0000 = SlodVersionForms[0];
-
-	// FORM SLOD > FORM 0000 wraps one FORM SKTM per skeleton LOD level, most
-	// detailed (highest joint count) first — only that first one is used;
-	// there's no current need for the coarser LODs the game uses for distant
-	// creatures.
 	FSWGIffChunk SktmForm;
-	if (!Reader.FindChildForm(Form0000, SWG_IFF_TAG('S','K','T','M'), SktmForm)) return false;
+	if (TopLevel[0].FormType == SWG_IFF_TAG('S','L','O','D'))
+	{
+		const FSWGIffChunk& SlodForm = TopLevel[0];
+
+		// Same version-tag-drift pattern as FSWGMeshReader's FORM MESH/SKMG outer
+		// wrapper — take whichever single version-tagged form is present rather
+		// than hardcode "0000".
+		const TArray<FSWGIffChunk> SlodVersionForms = Reader.FindChildForms(SlodForm);
+		if (SlodVersionForms.Num() == 0) return false;
+		const FSWGIffChunk& Form0000 = SlodVersionForms[0];
+
+		if (!Reader.FindChildForm(Form0000, SWG_IFF_TAG('S','K','T','M'), SktmForm)) return false;
+	}
+	else if (TopLevel[0].FormType == SWG_IFF_TAG('S','K','T','M'))
+	{
+		SktmForm = TopLevel[0];
+	}
+	else
+	{
+		return false;
+	}
 
 	// FORM SKTM wraps a single version-tagged form too, same pattern again.
 	const TArray<FSWGIffChunk> SktmVersionForms = Reader.FindChildForms(SktmForm);

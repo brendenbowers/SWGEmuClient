@@ -382,6 +382,28 @@ bool USWGTreSubsystem::FindTemplateIntParam(const FString& TemplatePath, const T
 	return false;
 }
 
+bool USWGTreSubsystem::FindTemplateCreatureFloat(const FString& TemplatePath, const TCHAR* Key, int32 Index, float& OutValue)
+{
+	FString CurrentPath = TemplatePath;
+	for (int32 Depth = 0; Depth < 16 && !CurrentPath.IsEmpty(); ++Depth)
+	{
+		const FSWGIffReader Reader = CreateIffReader(CurrentPath);
+		if (!Reader.IsValid())
+		{
+			return false;
+		}
+		if (FSWGObjectTemplateReader::FindCreatureFloatArrayField(Reader, Key, Index, OutValue))
+		{
+			return true;
+		}
+		if (!FSWGObjectTemplateReader::FindDervParentPath(Reader, CurrentPath))
+		{
+			return false;
+		}
+	}
+	return false;
+}
+
 FString USWGTreSubsystem::ResolveTemplateObjectName(uint32 Crc)
 {
 	const FString TemplatePath = ResolveTemplatePath(Crc);

@@ -11,6 +11,7 @@
 #include "TRE/SWGAppearanceCollisionReader.h"
 #include "TRE/SWGFloorReader.h"
 #include "TRE/SWGShaderReader.h"
+#include "TRE/SWGDataTableReader.h"
 #include "Customization/SWGCustomizationVariables.h"
 #include "Engine/AssetUserData.h"
 #include "SWGMeshGeneratorSubsystem.generated.h"
@@ -297,6 +298,11 @@ public:
 	 */
 	void RequestAppearanceMesh(const FString& AppearancePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)> OnComplete);
 
+	/** Component tag on a vehicle's attached body mesh (TryAttachVehicleBody), so fallback-mesh cleanup leaves it alone. */
+	static inline const FName VehicleBodyTag{TEXT("SWGVehicleBody")};
+
+	void RequestAppearanceMeshWithHardpoints(const FString& AppearancePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials, const TArray<FSWGMeshHardpoint>& Hardpoints)> OnComplete, const FSWGCustomizationVariables& Customization = FSWGCustomizationVariables());
+
 	/**
 	 * Walks TemplatePath's DERV inheritance chain looking for
 	 * portalLayoutFilename — the .pob a building-with-interior template
@@ -434,6 +440,19 @@ private:
 	/** .lmg (FORM MLOD > FORM 0000 > one NAME per LOD) -> its highest-detail .mgn. */
 	bool ResolveLmgMeshPath(const FString& LmgPath, FString& OutMgnPath);
 
+	void TryAttachVehicleBody(AActor& Actor, const FString& SkeletalAppearancePath);
+
+	/** "appearance/pv_landspeeder_luke.sat" -> "appearance/landspeeder_luke.apt"; empty if it isn't a "pv_" appearance. See TryAttachVehicleBody. */
+	static FString VehicleBodyAppearancePath(const FString& SkeletalAppearancePath);
+
+	FString ResolveRiderPose(const FString& MountAppearancePath);
+
+	/** The three datatables/mount tables ResolveRiderPose reads, loaded on first use. */
+	FSWGDataTableData RiderPoseMap;
+	FSWGDataTableData LogicalSaddleNameMap;
+	FSWGDataTableData SaddleAppearanceMap;
+	bool bTriedMountTables = false;
+
 public:
 	/**
 	 * CRC -> template -> arrangementDescriptorFilename (walking the DERV chain
@@ -558,6 +577,9 @@ private:
 		 * but the tags are identical across every creature shader checked.
 		 */
 		TMap<FString, FString> ColorFactorTags;
+
+		/** Color-factor tag -> its palette's color at the PAL entry's own default index; what retail shows when the object sets no value. */
+		TMap<FString, FLinearColor> DefaultFactorColors;
 
 		/** Ordered, 0-based list of selectable diffuse variants (FORM TXTR > CHUNK DATA). */
 		TArray<FString> TextureVariants;
@@ -719,6 +741,10 @@ private:
 	/** Same as ObjectMaterialParent but BLEND_Masked, with OpacityMask wired from Diffuse's alpha channel — used instead of ObjectMaterialParent for shaders where FSWGShaderData::NeedsAlphaBlend() is true (see GetOrBuildObjectMaterial). */
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> ObjectMaterialParentMasked;
+
+	/** BLEND_Translucent parent for glass (a_alpha_envmask* effects): Diffuse/EnvMask/TintColor/Roughness, opacity = saturate(Diffuse.a + EnvMask.a). */
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> ObjectMaterialParentTranslucent;
 
 	/** TRE virtual texture path -> decoded transient UTexture2D. See GetOrLoadObjectTexture. */
 	UPROPERTY()

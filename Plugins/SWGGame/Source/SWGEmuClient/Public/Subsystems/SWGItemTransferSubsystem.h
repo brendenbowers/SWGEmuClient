@@ -50,6 +50,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|Inventory")
 	int64 FindInventoryBagId() const;
 
+	/** The local player's datapad bag (template character_datapad), or 0 until its containment has arrived. */
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|Inventory")
+	int64 FindDatapadBagId() const;
+
 private:
 	/** transferItemArmor / transferItemWeapon / transferItemMisc, by template path — Core3 rejects the wrong one. */
 	FString TransferCommandFor(int64 ObjectId) const;

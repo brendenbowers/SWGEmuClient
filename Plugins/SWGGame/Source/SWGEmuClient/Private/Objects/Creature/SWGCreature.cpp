@@ -33,6 +33,7 @@ ASWGCreature::ASWGCreature(const FObjectInitializer& ObjectInitializer)
 	PerformanceComponent = CreateDefaultSubobject<USWGPerformanceComponent>(TEXT("PerformanceComponent"));
 	GetCapsuleComponent()->SetCollisionResponseToChannel(
 		USWGTargetSubsystem::SelectionChannel, ECR_Block);
+	GetCharacterMovement()->bOrientRotationToMovement = true;
 }
 
 void ASWGCreature::PostInitializeComponents()

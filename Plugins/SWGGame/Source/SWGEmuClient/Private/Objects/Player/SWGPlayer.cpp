@@ -4,6 +4,7 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Components/SWGMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Math/RotationMatrix.h"
 #include "EnhancedInputComponent.h"
@@ -239,6 +240,7 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	PlayerInputComponent->BindKey(InventoryKey, IE_Pressed, this, &ASWGPlayer::ToggleInventory);
 	PlayerInputComponent->BindKey(GamepadInventoryKey, IE_Pressed, this, &ASWGPlayer::ToggleInventory);
 	PlayerInputComponent->BindKey(WaypointListKey, IE_Pressed, this, &ASWGPlayer::ToggleWaypointList);
+	PlayerInputComponent->BindKey(DatapadKey, IE_Pressed, this, &ASWGPlayer::ToggleDatapad);
 
 	// Action bar hotkeys: 1-9, 0, then hyphen and equals — SWG's twelve-slot
 	// bank. Bound the same legacy way as the mouse keys above rather than
@@ -284,6 +286,11 @@ void ASWGPlayer::ToggleInventory()
 void ASWGPlayer::ToggleWaypointList()
 {
 	OnToggleWaypointList.Broadcast();
+}
+
+void ASWGPlayer::ToggleDatapad()
+{
+	OnToggleDatapad.Broadcast();
 }
 
 void ASWGPlayer::ToggleActionBank()
@@ -610,8 +617,17 @@ void ASWGPlayer::Move(const FInputActionValue& Value)
 	const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
 	const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
 
-	AddMovementInput(ForwardDirection, MovementVector.Y);
-	AddMovementInput(RightDirection, MovementVector.X);
+	// While mounted, steering drives the mount instead — AddMovementInput just
+	// accumulates a control input vector the pawn's own movement component
+	// consumes on tick, so this works without possessing the mount.
+	APawn* MovedPawn = RiddenMount.IsValid() ? Cast<APawn>(RiddenMount.Get()) : this;
+	if (!MovedPawn)
+	{
+		return;
+	}
+
+	MovedPawn->AddMovementInput(ForwardDirection, MovementVector.Y);
+	MovedPawn->AddMovementInput(RightDirection, MovementVector.X);
 }
 
 void ASWGPlayer::Tick(float DeltaTime)
@@ -623,17 +639,55 @@ void ASWGPlayer::Tick(float DeltaTime)
 		return;
 	}
 
+	const bool bMounted = RiddenMount.IsValid();
+
 	// Steering: RMB held, or the right stick deflected sideways this frame.
-	const bool bSteering = bIsMouseLooking || bIsGamepadSteering;
-	GetCharacterMovement()->bOrientRotationToMovement = !bSteering;
-	if (bSteering && Controller)
+	// While mounted the rider's own facing is just the seat's fixed attach
+	// offset (ApplyRiderContainment) — the mount handles its own
+	// orient-to-movement, so this only applies unmounted.
+	if (bMounted)
 	{
-		// The mesh faces actor +X (SWG's +z forward lands there, see
-		// SWGWorldScale.h), so facing the camera is just matching
-		// ControlRotation's yaw.
-		FRotator NewRotation = GetActorRotation();
-		NewRotation.Yaw = Controller->GetControlRotation().Yaw;
-		SetActorRotation(NewRotation);
+		// Core3's mount command moves the vehicle's run speed, acceleration and
+		// turn rate onto the rider's CREO4 (MountCommand.h) — the vehicle's own
+		// base4 never reaches us — and checks speed against the rider. So the
+		// vehicle drives with this pawn's limits.
+		USWGMovementComponent* MountMovement = RiddenMount->GetSWGMovementComponent();
+		const USWGMovementComponent* OwnMovement = GetSWGMovementComponent();
+		if (MountMovement && OwnMovement)
+		{
+			MountMovement->MaxWalkSpeed = OwnMovement->MaxWalkSpeed;
+			MountMovement->MaxAcceleration = OwnMovement->MaxAcceleration;
+
+			// The rider carries the vehicle's TurnScale; the rate it scales is
+			// the vehicle template's own turnRate, not the rider's.
+			const float TurnRate = MountMovement->GetTemplateRunTurnRate() * OwnMovement->TurnScale;
+			MountMovement->RotationRate = FRotator(0.0f, TurnRate, 0.0f);
+
+			// Steering turns the vehicle toward the camera, at that same rate —
+			// the mounted counterpart of the unmounted branch below.
+			const bool bSteering = bIsMouseLooking || bIsGamepadSteering;
+			MountMovement->bOrientRotationToMovement = !bSteering;
+			if (bSteering && Controller)
+			{
+				FRotator MountRotation = RiddenMount->GetActorRotation();
+				MountRotation.Yaw = FMath::FixedTurn(MountRotation.Yaw, Controller->GetControlRotation().Yaw, TurnRate * DeltaTime);
+				RiddenMount->SetActorRotation(MountRotation);
+			}
+		}
+	}
+	else
+	{
+		const bool bSteering = bIsMouseLooking || bIsGamepadSteering;
+		GetCharacterMovement()->bOrientRotationToMovement = !bSteering;
+		if (bSteering && Controller)
+		{
+			// The mesh faces actor +X (SWG's +z forward lands there, see
+			// SWGWorldScale.h), so facing the camera is just matching
+			// ControlRotation's yaw.
+			FRotator NewRotation = GetActorRotation();
+			NewRotation.Yaw = Controller->GetControlRotation().Yaw;
+			SetActorRotation(NewRotation);
+		}
 	}
 
 	// Real SWG clients report position ~10/sec while moving and send one
@@ -642,7 +696,11 @@ void ASWGPlayer::Tick(float DeltaTime)
 	// format/field layout works against Core3's DataTransformCallback.
 	constexpr float TransformSendInterval = 0.1f;
 
-	const float Speed = GetVelocity().Size();
+	// While mounted, SendDataTransformUpdate reports the mount's own
+	// transform (this pawn's is just the attached seat offset) — read speed
+	// from the same actor so the stop/move edge that triggers a send matches.
+	const ASWGCreature* TransformTarget = bMounted ? RiddenMount.Get() : this;
+	const float Speed = TransformTarget->GetVelocity().Size();
 	const bool bIsMoving = Speed > KINDA_SMALL_NUMBER;
 
 	TimeSinceLastTransformSend += DeltaTime;
@@ -670,13 +728,18 @@ void ASWGPlayer::SendDataTransformUpdate()
 		return;
 	}
 
+	// While mounted, this pawn's own transform is just the attached seat
+	// offset — report the mount's transform, under the mount's own object id,
+	// instead (see RiddenMount's comment on ASWGCreature).
+	ASWGCreature* TransformTarget = RiddenMount.IsValid() ? RiddenMount.Get() : static_cast<ASWGCreature*>(this);
+
 	// Feet, not the capsule centre: the wire Z is ground level everywhere
 	// (GroundedLocationFor adds the half height on the way in), and Core3
 	// bounces a cell change whose Z is more than 25 cm off the floor.
-	const UCapsuleComponent* Capsule = GetCapsuleComponent();
-	const FVector FeetLocation = GetActorLocation() - FVector(0.0f, 0.0f, Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 0.0f);
+	const UCapsuleComponent* Capsule = TransformTarget->GetCapsuleComponent();
+	const FVector FeetLocation = TransformTarget->GetActorLocation() - FVector(0.0f, 0.0f, Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 0.0f);
 	const FVector RawPosition = SWGToRawSpace(FeetLocation);
-	const FQuat RawDirection = SWGCharacterHeadingToNativeRotation(GetActorRotation());
+	const FQuat RawDirection = SWGCharacterHeadingToNativeRotation(TransformTarget->GetActorRotation());
 	const uint32 RawTimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
 	const int32 RawMoveCount = ++TransformMovementCounter;
 	// Same raw/pre-scale conversion as Position — server compares this against
@@ -684,9 +747,9 @@ void ASWGPlayer::SendDataTransformUpdate()
 	// PlayerManager::checkSpeedHackTests; sending raw UE cm/s here (e.g. 154.9
 	// for a ~1.55 m/s walk) reads as 100x overspeed and trips the speed-hack
 	// bounce back.
-	const float RawSpeed = SWGToRawSpace(GetVelocity().Size());
+	const float RawSpeed = SWGToRawSpace(TransformTarget->GetVelocity().Size());
 
-	const ASWGCell* CurrentCell = ResolveCurrentCell();
+	const ASWGCell* CurrentCell = ResolveCurrentCell(TransformTarget);
 
 	const int64 ParentId = CurrentCell ? CurrentCell->GetObjectId() : 0;
 	if (ParentId != LastReportedParentId)
@@ -704,7 +767,7 @@ void ASWGPlayer::SendDataTransformUpdate()
 			? SWGToRawSpace(OwningBuilding->GetActorTransform().InverseTransformPosition(FeetLocation))
 			: RawPosition;
 
-		FDataTransformWithParent DTMessage(SWGObjectId);
+		FDataTransformWithParent DTMessage(TransformTarget->SWGObjectId);
 		DTMessage.ParentId = (uint64)CurrentCell->GetObjectId();
 		DTMessage.Position = BuildingLocalPosition;
 		DTMessage.Direction = RawDirection;
@@ -716,7 +779,7 @@ void ASWGPlayer::SendDataTransformUpdate()
 	}
 	else
 	{
-		FDataTransform DTMessage(SWGObjectId);
+		FDataTransform DTMessage(TransformTarget->SWGObjectId);
 		DTMessage.Position = RawPosition;
 		DTMessage.Direction = RawDirection;
 		DTMessage.TimeStamp = RawTimeStamp;
@@ -765,9 +828,9 @@ void ASWGPlayer::BeginPlay()
 	}
 }
 
-ASWGCell* ASWGPlayer::ResolveCurrentCell() const
+ASWGCell* ASWGPlayer::ResolveCurrentCell(const ASWGCreature* Target) const
 {
-	UCapsuleComponent* Capsule = GetCapsuleComponent();
+	const UCapsuleComponent* Capsule = Target ? Target->GetCapsuleComponent() : nullptr;
 	if (!Capsule)
 	{
 		return nullptr;
@@ -786,7 +849,7 @@ ASWGCell* ASWGPlayer::ResolveCurrentCell() const
 	// Zoned in inside a room whose trigger hasn't been built yet: keep
 	// reporting relative to it rather than walk ourselves out of the building
 	// server-side. Once the trigger exists, the overlap above is the truth.
-	if (ASWGCell* Placed = PlacedInCell.Get(); Placed && !Placed->TriggerVolume)
+	if (ASWGCell* Placed = Target->PlacedInCell.Get(); Placed && !Placed->TriggerVolume)
 	{
 		return Placed;
 	}

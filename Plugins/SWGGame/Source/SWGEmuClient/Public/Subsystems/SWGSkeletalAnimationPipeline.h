@@ -63,6 +63,9 @@ struct FSWGPlayingAnimation
 	ESWGPosture Posture = ESWGPosture::Invalid;
 	int64 StateBitmask = 0;
 
+	/** Rider pose the clips were resolved with — part of the change check because it can land after RIDINGMOUNT (the mount's mesh resolves later). */
+	FString RiderPose;
+
 	/** Set while a replacement blend space is being built, so Tick doesn't queue a second one for the same change. */
 	bool bSwapInFlight = false;
 

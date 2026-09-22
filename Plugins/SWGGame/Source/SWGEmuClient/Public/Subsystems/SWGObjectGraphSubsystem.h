@@ -16,6 +16,7 @@ class USWGMeshGeneratorSubsystem;
 class UDataTable;
 class ULevelStreaming;
 class ASWGCell;
+class ASWGCreature;
 struct FSWGNetMessage;
 struct FSceneCreateObjectMessage;
 struct FBaselinesMessage;
@@ -74,6 +75,15 @@ public:
 
 	AActor* FindActor(int64 ObjectId) const;
 
+	/**
+	 * The template CRC SceneCreateObjectByCrc reported for ObjectId, or 0 if
+	 * none has arrived. Recorded even for objects that resolve to no actor
+	 * class (e.g. ITNO/intangible — see HandleSceneCreateObject) since that's
+	 * otherwise the only place this CRC is ever seen client-side, and
+	 * USWGItemIconSubsystem needs it to preview an item with no spawned actor.
+	 */
+	uint32 FindObjectCrc(int64 ObjectId) const { return ObjectCrcById.FindRef(ObjectId); }
+
 	template<typename T>
 	T* FindComponent(int64 ObjectId) const
 	{
@@ -120,6 +130,15 @@ public:
 
 	/** Whether the local player's server-side container is ContainerId (a cell, usually). */
 	bool IsLocalPlayerContainedIn(int64 ContainerId) const;
+
+	/**
+	 * Whether ObjectId is somewhere in the local player's own possessions —
+	 * equipped, in the inventory bag, the datapad, nested arbitrarily deep —
+	 * by walking FindContainerId up to LocalPlayerObjectId. False for world
+	 * objects, other players/NPCs, and anything whose chain doesn't resolve
+	 * (capped hop count against bad/cyclic containment data).
+	 */
+	bool IsOwnedByLocalPlayer(int64 ObjectId) const;
 
 	/** Fired once SceneEndBaselines confirms an object's baselines are complete. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnObjectReady, int64 /*ObjectId*/);
@@ -216,8 +235,17 @@ private:
 	 */
 	static FVector GroundedLocationFor(const AActor* Actor, const FVector& NetworkPos);
 
-	/** Hides/shows Actor for a container change, or no-ops if Actor is null (containment can arrive before the actor's SceneCreateObjectByCrc). */
-	void ApplyContainment(AActor* Actor, int64 ContainerId);
+	/**
+	 * Hides/shows Actor for a container change, or no-ops if Actor is null
+	 * (containment can arrive before the actor's SceneCreateObjectByCrc).
+	 * ObjectId is Actor's own object id — used to look up
+	 * ContainmentTypeByObjectId so a Rider containment (mounting) can be told
+	 * apart from ordinary volume containment (hidden away in a bag).
+	 */
+	void ApplyContainment(AActor* Actor, int64 ObjectId, int64 ContainerId);
+
+	/** Rider-containment half of ApplyContainment: attach/detach Actor to/from a mount's rider hardpoint instead of hiding it. */
+	void ApplyRiderContainment(ASWGCreature* Rider, ASWGCreature* Mount);
 
 	/**
 	 * Hands a slotted item to its container creature's USWGEquipmentComponent,
@@ -242,6 +270,9 @@ private:
 	bool bCrcMapBuilt = false;
 
 	TMap<int64, TWeakObjectPtr<AActor>> ActorRegistry;
+
+	/** ObjectId -> template CRC, recorded for every SceneCreateObjectByCrc regardless of whether an actor spawned — see FindObjectCrc. */
+	TMap<int64, uint32> ObjectCrcById;
 
 	/** Above this horizontal jump an update is applied directly instead of walked to. Sized so a sprint between sparse updates still smooths, but a zone-in doesn't get strolled to. */
 	static constexpr float MaxSmoothedMoveDistance = 1500.0f;

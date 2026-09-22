@@ -67,4 +67,8 @@ public:
 	/** Datapad waypoint list, toggled by the player's WaypointListKey. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGWaypointListWidget> WaypointListClass;
+
+	/** Datapad window (schematics, mission items, deeds), toggled by the player's DatapadKey. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGDatapadWidget> DatapadClass;
 };

@@ -14,6 +14,8 @@ namespace
 	constexpr FSWGIffTag TagPptr = SWG_IFF_TAG('P', 'P', 'T', 'R');
 	constexpr FSWGIffTag TagAnms = SWG_IFF_TAG('A', 'N', 'M', 'S');
 	constexpr FSWGIffTag TagDflt = SWG_IFF_TAG('D', 'F', 'L', 'T');
+	constexpr FSWGIffTag TagSsat = SWG_IFF_TAG('S', 'S', 'A', 'T');
+	constexpr FSWGIffTag TagVal  = SWG_IFF_TAG('V', 'A', 'L', ' ');
 
 	/** Reads one FORM PXAT's clip: its FORM 0000 holds INFO (the .ans path) and PUNF (the blend parameter name, stored twice). */
 	bool ReadPxatClip(const FSWGIffReader& Reader, const FSWGIffChunk& PxatForm, FSWGLatClip& OutClip)
@@ -90,8 +92,10 @@ namespace
 		// is real for a default-state creature — loop_sitting_ground nests a
 		// "gender" selector over a "mood" selector, so walking every branch
 		// would fold the female clips and the meditating mood into one clip
-		// list. Runtime selector inputs (gender, mood, rider pose) aren't
-		// modelled yet, so the default branch is the honest choice.
+		// list. Gender and mood aren't modelled at runtime, so the default
+		// branch is the honest choice here; an entry whose own template is a
+		// string selector (rider pose) also keeps every branch, see
+		// ReadStringSelector.
 		FSWGIffChunk AnimsForm;
 		if (Reader.FindChildForm(Node, TagAnms, AnimsForm))
 		{
@@ -122,6 +126,65 @@ namespace
 		}
 
 		return bConsumedSpat || Node.FormType == TagSpat;
+	}
+
+	/**
+	 * Decodes a string selector's value table onto Entry, so a caller that
+	 * knows the variable's runtime value can pick the right branch instead of
+	 * the default CollectClips settles for. Layout, from all_m.lat's
+	 * loop_riding: FORM SSAT > FORM 0000 > INFO (variable name), FORM ANMS
+	 * (INFO u16 branch count, then one template per branch), VAL (u16 count,
+	 * then that many {cstring value, u16 branch index}), DFLT (u16 branch).
+	 */
+	void ReadStringSelector(const FSWGIffReader& Reader, const FSWGIffChunk& SsatForm, FSWGLatEntry& Entry)
+	{
+		const TArray<FSWGIffChunk> VersionForms = Reader.FindChildForms(SsatForm);
+		if (VersionForms.Num() == 0)
+		{
+			return;
+		}
+		const FSWGIffChunk& VersionForm = VersionForms[0];
+
+		FSWGIffChunk InfoChunk, AnimsForm, ValueChunk;
+		if (!Reader.FindChildChunk(VersionForm, SWGIffTags::Info, InfoChunk)
+			|| !Reader.FindChildForm(VersionForm, TagAnms, AnimsForm)
+			|| !Reader.FindChildChunk(VersionForm, TagVal, ValueChunk))
+		{
+			return;
+		}
+
+		FString Variable;
+		FSWGIFFChunkReader InfoReader(InfoChunk, Reader);
+		if (!InfoReader.ReadTerminiatedString(Variable) || Variable.IsEmpty())
+		{
+			return;
+		}
+
+		const TArray<FSWGIffChunk> Branches = Reader.FindChildForms(AnimsForm);
+		FSWGIFFChunkReader ValueReader(ValueChunk, Reader);
+		const uint16 ValueCount = ValueReader.ReadValueLE<uint16>();
+		for (uint16 Index = 0; Index < ValueCount && !ValueReader.AtEnd(); ++Index)
+		{
+			FString Value;
+			uint16 BranchIndex = 0;
+			if (!ValueReader.ReadTerminiatedString(Value) || !ValueReader.ReadValueLE(BranchIndex) || !Branches.IsValidIndex(BranchIndex))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("FSWGLatReader: malformed VAL entry %u in selector '%s' of '%s'"), Index, *Variable, *Entry.LogicalName);
+				return;
+			}
+
+			TArray<FSWGLatClip> BranchClips;
+			CollectClips(Reader, Branches[BranchIndex], BranchClips);
+			if (BranchClips.Num() > 0)
+			{
+				Entry.ClipsBySelectorValue.Add(Value, MoveTemp(BranchClips));
+			}
+		}
+
+		if (Entry.ClipsBySelectorValue.Num() > 0)
+		{
+			Entry.SelectorVariable = MoveTemp(Variable);
+		}
 	}
 }
 
@@ -176,6 +239,10 @@ bool FSWGLatReader::ReadLat(const FSWGIffReader& Reader, FSWGLatData& OutData)
 
 		for (const FSWGIffChunk& Wrapper : Reader.FindChildForms(Child))
 		{
+			if (Wrapper.FormType == TagSsat)
+			{
+				ReadStringSelector(Reader, Wrapper, Entry);
+			}
 			if (CollectClips(Reader, Wrapper, Entry.Clips))
 			{
 				break;

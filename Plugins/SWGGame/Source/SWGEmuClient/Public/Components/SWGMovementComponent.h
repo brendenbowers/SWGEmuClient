@@ -13,7 +13,7 @@ struct FSWGPacket;
  * CREO base4 movement fields, applied directly onto UCharacterMovementComponent's
  * own properties rather than duplicating them:
  *   RunSpeed/WalkSpeed        -> MaxWalkSpeed (swapped by current run/walk state)
- *   TurnScale                 -> RotationRate
+ *   TurnScale                 -> RotationRate (a multiplier on the template's turnRate)
  *   SlopeModAngle             -> SetWalkableFloorAngle()
  *   AccelerationMultiplier*   -> MaxAcceleration
  *   WaterModPercent           -> MaxSwimSpeed
@@ -116,8 +116,21 @@ public:
 	/** The locomotion this creature is currently presenting, from its posture and how fast it's actually moving. */
 	ESWGLocomotion GetCurrentLocomotion() const;
 
+	/**
+	 * The creature template's "turnRate" (degrees/second, run and walk) —
+	 * what CREO4 TurnScale multiplies. Set once the template is known; see
+	 * USWGObjectGraphSubsystem's creature spawn.
+	 */
+	void SetTemplateTurnRates(float RunTurnRate, float WalkTurnRate);
+	float GetTemplateRunTurnRate() const { return TemplateRunTurnRate; }
+
 private:
 	void RecomputeMovementLimits();
+
+	// shared_base_player.iff's turnRate, which every player template inherits —
+	// the rate until the actual template's arrives.
+	float TemplateRunTurnRate = 720.0f;
+	float TemplateWalkTurnRate = 720.0f;
 
 	/** One frame of easing toward NetworkTargetLocation/Yaw. Sets Velocity from the step actually taken, so the blend space animates the movement. */
 	void TickNetworkSmoothing(float DeltaTime);

@@ -89,6 +89,67 @@ bool FSWGObjectTemplateReader::FindIntField(const FSWGIffReader& Reader, const T
 	return false;
 }
 
+bool FSWGObjectTemplateReader::FindCreatureFloatArrayField(const FSWGIffReader& Reader, const TCHAR* Key, int32 Index, float& OutValue)
+{
+	// FORM SCOT's children are its DERV, its own version form (the creature
+	// fields) and the nested FORM STOT holding the lower layers.
+	FSWGIffChunk Scot;
+	if (!Reader.FindForm(SWG_IFF_TAG('S','C','O','T'), Scot))
+	{
+		return false;
+	}
+	const FSWGIffChunk* DataForm = nullptr;
+	const TArray<FSWGIffChunk> Children = Reader.ReadChildren(Scot);
+	for (const FSWGIffChunk& Child : Children)
+	{
+		if (Child.IsForm() && Child.FormType != SWG_IFF_TAG('D','E','R','V') && Child.FormType != SWG_IFF_TAG('S','T','O','T'))
+		{
+			DataForm = &Child;
+			break;
+		}
+	}
+	if (!DataForm)
+	{
+		return false;
+	}
+
+	for (const FSWGIffChunk& Child : Reader.FindAllChildChunks(*DataForm, SWG_IFF_TAG('X','X','X','X')))
+	{
+		FSWGIFFChunkReader ChunkReader(Child, Reader);
+		FString ChunkKey;
+		if (!ChunkReader.ReadTerminiatedString(ChunkKey) || !ChunkKey.Equals(Key))
+		{
+			continue;
+		}
+
+		int32 Count = 0;
+		if (!ChunkReader.ReadValueLE(Count) || Index < 0 || Index >= Count)
+		{
+			return false;
+		}
+		for (int32 Entry = 0; Entry < Count; ++Entry)
+		{
+			uint8 HasValue = 0, ValueType = 0;
+			if (!ChunkReader.ReadValueLE(HasValue) || !ChunkReader.ReadValueLE(ValueType))
+			{
+				return false;
+			}
+			float Value = 0.0f;
+			if (HasValue != 0 && !ChunkReader.ReadValueLE(Value))
+			{
+				return false;
+			}
+			if (Entry == Index)
+			{
+				OutValue = Value;
+				return HasValue != 0;
+			}
+		}
+		return false;
+	}
+	return false;
+}
+
 bool FSWGObjectTemplateReader::FindDervParentPath(const FSWGIffReader& Reader, FString& OutParentPath)
 {
 	FSWGIffChunk Shot, Derv, Xxxx;

@@ -11,6 +11,7 @@
 #include "CommonInputSubsystem.h"
 #include "SWGExamineWidget.h"
 #include "SWGWaypointListWidget.h"
+#include "SWGDatapadWidget.h"
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
@@ -340,6 +341,10 @@ void USWGUISubsystem::HandleWindowClosed(USWGWindowWidget* Window)
 	{
 		WaypointWindow = nullptr;
 	}
+	if (Window == DatapadWindow)
+	{
+		DatapadWindow = nullptr;
+	}
 	for (auto It = ExamineWindows.CreateIterator(); It; ++It)
 	{
 		if (It->Value == Window)
@@ -520,5 +525,33 @@ void USWGUISubsystem::CloseWaypointList()
 	if (WaypointWindow)
 	{
 		WaypointWindow->Close();
+	}
+}
+
+void USWGUISubsystem::ToggleDatapad()
+{
+	if (IsDatapadOpen())
+	{
+		CloseDatapad();
+		return;
+	}
+
+	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
+	TSubclassOf<USWGDatapadWidget> DatapadClass = USWGUISettings::Get().DatapadClass.LoadSynchronous();
+	if (!PlayerController || !DatapadClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: no DatapadClass set in Project Settings > SWG UI"));
+		return;
+	}
+	DatapadWindow = CreateWidget<USWGDatapadWidget>(PlayerController, DatapadClass);
+	ShowWindow(DatapadWindow);
+	DatapadWindow->CenterOnScreen();
+}
+
+void USWGUISubsystem::CloseDatapad()
+{
+	if (DatapadWindow)
+	{
+		DatapadWindow->Close();
 	}
 }

@@ -107,6 +107,35 @@ public:
 	TWeakObjectPtr<ASWGCell> PlacedInCell;
 
 	/**
+	 * The mount this creature is currently riding, or null if on its own feet.
+	 * Set/cleared by USWGObjectGraphSubsystem::ApplyRiderContainment when a
+	 * Rider containment (ESWGContainmentType::Rider) attaches/detaches it —
+	 * valid for any rider, local or remote, since the attach itself is purely
+	 * visual. ASWGPlayer additionally reads this to forward its own steering
+	 * input to the mount instead of moving itself.
+	 */
+	TWeakObjectPtr<ASWGCreature> RiddenMount;
+
+	/**
+	 * This mount's own "player" hardpoint, relative to its actor origin — set
+	 * by USWGMeshGeneratorSubsystem::TryAttachVehicleBody once a vehicle's
+	 * real body mesh (with named hardpoints) attaches, some time after the
+	 * mount itself spawns. Unset for anything without a body hardpoint
+	 * (ordinary creature mounts) — ApplyRiderContainment falls back to the
+	 * skeletal "rider" socket, then the mesh root, in that case.
+	 */
+	TOptional<FTransform> RiderSeatTransform;
+
+	/**
+	 * How a rider sits on this mount — datatables/mount/rider_pose_map.iff's
+	 * rider_pose for its saddle appearance ("vehicle_landspeeder",
+	 * "saddle_body1_wide", ...), which picks the rider's loop_riding clip.
+	 * Set by USWGMeshGeneratorSubsystem once the appearance resolves; empty
+	 * for anything that isn't a mount.
+	 */
+	FString MountRiderPose;
+
+	/**
 	 * True while the transform is still the cell-relative spawn one. Cleared
 	 * by cell placement, by a world-space UpdateTransform, or by finishing
 	 * baselines with no container — after that a containment must not re-place.

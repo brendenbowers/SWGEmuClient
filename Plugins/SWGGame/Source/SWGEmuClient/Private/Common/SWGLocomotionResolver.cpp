@@ -215,7 +215,11 @@ const FSWGAnimationState* SWGLocomotion::ResolveState(const FSWGAnimationStateHi
 	// that dies before its Combat bit clears would otherwise stay on the
 	// combat-standing loop. A posture missing here is looked for up the
 	// ancestors before giving up and keeping the context node.
-	const FString PostureName = PostureStateName(Posture, StateBitmask);
+	//
+	// Riding comes from the state, not the posture: Core3's mount command
+	// leaves the rider Upright and only sets RIDINGMOUNT (MountCommand.h),
+	// so the DrivingVehicle/RidingCreature postures are never actually sent.
+	const FString PostureName = SWGHasState(StateBitmask, ESWGState::RidingMount) ? FString(TEXT("riding")) : PostureStateName(Posture, StateBitmask);
 	for (const FSWGAnimationState* Ancestor = Node; Ancestor && !PostureName.IsEmpty(); Ancestor = Hierarchy.States.IsValidIndex(Ancestor->ParentIndex) ? &Hierarchy.States[Ancestor->ParentIndex] : nullptr)
 	{
 		if (const FSWGAnimationState* PostureNode = Hierarchy.FindChildOf(*Ancestor, PostureName))
@@ -279,13 +283,28 @@ FString SWGLocomotion::ResolveTransitionClip(const FSWGAnimationStateHierarchy& 
 	return Entry ? IdlePathOf(*Entry) : FString();
 }
 
-bool SWGLocomotion::ResolveClipSet(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, ESWGPosture Posture, int64 StateBitmask, FSWGLocomotionClipSet& OutClipSet)
+bool SWGLocomotion::ResolveClipSet(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, ESWGPosture Posture, int64 StateBitmask, FSWGLocomotionClipSet& OutClipSet, const FString& RiderPose)
 {
 	OutClipSet = FSWGLocomotionClipSet();
 
 	const FString IdleLoopName = LoopNameOf(Hierarchy, ResolveState(Hierarchy, Posture, StateBitmask));
-	const FSWGLatEntry* IdleEntry = Lat.Find(IdleLoopName);
-	if (!IdleEntry || IdleEntry->Clips.Num() == 0)
+	const FSWGLatEntry* FoundEntry = Lat.Find(IdleLoopName);
+	if (!FoundEntry)
+	{
+		return false;
+	}
+
+	// loop_riding switches its clip on "rider_pose" — pick the mount's branch
+	// (seated in a landspeeder vs. astride a bantha) rather than the default.
+	FSWGLatEntry SelectedEntry;
+	const FSWGLatEntry* IdleEntry = FoundEntry;
+	if (FoundEntry->SelectorVariable == TEXT("rider_pose"))
+	{
+		SelectedEntry.LogicalName = FoundEntry->LogicalName;
+		SelectedEntry.Clips = FoundEntry->ClipsFor(RiderPose);
+		IdleEntry = &SelectedEntry;
+	}
+	if (IdleEntry->Clips.Num() == 0)
 	{
 		return false;
 	}

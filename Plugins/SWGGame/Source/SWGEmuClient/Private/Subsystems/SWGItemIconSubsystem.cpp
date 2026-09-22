@@ -363,7 +363,21 @@ void USWGItemIconSubsystem::RequestItemModel(int64 ObjectId, TFunction<void(UObj
 	USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
 	AActor* Actor = ObjectGraph ? ObjectGraph->FindActor(ObjectId) : nullptr;
 	ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(Actor);
-	if (!NetObject || NetObject->GetObjectCrc() == 0 || !OnReady)
+	if (!NetObject || NetObject->GetObjectCrc() == 0)
+	{
+		// No spawned actor — true for ITNO/intangible objects (datapad
+		// contents) by design, see SWGFormTagMappings.csv's SITN row. Their
+		// template CRC is still recorded in USWGObjectGraphSubsystem
+		// (HandleSceneCreateObject) even though nothing spawned for it, so a
+		// preview can still be built the same way RequestModelForTemplateCrc
+		// does — just with no live customization to read.
+		if (const uint32 Crc = ObjectGraph ? ObjectGraph->FindObjectCrc(ObjectId) : 0; Crc != 0 && OnReady)
+		{
+			RequestModelForTemplateCrcImpl(Crc, FSWGCustomizationVariables(), MoveTemp(OnReady));
+		}
+		return;
+	}
+	if (!OnReady)
 	{
 		return;
 	}

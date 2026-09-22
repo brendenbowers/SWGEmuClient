@@ -122,6 +122,9 @@ public:
 	 */
 	bool FindTemplateIntParam(const FString& TemplatePath, const TCHAR* Key, int32& OutValue);
 
+	/** FSWGObjectTemplateReader::FindCreatureFloatArrayField through the DERV chain — shared_wookiee_male leaves turnRate to shared_base_player. */
+	bool FindTemplateCreatureFloat(const FString& TemplatePath, const TCHAR* Key, int32 Index, float& OutValue);
+
 	/** FindTemplateStringId("objectName") for a template CRC, resolved through the string tables. Empty if nothing resolves. */
 	FString ResolveTemplateObjectName(uint32 Crc);
 

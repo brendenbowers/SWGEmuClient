@@ -157,6 +157,13 @@ ESWGLocomotion USWGMovementComponent::GetCurrentLocomotion() const
 	return SWGMovementTables::ResolveLocomotion(Posture, Category);
 }
 
+void USWGMovementComponent::SetTemplateTurnRates(float RunTurnRate, float WalkTurnRate)
+{
+	TemplateRunTurnRate = RunTurnRate;
+	TemplateWalkTurnRate = WalkTurnRate;
+	RecomputeMovementLimits();
+}
+
 void USWGMovementComponent::RecomputeMovementLimits()
 {
 	// Posture/state changes can land before base4 (base3 precedes it in the
@@ -189,7 +196,8 @@ void USWGMovementComponent::RecomputeMovementLimits()
 	// The state ceiling picks *which* of the two speeds is the cap, rather than
 	// scaling either: movementstates.iff is a category ("this state can't move
 	// faster than slow"), and slow is exactly the walk speed.
-	switch (SWGMovementTables::GetMaxSpeedCategory(StateBitmask))
+	const ESWGSpeedCategory SpeedCategory = SWGMovementTables::GetMaxSpeedCategory(StateBitmask);
+	switch (SpeedCategory)
 	{
 		case ESWGSpeedCategory::Stationary:
 			MaxWalkSpeed = 0.0f;
@@ -218,7 +226,10 @@ void USWGMovementComponent::RecomputeMovementLimits()
 	{
 		MaxAcceleration = BaselineAcceleration;
 	}
-	RotationRate = FRotator(0.0f, TurnScale * PostureTurnScale, 0.0f);
+	// TurnScale is a multiplier (Core3 defaults it to 1.0), not degrees/second —
+	// on its own it turned every creature at 1°/s.
+	const float TemplateTurnRate = SpeedCategory == ESWGSpeedCategory::Slow ? TemplateWalkTurnRate : TemplateRunTurnRate;
+	RotationRate = FRotator(0.0f, TemplateTurnRate * TurnScale * PostureTurnScale, 0.0f);
 	// Core3 stores/sends this pre-converted to radians (CreatureObjectImplementation.cpp:
 	// "slopeModAngle = (creoData->getSlopeModAngle() * M_PI) / 180.f"), but
 	// UCharacterMovementComponent::SetWalkableFloorAngle expects degrees. Passing the

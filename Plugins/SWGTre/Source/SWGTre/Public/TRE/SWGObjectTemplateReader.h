@@ -30,6 +30,16 @@ public:
 	 */
 	static bool FindIntField(const FSWGIffReader& Reader, const TCHAR* Key, int32& OutValue);
 
+	/**
+	 * Reads one entry of a float-array field in the creature layer — FORM
+	 * SCOT's own version form, not SHOT ("speed", "turnRate",
+	 * "acceleration"; index 0 = run, 1 = walk). Wire shape, from
+	 * shared_landspeeder_x31.iff:
+	 *   key\0  int32 count  then per entry 01(has value) 20(literal) float, or 00 20 when unset
+	 * False when absent, out of range, or unset in this layer.
+	 */
+	static bool FindCreatureFloatArrayField(const FSWGIffReader& Reader, const TCHAR* Key, int32 Index, float& OutValue);
+
 	/** The template this one DERVs from (FORM SHOT > FORM DERV > XXXX path\0), or false at the chain's root. */
 	static bool FindDervParentPath(const FSWGIffReader& Reader, FString& OutParentPath);
 

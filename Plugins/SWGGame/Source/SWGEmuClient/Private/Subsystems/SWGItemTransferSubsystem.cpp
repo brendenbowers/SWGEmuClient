@@ -107,6 +107,25 @@ int64 USWGItemTransferSubsystem::FindInventoryBagId() const
 	return 0;
 }
 
+int64 USWGItemTransferSubsystem::FindDatapadBagId() const
+{
+	if (!ObjectGraph || !Tre)
+	{
+		return 0;
+	}
+	for (const int64 ObjectId : ObjectGraph->FindContainedObjectIds(ObjectGraph->GetLocalPlayerObjectId()))
+	{
+		if (const ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(ObjectGraph->FindActor(ObjectId)))
+		{
+			if (Tre->ResolveTemplatePath(NetObject->GetObjectCrc()).Contains(TEXT("character_datapad")))
+			{
+				return ObjectId;
+			}
+		}
+	}
+	return 0;
+}
+
 bool USWGItemTransferSubsystem::EquipItem(int64 ObjectId)
 {
 	if (!ObjectGraph || !MeshGenerator || IsEquipped(ObjectId))

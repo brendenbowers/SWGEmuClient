@@ -89,8 +89,12 @@ namespace SWGLocomotion
 	 * idle plus the crouch walk). So when the posture's own node has no moving
 	 * clips, the moving half is sourced from a second node, and a kneeling
 	 * creature that starts moving crouch-walks instead of sliding.
+	 *
+	 * RiderPose is the rider_pose_map value of the mount being ridden (e.g.
+	 * "vehicle_landspeeder"); it picks loop_riding's branch. Empty uses the
+	 * LAT's "default" branch.
 	 */
-	SWGEMUCLIENT_API bool ResolveClipSet(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, ESWGPosture Posture, int64 StateBitmask, FSWGLocomotionClipSet& OutClipSet);
+	SWGEMUCLIENT_API bool ResolveClipSet(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, ESWGPosture Posture, int64 StateBitmask, FSWGLocomotionClipSet& OutClipSet, const FString& RiderPose = FString());
 
 	/**
 	 * The .ans clip the .ash authors for changing from one posture to another,

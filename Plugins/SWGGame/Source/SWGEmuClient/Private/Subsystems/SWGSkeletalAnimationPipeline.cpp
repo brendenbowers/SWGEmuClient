@@ -16,6 +16,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/SWGMovementComponent.h"
 #include "Components/SWGCombatStateComponent.h"
+#include "Objects/Creature/SWGCreature.h"
 #include "Common/SWGLocomotionResolver.h"
 #include "TRE/SWGAshReader.h"
 #include "TRE/SWGLatReader.h"
@@ -60,6 +61,14 @@ namespace
 			OutPosture = CombatState->GetPosture();
 			OutStateBitmask = CombatState->StateBitmask;
 		}
+	}
+
+	/** The rider pose of whatever Actor is riding — empty when it's on its own feet. See ASWGCreature::MountRiderPose. */
+	FString ReadRiderPose(const AActor& Actor)
+	{
+		const ASWGCreature* Creature = Cast<ASWGCreature>(&Actor);
+		const ASWGCreature* Mount = Creature ? Creature->RiddenMount.Get() : nullptr;
+		return Mount ? Mount->MountRiderPose : FString();
 	}
 
 	/**
@@ -293,7 +302,8 @@ void FSWGSkeletalAnimationPipeline::UpdatePostureDrivenAnimations()
 		ESWGPosture Posture = ESWGPosture::Upright;
 		int64 StateBitmask = 0;
 		ReadPostureAndStates(*Character, Posture, StateBitmask);
-		if (Posture == Playing.Posture && StateBitmask == Playing.StateBitmask)
+		const FString RiderPose = ReadRiderPose(*Character);
+		if (Posture == Playing.Posture && StateBitmask == Playing.StateBitmask && RiderPose == Playing.RiderPose)
 		{
 			continue;
 		}
@@ -305,6 +315,7 @@ void FSWGSkeletalAnimationPipeline::UpdatePostureDrivenAnimations()
 		const int64 PreviousStateBitmask = Playing.StateBitmask;
 		Playing.Posture = Posture;
 		Playing.StateBitmask = StateBitmask;
+		Playing.RiderPose = RiderPose;
 
 		const FSWGLocomotionSource* Source = GetOrLoadLocomotionSource(Playing.LatPath);
 		if (!Source)
@@ -313,7 +324,7 @@ void FSWGSkeletalAnimationPipeline::UpdatePostureDrivenAnimations()
 		}
 
 		FSWGLocomotionClipSet ClipSet;
-		if (!SWGLocomotion::ResolveClipSet(Source->Hierarchy, Source->Lat, Posture, StateBitmask, ClipSet))
+		if (!SWGLocomotion::ResolveClipSet(Source->Hierarchy, Source->Lat, Posture, StateBitmask, ClipSet, RiderPose))
 		{
 			UE_LOG(LogTemp, Warning, TEXT("FSWGSkeletalAnimationPipeline: %s has no usable clips for posture %d — keeping '%s'"),
 				*Character->GetName(), (int32)Posture, *Playing.ClipSet.IdleLoopName);
@@ -323,6 +334,11 @@ void FSWGSkeletalAnimationPipeline::UpdatePostureDrivenAnimations()
 		if (ClipSet == Playing.ClipSet)
 		{
 			continue;
+		}
+
+		if (!RiderPose.IsEmpty())
+		{
+			UE_LOG(LogTemp, Log, TEXT("FSWGSkeletalAnimationPipeline: %s riding (pose '%s') -> %s"), *Character->GetName(), *RiderPose, *ClipSet.IdlePath);
 		}
 
 		float WalkSpeed = 0.0f;
@@ -1453,7 +1469,9 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 				TInlineComponentArray<UStaticMeshComponent*> ProceduralMeshComponents(Actor);
 				for (UStaticMeshComponent* ProceduralMesh : ProceduralMeshComponents)
 				{
-					if (ProceduralMesh)
+					// A vehicle's body is a static mesh too, but the real one — it
+					// can attach before this swap lands (see TryAttachVehicleBody).
+					if (ProceduralMesh && !ProceduralMesh->ComponentHasTag(USWGMeshGeneratorSubsystem::VehicleBodyTag))
 					{
 						ProceduralMesh->SetVisibility(false);
 						ProceduralMesh->SetHiddenInGame(true);

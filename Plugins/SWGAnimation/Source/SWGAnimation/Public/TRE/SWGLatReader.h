@@ -20,7 +20,33 @@ struct FSWGLatClip
 struct FSWGLatEntry
 {
 	FString LogicalName;
+
+	/** The clips of the default branch wherever a selector sits in the tree (its DFLT). */
 	TArray<FSWGLatClip> Clips;
+
+	/**
+	 * Set when the entry's own template is a string selector (FORM SSAT) —
+	 * the runtime variable it switches on, e.g. "rider_pose" for loop_riding.
+	 * Empty for every other entry.
+	 */
+	FString SelectorVariable;
+
+	/** That selector's branches keyed by value ("vehicle_landspeeder", "default", ...) — from its VAL table. */
+	TMap<FString, TArray<FSWGLatClip>> ClipsBySelectorValue;
+
+	/** The clips for SelectorValue, falling back to the "default" value's branch, then to Clips. */
+	const TArray<FSWGLatClip>& ClipsFor(const FString& SelectorValue) const
+	{
+		if (const TArray<FSWGLatClip>* Selected = ClipsBySelectorValue.Find(SelectorValue))
+		{
+			return *Selected;
+		}
+		if (const TArray<FSWGLatClip>* Default = ClipsBySelectorValue.Find(TEXT("default")))
+		{
+			return *Default;
+		}
+		return Clips;
+	}
 };
 
 /**

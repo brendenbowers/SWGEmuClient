@@ -53,8 +53,10 @@
 #include "Objects/World/SWGInstallation.h"
 #include "Objects/Tangible/SWGItem.h"
 #include "Objects/Player/SWGPlayer.h"
+#include "Objects/Creature/SWGCreature.h"
 #include "Components/SWGMovementComponent.h"
 #include "Components/SWGTangibleComponent.h"
+#include "Subsystems/SWGTargetSubsystem.h"
 #include "HAL/FileManager.h"
 #include "Misc/ScopeExit.h"
 #include "UObject/UObjectIterator.h"
@@ -715,6 +717,24 @@ void USWGMeshGeneratorSubsystem::RequestAppearanceMesh(const FString& Appearance
 	PendingRequests.Add(MoveTemp(Request));
 }
 
+void USWGMeshGeneratorSubsystem::RequestAppearanceMeshWithHardpoints(const FString& AppearancePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials, const TArray<FSWGMeshHardpoint>& Hardpoints)> OnComplete, const FSWGCustomizationVariables& Customization)
+{
+	if (!OnComplete)
+	{
+		return;
+	}
+
+	FSWGPendingMeshRequest Request;
+	Request.AppearancePath = AppearancePath;
+	Request.bStatic = true;
+	Request.Customization = Customization;
+	Request.OnItemMeshReady = [OnComplete = MoveTemp(OnComplete)](UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)
+		{
+			OnComplete(Mesh, Materials, MeshData.Hardpoints);
+		};
+	PendingRequests.Add(MoveTemp(Request));
+}
+
 void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 {
 	while (PendingRequests.Num() > 0)
@@ -1009,6 +1029,15 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							SkeletalAnimationPipeline->TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent, PaletteTintsPtr, MorphWeightsPtr, TextureIndicesPtr);
 						}
 
+						if (Request.bSkeletal)
+						{
+							if (ASWGCreature* Creature = Cast<ASWGCreature>(Request.Actor.Get()))
+							{
+								Creature->MountRiderPose = ResolveRiderPose(Request.AppearancePath);
+							}
+							TryAttachVehicleBody(*Request.Actor, Request.AppearancePath);
+						}
+
 						ResultGuard.Succeed(FSWGMeshGenerationResult(MeshComponent, {}, MoveTemp(MeshData)));
 					});
 			});
@@ -1292,6 +1321,154 @@ bool USWGMeshGeneratorSubsystem::ResolveAppearanceMeshPaths(const FString& Appea
 	}
 
 	return !OutMeshVirtualPaths.IsEmpty();
+}
+
+FString USWGMeshGeneratorSubsystem::VehicleBodyAppearancePath(const FString& SkeletalAppearancePath)
+{
+	const FString BaseName = FPaths::GetBaseFilename(SkeletalAppearancePath);
+	if (!BaseName.StartsWith(TEXT("pv_")))
+	{
+		return FString();
+	}
+	return FPaths::GetPath(SkeletalAppearancePath) / (BaseName.RightChop(3) + TEXT(".apt"));
+}
+
+FString USWGMeshGeneratorSubsystem::ResolveRiderPose(const FString& MountAppearancePath)
+{
+	if (MountAppearancePath.IsEmpty() || !TreSubsystem)
+	{
+		return FString();
+	}
+
+	if (!bTriedMountTables)
+	{
+		bTriedMountTables = true;
+		FSWGDataTableReader::ReadDataTable(TreSubsystem->CreateIffReader(TEXT("datatables/mount/rider_pose_map.iff")), RiderPoseMap);
+		FSWGDataTableReader::ReadDataTable(TreSubsystem->CreateIffReader(TEXT("datatables/mount/logical_saddle_name_map.iff")), LogicalSaddleNameMap);
+		FSWGDataTableReader::ReadDataTable(TreSubsystem->CreateIffReader(TEXT("datatables/mount/saddle_appearance_map.iff")), SaddleAppearanceMap);
+	}
+
+	// A vehicle is its own saddle; a creature mount wears one, named by its .sat.
+	FString SaddleAppearancePath = VehicleBodyAppearancePath(MountAppearancePath);
+	if (SaddleAppearancePath.IsEmpty())
+	{
+		const int32 LogicalRow = LogicalSaddleNameMap.FindRowIndex(TEXT("sat_or_skt_name"), MountAppearancePath);
+		const FString LogicalSaddle = LogicalSaddleNameMap.GetCell(LogicalRow, TEXT("logical_saddle_name"));
+		const int32 SaddleRow = SaddleAppearanceMap.FindRowIndex(TEXT("logical_saddle_name"), LogicalSaddle);
+		SaddleAppearancePath = SaddleAppearanceMap.GetCell(SaddleRow, TEXT("saddle_appearance_name"));
+	}
+	if (SaddleAppearancePath.IsEmpty())
+	{
+		return FString();
+	}
+
+	// Seat 1 is the driver's seat — the only one every row defines.
+	for (int32 Row = 0; Row < RiderPoseMap.Rows.Num(); ++Row)
+	{
+		if (RiderPoseMap.GetCell(Row, TEXT("saddle_appearance_name")) == SaddleAppearancePath
+			&& RiderPoseMap.GetCell(Row, TEXT("seat_index")) == TEXT("1"))
+		{
+			return RiderPoseMap.GetCell(Row, TEXT("rider_pose"));
+		}
+	}
+	return FString();
+}
+
+void USWGMeshGeneratorSubsystem::TryAttachVehicleBody(AActor& Actor, const FString& SkeletalAppearancePath)
+{
+	const FString BodyPath = VehicleBodyAppearancePath(SkeletalAppearancePath);
+	if (BodyPath.IsEmpty() || !TreSubsystem || !TreSubsystem->CreateIffReader(BodyPath).IsValid())
+	{
+		// Not every "pv_*" appearance has a sibling body (droids, small
+		// creatures using the same rig convention for other FX) — silently
+		// skip rather than warn.
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("USWGMeshGeneratorSubsystem: %s looks like a vehicle engine-FX rig — attaching body %s"), *SkeletalAppearancePath, *BodyPath);
+
+	// Real per-shader palette tints/texture variants (paint color, glass
+	// tint, ...) for this specific vehicle instance — resolved against the
+	// BODY's own appearance, same as the skeletal FX rig's tint is resolved
+	// against its appearance a few lines up in ProcessNextRequest. Without
+	// this every shader would render its bare, undyed default.
+	FSWGCustomizationVariables Customization;
+	if (const USWGTangibleComponent* Tangible = Actor.FindComponentByClass<USWGTangibleComponent>())
+	{
+		Customization = Tangible->GetEffectiveCustomization();
+	}
+
+	TWeakObjectPtr<AActor> ActorWeak(&Actor);
+	RequestAppearanceMeshWithHardpoints(BodyPath, [ActorWeak](UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials, const TArray<FSWGMeshHardpoint>& Hardpoints)
+		{
+			AActor* BodyActor = ActorWeak.Get();
+			if (!BodyActor || !Mesh)
+			{
+				return;
+			}
+
+			UStaticMeshComponent* BodyComponent = NewObject<UStaticMeshComponent>(BodyActor, TEXT("VehicleBodyMesh"));
+			BodyComponent->ComponentTags.Add(VehicleBodyTag);
+			BodyComponent->SetStaticMesh(Mesh);
+			for (int32 Index = 0; Index < Materials.Num(); ++Index)
+			{
+				BodyComponent->SetMaterial(Index, Materials[Index]);
+			}
+			// Purely visual — a fresh component's default "BlockAll" collision
+			// would block this actor's own CharacterMovementComponent sweeps
+			// (same actor, sibling primitive, not excluded automatically),
+			// freezing the vehicle in place the moment this attaches. The
+			// SelectionBox below is what answers clicks, not this mesh.
+			BodyComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			BodyComponent->SetupAttachment(BodyActor->GetRootComponent());
+			BodyComponent->RegisterComponent();
+
+			if (ASWGCreature* Creature = Cast<ASWGCreature>(BodyActor))
+			{
+				if (const FSWGMeshHardpoint* PlayerHardpoint = Hardpoints.FindByPredicate(
+					[](const FSWGMeshHardpoint& Hardpoint) { return Hardpoint.Name.Equals(TEXT("player"), ESearchCase::IgnoreCase); }))
+				{
+					Creature->RiderSeatTransform = FTransform(PlayerHardpoint->Rotation, PlayerHardpoint->Translation);
+				}
+			}
+
+			// The primary generated mesh's own selection box (see
+			// USWGTargetSubsystem::HandleMeshReady) was fitted to the tiny FX
+			// rig, not this — refit that same box to the real body instead of
+			// adding a second selectable primitive (which would double-catch
+			// clicks). Created here directly if it hasn't landed yet (race
+			// between this request and the primary one).
+			if (ACharacter* Character = Cast<ACharacter>(BodyActor))
+			{
+				static const FName SelectionBoxName(TEXT("SelectionBox"));
+				UBoxComponent* SelectionBox = nullptr;
+				TInlineComponentArray<UBoxComponent*> Boxes(BodyActor);
+				if (UBoxComponent** Existing = Boxes.FindByPredicate([](const UBoxComponent* Box) { return Box && Box->GetFName() == SelectionBoxName; }))
+				{
+					SelectionBox = *Existing;
+					SelectionBox->AttachToComponent(BodyComponent, FAttachmentTransformRules::KeepRelativeTransform);
+				}
+				else
+				{
+					SelectionBox = NewObject<UBoxComponent>(BodyActor, SelectionBoxName);
+					SelectionBox->SetupAttachment(BodyComponent);
+					SelectionBox->RegisterComponent();
+				}
+				const FBox MeshBounds = Mesh->GetBoundingBox();
+				SelectionBox->SetRelativeLocation(MeshBounds.GetCenter());
+				SelectionBox->SetBoxExtent(MeshBounds.GetExtent(), false);
+				USWGTargetSubsystem::MakeSelectable(SelectionBox);
+
+				if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+				{
+					Capsule->SetCollisionResponseToChannel(USWGTargetSubsystem::SelectionChannel, ECR_Ignore);
+				}
+			}
+			else
+			{
+				USWGTargetSubsystem::MakeSelectable(BodyComponent);
+			}
+		}, Customization);
 }
 
 bool USWGMeshGeneratorSubsystem::ResolveLmgMeshPath(const FString& LmgPath, FString& OutMgnPath)
@@ -2096,9 +2273,8 @@ USWGMeshGeneratorSubsystem::FSWGShaderCustomization USWGMeshGeneratorSubsystem::
 	}
 
 	// FORM TFAC > CHUNK PAL (repeated): [varName\0][\0][4-byte reversed
-	// color-factor tag][palette path\0]. Same byte layout
-	// ResolveShaderTintPalettePath parses — see its comment — but here the
-	// factor tag is the point rather than the palette path.
+	// color-factor tag][palette path\0][int32 default index]. e.g.
+	// landspeeder_hcsb21.sht: index_color_2 -> HUEB, vehicle_trim.pal, 4.
 	FSWGIffChunk TfacForm;
 	if (FindFormRecursive(Reader, TopLevel[0], SWG_IFF_TAG('T','F','A','C'), TfacForm, 4))
 	{
@@ -2124,6 +2300,18 @@ USWGMeshGeneratorSubsystem::FSWGShaderCustomization USWGMeshGeneratorSubsystem::
 			const FString FactorTag = FString::Printf(TEXT("%c%c%c%c"),
 				(TCHAR)Data[Offset + 3], (TCHAR)Data[Offset + 2], (TCHAR)Data[Offset + 1], (TCHAR)Data[Offset]);
 			Result.ColorFactorTags.Add(Key, FactorTag);
+			Offset += 4;
+
+			const int32 PathStart = Offset;
+			while (Offset < Size && Data[Offset] != 0) ++Offset;
+			FString PalettePath = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + PathStart), Offset - PathStart);
+			PalettePath.ReplaceInline(TEXT("\\"), TEXT("/"));
+			++Offset; // past the terminator
+			if (!PalettePath.IsEmpty() && Offset + 4 <= Size && !Result.DefaultFactorColors.Contains(FactorTag))
+			{
+				const int32 DefaultIndex = (int32)Data[Offset] | ((int32)Data[Offset + 1] << 8) | ((int32)Data[Offset + 2] << 16) | ((int32)Data[Offset + 3] << 24);
+				Result.DefaultFactorColors.Add(FactorTag, LoadPaletteColorAtIndex(PalettePath, DefaultIndex));
+			}
 		}
 	}
 
@@ -2672,12 +2860,23 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 		// effect names one (a_punchout: 128), floored at a third for blended
 		// effects whose test is only a near-zero fringe cut (e_radialflora: 7).
 		const FSWGEffectRenderStates EffectStates = GetOrReadEffectRenderStates(ShaderData.EffectName);
-		const bool bCutout = EffectStates.bAlphaTest || EffectStates.bAlphaBlend || ShaderData.NeedsAlphaBlend();
+		// Glass is the exception: every a_alpha_envmask* shader in the TRE is a
+		// window, bottle, lens or windshield. Plain a_alpha shares its render
+		// states but is mostly leaf cards, so it stays masked.
+		const bool bGlass = EffectStates.bAlphaBlend && !EffectStates.bWritesDepth
+			&& ShaderData.EffectName.Contains(TEXT("a_alpha_envmask"), ESearchCase::IgnoreCase);
+		if (bGlass && !ObjectMaterialParentTranslucent)
+		{
+			ObjectMaterialParentTranslucent = LoadObject<UMaterialInterface>(nullptr,
+				TEXT("/Game/SWGEmu/Materials/M_SWGObjectTranslucent.M_SWGObjectTranslucent"));
+		}
+		const bool bTranslucent = bGlass && ObjectMaterialParentTranslucent;
+		const bool bCutout = !bTranslucent && (EffectStates.bAlphaTest || EffectStates.bAlphaBlend || ShaderData.NeedsAlphaBlend());
 		const float AlphaThreshold = EffectStates.bAlphaBlend || !EffectStates.bAlphaTest
 			? FMath::Max(EffectStates.ResolveAlphaThreshold(ShaderData, 0.333f), 0.333f)
 			: EffectStates.ResolveAlphaThreshold(ShaderData, 0.5f);
-		UMaterialInterface* Parent = (bCutout && ObjectMaterialParentMasked)
-			? ObjectMaterialParentMasked.Get()
+		UMaterialInterface* Parent = bTranslucent ? ObjectMaterialParentTranslucent.Get()
+			: (bCutout && ObjectMaterialParentMasked) ? ObjectMaterialParentMasked.Get()
 			: ObjectMaterialParent.Get();
 
 		if (Parent)
@@ -2688,6 +2887,15 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 				if (bCutout)
 				{
 					MID->SetScalarParameterValue(TEXT("AlphaThreshold"), AlphaThreshold);
+				}
+				if (bTranslucent)
+				{
+					// The env mask is the MASK slot's alpha, sampled on MAIN's UVs;
+					// sRGB matches the parent's Color sampler and leaves alpha alone.
+					const FSWGShaderTexture* MaskDef = ShaderData.Textures.FindByPredicate(
+						[](const FSWGShaderTexture& Candidate) { return Candidate.Tag == TEXT("MASK") && !Candidate.VirtualPath.IsEmpty(); });
+					UTexture2D* MaskTexture = MaskDef ? GetOrLoadObjectTexture(MaskDef->VirtualPath, /*bSRGB=*/true) : nullptr;
+					MID->SetTextureParameterValue(TEXT("EnvMask"), MaskTexture ? MaskTexture : Texture);
 				}
 				if (NormalTexture)
 				{
@@ -2722,7 +2930,16 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 				// average color for both, as before this two-tone mechanism
 				// was understood (no per-vertex variation without a real
 				// per-character customization to drive it anyway).
-				if (TintOverride)
+				// A factor the object doesn't set falls back to the shader's own
+				// PAL default index (a Luke speeder with no customization is
+				// still tan with red trim).
+				if (!bHasAnyOverrides)
+				{
+					ShaderCustomization = ResolveShaderCustomization(ShaderVirtualPath);
+				}
+				const FLinearColor* MainColor = TintOverride ? TintOverride : ShaderCustomization.DefaultFactorColors.Find(TEXT("MAIN"));
+				const FLinearColor* HueColor = TintOverride2 ? TintOverride2 : ShaderCustomization.DefaultFactorColors.Find(TEXT("HUEB"));
+				if (MainColor || HueColor)
 				{
 					// The material lerps TintColor -> TintColor2 across the diffuse
 					// alpha, and which end each factor belongs on depends on the
@@ -2732,8 +2949,8 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 					// legs/arms, feather trim), so the two colours swap slots
 					// between the two families.
 					const bool bMainAtHighAlpha = ShaderData.EffectName.Contains(TEXT("color2w"), ESearchCase::IgnoreCase);
-					const FLinearColor MainTint = *TintOverride;
-					const FLinearColor HueTint = TintOverride2 ? *TintOverride2 : *TintOverride;
+					const FLinearColor MainTint = MainColor ? *MainColor : *HueColor;
+					const FLinearColor HueTint = HueColor ? *HueColor : *MainColor;
 
 					MID->SetVectorParameterValue(TEXT("TintColor"), bMainAtHighAlpha ? HueTint : MainTint);
 					MID->SetVectorParameterValue(TEXT("TintColor2"), bMainAtHighAlpha ? MainTint : HueTint);

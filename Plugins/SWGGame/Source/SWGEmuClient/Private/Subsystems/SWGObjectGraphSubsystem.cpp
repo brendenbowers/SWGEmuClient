@@ -18,6 +18,7 @@
 #include "Network/Messages/Zone/DeltasMessage.h"
 #include "Network/Messages/Zone/CmdStartSceneMessage.h"
 #include "Network/Messages/Zone/UpdateContainmentMessage.h"
+#include "Network/Objects/Zone/Object/SWGContainmentType.h"
 #include "Network/Messages/Zone/UpdateTransformMessage.h"
 #include "Network/Messages/Zone/UpdateTransformWithParentMessage.h"
 #include "Network/Messages/Zone/ObjControllerMessageIn.h"
@@ -281,6 +282,7 @@ void USWGObjectGraphSubsystem::HandleCmdStartScene(const FCmdStartSceneMessage& 
 	// FSWGZoneLoadingState reopens the level and the server resends everything
 	// from scratch; a stale containment here would misplace a reused id.
 	ActorRegistry.Reset();
+	ObjectCrcById.Reset();
 	ContainerByObjectId.Reset();
 	ContainmentTypeByObjectId.Reset();
 	CellNumberByObjectId.Reset();
@@ -300,6 +302,11 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 		UE_LOG(LogTemp, Warning, TEXT("USWGObjectGraphSubsystem: SceneCreateObjectByCrc for object %lld arrived before the CRC->actor-class map was built"), Msg.ObjectId);
 		return;
 	}
+
+	// Recorded unconditionally — an object that resolves to no actor class
+	// below (ITNO/intangible, mainly) still needs this CRC remembered
+	// somewhere, since nothing else client-side ever sees it again otherwise.
+	ObjectCrcById.Add(Msg.ObjectId, Msg.ObjectCrc);
 
 	TSubclassOf<AActor> ActorClass = ResolveActorClassForCrc(Msg.ObjectCrc);
 	if (!ActorClass)
@@ -407,6 +414,21 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 		}
 	}
 
+	// CREO4's TurnScale only multiplies the template's own turnRate.
+	if (ASWGCreature* Creature = Cast<ASWGCreature>(NewActor); Creature && TreSubsystem)
+	{
+		const FString TemplatePath = TreSubsystem->ResolveTemplatePath(Msg.ObjectCrc);
+		float RunTurnRate = 0.0f;
+		float WalkTurnRate = 0.0f;
+		USWGMovementComponent* Movement = Creature->GetSWGMovementComponent();
+		if (Movement
+			&& TreSubsystem->FindTemplateCreatureFloat(TemplatePath, TEXT("turnRate"), 0, RunTurnRate)
+			&& TreSubsystem->FindTemplateCreatureFloat(TemplatePath, TEXT("turnRate"), 1, WalkTurnRate))
+		{
+			Movement->SetTemplateTurnRates(RunTurnRate, WalkTurnRate);
+		}
+	}
+
 
 	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: spawned %s for object %lld (crc %08X), registered"),
 		*ActorClass->GetName(), Msg.ObjectId, Msg.ObjectCrc);
@@ -453,7 +475,7 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 
 	if (const int64* ContainerId = ContainerByObjectId.Find(Msg.ObjectId); ContainerId && *ContainerId != 0)
 	{
-		ApplyContainment(Actor, *ContainerId);
+		ApplyContainment(Actor, Msg.ObjectId, *ContainerId);
 		SyncSlottedEquipment(Msg.ObjectId, 0);
 
 		// The local player is never tucked away — if its cell is unknown it
@@ -544,7 +566,7 @@ void USWGObjectGraphSubsystem::HandleUpdateContainment(const FUpdateContainmentM
 	// the matching exemption in HandleSceneEndBaselines.
 	if (Actor && !Cast<ASWGCell>(Actor))
 	{
-		ApplyContainment(Actor, Msg.ContainerId);
+		ApplyContainment(Actor, Msg.ObjectId, Msg.ContainerId);
 	}
 
 	// Core3 links before it sends baselines, so an item's first containment
@@ -656,6 +678,16 @@ void USWGObjectGraphSubsystem::ApplyNetworkTransform(AActor* Actor, int64 Object
 	const bool bIsLocalPlayer = ObjectId == LocalPlayerObjectId;
 	const bool bTeleport = FVector::Dist2D(OldLocation, NewLocation) > MaxSmoothedMoveDistance;
 
+	// The mount the local player is driving is client-authoritative too, and
+	// the server echoes its (always slightly stale) position back to us as
+	// the rider — smoothing toward that would drag the vehicle backwards.
+	// Only a real jump (server correction, zone move) is honoured.
+	const ASWGCreature* LocalPlayer = Cast<ASWGCreature>(FindActor(LocalPlayerObjectId));
+	if (LocalPlayer && LocalPlayer->RiddenMount.Get() == Actor && !bTeleport)
+	{
+		return;
+	}
+
 	if (Movement && !bIsLocalPlayer && !bTeleport)
 	{
 		Movement->SetNetworkTarget(NewLocation, YawDegrees);
@@ -723,7 +755,7 @@ void USWGObjectGraphSubsystem::HandleObjControllerMessage(const FObjControllerMe
 	}
 }
 
-void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ContainerId)
+void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ObjectId, int64 ContainerId)
 {
 	if (!Actor)
 	{
@@ -742,6 +774,35 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ContainerId
 	const bool bContainedInCell = ContainerCell != nullptr;
 	const bool bContained = ContainerId != 0 && !bContainedInCell;
 	const bool bIsCreature = Actor->IsA<ASWGCreature>();
+
+	// A creature contained (Rider) in another creature is being mounted, not
+	// tucked into a bag — attach it to the mount's seat instead of hiding it.
+	// Rider shares its wire value (4) with "equipped in arrangement group 0"
+	// (see ESWGContainmentType's doc comment), but that ambiguity can't
+	// misfire here: an equipped item's actor is an ASWGItem, never an
+	// ASWGCreature, so bIsCreature already rules ordinary gear out.
+	ASWGCreature* MountActor = (bIsCreature && ContainerActor != Actor) ? Cast<ASWGCreature>(ContainerActor) : nullptr;
+	const bool bMounting = MountActor != nullptr
+		&& ContainmentTypeByObjectId.FindRef(ObjectId) == static_cast<int32>(ESWGContainmentType::Rider);
+
+	if (bMounting)
+	{
+		ApplyRiderContainment(CastChecked<ASWGCreature>(Actor), MountActor);
+		return;
+	}
+
+	// Not (or no longer) a Rider containment — a creature that was mounted
+	// needs to be put back on its own feet before falling through to the
+	// generic hide/attach handling below (e.g. dismounting into a cell, or
+	// straight into the world).
+	if (bIsCreature)
+	{
+		if (ASWGCreature* Creature = CastChecked<ASWGCreature>(Actor); Creature->RiddenMount.IsValid())
+		{
+			ApplyRiderContainment(Creature, nullptr);
+		}
+	}
+
 	Actor->SetActorHiddenInGame(bContained);
 	Actor->SetActorEnableCollision(!bContained);
 
@@ -811,6 +872,99 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ContainerId
 			}
 		}
 	}
+}
+
+void USWGObjectGraphSubsystem::ApplyRiderContainment(ASWGCreature* Rider, ASWGCreature* Mount)
+{
+	if (!Rider)
+	{
+		return;
+	}
+
+	if (!Mount)
+	{
+		// Dismounting: undo the attach and give the rider its own legs back.
+		Rider->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		Rider->SetActorEnableCollision(true);
+		if (USWGMovementComponent* RiderMovement = Rider->GetSWGMovementComponent())
+		{
+			RiderMovement->SetMovementMode(MOVE_Walking);
+		}
+		// Hand the vehicle back to the network: it's parked, and the server's
+		// transforms for it apply again (see ApplyNetworkTransform).
+		if (ASWGCreature* PreviousMount = Rider->RiddenMount.Get())
+		{
+			if (USWGMovementComponent* MountMovement = PreviousMount->GetSWGMovementComponent())
+			{
+				MountMovement->bRunPhysicsWithNoController = false;
+				MountMovement->StopMovementImmediately();
+			}
+		}
+		UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: %s dismounted"), *Rider->GetName());
+		Rider->RiddenMount.Reset();
+		return;
+	}
+
+	// No slot_definitions.iff row exists for a rider seat (unlike ordinary
+	// equip hardpoints — see USWGEquipmentComponent::AttachMeshToHardpoint),
+	// so there's no data-driven socket name to look up for an ordinary
+	// creature mount. A vehicle's own body mesh carries a real "player"
+	// hardpoint instead (see USWGMeshGeneratorSubsystem::TryAttachVehicleBody)
+	// — used below when present. Otherwise fall back to the mesh root so
+	// mounting still works, just without a proper seat offset.
+	static const FName RiderSocketName(TEXT("rider"));
+	USkeletalMeshComponent* MountMesh = Mount->GetMesh();
+	const bool bHasSeatSocket = MountMesh && MountMesh->DoesSocketExist(RiderSocketName);
+	if (!bHasSeatSocket && !Mount->RiderSeatTransform.IsSet())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGObjectGraphSubsystem: mount %s has no '%s' socket or body hardpoint — attaching rider %s at its mesh root"),
+			*Mount->GetName(), *RiderSocketName.ToString(), *Rider->GetName());
+	}
+
+	// A Character's movement component fights a parent attachment (see the
+	// "Creatures aren't attached" comment above for cell placement), so
+	// movement is switched off before attaching rather than left to contest it.
+	if (USWGMovementComponent* RiderMovement = Rider->GetSWGMovementComponent())
+	{
+		RiderMovement->SetMovementMode(MOVE_None);
+	}
+	Rider->SetActorEnableCollision(false);
+	Rider->SetActorHiddenInGame(false);
+
+	// The local player drives its mount client-side, like it does itself:
+	// ASWGPlayer::Move feeds it AddMovementInput without possessing it, and
+	// UCharacterMovementComponent only simulates a controller-less character
+	// when bRunPhysicsWithNoController is set — otherwise it consumes the
+	// input and discards it. Any pending network target would also pre-empt
+	// the simulation (USWGMovementComponent::TickComponent). Someone else's
+	// mount stays network-driven.
+	if (Rider->GetObjectId() == LocalPlayerObjectId)
+	{
+		if (USWGMovementComponent* MountMovement = Mount->GetSWGMovementComponent())
+		{
+			MountMovement->ClearNetworkTarget();
+			MountMovement->bRunPhysicsWithNoController = true;
+			MountMovement->SetMovementMode(MOVE_Walking);
+		}
+	}
+
+	if (bHasSeatSocket)
+	{
+		Rider->AttachToComponent(MountMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, RiderSocketName);
+	}
+	else if (Mount->RiderSeatTransform.IsSet())
+	{
+		Rider->AttachToComponent(Mount->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
+		Rider->SetActorRelativeTransform(*Mount->RiderSeatTransform);
+	}
+	else if (USceneComponent* AttachTarget = MountMesh ? static_cast<USceneComponent*>(MountMesh) : Mount->GetRootComponent())
+	{
+		Rider->AttachToComponent(AttachTarget, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+	}
+
+	Rider->RiddenMount = Mount;
+
+	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: %s mounted %s"), *Rider->GetName(), *Mount->GetName());
 }
 
 void USWGObjectGraphSubsystem::SyncSlottedEquipment(int64 ObjectId, int64 PreviousContainerId)
@@ -914,7 +1068,7 @@ void USWGObjectGraphSubsystem::RegisterStaticObject(int64 ObjectId, AActor* Acto
 		{
 			if (Pair.Value == ObjectId && ReadyObjects.Contains(Pair.Key))
 			{
-				ApplyContainment(FindActor(Pair.Key), ObjectId);
+				ApplyContainment(FindActor(Pair.Key), Pair.Key, ObjectId);
 			}
 		}
 	}
@@ -930,7 +1084,7 @@ void USWGObjectGraphSubsystem::NotifyCellFinished(int64 CellObjectId)
 	{
 		if (Pair.Value == CellObjectId && ReadyObjects.Contains(Pair.Key))
 		{
-			ApplyContainment(FindActor(Pair.Key), CellObjectId);
+			ApplyContainment(FindActor(Pair.Key), Pair.Key, CellObjectId);
 		}
 	}
 }
@@ -938,6 +1092,31 @@ void USWGObjectGraphSubsystem::NotifyCellFinished(int64 CellObjectId)
 bool USWGObjectGraphSubsystem::IsLocalPlayerContainedIn(int64 ContainerId) const
 {
 	return LocalPlayerObjectId != 0 && ContainerId != 0 && ContainerByObjectId.FindRef(LocalPlayerObjectId) == ContainerId;
+}
+
+bool USWGObjectGraphSubsystem::IsOwnedByLocalPlayer(int64 ObjectId) const
+{
+	if (LocalPlayerObjectId == 0 || ObjectId == 0)
+	{
+		return false;
+	}
+
+	int64 Current = ObjectId;
+	constexpr int32 MaxHops = 16;
+	for (int32 Hop = 0; Hop < MaxHops; ++Hop)
+	{
+		const int64* ContainerId = ContainerByObjectId.Find(Current);
+		if (!ContainerId || *ContainerId == 0)
+		{
+			return false;
+		}
+		if (*ContainerId == LocalPlayerObjectId)
+		{
+			return true;
+		}
+		Current = *ContainerId;
+	}
+	return false;
 }
 
 AActor* USWGObjectGraphSubsystem::ResolveMessageActor(int64 ObjectId, ESWGObjectType ObjectType)

@@ -48,6 +48,26 @@ struct FSWGDataTableData
 				return Row.Cells.IsValidIndex(ColIdx) && Row.Cells[ColIdx] == Value;
 			});
 	}
+
+	/**
+	 * Same as FindRowByColumn, but the row's index rather than the row itself —
+	 * for a table like datatables/player/radial_menu.iff where the row index
+	 * *is* the meaningful id elsewhere (Core3's RadialOptions), so callers
+	 * want "the id named X" rather than "the row named X". INDEX_NONE if no
+	 * row matches.
+	 */
+	int32 FindRowIndex(const FString& ColumnName, const FString& Value) const
+	{
+		const int32 ColIdx = GetColumnIndex(ColumnName);
+		if (ColIdx == INDEX_NONE)
+		{
+			return INDEX_NONE;
+		}
+		return Rows.IndexOfByPredicate([ColIdx, &Value](const FSWGDataTableRow& Row)
+			{
+				return Row.Cells.IsValidIndex(ColIdx) && Row.Cells[ColIdx] == Value;
+			});
+	}
 };
 
 class SWGTRE_API FSWGDataTableReader

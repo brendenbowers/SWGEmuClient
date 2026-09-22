@@ -96,16 +96,17 @@ static FAutoConsoleCommandWithWorldAndArgs GSWGRadialSelectCommand(
 
 namespace
 {
-	// datatables/player/radial_menu.iff rows, by index (== Core3 RadialOptions).
-	constexpr int32 RadialCombatAttack = 3;
-	constexpr int32 RadialExamine = 7;
-	constexpr int32 RadialItemEquip = 11;
-	constexpr int32 RadialItemUnequip = 12;
-	constexpr int32 RadialItemUse = 20;
-
-	/** Retail names the standard options as @ui_radial:<row caption, lowercased>. */
 	FString MakeStandardLabelId(const FString& Caption)
 	{
+		static const TMap<FString, FString> LabelOverrides = {
+			{ TEXT("VEHICLE_GENERATE"), TEXT("control_call") },
+			{ TEXT("VEHICLE_STORE"), TEXT("control_store") },
+			{ TEXT("PET_STORE"), TEXT("control_store") },
+		};
+		if (const FString* Override = LabelOverrides.Find(Caption.ToUpper()))
+		{
+			return TEXT("@ui_radial:") + *Override;
+		}
 		return TEXT("@ui_radial:") + Caption.ToLower();
 	}
 }
@@ -152,20 +153,20 @@ bool USWGRadialMenuSubsystem::RequestMenu(int64 ObjectId, FVector2D ScreenPositi
 
 	FObjectMenuRequest Request(PlayerId, ObjectId, ++NextCounter);
 
-	// Retail's client offers "Use" on usable tangibles and the server relies on
-	// it: terminals act only on a select of ITEM_USE, and several menu
-	// components nest their options under it (addRadialMenuItemToRadialID(20,
-	// ...) throws when it's missing). So it goes in the request, comes back
-	// flagged server-handled, and a pick sends ObjectMenuSelect. Attack and
-	// Examine stay client-side (see AppendClientDefaults).
-	const AActor* Actor = ObjectGraph->FindActor(ObjectId);
-	if (Actor && (Actor->IsA<ASWGItem>() || Actor->IsA<ASWGInstallation>()))
+	// Some options (currently just "Use" — see its rule's comment in
+	// GetClientRadialRules) need to be pre-seeded in the request itself, not
+	// just offered client-side after the response comes back.
+	int32 NextSeedIndex = 1;
+	for (const FSWGClientRadialRule& Rule : GetClientRadialRules())
 	{
-		FSWGRadialMenuEntry& Use = Request.ClientItems.AddDefaulted_GetRef();
-		Use.Index = 1;
-		Use.ParentIndex = 0;
-		Use.RadialId = RadialItemUse;
-		Use.Callback = 3;
+		if (Rule.RadialId != INDEX_NONE && Rule.bSeedInRequest && Rule.ShouldOffer(ObjectId))
+		{
+			FSWGRadialMenuEntry& Seeded = Request.ClientItems.AddDefaulted_GetRef();
+			Seeded.Index = static_cast<uint8>(NextSeedIndex++);
+			Seeded.ParentIndex = 0;
+			Seeded.RadialId = static_cast<uint8>(Rule.RadialId);
+			Seeded.Callback = 3;
+		}
 	}
 
 	Network->SendMessage(Request.Serialize());
@@ -208,35 +209,17 @@ void USWGRadialMenuSubsystem::SelectOption(int64 ObjectId, int32 RadialId)
 		return;
 	}
 
-	// MissionTerminalImplementation never answers ITEM_USE server-side — the
-	// retail client instead special-cases "Use" on a mission terminal exactly
-	// like Equip on a wearable, firing MissionListRequest directly instead of
-	// ObjectMenuSelect. See FMissionListRequest.
-	if (RadialId == RadialItemUse && IsMissionTerminal(ObjectId))
+	// Client-drawn options (Equip/Unequip/Use's equip-toggle and mission-
+	// terminal special cases, Examine, ...) handle their own pick before
+	// anything server-related — see GetClientRadialRules for why each one
+	// does what it does. A rule with no OnSelected, or one that returns
+	// false, falls through to the generic paths below unchanged.
+	for (const FSWGClientRadialRule& Rule : GetClientRadialRules())
 	{
-		// USWGMissionSubsystem sends FMissionListRequest itself, from this — it
-		// also owns AcceptMission/RefreshMissionList, so one place tracks the
-		// request seq every mission's RefreshCounter gets checked against.
-		OnMissionTerminalUsed.Broadcast(ObjectId);
-		return;
-	}
-
-	// Equip and Unequip are client commands in retail (the table's "equip" /
-	// "unequip" never reach the server), and Use on a wearable means equip —
-	// Core3's WearableObjectMenuComponent does nothing with ITEM_USE; the
-	// retail client sends a transferItem* instead.
-	USWGItemTransferSubsystem* Transfer = GetGameInstance()->GetSubsystem<USWGItemTransferSubsystem>();
-	if (Transfer && (RadialId == RadialItemEquip || RadialId == RadialItemUnequip || RadialId == RadialItemUse) && Transfer->IsEquippable(ObjectId))
-	{
-		if (Transfer->IsEquipped(ObjectId))
+		if (Rule.RadialId == RadialId && Rule.OnSelected && Rule.OnSelected(ObjectId))
 		{
-			Transfer->UnequipItem(ObjectId);
+			return;
 		}
-		else
-		{
-			Transfer->EquipItem(ObjectId);
-		}
-		return;
 	}
 
 	if (Item->bServerHandled)
@@ -248,15 +231,6 @@ void USWGRadialMenuSubsystem::SelectOption(int64 ObjectId, int32 RadialId)
 			Select.RadialId = static_cast<uint8>(RadialId);
 			Network->SendMessage(Select.Serialize());
 			UE_LOG(LogSWGRadial, Log, TEXT("selected server option %d on %lld"), RadialId, ObjectId);
-		}
-		return;
-	}
-
-	if (RadialId == RadialExamine)
-	{
-		if (USWGExamineSubsystem* Examine = GetGameInstance()->GetSubsystem<USWGExamineSubsystem>())
-		{
-			Examine->RequestExamine(ObjectId);
 		}
 		return;
 	}
@@ -342,33 +316,151 @@ void USWGRadialMenuSubsystem::AppendClientDefaults(int64 ObjectId, TArray<FSWGRa
 		NextIndex = FMath::Max(NextIndex, Item.Index);
 	}
 
-	auto AddDefault = [&](int32 RadialId)
+	for (const FSWGClientRadialRule& Rule : GetClientRadialRules())
 	{
-		if (AlreadyOffered(RadialId))
+		if (Rule.RadialId == INDEX_NONE || AlreadyOffered(Rule.RadialId) || !Rule.ShouldOffer(ObjectId))
 		{
-			return;
+			continue;
 		}
 		FSWGRadialMenuItem& Item = Items.AddDefaulted_GetRef();
 		Item.Index = ++NextIndex;
 		Item.ParentIndex = 0;
-		Item.RadialId = RadialId;
-		const FString Caption = Table->GetCell(RadialId, TEXT("caption"));
+		Item.RadialId = Rule.RadialId;
+		const FString Caption = Table->GetCell(Rule.RadialId, TEXT("caption"));
 		Item.Label = FText::FromString(Tre ? Tre->ResolveStringId(MakeStandardLabelId(Caption)) : Caption);
 		Item.bServerHandled = false;
-	};
+	}
+}
 
-	const bool bIsSelf = ObjectGraph && ObjectGraph->GetLocalPlayerObjectId() == ObjectId;
-	const ASWGCreature* Creature = ObjectGraph ? Cast<ASWGCreature>(ObjectGraph->FindActor(ObjectId)) : nullptr;
-	if (Creature && !bIsSelf)
+bool USWGRadialMenuSubsystem::ToggleEquip(int64 ObjectId) const
+{
+	USWGItemTransferSubsystem* Transfer = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGItemTransferSubsystem>() : nullptr;
+	if (!Transfer || !Transfer->IsEquippable(ObjectId))
 	{
-		AddDefault(RadialCombatAttack);
+		return false;
 	}
-	// Wearables and weapons: Equip / Unequip are the client's to offer (see SelectOption).
-	if (const USWGItemTransferSubsystem* Transfer = GetGameInstance()->GetSubsystem<USWGItemTransferSubsystem>(); Transfer && Transfer->IsEquippable(ObjectId))
+	if (Transfer->IsEquipped(ObjectId))
 	{
-		AddDefault(Transfer->IsEquipped(ObjectId) ? RadialItemUnequip : RadialItemEquip);
+		Transfer->UnequipItem(ObjectId);
 	}
-	AddDefault(RadialExamine);
+	else
+	{
+		Transfer->EquipItem(ObjectId);
+	}
+	return true;
+}
+
+const TArray<USWGRadialMenuSubsystem::FSWGClientRadialRule>& USWGRadialMenuSubsystem::GetClientRadialRules() const
+{
+	if (bBuiltClientRadialRules)
+	{
+		return ClientRadialRules;
+	}
+	bBuiltClientRadialRules = true;
+
+	// Row index == radial id is Core3's own convention (RadialOptions.h:
+	// "Do not modify this list, it matches datatables/player/radial_menu.iff"),
+	// and that enum's names — resolved here by ResolveRadialId(Name), against
+	// the table's own "caption" column (see ResolveRadialId's comment) — are
+	// the actual source of truth, avoiding hand-counting the id ourselves (a
+	// wrong "60 vs 61" count is exactly what happened before this).
+	const int32 RadialCombatAttack = ResolveRadialId(TEXT("COMBAT_ATTACK"));
+	const int32 RadialItemEquip = ResolveRadialId(TEXT("ITEM_EQUIP"));
+	const int32 RadialItemUnequip = ResolveRadialId(TEXT("ITEM_UNEQUIP"));
+	const int32 RadialItemUse = ResolveRadialId(TEXT("ITEM_USE"));
+	const int32 RadialVehicleGenerate = ResolveRadialId(TEXT("VEHICLE_GENERATE"));
+	const int32 RadialExamine = ResolveRadialId(TEXT("EXAMINE"));
+	const int32 RadialItemDestroy = ResolveRadialId(TEXT("ITEM_DESTROY"));
+
+	// Attack — a live, non-self creature. No OnSelected: falls through to
+	// the generic table "command" dispatch, same as it always has.
+	ClientRadialRules.Add(FSWGClientRadialRule{ RadialCombatAttack,
+		[this](int64 ObjectId)
+		{
+			const bool bIsSelf = ObjectGraph && ObjectGraph->GetLocalPlayerObjectId() == ObjectId;
+			const ASWGCreature* Creature = ObjectGraph ? Cast<ASWGCreature>(ObjectGraph->FindActor(ObjectId)) : nullptr;
+			return Creature && !bIsSelf;
+		},
+		false, nullptr });
+
+	// Equip / Unequip — wearables and weapons; Core3's WearableObjectMenuComponent
+	// does nothing with ITEM_USE, so this is entirely client-local (a
+	// transferItem* command), same action either direction.
+	ClientRadialRules.Add(FSWGClientRadialRule{ RadialItemEquip,
+		[this](int64 ObjectId)
+		{
+			USWGItemTransferSubsystem* Transfer = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGItemTransferSubsystem>() : nullptr;
+			return Transfer && Transfer->IsEquippable(ObjectId) && !Transfer->IsEquipped(ObjectId);
+		},
+		false, [this](int64 ObjectId) { return ToggleEquip(ObjectId); } });
+
+	ClientRadialRules.Add(FSWGClientRadialRule{ RadialItemUnequip,
+		[this](int64 ObjectId)
+		{
+			USWGItemTransferSubsystem* Transfer = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGItemTransferSubsystem>() : nullptr;
+			return Transfer && Transfer->IsEquippable(ObjectId) && Transfer->IsEquipped(ObjectId);
+		},
+		false, [this](int64 ObjectId) { return ToggleEquip(ObjectId); } });
+
+	ClientRadialRules.Add(FSWGClientRadialRule{ RadialItemUse,
+		[this](int64 ObjectId)
+		{
+			const AActor* Actor = ObjectGraph ? ObjectGraph->FindActor(ObjectId) : nullptr;
+			return Actor && (Actor->IsA<ASWGItem>() || Actor->IsA<ASWGInstallation>());
+		},
+		true,
+		[this](int64 ObjectId)
+		{
+			if (IsMissionTerminal(ObjectId))
+			{
+				OnMissionTerminalUsed.Broadcast(ObjectId);
+				return true;
+			}
+			return ToggleEquip(ObjectId);
+		} });
+
+	ClientRadialRules.Add(FSWGClientRadialRule{ RadialVehicleGenerate,
+		[this](int64 ObjectId)
+		{
+			if (!ObjectGraph || !Tre || !ObjectGraph->IsOwnedByLocalPlayer(ObjectId))
+			{
+				return false;
+			}
+			const uint32 Crc = ObjectGraph->FindObjectCrc(ObjectId);
+			return Crc != 0 && Tre->ResolveTemplatePath(Crc).Contains(TEXT("object/intangible/vehicle/"));
+		},
+		false,
+		[this, RadialVehicleGenerate](int64 ObjectId)
+		{
+			if (Network)
+			{
+				FObjectMenuSelectMessage Select;
+				Select.ObjectId = ObjectId;
+				Select.RadialId = static_cast<uint8>(RadialVehicleGenerate);
+				Network->SendMessage(Select.Serialize());
+				UE_LOG(LogSWGRadial, Log, TEXT("selected client-drawn option %d (Call) on %lld"), RadialVehicleGenerate, ObjectId);
+			}
+			return true;
+		} });
+
+	// Examine — always offered, handled entirely client-side.
+	ClientRadialRules.Add(FSWGClientRadialRule{ RadialExamine,
+		[](int64) { return true; },
+		false,
+		[this](int64 ObjectId)
+		{
+			if (USWGExamineSubsystem* Examine = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGExamineSubsystem>() : nullptr)
+			{
+				Examine->RequestExamine(ObjectId);
+			}
+			return true;
+		} });
+
+	ClientRadialRules.Add(FSWGClientRadialRule{ RadialItemDestroy,
+		[this](int64 ObjectId) { return ObjectGraph && ObjectGraph->IsOwnedByLocalPlayer(ObjectId); },
+		false, nullptr });
+
+	return ClientRadialRules;
 }
 
 FText USWGRadialMenuSubsystem::ResolveLabel(const FSWGRadialMenuEntry& Entry) const
@@ -408,4 +500,15 @@ const FSWGDataTableData* USWGRadialMenuSubsystem::GetRadialTable() const
 
 	RadialTable = MoveTemp(Loaded);
 	return RadialTable.Get();
+}
+
+int32 USWGRadialMenuSubsystem::ResolveRadialId(const FString& Name) const
+{
+	const FSWGDataTableData* Table = GetRadialTable();
+	const int32 RadialId = Table ? Table->FindRowIndex(TEXT("caption"), Name) : INDEX_NONE;
+	if (RadialId == INDEX_NONE)
+	{
+		UE_LOG(LogSWGRadial, Warning, TEXT("ResolveRadialId: no row captioned '%s' in datatables/player/radial_menu.iff — that option won't be offered"), *Name);
+	}
+	return RadialId;
 }
