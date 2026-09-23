@@ -9,6 +9,7 @@ class USWGObjectGraphSubsystem;
 class USWGTerrainSubsystem;
 class USWGJournalComponent;
 class USWGMissionSubsystem;
+class USWGCommandSubsystem;
 class USWGTreSubsystem;
 class ASWGWaypointMarker;
 class ASWGWaypointCompassArrow;
@@ -99,9 +100,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FSWGOnWaypointListChanged);
  * Mirrors USWGMissionSubsystem's shape (a GameInstanceSubsystem exposing a
  * GetX() snapshot recomputed on each call).
  *
- * There is currently no client-side "activate/deactivate" command — a
- * waypoint's Active flag is entirely server-driven (mission acceptance,
- * or whatever placed it), so this is read-only.
+ * Activation is toggled server-side through setWaypointActiveStatus; the
+ * returned PLAY delta remains the authority for each waypoint's active flag.
  *
  * Also owns the 3D side of an active, loaded waypoint: it spawns/moves/
  * destroys one ASWGWaypointMarker per such waypoint (FTickableGameObject,
@@ -141,6 +141,10 @@ public:
 	/** GetWaypoints(), filtered to bActive. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Waypoint")
 	TArray<FSWGWaypointEntry> GetActiveWaypoints() const;
+
+	/** Asks the server to toggle this waypoint's active state. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Waypoint")
+	bool ToggleWaypoint(int64 WaypointObjectId);
 
 	/** UI colour for a waypoint's Colour byte. */
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|Waypoint")
@@ -183,6 +187,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<USWGMissionSubsystem> Missions;
+
+	UPROPERTY()
+	TObjectPtr<USWGCommandSubsystem> Commands;
 
 	UPROPERTY()
 	TObjectPtr<USWGTreSubsystem> Tre;

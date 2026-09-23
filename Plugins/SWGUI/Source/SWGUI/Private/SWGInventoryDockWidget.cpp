@@ -1,5 +1,6 @@
 #include "SWGInventoryDockWidget.h"
 #include "SWGExamineLines.h"
+#include "SWGDatapadQuery.h"
 #include "SWGInventoryRowWidget.h"
 #include "SWGUISettings.h"
 #include "ModelWidget.h"
@@ -63,11 +64,14 @@ void USWGInventoryDockWidget::NativeDestruct()
 
 void USWGInventoryDockWidget::Refresh()
 {
-	if (!SWGInventoryQuery::Gather(GetGameInstance(), Equipped, Contents))
+	SWGInventoryQuery::Gather(GetGameInstance(), Equipped, Contents);
+	RefreshWaypoints();
+	RefreshDatapad();
+	ApplyTabStyle();
+	if (Tab == ESWGInventoryTab::Waypoints || Tab == ESWGInventoryTab::Datapad)
 	{
-		return;
+		DetailObjectId = 0;
 	}
-	InventoryTabText->SetText(FText::FromString(FString::Printf(TEXT("INVENTORY (%d)"), Contents.Num())));
 	RebuildList();
 }
 
@@ -77,6 +81,9 @@ const TArray<FSWGInventoryEntry>& USWGInventoryDockWidget::ActiveEntries() const
 	{
 	case ESWGInventoryTab::Equipped: return Equipped;
 	case ESWGInventoryTab::Examine: return Examined;
+	case ESWGInventoryTab::Waypoints: return WaypointRows;
+	case ESWGInventoryTab::Missions: return MissionRows;
+	case ESWGInventoryTab::Datapad: return DatapadRows;
 	default: return Contents;
 	}
 }
@@ -88,12 +95,19 @@ TArray<ESWGInventoryTab> USWGInventoryDockWidget::AvailableTabs() const
 	{
 		Tabs.Add(ESWGInventoryTab::Examine);
 	}
+	Tabs.Add(ESWGInventoryTab::Waypoints);
+	if (!Missions.IsEmpty())
+	{
+		Tabs.Add(ESWGInventoryTab::Missions);
+	}
+	Tabs.Add(ESWGInventoryTab::Datapad);
 	return Tabs;
 }
 
 void USWGInventoryDockWidget::SetTab(ESWGInventoryTab InTab)
 {
 	Tab = InTab;
+	DetailObjectId = 0;
 	ApplyTabStyle();
 	Cursor = 0;
 	RebuildList();
@@ -108,10 +122,68 @@ void USWGInventoryDockWidget::CycleTab(int32 Direction)
 
 void USWGInventoryDockWidget::ApplyTabStyle()
 {
+	const bool bInventoryTab = Tab == ESWGInventoryTab::Equipped || Tab == ESWGInventoryTab::Inventory || Tab == ESWGInventoryTab::Examine;
+	EquippedTabText->SetVisibility(bInventoryTab ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	ExamineTabText->SetVisibility(bInventoryTab && !Examined.IsEmpty() ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	InventoryTabText->SetText(bInventoryTab
+		? FText::FromString(FString::Printf(TEXT("INVENTORY (%d)"), Contents.Num()))
+		: Tab == ESWGInventoryTab::Waypoints
+			? FText::FromString(FString::Printf(TEXT("WAYPOINTS (%d)"), WaypointRows.Num()))
+			: Tab == ESWGInventoryTab::Missions
+				? FText::FromString(FString::Printf(TEXT("MISSIONS (%d)"), MissionRows.Num()))
+				: FText::FromString(FString::Printf(TEXT("DATAPAD (%d)"), DatapadRows.Num())));
 	EquippedTabText->SetColorAndOpacity(FSlateColor(Tab == ESWGInventoryTab::Equipped ? ActiveTabColor : InactiveTabColor));
-	InventoryTabText->SetColorAndOpacity(FSlateColor(Tab == ESWGInventoryTab::Inventory ? ActiveTabColor : InactiveTabColor));
+	InventoryTabText->SetColorAndOpacity(FSlateColor(Tab == ESWGInventoryTab::Inventory || !bInventoryTab ? ActiveTabColor : InactiveTabColor));
 	ExamineTabText->SetColorAndOpacity(FSlateColor(Tab == ESWGInventoryTab::Examine ? ActiveTabColor : InactiveTabColor));
-	ExamineTabText->SetVisibility(Examined.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+}
+
+void USWGInventoryDockWidget::RefreshWaypoints()
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	USWGWaypointSubsystem* Subsystem = GameInstance ? GameInstance->GetSubsystem<USWGWaypointSubsystem>() : nullptr;
+	Waypoints = Subsystem ? Subsystem->GetWaypoints() : TArray<FSWGWaypointEntry>();
+	Waypoints.Sort([](const FSWGWaypointEntry& A, const FSWGWaypointEntry& B) { return A.DistanceMeters < B.DistanceMeters; });
+	WaypointRows.Reset(Waypoints.Num());
+	for (const FSWGWaypointEntry& Waypoint : Waypoints)
+	{
+		FSWGInventoryEntry& Row = WaypointRows.AddDefaulted_GetRef();
+		Row.ObjectId = Waypoint.WaypointObjectId;
+		Row.Name = Waypoint.Name.ToString();
+		Row.SlotNames = Waypoint.bHasDistance
+			? FString::Printf(TEXT("%s  %dm%s"), *Waypoint.Direction, FMath::RoundToInt(Waypoint.DistanceMeters), Waypoint.bActive ? TEXT("  ACTIVE") : TEXT(""))
+			: Waypoint.bActive ? TEXT("ACTIVE") : TEXT("");
+	}
+}
+
+void USWGInventoryDockWidget::RefreshDatapad()
+{
+	SWGDatapadQuery::Gather(GetGameInstance(), DatapadRows);
+}
+
+void USWGInventoryDockWidget::SetMissions(const TArray<FSWGMissionEntry>& InMissions)
+{
+	Missions = InMissions.FilterByPredicate([](const FSWGMissionEntry& Entry) { return Entry.bPopulated; });
+	RebuildMissionRows();
+	if (Tab == ESWGInventoryTab::Missions)
+	{
+		DetailObjectId = 0;
+		ApplyTabStyle();
+		RebuildList();
+	}
+}
+
+void USWGInventoryDockWidget::RebuildMissionRows()
+{
+	MissionRows.Reset(Missions.Num());
+	for (const FSWGMissionEntry& Mission : Missions)
+	{
+		FSWGInventoryEntry& Row = MissionRows.AddDefaulted_GetRef();
+		Row.ObjectId = Mission.ObjectId;
+		Row.Name = Mission.Title.IsEmpty() ? TEXT("Mission") : Mission.Title.ToString();
+		Row.SlotNames = Mission.bHasStartPosition
+			? FString::Printf(TEXT("%d cr  %dm %s"), Mission.RewardCredits, FMath::RoundToInt(Mission.DistanceMeters), *Mission.Direction)
+			: FString::Printf(TEXT("%d cr"), Mission.RewardCredits);
+	}
 }
 
 void USWGInventoryDockWidget::MoveCursor(int32 Delta)
@@ -204,14 +276,66 @@ void USWGInventoryDockWidget::ShowDetails(int64 ObjectId)
 	DetailObjectId = ObjectId;
 	DetailAttributePanel->ClearChildren();
 	DetailDescriptionText->SetText(FText::GetEmpty());
+	DetailDescriptionText->SetVisibility(ESlateVisibility::Collapsed);
+	DetailModel->ClearModel();
+
+	if (Tab == ESWGInventoryTab::Waypoints)
+	{
+		const FSWGWaypointEntry* Waypoint = Waypoints.FindByPredicate([ObjectId](const FSWGWaypointEntry& Entry) { return Entry.WaypointObjectId == ObjectId; });
+		DetailNameText->SetText(Waypoint ? Waypoint->Name : FText::GetEmpty());
+		if (Waypoint)
+		{
+			FText Details = FText::FromString(Waypoint->bHasDistance
+				? FString::Printf(TEXT("%s, %d metres away%s"), *Waypoint->Direction, FMath::RoundToInt(Waypoint->DistanceMeters), Waypoint->bActive ? TEXT(" (active)") : TEXT(""))
+				: Waypoint->bActive ? TEXT("Active waypoint") : TEXT("Inactive waypoint"));
+
+			UGameInstance* GameInstance = GetGameInstance();
+			USWGMissionSubsystem* MissionSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGMissionSubsystem>() : nullptr;
+			const TArray<FSWGMissionEntry> MissionEntries = MissionSubsystem ? MissionSubsystem->GetAllTrackedMissions() : TArray<FSWGMissionEntry>();
+			if (const FSWGMissionEntry* Mission = MissionEntries.FindByPredicate([ObjectId](const FSWGMissionEntry& Entry) { return Entry.WaypointObjectId == ObjectId; }))
+			{
+				DetailNameText->SetText(Mission->Title.IsEmpty() ? Waypoint->Name : Mission->Title);
+				Details = FText::Format(NSLOCTEXT("SWGEmu", "WaypointMissionDetails", "{0}\n\n{1}\nReward: {2} cr   Difficulty: {3}{4}"),
+					Details, Mission->Description, FText::AsNumber(Mission->RewardCredits), FText::AsNumber(Mission->DifficultyDisplay),
+					Mission->TargetTemplateName.IsEmpty() ? FText::GetEmpty() : FText::Format(NSLOCTEXT("SWGEmu", "WaypointMissionTarget", "   Target: {0}"), Mission->TargetTemplateName));
+			}
+
+			DetailDescriptionText->SetText(Details);
+			DetailDescriptionText->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+		return;
+	}
+
+	if (Tab == ESWGInventoryTab::Missions)
+	{
+		const FSWGMissionEntry* Mission = Missions.FindByPredicate([ObjectId](const FSWGMissionEntry& Entry) { return Entry.ObjectId == ObjectId; });
+		DetailNameText->SetText(Mission ? Mission->Title : FText::GetEmpty());
+		if (Mission)
+		{
+			DetailDescriptionText->SetText(FText::Format(NSLOCTEXT("SWGEmu", "ControllerMissionDetails", "{0}\nReward: {1} cr   Difficulty: {2}{3}"),
+				Mission->Description, FText::AsNumber(Mission->RewardCredits), FText::AsNumber(Mission->DifficultyDisplay),
+				Mission->TargetTemplateName.IsEmpty() ? FText::GetEmpty() : FText::Format(NSLOCTEXT("SWGEmu", "ControllerMissionTarget", "   Target: {0}"), Mission->TargetTemplateName)));
+			DetailDescriptionText->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+		return;
+	}
 
 	UGameInstance* GameInstance = GetGameInstance();
 	USWGExamineSubsystem* Examine = GameInstance ? GameInstance->GetSubsystem<USWGExamineSubsystem>() : nullptr;
 	FSWGExamineInfo Info;
 	if (ObjectId == 0 || !Examine || !Examine->Describe(ObjectId, Info))
 	{
-		DetailNameText->SetText(FText::GetEmpty());
-		DetailModel->ClearModel();
+		const FSWGInventoryEntry* Entry = ActiveEntries().FindByPredicate([ObjectId](const FSWGInventoryEntry& Item) { return Item.ObjectId == ObjectId; });
+		DetailNameText->SetText(Entry ? FText::FromString(Entry->Name) : FText::GetEmpty());
+		if (Tab == ESWGInventoryTab::Datapad)
+		{
+			USWGMissionSubsystem* MissionSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGMissionSubsystem>() : nullptr;
+			if (const FSWGMissionEntry* Mission = MissionSubsystem ? MissionSubsystem->FindMission(ObjectId) : nullptr)
+			{
+				DetailDescriptionText->SetText(Mission->Description);
+				DetailDescriptionText->SetVisibility(Mission->Description.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+			}
+		}
 		return;
 	}
 	DetailModel->SetObject(ObjectId);
@@ -233,6 +357,25 @@ void USWGInventoryDockWidget::HandleExamineInfo(const FSWGExamineInfo& Info)
 
 void USWGInventoryDockWidget::OpenActions()
 {
+	if (Tab == ESWGInventoryTab::Missions)
+	{
+		UGameInstance* GameInstance = GetGameInstance();
+		if (USWGMissionSubsystem* MissionSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGMissionSubsystem>() : nullptr; MissionSubsystem && DetailObjectId != 0)
+		{
+			MissionSubsystem->AcceptMission(DetailObjectId);
+		}
+		return;
+	}
+	if (Tab == ESWGInventoryTab::Waypoints)
+	{
+		UGameInstance* GameInstance = GetGameInstance();
+		if (USWGWaypointSubsystem* WaypointSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGWaypointSubsystem>() : nullptr)
+		{
+			WaypointSubsystem->ToggleWaypoint(DetailObjectId);
+		}
+		return;
+	}
+
 	UGameInstance* GameInstance = GetGameInstance();
 	USWGRadialMenuSubsystem* Radial = GameInstance ? GameInstance->GetSubsystem<USWGRadialMenuSubsystem>() : nullptr;
 	if (!Radial || DetailObjectId == 0)
@@ -298,6 +441,15 @@ FReply USWGInventoryDockWidget::NativeOnKeyDown(const FGeometry& InGeometry, con
 	if (Key == EKeys::Gamepad_RightShoulder || Key == EKeys::Tab)
 	{
 		CycleTab(1);
+		return FReply::Handled();
+	}
+	if (Key == EKeys::Gamepad_FaceButton_Top && Tab == ESWGInventoryTab::Missions)
+	{
+		UGameInstance* GameInstance = GetGameInstance();
+		if (USWGMissionSubsystem* MissionSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGMissionSubsystem>() : nullptr)
+		{
+			MissionSubsystem->RefreshMissionList();
+		}
 		return FReply::Handled();
 	}
 	// The same button that opens a target's menu out in the world (ASWGPlayer::InteractKey), plus A.

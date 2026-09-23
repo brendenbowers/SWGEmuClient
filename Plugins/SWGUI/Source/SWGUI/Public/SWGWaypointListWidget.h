@@ -10,9 +10,8 @@ class UPanelWidget;
  * The datapad's waypoint list — every waypoint the player currently has,
  * sorted nearest first, each row showing its name, colour, active state,
  * compass direction and distance. A floating USWGWindowWidget like Inventory/
- * Examine/the mission browser. Read-only: there is no client-side waypoint
- * activate/deactivate command yet (see USWGWaypointSubsystem), so a row is
- * informational only, not clickable.
+ * Examine/the mission browser. This desktop form remains informational; the
+ * controller dock toggles the selected waypoint through USWGWaypointSubsystem.
  */
 UCLASS(Abstract)
 class SWGUI_API USWGWaypointListWidget : public USWGWindowWidget

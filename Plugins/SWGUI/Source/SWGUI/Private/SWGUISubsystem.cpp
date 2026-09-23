@@ -157,6 +157,31 @@ void USWGUISubsystem::HandleSuiPageClosed(int32 PageId)
 
 void USWGUISubsystem::HandleMissionWindowRequested(int64 TerminalObjectId)
 {
+	if (IsGamepadActive())
+	{
+		if (MissionWindow)
+		{
+			MissionWindow->Close();
+		}
+		if (MissionDock)
+		{
+			MissionDock->Close();
+		}
+		if (!InventoryDock)
+		{
+			OpenInventory(true);
+		}
+		if (InventoryDock)
+		{
+			UGameInstance* GameInstance = GetLocalPlayer() ? GetLocalPlayer()->GetGameInstance() : nullptr;
+			USWGMissionSubsystem* Missions = GameInstance ? GameInstance->GetSubsystem<USWGMissionSubsystem>() : nullptr;
+			InventoryDock->SetMissions(Missions ? Missions->GetMissions() : TArray<FSWGMissionEntry>());
+			InventoryDock->SetTab(ESWGInventoryTab::Missions);
+			InventoryDock->Refocus();
+		}
+		return;
+	}
+
 	if (MissionWindow || MissionDock)
 	{
 		// Already up (re-used the terminal, or a second terminal) — raise it and let HandleMissionListChanged refresh it.
@@ -171,24 +196,6 @@ void USWGUISubsystem::HandleMissionWindowRequested(int64 TerminalObjectId)
 	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
 	if (!PlayerController)
 	{
-		return;
-	}
-
-	// Same split as the inventory: a gamepad gets the docked, D-pad-driven form
-	// instead of a floating, mouse-dragged window.
-	if (IsGamepadActive())
-	{
-		TSubclassOf<USWGMissionBrowserDockWidget> DockClass = USWGUISettings::Get().MissionBrowserDockClass.LoadSynchronous();
-		if (!DockClass)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: mission dock for %lld dropped — no MissionBrowserDockClass set in Project Settings > SWG UI"), TerminalObjectId);
-			return;
-		}
-		MissionDock = CreateWidget<USWGMissionBrowserDockWidget>(PlayerController, DockClass);
-		MissionDock->OnClosed.AddUObject(this, &USWGUISubsystem::HandleMissionDockClosed);
-		MissionDock->AddToPlayerScreen(NextWindowZ++);
-		MissionDock->SetFocus();
-		HandleMissionListChanged();
 		return;
 	}
 
@@ -226,6 +233,10 @@ void USWGUISubsystem::HandleMissionListChanged()
 	if (MissionDock)
 	{
 		MissionDock->SetMissions(Missions->GetMissions());
+	}
+	if (InventoryDock)
+	{
+		InventoryDock->SetMissions(Missions->GetMissions());
 	}
 }
 
@@ -369,6 +380,14 @@ bool USWGUISubsystem::IsInventoryOpen() const
 
 void USWGUISubsystem::ToggleInventory()
 {
+	if (InventoryDock && InventoryDock->GetTab() != ESWGInventoryTab::Equipped
+		&& InventoryDock->GetTab() != ESWGInventoryTab::Inventory
+		&& InventoryDock->GetTab() != ESWGInventoryTab::Examine)
+	{
+		InventoryDock->SetTab(ESWGInventoryTab::Inventory);
+		InventoryDock->Refocus();
+		return;
+	}
 	if (IsInventoryOpen())
 	{
 		CloseInventory();
@@ -429,12 +448,51 @@ void USWGUISubsystem::HandleInventoryDockClosed()
 
 void USWGUISubsystem::HandleInputMethodChanged(ECommonInputType InputType)
 {
-	// Picking up the other device while the inventory is up swaps it to that device's form.
 	const bool bGamepad = InputType == ECommonInputType::Gamepad;
-	if ((bGamepad && InventoryWindow) || (!bGamepad && InventoryDock))
+	if (bGamepad)
 	{
+		ESWGInventoryTab Tab = ESWGInventoryTab::Inventory;
+		bool bNeedsDock = false;
+		if (MissionWindow) { Tab = ESWGInventoryTab::Missions; bNeedsDock = true; }
+		else if (DatapadWindow) { Tab = ESWGInventoryTab::Datapad; bNeedsDock = true; }
+		else if (WaypointWindow) { Tab = ESWGInventoryTab::Waypoints; bNeedsDock = true; }
+		else if (InventoryWindow) { bNeedsDock = true; }
+		if (!bNeedsDock)
+		{
+			return;
+		}
+
+		if (MissionWindow) MissionWindow->Close();
+		if (DatapadWindow) DatapadWindow->Close();
+		if (WaypointWindow) WaypointWindow->Close();
+		if (InventoryWindow) InventoryWindow->Close();
+		OpenInventory(true);
+		if (InventoryDock)
+		{
+			if (Tab == ESWGInventoryTab::Missions)
+			{
+				UGameInstance* GameInstance = GetLocalPlayer() ? GetLocalPlayer()->GetGameInstance() : nullptr;
+				USWGMissionSubsystem* Missions = GameInstance ? GameInstance->GetSubsystem<USWGMissionSubsystem>() : nullptr;
+				InventoryDock->SetMissions(Missions ? Missions->GetMissions() : TArray<FSWGMissionEntry>());
+			}
+			InventoryDock->SetTab(Tab);
+		}
+		return;
+	}
+
+	if (InventoryDock)
+	{
+		const ESWGInventoryTab Tab = InventoryDock->GetTab();
 		CloseInventory();
-		OpenInventory(bGamepad);
+		if (Tab == ESWGInventoryTab::Waypoints) ToggleWaypointList();
+		else if (Tab == ESWGInventoryTab::Datapad) ToggleDatapad();
+		else if (Tab == ESWGInventoryTab::Missions)
+		{
+			UGameInstance* GameInstance = GetLocalPlayer() ? GetLocalPlayer()->GetGameInstance() : nullptr;
+			USWGMissionSubsystem* Missions = GameInstance ? GameInstance->GetSubsystem<USWGMissionSubsystem>() : nullptr;
+			HandleMissionWindowRequested(Missions ? Missions->GetActiveTerminalId() : 0);
+		}
+		else OpenInventory(false);
 	}
 }
 
@@ -502,6 +560,25 @@ void USWGUISubsystem::OpenExamine(int64 ObjectId)
 
 void USWGUISubsystem::ToggleWaypointList()
 {
+	if (IsGamepadActive())
+	{
+		if (InventoryDock && InventoryDock->GetTab() == ESWGInventoryTab::Waypoints)
+		{
+			InventoryDock->Close();
+			return;
+		}
+		if (!InventoryDock)
+		{
+			OpenInventory(true);
+		}
+		if (InventoryDock)
+		{
+			InventoryDock->SetTab(ESWGInventoryTab::Waypoints);
+			InventoryDock->Refocus();
+		}
+		return;
+	}
+
 	if (IsWaypointListOpen())
 	{
 		CloseWaypointList();
@@ -526,10 +603,38 @@ void USWGUISubsystem::CloseWaypointList()
 	{
 		WaypointWindow->Close();
 	}
+	if (InventoryDock && InventoryDock->GetTab() == ESWGInventoryTab::Waypoints)
+	{
+		InventoryDock->Close();
+	}
+}
+
+bool USWGUISubsystem::IsWaypointListOpen() const
+{
+	return WaypointWindow != nullptr || (InventoryDock && InventoryDock->GetTab() == ESWGInventoryTab::Waypoints);
 }
 
 void USWGUISubsystem::ToggleDatapad()
 {
+	if (IsGamepadActive())
+	{
+		if (InventoryDock && InventoryDock->GetTab() == ESWGInventoryTab::Datapad)
+		{
+			InventoryDock->Close();
+			return;
+		}
+		if (!InventoryDock)
+		{
+			OpenInventory(true);
+		}
+		if (InventoryDock)
+		{
+			InventoryDock->SetTab(ESWGInventoryTab::Datapad);
+			InventoryDock->Refocus();
+		}
+		return;
+	}
+
 	if (IsDatapadOpen())
 	{
 		CloseDatapad();
@@ -554,4 +659,13 @@ void USWGUISubsystem::CloseDatapad()
 	{
 		DatapadWindow->Close();
 	}
+	if (InventoryDock && InventoryDock->GetTab() == ESWGInventoryTab::Datapad)
+	{
+		InventoryDock->Close();
+	}
+}
+
+bool USWGUISubsystem::IsDatapadOpen() const
+{
+	return DatapadWindow != nullptr || (InventoryDock && InventoryDock->GetTab() == ESWGInventoryTab::Datapad);
 }

@@ -4,6 +4,8 @@
 #include "Blueprint/UserWidget.h"
 #include "SWGInventoryQuery.h"
 #include "Subsystems/SWGExamineSubsystem.h"
+#include "Subsystems/SWGMissionSubsystem.h"
+#include "Subsystems/SWGWaypointSubsystem.h"
 #include "SWGInventoryDockWidget.generated.h"
 
 class UModelWidget;
@@ -18,15 +20,17 @@ enum class ESWGInventoryTab : uint8
 	Inventory,
 	/** Objects examined out in the world; the tab appears once there is one. */
 	Examine,
+	Waypoints,
+	Missions,
+	Datapad,
 };
 
 /**
- * The gamepad inventory (WBP_InventoryDock): a panel docked to one edge of
- * the screen rather than a floating window, in the console-RPG idiom — tabs
- * for gear, bag and examined world objects switched with the shoulder
- * buttons, one list walked with the D-pad or stick, and the focused item's
- * model, name and attributes shown alongside so there is no separate examine
- * step. Menu or A opens the item's actions (the radial menu), B closes.
+ * The shared gamepad dock (WBP_InventoryDock): inventory, examine, waypoints,
+ * mission offers and datapad contents use this one panel on the screen edge
+ * instead of separate floating windows. The shoulder buttons switch sections,
+ * the D-pad or stick walks the list, and A performs the section's action.
+ * B closes.
  * While open it owns the D-pad and face buttons, so the action bar's hotkeys
  * don't fire underneath it.
  */
@@ -56,6 +60,11 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Inventory")
 	void AddExamined(int64 ObjectId);
+
+	/** Supplies the active terminal's offers to the shared controller dock. */
+	void SetMissions(const TArray<FSWGMissionEntry>& InMissions);
+
+	ESWGInventoryTab GetTab() const { return Tab; }
 
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Inventory")
 	void Close();
@@ -126,6 +135,9 @@ private:
 	void ShowDetails(int64 ObjectId);
 	void OpenActions();
 	void ApplyTabStyle();
+	void RefreshWaypoints();
+	void RefreshDatapad();
+	void RebuildMissionRows();
 
 	UFUNCTION()
 	void HandleExamineInfo(const FSWGExamineInfo& Info);
@@ -141,6 +153,11 @@ private:
 	TArray<FSWGInventoryEntry> Contents;
 	/** Objects examined out in the world, newest first. */
 	TArray<FSWGInventoryEntry> Examined;
+	TArray<FSWGInventoryEntry> WaypointRows;
+	TArray<FSWGInventoryEntry> MissionRows;
+	TArray<FSWGInventoryEntry> DatapadRows;
+	TArray<FSWGWaypointEntry> Waypoints;
+	TArray<FSWGMissionEntry> Missions;
 
 	UPROPERTY()
 	TArray<TObjectPtr<USWGInventoryRowWidget>> Rows;

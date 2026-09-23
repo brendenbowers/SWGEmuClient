@@ -2,6 +2,7 @@
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Subsystems/SWGTerrainSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
+#include "Subsystems/SWGCommandSubsystem.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Components/SWGJournalComponent.h"
 #include "Network/Objects/Zone/Player/Waypoint.h"
@@ -117,6 +118,7 @@ void USWGWaypointSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	ObjectGraph = Cast<USWGObjectGraphSubsystem>(Collection.InitializeDependency(USWGObjectGraphSubsystem::StaticClass()));
 	Terrain = Cast<USWGTerrainSubsystem>(Collection.InitializeDependency(USWGTerrainSubsystem::StaticClass()));
 	Missions = Cast<USWGMissionSubsystem>(Collection.InitializeDependency(USWGMissionSubsystem::StaticClass()));
+	Commands = Cast<USWGCommandSubsystem>(Collection.InitializeDependency(USWGCommandSubsystem::StaticClass()));
 	Tre = Cast<USWGTreSubsystem>(Collection.InitializeDependency(USWGTreSubsystem::StaticClass()));
 
 	if (Missions)
@@ -306,6 +308,12 @@ TArray<FSWGWaypointEntry> USWGWaypointSubsystem::GetActiveWaypoints() const
 	TArray<FSWGWaypointEntry> Result = GetWaypoints();
 	Result.RemoveAll([](const FSWGWaypointEntry& Entry) { return !Entry.bActive; });
 	return Result;
+}
+
+bool USWGWaypointSubsystem::ToggleWaypoint(int64 WaypointObjectId)
+{
+	return Commands && WaypointObjectId != 0
+		&& Commands->SendCommand(TEXT("setWaypointActiveStatus"), WaypointObjectId) != 0;
 }
 
 FLinearColor USWGWaypointSubsystem::GetWaypointColor(ESWGWaypointColor Color)

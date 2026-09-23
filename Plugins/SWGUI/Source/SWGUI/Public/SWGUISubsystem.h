@@ -56,7 +56,7 @@ public:
 	void CloseWaypointList();
 
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
-	bool IsWaypointListOpen() const { return WaypointWindow != nullptr; }
+	bool IsWaypointListOpen() const;
 
 	/** Opens the datapad, or closes it if it is up. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
@@ -66,7 +66,7 @@ public:
 	void CloseDatapad();
 
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
-	bool IsDatapadOpen() const { return DatapadWindow != nullptr; }
+	bool IsDatapadOpen() const;
 
 private:
 	bool IsGamepadActive() const;
