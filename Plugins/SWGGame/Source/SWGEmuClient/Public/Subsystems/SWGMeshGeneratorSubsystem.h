@@ -298,6 +298,8 @@ public:
 	 */
 	void RequestAppearanceMesh(const FString& AppearancePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)> OnComplete);
 
+	/** A per-owner MID of one of the returned materials. They're MIDs themselves, which UE rejects as a parent, so this re-parents onto theirs and copies the overrides. */
+	static UMaterialInstanceDynamic* CreateOwnedMaterialCopy(UMaterialInterface* Source, UObject* Outer);
 	/** Component tag on a vehicle's attached body mesh (TryAttachVehicleBody), so fallback-mesh cleanup leaves it alone. */
 	static inline const FName VehicleBodyTag{TEXT("SWGVehicleBody")};
 

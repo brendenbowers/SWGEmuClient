@@ -9,6 +9,7 @@
 #include "Subsystems/SWGInteriorStreamingSubsystem.h"
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Objects/SWGObject.h"
+#include "Objects/Creature/SWGCreature.h"
 #include "Objects/World/SWGBuilding.h"
 #include "Objects/World/SWGCell.h"
 #include "TRE/SWGTerrainReader.h"
@@ -3158,7 +3159,9 @@ bool USWGTerrainSubsystem::GetStreamingCenter(FVector2D& OutRawPosition) const
 	const UWorld* World = GetWorld();
 	const APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
 	const APawn* Pawn = PlayerController ? PlayerController->GetPawn() : nullptr;
-	if (Pawn)
+	// A login inside a cell starts with cell-local pawn coordinates. Keep
+	// streaming around CmdStartScene's world position until the cell places it.
+	if (const ASWGCreature* Creature = Cast<ASWGCreature>(Pawn); Creature && !Creature->bAwaitingCellPlacement)
 	{
 		const FVector Raw = SWGToRawSpace(Pawn->GetActorLocation());
 		OutRawPosition = FVector2D(Raw.X, Raw.Y);
@@ -3593,6 +3596,15 @@ void USWGTerrainSubsystem::ApplyTerrainTileBuild(const FIntPoint& Coord, FSWGTer
 	Tile.Component->SetMaterial(0, BuildTerrainTileMaterial(Build.Heightmap));
 
 	// Shape changed, so the cooked collision is stale. bOnlyIfPending=false since
-	// the flags haven't changed; bUseAsyncCooking keeps the cook off this thread.
+	// the flags haven't changed. The initial spawn ring cooks synchronously while
+	// the loading screen is up; otherwise OnTerrainReady could fire after the
+	// render mesh was installed but before its async collision existed.
+	const bool bSpawnTile = !bInitialTilesReported && InitialTiles.Contains(Coord);
+	const bool bWasAsyncCooking = Tile.Component->bUseAsyncCooking;
+	if (bSpawnTile)
+	{
+		Tile.Component->bUseAsyncCooking = false;
+	}
 	Tile.Component->UpdateCollision(false);
+	Tile.Component->bUseAsyncCooking = bWasAsyncCooking;
 }

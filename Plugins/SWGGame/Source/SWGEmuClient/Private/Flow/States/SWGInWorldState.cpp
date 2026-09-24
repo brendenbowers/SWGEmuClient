@@ -164,6 +164,22 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 			}
 		}
 	}
+
+	// ZoneLoading only reaches this state after the spawn terrain has real
+	// collision and, for an interior login, after the containing room has built
+	// its collision. Release gravity and input last so the stationary transform
+	// above still reports the exact server spawn.
+	if (UGameInstance* GameInstance = UIStateMachine.GetGameInstance())
+	{
+		if (USWGObjectGraphSubsystem* ObjectGraph = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>())
+		{
+			if (ASWGPlayer* Player = Cast<ASWGPlayer>(ObjectGraph->FindActor(ObjectGraph->GetLocalPlayerObjectId())))
+			{
+				Player->SetSceneLoadingLocked(false);
+				UE_LOG(LogTemp, Log, TEXT("FSWGInWorldState::Enter: released local player scene-loading lock"));
+			}
+		}
+	}
 }
 void FSWGInWorldState::Exit(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx)
 {

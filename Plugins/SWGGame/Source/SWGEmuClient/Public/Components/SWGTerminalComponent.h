@@ -5,12 +5,9 @@
 #include "SWGTerminalComponent.generated.h"
 
 /**
- * What kind of terminal an actor's template is — read from the actual
- * gameObjectType field every SharedObjectTemplate carries (retail's own
- * SceneObjectType enum, values 0x4000-0x40xx for the terminal family), not
- * guessed from the template's file name. See FSWGTerminalSpawnHandler, which
- * classifies and attaches this; add a case there (not just here) for a new
- * terminal kind.
+ * What kind of terminal an actor's template is. Most kinds come from the
+ * template's gameObjectType; retail travel terminals share 0x400C with other
+ * interactive terminals, so that one is identified by its exact template.
  */
 UENUM(BlueprintType)
 enum class ESWGTerminalType : uint8
@@ -18,6 +15,7 @@ enum class ESWGTerminalType : uint8
 	/** In the terminal family (gameObjectType 0x4000-0x40xx) but not one anything acts on yet — a city or guild terminal, say. */
 	Other,
 	Mission,
+	Travel,
 	Bazaar,
 	Bank,
 };

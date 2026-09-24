@@ -274,6 +274,10 @@ void USWGRadialMenuSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> M
 	FSWGRadialMenu Menu;
 	Menu.ObjectId = static_cast<int64>(Response.TargetId);
 	Menu.ScreenPosition = (Menu.ObjectId == PendingObjectId) ? PendingScreenPosition : FVector2D::ZeroVector;
+	const AActor* Actor = ObjectGraph ? ObjectGraph->FindActor(Menu.ObjectId) : nullptr;
+	const USWGTerminalComponent* Terminal = Actor ? Actor->FindComponentByClass<USWGTerminalComponent>() : nullptr;
+	const int32 TravelUseRadialId = Terminal && Terminal->TerminalType == ESWGTerminalType::Travel
+		? ResolveRadialId(TEXT("ITEM_USE")) : INDEX_NONE;
 
 	for (const FSWGRadialMenuEntry& Entry : Response.Items)
 	{
@@ -281,7 +285,9 @@ void USWGRadialMenuSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> M
 		Item.Index = Entry.Index;
 		Item.ParentIndex = Entry.ParentIndex;
 		Item.RadialId = Entry.RadialId;
-		Item.Label = ResolveLabel(Entry);
+		Item.Label = Entry.RadialId == TravelUseRadialId
+			? NSLOCTEXT("SWGEmu", "TravelBuyTickets", "Buy Tickets")
+			: ResolveLabel(Entry);
 		Item.bServerHandled = Entry.NotifiesServer();
 	}
 	AppendClientDefaults(Menu.ObjectId, Menu.Items);

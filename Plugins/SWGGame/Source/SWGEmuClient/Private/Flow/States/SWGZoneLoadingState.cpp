@@ -41,7 +41,8 @@ void FSWGZoneLoadingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFl
 				}
 				if (USWGTerrainSubsystem* TerrainSubsystem = TerrainSubsystemWeak.Get())
 				{
-					TerrainSubsystem->OnTerrainReady.Clear();
+					TerrainSubsystem->OnTerrainReady.Remove(TerrainReadyHandle);
+					TerrainReadyHandle.Reset();
 				}
 
 				Ctx.bTerrainLoaded = true;

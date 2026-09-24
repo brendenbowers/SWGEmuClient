@@ -18,6 +18,7 @@ namespace
 	constexpr int32 GOT_Bank               = 0x4001;
 	constexpr int32 GOT_Bazaar             = 0x4002;
 	constexpr int32 GOT_MissionTerminal    = 0x4006;
+	constexpr int32 GOT_TravelTerminal     = 0x4012;
 }
 
 bool FSWGTerminalSpawnHandler::ClassifyGameObjectType(int32 GameObjectType, ESWGTerminalType& OutType)
@@ -30,6 +31,7 @@ bool FSWGTerminalSpawnHandler::ClassifyGameObjectType(int32 GameObjectType, ESWG
 	switch (GameObjectType)
 	{
 		case GOT_MissionTerminal: OutType = ESWGTerminalType::Mission; break;
+		case GOT_TravelTerminal:  OutType = ESWGTerminalType::Travel;  break;
 		case GOT_Bazaar:          OutType = ESWGTerminalType::Bazaar;  break;
 		case GOT_Bank:            OutType = ESWGTerminalType::Bank;    break;
 		default:                  OutType = ESWGTerminalType::Other;   break;
@@ -53,11 +55,14 @@ bool FSWGTerminalSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 		return false;
 	}
 
-	ESWGTerminalType Type;
-	if (ClassifyGameObjectType(GameObjectType, Type))
+	ESWGTerminalType Type = ESWGTerminalType::Other;
+	// shared_terminal_travel.iff uses the client's ambiguous 0x400C type,
+	// despite Core3 also defining its server-side travel type as 0x4012.
+	const bool bTravelTemplate = TemplatePath.EndsWith(TEXT("/shared_terminal_travel.iff"), ESearchCase::IgnoreCase);
+	if (bTravelTemplate || ClassifyGameObjectType(GameObjectType, Type))
 	{
 		USWGTerminalComponent* Terminal = NewObject<USWGTerminalComponent>(&Actor);
-		Terminal->TerminalType = Type;
+		Terminal->TerminalType = bTravelTemplate ? ESWGTerminalType::Travel : Type;
 		Terminal->GameObjectType = GameObjectType;
 		Terminal->RegisterComponent();
 	}

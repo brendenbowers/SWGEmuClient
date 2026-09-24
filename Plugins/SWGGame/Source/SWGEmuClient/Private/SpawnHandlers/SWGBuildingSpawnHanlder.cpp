@@ -910,12 +910,6 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 	BuildingActor->Cells.Add(CellActor);
 	CellActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
 
-	// The cell now has a real transform: place whoever was waiting in it.
-	if (ObjectGraph)
-	{
-		ObjectGraph->NotifyCellFinished(CellActor->GetObjectId());
-	}
-
 	SpawnInteriorLayout(CellActor, BuildingActor, CellData, MeshGeneratorSubsystem);
 
 	TWeakObjectPtr<ASWGCell> CellActorWeakPtr = CellActor;
@@ -959,6 +953,18 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 			}
 			BuildRoomLights(CellActor, CellData);
 			CreateCollisionForCell(TreSubsystem, MeshGeneratorSubsystem, CellActor, CellData);
+			CellActor->bCollisionReady = true;
+
+			// Only place/reveal occupants once there is a floor for them to stand
+			// on. OwningBuilding becomes valid before the async room mesh does, so
+			// using that alone lets a login pawn fall during this gap.
+			if (UGameInstance* GameInstance = CellActor->GetGameInstance())
+			{
+				if (USWGObjectGraphSubsystem* ObjectGraph = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>())
+				{
+					ObjectGraph->NotifyCellFinished(CellActor->GetObjectId());
+				}
+			}
 			BuildingActor->RegisterCellTrigger(CellActor, CellData.CanSeeParent);
 		}));
 

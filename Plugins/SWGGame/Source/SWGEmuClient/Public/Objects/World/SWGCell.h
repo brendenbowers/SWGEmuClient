@@ -39,6 +39,9 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	bool bCanSeeParent = false;
 
+	/** True once the room mesh and its floor/wall collision have been installed. */
+	bool bCollisionReady = false;
+
 	// Client-only props placed in this room (.ws children, interior layout),
 	// destroyed with it by ASWGBuilding::UnloadRoom. Unattached: the cell's
 	// root is replaced when its mesh lands.

@@ -6,6 +6,7 @@
 #include "SWGSuiBoxWidget.h"
 #include "SWGMissionBrowserWidget.h"
 #include "SWGMissionBrowserDockWidget.h"
+#include "SWGTravelWidget.h"
 #include "SWGInventoryWidget.h"
 #include "SWGInventoryDockWidget.h"
 #include "CommonInputSubsystem.h"
@@ -15,6 +16,7 @@
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
+#include "Subsystems/SWGTravelSubsystem.h"
 #include "Engine/DataTable.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
@@ -45,6 +47,10 @@ void USWGUISubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	{
 		Missions->OnMissionWindowRequested.AddDynamic(this, &USWGUISubsystem::HandleMissionWindowRequested);
 		Missions->OnMissionListChanged.AddDynamic(this, &USWGUISubsystem::HandleMissionListChanged);
+	}
+	if (USWGTravelSubsystem* Travel = GameInstance->GetSubsystem<USWGTravelSubsystem>())
+	{
+		Travel->OnTravelWindowRequested.AddDynamic(this, &USWGUISubsystem::HandleTravelWindowRequested);
 	}
 	if (UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetLocalPlayer()))
 	{
@@ -81,6 +87,10 @@ void USWGUISubsystem::Deinitialize()
 		{
 			Missions->OnMissionWindowRequested.RemoveAll(this);
 			Missions->OnMissionListChanged.RemoveAll(this);
+		}
+		if (USWGTravelSubsystem* Travel = GameInstance->GetSubsystem<USWGTravelSubsystem>())
+		{
+			Travel->OnTravelWindowRequested.RemoveAll(this);
 		}
 	}
 
@@ -240,6 +250,26 @@ void USWGUISubsystem::HandleMissionListChanged()
 	}
 }
 
+void USWGUISubsystem::HandleTravelWindowRequested()
+{
+	if (TravelWindow)
+	{
+		TravelWindow->SetControllerMode(IsGamepadActive());
+		HandleWindowPressed(TravelWindow);
+		return;
+	}
+
+	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
+	if (!PlayerController)
+	{
+		return;
+	}
+	TravelWindow = CreateWidget<USWGTravelWidget>(PlayerController, USWGTravelWidget::StaticClass());
+	TravelWindow->SetControllerMode(IsGamepadActive());
+	ShowWindow(TravelWindow);
+	TravelWindow->CenterOnScreen();
+}
+
 void USWGUISubsystem::PlayerControllerChanged(APlayerController* NewPlayerController)
 {
 	Super::PlayerControllerChanged(NewPlayerController);
@@ -348,6 +378,10 @@ void USWGUISubsystem::HandleWindowClosed(USWGWindowWidget* Window)
 	{
 		MissionWindow = nullptr;
 	}
+	if (Window == TravelWindow)
+	{
+		TravelWindow = nullptr;
+	}
 	if (Window == WaypointWindow)
 	{
 		WaypointWindow = nullptr;
@@ -449,6 +483,10 @@ void USWGUISubsystem::HandleInventoryDockClosed()
 void USWGUISubsystem::HandleInputMethodChanged(ECommonInputType InputType)
 {
 	const bool bGamepad = InputType == ECommonInputType::Gamepad;
+	if (TravelWindow)
+	{
+		TravelWindow->SetControllerMode(bGamepad);
+	}
 	if (bGamepad)
 	{
 		ESWGInventoryTab Tab = ESWGInventoryTab::Inventory;

@@ -100,6 +100,9 @@ private:
 	UFUNCTION()
 	void HandleMissionListChanged();
 
+	UFUNCTION()
+	void HandleTravelWindowRequested();
+
 	USWGGameLayout* EnsureLayout();
 
 	UPROPERTY()
@@ -115,6 +118,10 @@ private:
 	/** The gamepad form; only one of this and MissionWindow is ever up. */
 	UPROPERTY()
 	TObjectPtr<class USWGMissionBrowserDockWidget> MissionDock;
+
+	/** Ticket purchase is one responsive window; it expands and changes controls when gamepad becomes active. */
+	UPROPERTY()
+	TObjectPtr<class USWGTravelWidget> TravelWindow;
 
 	void HandleMissionDockClosed();
 

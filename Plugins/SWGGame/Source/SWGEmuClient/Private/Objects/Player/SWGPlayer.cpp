@@ -64,6 +64,7 @@ ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 	bUseControllerRotationRoll = false;
 	GetCharacterMovement()->bOrientRotationToMovement = true;
 	GetCharacterMovement()->RotationRate = FRotator(0.0f, 500.0f, 0.0f);
+	GetCharacterMovement()->SetMovementMode(MOVE_None);
 
 	PlayerProfileComponent = CreateDefaultSubobject<USWGPlayerProfileComponent>(TEXT("PlayerProfileComponent"));
 	ExperienceComponent = CreateDefaultSubobject<USWGExperienceComponent>(TEXT("ExperienceComponent"));
@@ -157,7 +158,7 @@ void ASWGPlayer::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
 
-	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+	SetSceneLoadingLocked(bSceneLoadingLocked);
 
 	// This player is spawned and possessed at runtime. Install its mapping
 	// context here rather than relying solely on Blueprint controller defaults
@@ -172,6 +173,18 @@ void ASWGPlayer::PossessedBy(AController* NewController)
 				Subsystem->AddMappingContext(DefaultMappingContext, 0);
 			}
 		}
+	}
+}
+
+void ASWGPlayer::SetSceneLoadingLocked(bool bLocked)
+{
+	bSceneLoadingLocked = bLocked;
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+		// A rider remains attached and inert; its mount owns movement even after
+		// scene loading completes.
+		Movement->SetMovementMode(bLocked || RiddenMount.IsValid() ? MOVE_None : MOVE_Walking);
 	}
 }
 
@@ -634,7 +647,7 @@ void ASWGPlayer::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	if (!IsLocallyControlled())
+	if (!IsLocallyControlled() || bSceneLoadingLocked)
 	{
 		return;
 	}

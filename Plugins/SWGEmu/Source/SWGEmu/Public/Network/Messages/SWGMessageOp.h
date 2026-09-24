@@ -66,6 +66,11 @@ enum class ESWGMessageOp : uint32
 	SuiForceClosePage = 0x990B5DE0u,    // Server: close a window
 	SuiEventNotification = 0x092D3564u, // Client: a window button was pressed, with its values
 
+	// ── Travel terminals ────────────────────────────────────────
+	EnterTicketPurchaseMode = 0x904DAE1Au, // Server: departure planet/location for the ticket window
+	PlanetTravelPointListRequest = 0x96405D4Du,
+	PlanetTravelPointListResponse = 0x4D32541Fu,
+
 	// Add more as needed during implementation
 	Null = 0x0u,
 	Multi = 0x2u

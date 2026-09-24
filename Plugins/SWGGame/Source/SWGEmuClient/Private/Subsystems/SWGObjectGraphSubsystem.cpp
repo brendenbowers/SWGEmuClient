@@ -481,13 +481,17 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 		// The local player is never tucked away — if its cell is unknown it
 		// zoned in inside a snapshot building that hasn't loaded yet. Take
 		// control now; ApplyContainment reveals the level once it's placed.
-		if (bIsLocalPlayer && Actor->IsHidden())
+		if (bIsLocalPlayer)
 		{
-			Actor->SetActorHiddenInGame(false);
-			Actor->SetActorEnableCollision(true);
+			if (Actor->IsHidden())
+			{
+				Actor->SetActorHiddenInGame(false);
+				Actor->SetActorEnableCollision(true);
+			}
 			if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor); Creature && Creature->bAwaitingCellPlacement)
 			{
 				bRevealPendingPlayerPlacement = true;
+				Creature->GetCharacterMovement()->DisableMovement();
 			}
 		}
 
@@ -839,9 +843,10 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ObjectId, i
 		// player at cell-local coordinates in the sky. Wait for
 		// NotifyCellFinished; the local player's room is forced through
 		// FSWGCellSpawnHandler::FinishCell so this never stalls.
-		if (Creature->bAwaitingCellPlacement && !ContainerCell->OwningBuilding.IsValid())
+		if (Creature->bAwaitingCellPlacement
+			&& (!ContainerCell->OwningBuilding.IsValid() || !ContainerCell->bCollisionReady))
 		{
-			UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: %s waits for cell %lld to finish before placement"), *Actor->GetName(), ContainerId);
+			UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: %s waits for cell %lld collision before placement"), *Actor->GetName(), ContainerId);
 			return;
 		}
 
@@ -862,6 +867,10 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ObjectId, i
 			// USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent reads this
 			// back when the mesh lands, which can be after this.
 			Creature->LastNetworkZ = Creature->GetActorLocation().Z - HalfHeight;
+			if (Creature->GetObjectId() == LocalPlayerObjectId)
+			{
+				Creature->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+			}
 
 			// The local player zoned in inside a building: the level was held
 			// back until it stood somewhere real (HandleSceneEndBaselines).

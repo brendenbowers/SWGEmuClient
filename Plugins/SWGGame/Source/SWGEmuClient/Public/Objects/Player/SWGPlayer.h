@@ -58,6 +58,9 @@ public:
 
 	virtual void Tick(float DeltaTime) override;
 
+	/** Keeps the runtime-spawned pawn inert until terrain/interior collision is ready. */
+	void SetSceneLoadingLocked(bool bLocked);
+
 	// Re-derives CameraBoom's height above the capsule from the capsule's
 	// *current* size. Called once in the constructor (default 88 half-height,
 	// before any mesh exists) and again by USWGMeshGeneratorSubsystem once
@@ -69,10 +72,8 @@ public:
 	/** Writes swg.SkylightLeaking into the follow camera's Lumen post-process settings. */
 	void ApplySkylightLeaking();
 
-	// Switches to MOVE_Walking on possession now that terrain has real
-	// collision (USWGTerrainSubsystem) — the default pre-possession movement
-	// mode is whatever ACharacter starts with, which isn't guaranteed to be
-	// Walking.
+	// Keeps the scene-loading movement lock across possession. ZoneLoading
+	// releases it only after terrain or interior collision is ready.
 	virtual void PossessedBy(AController* NewController) override;
 
 	// Seeds the camera's starting orientation. This runs from ClientRestart,
@@ -136,6 +137,8 @@ protected:
 	virtual void BeginPlay() override;
 
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
+
+	bool bSceneLoadingLocked = true;
 
 	void Move(const FInputActionValue& Value);
 
