@@ -53,7 +53,7 @@ namespace
 
 float FSWGPlanetMapCamera::GetPitch() const
 {
-	const float ZoomFraction = FMath::Clamp(FMath::Loge(Distance / MinDistance) / FMath::Loge(MaxDistance / MinDistance), 0.f, 1.f);
+	const float ZoomFraction = FMath::Clamp(FMath::Loge(Distance / MinDistance) / FMath::Loge(OverviewDistance / MinDistance), 0.f, 1.f);
 	const float ZoomPitch = FMath::Lerp(-38.f, -89.f, FMath::SmoothStep(0.f, 1.f, ZoomFraction));
 	return FMath::Clamp(ZoomPitch + Tilt, -89.f, -12.f);
 }
@@ -65,6 +65,7 @@ FSWGPlanetMapCamera FSWGPlanetMapCamera::Blend(const FSWGPlanetMapCamera& From, 
 	Result.Distance = FMath::Exp(FMath::Lerp(FMath::Loge(From.Distance), FMath::Loge(To.Distance), Alpha));
 	Result.Yaw = FRotator::NormalizeAxis(From.Yaw + FMath::FindDeltaAngleDegrees(From.Yaw, To.Yaw) * Alpha);
 	Result.Tilt = FMath::Lerp(From.Tilt, To.Tilt, Alpha);
+	Result.OverviewDistance = To.OverviewDistance;
 	return Result;
 }
 

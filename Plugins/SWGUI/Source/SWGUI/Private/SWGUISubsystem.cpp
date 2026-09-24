@@ -13,6 +13,8 @@
 #include "SWGExamineWidget.h"
 #include "SWGWaypointListWidget.h"
 #include "SWGDatapadWidget.h"
+#include "SWGPlanetMapWindowWidget.h"
+#include "SWGHoloMapWidget.h"
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
@@ -396,6 +398,10 @@ void USWGUISubsystem::HandleWindowClosed(USWGWindowWidget* Window)
 	{
 		DatapadWindow = nullptr;
 	}
+	if (Window == PlanetMapWindow)
+	{
+		PlanetMapWindow = nullptr;
+	}
 	for (auto It = ExamineWindows.CreateIterator(); It; ++It)
 	{
 		if (It->Value == Window)
@@ -639,6 +645,73 @@ void USWGUISubsystem::ToggleWaypointList()
 	WaypointWindow = CreateWidget<USWGWaypointListWidget>(PlayerController, WaypointListClass);
 	ShowWindow(WaypointWindow);
 	WaypointWindow->CenterOnScreen();
+}
+
+void USWGUISubsystem::TogglePlanetMap()
+{
+	if (PlanetMapWindow)
+	{
+		PlanetMapWindow->Close();
+		return;
+	}
+	if (HoloMap)
+	{
+		HoloMap->Close();
+		return;
+	}
+	OpenPlanetMap();
+}
+
+void USWGUISubsystem::SetPlanetMapMode(ESWGPlanetMapMode Mode)
+{
+	PlanetMapMode = Mode;
+	const bool bWasOpen = PlanetMapWindow || HoloMap;
+	if (PlanetMapWindow && Mode != ESWGPlanetMapMode::Window)
+	{
+		PlanetMapWindow->Close();
+	}
+	if (HoloMap && Mode != ESWGPlanetMapMode::Hologram)
+	{
+		HoloMap->Close();
+	}
+	if (bWasOpen && !PlanetMapWindow && !HoloMap)
+	{
+		OpenPlanetMap();
+	}
+}
+
+void USWGUISubsystem::HandleHoloMapClosed()
+{
+	HoloMap = nullptr;
+}
+
+void USWGUISubsystem::OpenPlanetMap()
+{
+	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
+	if (PlanetMapMode == ESWGPlanetMapMode::Hologram)
+	{
+		TSubclassOf<USWGHoloMapWidget> HoloMapClass = USWGUISettings::Get().HoloMapClass.LoadSynchronous();
+		if (!PlayerController)
+		{
+			return;
+		}
+		HoloMap = CreateWidget<USWGHoloMapWidget>(PlayerController, HoloMapClass ? HoloMapClass.Get() : USWGHoloMapWidget::StaticClass());
+		HoloMap->OnClosed.AddUObject(this, &USWGUISubsystem::HandleHoloMapClosed);
+		HoloMap->OnSwitchToWindow.AddWeakLambda(this, [this]() { SetPlanetMapMode(ESWGPlanetMapMode::Window); });
+		// Under the layout (100) and windows, over the world.
+		HoloMap->AddToPlayerScreen(90);
+		return;
+	}
+	TSubclassOf<USWGPlanetMapWindowWidget> PlanetMapClass = USWGUISettings::Get().PlanetMapClass.LoadSynchronous();
+	if (!PlayerController || !PlanetMapClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: no PlanetMapClass set in Project Settings > SWG UI"));
+		return;
+	}
+	PlanetMapWindow = CreateWidget<USWGPlanetMapWindowWidget>(PlayerController, PlanetMapClass);
+	PlanetMapWindow->SetControllerMode(IsGamepadActive());
+	ShowWindow(PlanetMapWindow);
+	PlanetMapWindow->CenterOnScreen();
 }
 
 void USWGUISubsystem::CloseWaypointList()

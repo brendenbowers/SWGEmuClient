@@ -101,6 +101,7 @@ void USWGHudWidget::BindHotkeys(APawn* Pawn)
 		Previous->OnToggleInventory.RemoveAll(this);
 		Previous->OnToggleWaypointList.RemoveAll(this);
 		Previous->OnToggleDatapad.RemoveAll(this);
+		Previous->OnTogglePlanetMap.RemoveAll(this);
 	}
 
 	HotkeySource = Cast<ASWGPlayer>(Pawn);
@@ -111,6 +112,7 @@ void USWGHudWidget::BindHotkeys(APawn* Pawn)
 		Player->OnToggleInventory.AddUObject(this, &USWGHudWidget::ToggleInventory);
 		Player->OnToggleWaypointList.AddUObject(this, &USWGHudWidget::ToggleWaypointList);
 		Player->OnToggleDatapad.AddUObject(this, &USWGHudWidget::ToggleDatapad);
+		Player->OnTogglePlanetMap.AddUObject(this, &USWGHudWidget::TogglePlanetMap);
 		HandleActionBankChanged(Player->GetActiveActionBank());
 	}
 }
@@ -158,6 +160,14 @@ void USWGHudWidget::ToggleWaypointList()
 	}
 }
 
+void USWGHudWidget::TogglePlanetMap()
+{
+	if (USWGUISubsystem* UI = ULocalPlayer::GetSubsystem<USWGUISubsystem>(GetOwningLocalPlayer()))
+	{
+		UI->TogglePlanetMap();
+	}
+}
+
 void USWGHudWidget::ToggleDatapad()
 {
 	if (USWGUISubsystem* UI = ULocalPlayer::GetSubsystem<USWGUISubsystem>(GetOwningLocalPlayer()))
@@ -199,6 +209,31 @@ namespace
 			if (USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr)
 			{
 				UI->ToggleWaypointList();
+			}
+		}));
+
+	FAutoConsoleCommand CmdTogglePlanetMap(
+		TEXT("swg.Map"),
+		TEXT("Opens or closes the planet map, as the planet map key does."),
+		FConsoleCommandDelegate::CreateLambda([]()
+		{
+			USWGHudWidget* Hud = USWGHudWidget::GetActiveHud();
+			if (USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr)
+			{
+				UI->TogglePlanetMap();
+			}
+		}));
+
+	FAutoConsoleCommand CmdPlanetMapMode(
+		TEXT("swg.MapMode"),
+		TEXT("Chooses the planet map's form: 'swg.MapMode window' or 'swg.MapMode holo'. An open map swaps in place."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			USWGHudWidget* Hud = USWGHudWidget::GetActiveHud();
+			USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr;
+			if (UI && !Args.IsEmpty())
+			{
+				UI->SetPlanetMapMode(Args[0].StartsWith(TEXT("holo"), ESearchCase::IgnoreCase) ? ESWGPlanetMapMode::Hologram : ESWGPlanetMapMode::Window);
 			}
 		}));
 

@@ -1,6 +1,7 @@
 #include "SWGTravelWidget.h"
 #include "SWGPlanetMapWidget.h"
 #include "SWGRetailStyle.h"
+#include "SWGMapMarkers.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
@@ -14,7 +15,6 @@
 #include "Objects/Player/SWGPlayer.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGWaypointSubsystem.h"
-#include "TRE/SWGCrc32.h"
 
 namespace
 {
@@ -38,14 +38,13 @@ namespace
 		return Code ? FString::Printf(TEXT("texture/ui_planet_sel_%s.dds"), **Code) : FString();
 	}
 
-	UTextBlock* MakeText(UWidgetTree* Tree, const FText& Text, const FLinearColor& Color, int32 Size = 15)
+	/** RetailSize is a retail font pixel size (bold_13). */
+	UTextBlock* MakeText(UWidgetTree* Tree, const FText& Text, const FLinearColor& Color, int32 RetailSize = 13)
 	{
 		UTextBlock* Block = Tree->ConstructWidget<UTextBlock>();
 		Block->SetText(Text);
 		Block->SetColorAndOpacity(FSlateColor(Color));
-		FSlateFontInfo Font = Block->GetFont();
-		Font.Size = Size;
-		Block->SetFont(Font);
+		Block->SetFont(SWGRetailStyle::Font(RetailSize));
 		return Block;
 	}
 }
@@ -81,9 +80,16 @@ void USWGTravelWidget::NativeConstruct()
 	}
 	if (ButtonTextTints.IsEmpty())
 	{
-		for (UButton* Button : { GalaxyButton.Get(), PurchaseButton.Get(), ZoomInButton.Get(), ZoomOutButton.Get() })
+		// Retail's own labels from ui_ticketpurchase.inc; the zoom buttons have no retail counterpart.
+		const TPair<UButton*, const TCHAR*> RetailButtons[] = {
+			{ GalaxyButton.Get(), TEXT("@ui:travel_show_galaxy") },
+			{ PurchaseButton.Get(), TEXT("@ui:purchase") },
+			{ ZoomInButton.Get(), TEXT("") },
+			{ ZoomOutButton.Get(), TEXT("") },
+		};
+		for (const TPair<UButton*, const TCHAR*>& Entry : RetailButtons)
 		{
-			if (UObject* TextTint = SWGRetailStyle::ApplyHudButton(Button, Tre))
+			if (UObject* TextTint = SWGRetailStyle::ApplyHudButton(Entry.Key, Tre, Entry.Value))
 			{
 				ButtonTextTints.Add(TextTint);
 			}
@@ -92,8 +98,8 @@ void USWGTravelWidget::NativeConstruct()
 	if (!MapView)
 	{
 		MapView = CreateWidget<USWGPlanetMapWidget>(this, USWGPlanetMapWidget::StaticClass());
-		MapView->OnMarkerClicked.AddUObject(this, &USWGTravelWidget::HandleMapMarkerClicked);
-		MapView->OnPressed.AddWeakLambda(this, [this]() { OnPressed.Broadcast(this); });
+		MapView->OnMarkerClicked.AddDynamic(this, &USWGTravelWidget::HandleMapMarkerClicked);
+		MapView->OnPressed.AddDynamic(this, &USWGTravelWidget::HandleMapPressed);
 		MapCanvas->AddChild(MapView);
 		if (UCanvasPanelSlot* ViewSlot = Cast<UCanvasPanelSlot>(MapView->Slot))
 		{
@@ -345,28 +351,18 @@ void USWGTravelWidget::RefreshWaypointMarkers()
 	{
 		return;
 	}
+	const TArray<FSWGMapMarker> Markers = SWGMapMarkers::MakeWaypointMarkers(Waypoints, SelectedPlanet);
 	WaypointPositions.Reset();
-	TArray<FSWGMapMarker> Markers;
-	// Core3's waypoint planet CRC is the zone name's String::hashCode.
-	const int32 PlanetCrc = static_cast<int32>(FSWGCrc32::HashString(SelectedPlanet));
-	for (const FSWGWaypointEntry& Waypoint : Waypoints ? Waypoints->GetWaypoints() : TArray<FSWGWaypointEntry>())
+	for (const FSWGMapMarker& Marker : Markers)
 	{
-		// A cell waypoint's position is local to its room, not placeable on the map.
-		if (Waypoint.PlanetCRC != PlanetCrc || Waypoint.CellId != 0)
-		{
-			continue;
-		}
-		FSWGMapMarker& Marker = Markers.AddDefaulted_GetRef();
-		Marker.Id = FName(*LexToString(Waypoint.WaypointObjectId));
-		Marker.Position = FVector2D(Waypoint.RawPosition.X, Waypoint.RawPosition.Y);
-		Marker.Label = Waypoint.Name;
-		Marker.bCustomPinColor = true;
-		Marker.PinColor = USWGWaypointSubsystem::GetWaypointColor(Waypoint.Color);
-		Marker.PinColor.A = Waypoint.bActive ? 1.f : 0.55f;
-		Marker.LabelColor = Marker.PinColor;
 		WaypointPositions.Add(Marker.Id, Marker.Position);
 	}
 	MapView->SetMarkers(WaypointLayer, Markers);
+}
+
+void USWGTravelWidget::HandleMapPressed()
+{
+	OnPressed.Broadcast(this);
 }
 
 void USWGTravelWidget::HandleMapMarkerClicked(FName Layer, FName MarkerId)

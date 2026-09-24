@@ -150,6 +150,14 @@ public:
 	 */
 	void BeginLoadTerrain(const FString TerrainVirtualPath, const FVector& SpawnPosition);
 
+	/** The zone being streamed ("tatooine"), empty before the first BeginLoadTerrain. */
+	FString GetActivePlanetName() const { return FPaths::GetBaseFilename(ActiveTerrainVirtualPath); }
+
+	/** Immutable planet data, the published edit layers and the .ws snapshot: safe to read from any thread. Null until parsed. */
+	TSharedPtr<const FSWGTerrainData, ESPMode::ThreadSafe> GetPlanetData() const { return PlanetData; }
+	TSharedPtr<const TArray<FSWGTerrainLayer>, ESPMode::ThreadSafe> GetPublishedEditLayers() const { return PublishedEditLayers; }
+	TSharedPtr<const FSWGWorldSnapshotData, ESPMode::ThreadSafe> GetSnapshotData() const { return SnapshotData; }
+
 	/** Broadcast once BeginLoadTerrain's spawn-area tiles have a spawned, collidable mesh. */
 	DECLARE_MULTICAST_DELEGATE(FOnTerrainReady);
 	FOnTerrainReady OnTerrainReady;

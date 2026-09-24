@@ -70,10 +70,21 @@ public:
 	// size beforehand. No-op if NameLabel doesn't exist yet.
 	void RepositionNameLabel();
 
+	/** Hides the overhead name while set (the holographic map hides the player's own). */
+	void SetNameLabelHidden(bool bHidden);
+
+	/** Text with SWG's inline colour escapes removed: "\#rrggbb" sets a colour, "\#." resets it. */
+	static FString StripColorCodes(const FString& Text);
+
+	/** Turns the name label to face the viewer; ticks only once a label exists. */
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+
 private:
 	// Dev-visibility name tag floating above the object, showing GetDisplayName().
 	void UpdateNameLabel();
 
 	UPROPERTY()
 	TObjectPtr<UTextRenderComponent> NameLabel;
+
+	bool bNameLabelHidden = false;
 };

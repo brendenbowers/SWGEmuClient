@@ -72,6 +72,14 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGWaypointListWidget> WaypointListClass;
 
+	/** Planet map window (WBP_PlanetMap), toggled by the player's PlanetMapKey. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGPlanetMapWindowWidget> PlanetMapClass;
+
+	/** Holographic planet map overlay; unset uses USWGHoloMapWidget's own controls. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGHoloMapWidget> HoloMapClass;
+
 	/** Datapad window (schematics, mission items, deeds), toggled by the player's DatapadKey. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGDatapadWidget> DatapadClass;

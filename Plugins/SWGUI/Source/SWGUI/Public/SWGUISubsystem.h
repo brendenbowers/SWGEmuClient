@@ -10,6 +10,16 @@
 
 class USWGGameLayout;
 
+/** Which form the planet map opens in. */
+UENUM(BlueprintType)
+enum class ESWGPlanetMapMode : uint8
+{
+	/** USWGPlanetMapWindowWidget: a window over the game. */
+	Window,
+	/** USWGHoloMapWidget: a hologram projected in front of the player. */
+	Hologram
+};
+
 /**
  * Owns the UI side of the client flow: creates the layout for the local
  * player and pushes/clears layer widgets as USWGClientFlowSubsystem changes
@@ -57,6 +67,17 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
 	bool IsWaypointListOpen() const;
+
+	/** Opens the planet map in the current PlanetMapMode, or closes it if it is up. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void TogglePlanetMap();
+
+	/** Switches the map form; an open map is swapped for the other form in place. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void SetPlanetMapMode(ESWGPlanetMapMode Mode);
+
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
+	ESWGPlanetMapMode GetPlanetMapMode() const { return PlanetMapMode; }
 
 	/** Opens the datapad, or closes it if it is up. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
@@ -137,6 +158,17 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<class USWGDatapadWidget> DatapadWindow;
+
+	UPROPERTY()
+	TObjectPtr<class USWGPlanetMapWindowWidget> PlanetMapWindow;
+
+	UPROPERTY()
+	TObjectPtr<class USWGHoloMapWidget> HoloMap;
+
+	ESWGPlanetMapMode PlanetMapMode = ESWGPlanetMapMode::Window;
+
+	void OpenPlanetMap();
+	void HandleHoloMapClosed();
 
 	/** The gamepad form; only one of this and InventoryWindow is ever up. */
 	UPROPERTY()

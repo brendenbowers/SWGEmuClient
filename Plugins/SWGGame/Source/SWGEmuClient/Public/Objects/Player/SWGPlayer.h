@@ -116,6 +116,13 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
 	FKey DatapadKey = EKeys::B;
 
+	// Fired by PlanetMapKey; the HUD opens or closes the planet map window.
+	DECLARE_MULTICAST_DELEGATE(FOnTogglePlanetMap);
+	FOnTogglePlanetMap OnTogglePlanetMap;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Input")
+	FKey PlanetMapKey = EKeys::M;
+
 	// Gamepad layout: D-pad and face buttons are the eight action slots;
 	// ActionBankShiftKey toggles to the second eight. InteractKey opens
 	// the target's radial menu (the RMB-click equivalent), and holding
@@ -201,6 +208,7 @@ protected:
 	void ToggleInventory();
 	void ToggleWaypointList();
 	void ToggleDatapad();
+	void TogglePlanetMap();
 	void OnZoomModifierPressed();
 	void OnZoomModifierReleased();
 

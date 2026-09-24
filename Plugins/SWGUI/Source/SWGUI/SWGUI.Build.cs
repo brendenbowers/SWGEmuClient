@@ -22,6 +22,8 @@ public class SWGUI : ModuleRules
 			"SWGTre",
 			"SWGEmuClient",
 			"ModelWidget",
+			"GeometryCore",
+			"GeometryFramework",
 		});
 	}
 }

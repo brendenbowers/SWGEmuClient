@@ -1,27 +1,13 @@
 #include "SWGPlanetMapWidget.h"
 #include "Blueprint/WidgetTree.h"
-#include "Components/Button.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/Image.h"
-#include "Components/SizeBox.h"
-#include "Components/TextBlock.h"
-#include "Components/VerticalBox.h"
-#include "Components/VerticalBoxSlot.h"
 #include "Engine/GameInstance.h"
 #include "Engine/TextureRenderTarget2D.h"
-#include "SWGRetailStyle.h"
-#include "Subsystems/SWGTreSubsystem.h"
 
 namespace
 {
-	/** Per-second rate the drawn camera closes on the goal; higher is snappier. */
-	constexpr float CameraEaseRate = 5.f;
-	constexpr float OrbitDegreesPerPixel = 0.25f;
-	constexpr float TiltDegreesPerPixel = 0.2f;
-	constexpr float MaxTilt = 60.f;
-	constexpr float WheelZoomFactor = 0.7f;
-
 	void FillParent(UWidget* Widget)
 	{
 		if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Widget->Slot))
@@ -37,12 +23,30 @@ void USWGPlanetMapWidget::NativeOnInitialized()
 	Super::NativeOnInitialized();
 	if (!WidgetTree->RootWidget)
 	{
-		RootCanvas = WidgetTree->ConstructWidget<UCanvasPanel>();
-		WidgetTree->RootWidget = RootCanvas;
+		UCanvasPanel* Root = WidgetTree->ConstructWidget<UCanvasPanel>();
+		WidgetTree->RootWidget = Root;
 		ViewImage = WidgetTree->ConstructWidget<UImage>();
-		ViewImage->SetVisibility(ESlateVisibility::HitTestInvisible);
-		RootCanvas->AddChild(ViewImage);
+		Root->AddChild(ViewImage);
 		FillParent(ViewImage);
+		MarkerCanvas = WidgetTree->ConstructWidget<UCanvasPanel>();
+		Root->AddChild(MarkerCanvas);
+		FillParent(MarkerCanvas);
+	}
+	if (!MarkerCanvas)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGPlanetMapWidget %s: its designer tree has no MarkerCanvas, so markers won't show"), *GetName());
+	}
+	if (ViewImage)
+	{
+		ViewImage->SetVisibility(ESlateVisibility::HitTestInvisible);
+	}
+	if (MarkerCanvas)
+	{
+		MarkerCanvas->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	}
+	if (!MarkerWidgetClass)
+	{
+		MarkerWidgetClass = USWGMapMarkerWidget::StaticClass();
 	}
 	// The map itself takes the clicks for pan/orbit; only markers sit above it.
 	SetVisibility(ESlateVisibility::Visible);
@@ -54,7 +58,11 @@ void USWGPlanetMapWidget::NativeConstruct()
 	if (!MapScene)
 	{
 		MapScene = MakeShared<FSWGPlanetMapScene>(GetGameInstance());
-		ViewImage->SetBrushResourceObject(MapScene->GetRenderTarget());
+		if (ViewImage)
+		{
+			ViewImage->SetBrushResourceObject(MapScene->GetRenderTarget());
+		}
+		bTerrainWasReady = false;
 		if (!Planet.IsEmpty())
 		{
 			MapScene->ShowPlanet(Planet, BuildingFocusPoints);
@@ -64,7 +72,10 @@ void USWGPlanetMapWidget::NativeConstruct()
 
 void USWGPlanetMapWidget::NativeDestruct()
 {
-	ViewImage->SetBrushResourceObject(nullptr);
+	if (ViewImage)
+	{
+		ViewImage->SetBrushResourceObject(nullptr);
+	}
 	MapScene.Reset();
 	Super::NativeDestruct();
 }
@@ -74,6 +85,7 @@ void USWGPlanetMapWidget::ShowPlanet(const FString& InPlanet, const TArray<FVect
 	if (InPlanet != Planet)
 	{
 		Planet = InPlanet;
+		bTerrainWasReady = false;
 		ResetView();
 	}
 	BuildingFocusPoints = InBuildingFocusPoints;
@@ -83,76 +95,102 @@ void USWGPlanetMapWidget::ShowPlanet(const FString& InPlanet, const TArray<FVect
 	}
 }
 
-void USWGPlanetMapWidget::SetMarkers(FName LayerName, const TArray<FSWGMapMarker>& Markers)
+USWGPlanetMapWidget::FMarkerLayer& USWGPlanetMapWidget::FindOrAddLayer(FName LayerName)
 {
-	FMarkerLayer* Layer = Layers.FindByPredicate([LayerName](const FMarkerLayer& Candidate) { return Candidate.Name == LayerName; });
-	if (!Layer)
+	if (FMarkerLayer* Existing = Layers.FindByPredicate([LayerName](const FMarkerLayer& Candidate) { return Candidate.Name == LayerName; }))
 	{
-		Layer = &Layers.AddDefaulted_GetRef();
-		Layer->Name = LayerName;
-		Layer->Panel = WidgetTree->ConstructWidget<UCanvasPanel>();
-		Layer->Panel->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
-		RootCanvas->AddChild(Layer->Panel);
-		FillParent(Layer->Panel);
+		return *Existing;
 	}
-	Layer->Markers = Markers;
-	RebuildLayer(*Layer);
+	FMarkerLayer& Layer = Layers.AddDefaulted_GetRef();
+	Layer.Name = LayerName;
+	// Its own canvas per layer keeps the draw order fixed when one rebuilds.
+	Layer.Panel = WidgetTree->ConstructWidget<UCanvasPanel>();
+	Layer.Panel->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	if (MarkerCanvas)
+	{
+		MarkerCanvas->AddChild(Layer.Panel);
+		FillParent(Layer.Panel);
+	}
+	return Layer;
 }
 
-void USWGPlanetMapWidget::RebuildLayer(FMarkerLayer& Layer)
+USWGMapMarkerWidget* USWGPlanetMapWidget::AddMarkerWidget(FMarkerLayer& Layer, const FSWGMapMarker& Marker)
 {
-	Layer.Panel->ClearChildren();
-	Layer.Pins.Reset();
-	USWGMapMarkerClickForwarderSet* ForwarderSet = NewObject<USWGMapMarkerClickForwarderSet>(this);
-	ClickForwarders.Add(Layer.Name, ForwarderSet);
-	USWGTreSubsystem* Tre = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGTreSubsystem>() : nullptr;
-	for (const FSWGMapMarker& Marker : Layer.Markers)
+	const TSubclassOf<USWGMapMarkerWidget>* LayerClass = LayerMarkerClasses.Find(Layer.Name);
+	const TSubclassOf<USWGMapMarkerWidget> MarkerClass = LayerClass && *LayerClass ? *LayerClass : MarkerWidgetClass;
+	USWGMapMarkerWidget* MarkerWidget = CreateWidget<USWGMapMarkerWidget>(this, MarkerClass ? MarkerClass.Get() : USWGMapMarkerWidget::StaticClass());
+	MarkerWidget->LayerName = Layer.Name;
+	MarkerWidget->Marker = Marker;
+	MarkerWidget->OnClicked.AddUObject(this, &USWGPlanetMapWidget::HandleMarkerWidgetClicked);
+	// Hidden until UpdateMarkerPositions has placed it.
+	MarkerWidget->SetVisibility(ESlateVisibility::Collapsed);
+	Layer.Panel->AddChild(MarkerWidget);
+	if (UCanvasPanelSlot* MarkerSlot = Cast<UCanvasPanelSlot>(MarkerWidget->Slot))
 	{
-		// Retail's travel map: the city pin with its name in green above it.
-		UVerticalBox* Pin = WidgetTree->ConstructWidget<UVerticalBox>();
-		// Hidden until UpdateMarkerPositions has placed it.
-		Pin->SetVisibility(ESlateVisibility::Collapsed);
+		MarkerSlot->SetAutoSize(true);
+	}
+	MarkerWidget->ApplyMarker(Marker);
+	Layer.Widgets.Add(MarkerWidget);
+	return MarkerWidget;
+}
 
-		UTextBlock* Label = WidgetTree->ConstructWidget<UTextBlock>();
-		Label->SetText(Marker.Label);
-		Label->SetColorAndOpacity(FSlateColor(Marker.LabelColor));
-		Label->SetShadowOffset(FVector2D(1.f, 1.f));
-		Label->SetShadowColorAndOpacity(FLinearColor(0.f, 0.f, 0.f, 0.9f));
-		Label->SetFont(SWGRetailStyle::BoldFont(Marker.bSelected ? 13 : 11));
-		Label->SetJustification(ETextJustify::Center);
-		Label->SetVisibility(ESlateVisibility::HitTestInvisible);
-		if (UVerticalBoxSlot* LabelSlot = Pin->AddChildToVerticalBox(Label))
-		{
-			LabelSlot->SetHorizontalAlignment(HAlign_Center);
-		}
-
-		UButton* Button = WidgetTree->ConstructWidget<UButton>();
-		const FLinearColor IdleColor = Marker.bSelected ? SWGRetailStyle::PinActivated
-			: Marker.bCustomPinColor ? Marker.PinColor : SWGRetailStyle::PinDefault;
-		Button->SetStyle(SWGRetailStyle::MakePinStyle(Tre, IdleColor));
-		USizeBox* PinSize = WidgetTree->ConstructWidget<USizeBox>();
-		PinSize->SetWidthOverride(SWGRetailStyle::PinSize.X);
-		PinSize->SetHeightOverride(SWGRetailStyle::PinSize.Y);
-		PinSize->AddChild(Button);
-		if (UVerticalBoxSlot* ButtonSlot = Pin->AddChildToVerticalBox(PinSize))
-		{
-			ButtonSlot->SetHorizontalAlignment(HAlign_Center);
-		}
-
-		Layer.Panel->AddChild(Pin);
-		if (UCanvasPanelSlot* MarkerSlot = Cast<UCanvasPanelSlot>(Pin->Slot))
-		{
-			MarkerSlot->SetAutoSize(true);
-			// Bottom-centre on the point, like a pin.
-			MarkerSlot->SetAlignment(FVector2D(0.5f, 1.f));
-		}
-		USWGMapMarkerClickForwarder* Forwarder = NewObject<USWGMapMarkerClickForwarder>(ForwarderSet);
-		Forwarder->Action = [this, LayerName = Layer.Name, MarkerId = Marker.Id]() { OnMarkerClicked.Broadcast(LayerName, MarkerId); };
-		Button->OnClicked.AddDynamic(Forwarder, &USWGMapMarkerClickForwarder::HandleClicked);
-		ForwarderSet->Forwarders.Add(Forwarder);
-		Layer.Pins.Add(Pin);
+void USWGPlanetMapWidget::SetMarkers(FName LayerName, const TArray<FSWGMapMarker>& Markers)
+{
+	FMarkerLayer& Layer = FindOrAddLayer(LayerName);
+	Layer.Panel->ClearChildren();
+	Layer.Widgets.Reset();
+	for (const FSWGMapMarker& Marker : Markers)
+	{
+		AddMarkerWidget(Layer, Marker);
 	}
 	UpdateMarkerPositions();
+}
+
+void USWGPlanetMapWidget::UpdateMarker(FName LayerName, const FSWGMapMarker& Marker)
+{
+	FMarkerLayer& Layer = FindOrAddLayer(LayerName);
+	for (USWGMapMarkerWidget* MarkerWidget : Layer.Widgets)
+	{
+		if (MarkerWidget->Marker.Id == Marker.Id)
+		{
+			const bool bRestyle = !MarkerWidget->Marker.LooksLike(Marker);
+			MarkerWidget->Marker = Marker;
+			if (bRestyle)
+			{
+				MarkerWidget->ApplyMarker(Marker);
+			}
+			return;
+		}
+	}
+	AddMarkerWidget(Layer, Marker);
+}
+
+void USWGPlanetMapWidget::RemoveMarker(FName LayerName, FName MarkerId)
+{
+	FMarkerLayer& Layer = FindOrAddLayer(LayerName);
+	for (int32 Index = Layer.Widgets.Num() - 1; Index >= 0; --Index)
+	{
+		if (Layer.Widgets[Index]->Marker.Id == MarkerId)
+		{
+			Layer.Widgets[Index]->RemoveFromParent();
+			Layer.Widgets.RemoveAt(Index);
+		}
+	}
+}
+
+void USWGPlanetMapWidget::ClearLayer(FName LayerName)
+{
+	SetMarkers(LayerName, {});
+}
+
+void USWGPlanetMapWidget::SetLayerMarkerClass(FName LayerName, TSubclassOf<USWGMapMarkerWidget> MarkerClass)
+{
+	LayerMarkerClasses.Add(LayerName, MarkerClass);
+}
+
+void USWGPlanetMapWidget::HandleMarkerWidgetClicked(USWGMapMarkerWidget* MarkerWidget)
+{
+	OnMarkerClicked.Broadcast(MarkerWidget->LayerName, MarkerWidget->Marker.Id);
 }
 
 void USWGPlanetMapWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
@@ -173,35 +211,63 @@ void USWGPlanetMapWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaT
 	MapScene->SetCamera(Camera);
 	MapScene->RenderIfDirty();
 	UpdateMarkerPositions();
+	if (!bTerrainWasReady && MapScene->IsTerrainReady())
+	{
+		bTerrainWasReady = true;
+		// The real map size is only known now; an untouched overview reframes to it.
+		const float Overview = FSWGPlanetMapCamera::OverviewDistanceFor(MapScene->GetMapSize());
+		const bool bWasOverview = GoalCamera.Distance >= GoalCamera.OverviewDistance * 0.99f;
+		GoalCamera.OverviewDistance = Overview;
+		Camera.OverviewDistance = Overview;
+		if (bWasOverview)
+		{
+			GoalCamera.Distance = Overview;
+			Camera.Distance = Overview;
+		}
+		ClampCamera(GoalCamera);
+		ClampCamera(Camera);
+		OnTerrainReady.Broadcast();
+	}
+}
+
+bool USWGPlanetMapWidget::ProjectToLocal(FVector2D RawPosition, FVector2D& OutLocalPosition) const
+{
+	const FVector2D LocalSize = GetCachedGeometry().GetLocalSize();
+	if (!MapScene || LocalSize.X < 1.f || LocalSize.Y < 1.f)
+	{
+		return false;
+	}
+	FVector2D Pixel;
+	if (!MapScene->Project(FVector(RawPosition.X, RawPosition.Y, MapScene->GetGroundHeight(RawPosition)), Pixel))
+	{
+		return false;
+	}
+	const FIntPoint Viewport = MapScene->GetViewportSize();
+	OutLocalPosition = Pixel * LocalSize / FVector2D(Viewport.X, Viewport.Y);
+	return OutLocalPosition.X >= 0.f && OutLocalPosition.Y >= 0.f && OutLocalPosition.X <= LocalSize.X && OutLocalPosition.Y <= LocalSize.Y;
 }
 
 void USWGPlanetMapWidget::UpdateMarkerPositions()
 {
-	if (!MapScene)
-	{
-		return;
-	}
-	const FVector2D LocalSize = GetCachedGeometry().GetLocalSize();
-	const FIntPoint Viewport = MapScene->GetViewportSize();
-	if (LocalSize.X < 1.f || LocalSize.Y < 1.f)
-	{
-		return;
-	}
-	const FVector2D PixelToLocal = LocalSize / FVector2D(Viewport.X, Viewport.Y);
 	for (FMarkerLayer& Layer : Layers)
 	{
-		for (int32 Index = 0; Index < Layer.Markers.Num(); ++Index)
+		for (USWGMapMarkerWidget* MarkerWidget : Layer.Widgets)
 		{
-			const FVector2D& Position = Layer.Markers[Index].Position;
-			FVector2D Pixel;
-			const bool bInFront = MapScene->Project(FVector(Position.X, Position.Y, MapScene->GetGroundHeight(Position)), Pixel);
-			const FVector2D Local = Pixel * PixelToLocal;
-			const bool bOnMap = bInFront && Local.X >= 0.f && Local.Y >= 0.f && Local.X <= LocalSize.X && Local.Y <= LocalSize.Y;
-			UWidget* Pin = Layer.Pins[Index];
-			Pin->SetVisibility(bOnMap ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
-			if (bOnMap)
+			FVector2D Local;
+			const bool bOnMap = ProjectToLocal(MarkerWidget->Marker.Position, Local);
+			MarkerWidget->SetVisibility(bOnMap ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+			if (!bOnMap)
 			{
-				Cast<UCanvasPanelSlot>(Pin->Slot)->SetPosition(Local);
+				continue;
+			}
+			if (UCanvasPanelSlot* MarkerSlot = Cast<UCanvasPanelSlot>(MarkerWidget->Slot))
+			{
+				MarkerSlot->SetAlignment(MarkerWidget->Anchor);
+				MarkerSlot->SetPosition(Local);
+			}
+			if (MarkerWidget->Marker.bHasHeading)
+			{
+				MarkerWidget->ApplyScreenHeading(MarkerWidget->Marker.Heading - Camera.Yaw);
 			}
 		}
 	}
@@ -212,15 +278,24 @@ void USWGPlanetMapWidget::ClampCamera(FSWGPlanetMapCamera& InOutCamera) const
 	const float HalfMap = MapScene ? MapScene->GetMapSize() * 0.5f : 8192.f;
 	InOutCamera.Target.X = FMath::Clamp(InOutCamera.Target.X, -HalfMap, HalfMap);
 	InOutCamera.Target.Y = FMath::Clamp(InOutCamera.Target.Y, -HalfMap, HalfMap);
-	InOutCamera.Distance = FMath::Clamp(InOutCamera.Distance, FSWGPlanetMapCamera::MinDistance, FSWGPlanetMapCamera::MaxDistance);
+	InOutCamera.Distance = FMath::Clamp(InOutCamera.Distance, FSWGPlanetMapCamera::MinDistance, InOutCamera.OverviewDistance);
 	InOutCamera.Tilt = FMath::Clamp(InOutCamera.Tilt, -MaxTilt, MaxTilt);
 }
 
-void USWGPlanetMapWidget::FlyTo(const FVector2D& Point, float Distance)
+void USWGPlanetMapWidget::FlyTo(FVector2D Point, float Distance)
 {
 	GoalCamera.Target = Point;
-	GoalCamera.Distance = FMath::Min(GoalCamera.Distance, Distance);
+	if (Distance > 0.f)
+	{
+		GoalCamera.Distance = FMath::Min(GoalCamera.Distance, Distance);
+	}
 	ClampCamera(GoalCamera);
+}
+
+void USWGPlanetMapWidget::JumpTo(FVector2D Point, float Distance)
+{
+	FlyTo(Point, Distance);
+	Camera = GoalCamera;
 }
 
 void USWGPlanetMapWidget::ZoomBy(float Factor)
@@ -228,18 +303,26 @@ void USWGPlanetMapWidget::ZoomBy(float Factor)
 	ZoomAbout(Factor, nullptr);
 }
 
+void USWGPlanetMapWidget::Orbit(float DeltaYaw, float DeltaTilt)
+{
+	GoalCamera.Yaw = FRotator::NormalizeAxis(GoalCamera.Yaw + DeltaYaw);
+	GoalCamera.Tilt += DeltaTilt;
+	ClampCamera(GoalCamera);
+}
+
 void USWGPlanetMapWidget::ResetView()
 {
 	GoalCamera = FSWGPlanetMapCamera();
+	GoalCamera.OverviewDistance = FSWGPlanetMapCamera::OverviewDistanceFor(MapScene ? MapScene->GetMapSize() : 16384.f);
+	GoalCamera.Distance = GoalCamera.OverviewDistance;
 	Camera = GoalCamera;
 }
 
 void USWGPlanetMapWidget::ZoomAbout(float Factor, const FVector2D* ScreenPosition)
 {
-	const float NewDistance = FMath::Clamp(GoalCamera.Distance * Factor, FSWGPlanetMapCamera::MinDistance, FSWGPlanetMapCamera::MaxDistance);
-	FVector2D Pixel;
+	const float NewDistance = FMath::Clamp(GoalCamera.Distance * Factor, FSWGPlanetMapCamera::MinDistance, GoalCamera.OverviewDistance);
 	FVector2D Anchor;
-	if (ScreenPosition && ScreenToPixel(*ScreenPosition, Pixel) && MapScene->Deproject(Pixel, Anchor))
+	if (ScreenPosition && ScreenToGround(*ScreenPosition, Anchor))
 	{
 		// Scaling the target about the ground point keeps that point under the cursor.
 		GoalCamera.Target = Anchor + (GoalCamera.Target - Anchor) * (NewDistance / GoalCamera.Distance);
@@ -260,7 +343,13 @@ bool USWGPlanetMapWidget::ScreenToPixel(const FVector2D& ScreenPosition, FVector
 	return true;
 }
 
-bool USWGPlanetMapWidget::HandleControllerKey(const FKey& Key)
+bool USWGPlanetMapWidget::ScreenToGround(const FVector2D& ScreenPosition, FVector2D& OutRawPosition) const
+{
+	FVector2D Pixel;
+	return ScreenToPixel(ScreenPosition, Pixel) && MapScene->Deproject(Pixel, OutRawPosition);
+}
+
+bool USWGPlanetMapWidget::HandleControllerKey(FKey Key)
 {
 	if (Key == EKeys::Gamepad_LeftShoulder || Key == EKeys::Gamepad_RightShoulder)
 	{
@@ -269,13 +358,12 @@ bool USWGPlanetMapWidget::HandleControllerKey(const FKey& Key)
 	}
 	if (Key == EKeys::Gamepad_RightStick_Left || Key == EKeys::Gamepad_RightStick_Right)
 	{
-		GoalCamera.Yaw = FRotator::NormalizeAxis(GoalCamera.Yaw + (Key == EKeys::Gamepad_RightStick_Right ? 15.f : -15.f));
+		Orbit(Key == EKeys::Gamepad_RightStick_Right ? 15.f : -15.f, 0.f);
 		return true;
 	}
 	if (Key == EKeys::Gamepad_RightStick_Up || Key == EKeys::Gamepad_RightStick_Down)
 	{
-		GoalCamera.Tilt += Key == EKeys::Gamepad_RightStick_Up ? 8.f : -8.f;
-		ClampCamera(GoalCamera);
+		Orbit(0.f, Key == EKeys::Gamepad_RightStick_Up ? 8.f : -8.f);
 		return true;
 	}
 	return false;
@@ -299,8 +387,20 @@ FReply USWGPlanetMapWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry,
 	// Ctrl+left orbits too, for trackpads.
 	bOrbiting = Button == EKeys::RightMouseButton || InMouseEvent.IsControlDown();
 	bPanning = !bOrbiting;
-	LastDragPosition = InMouseEvent.GetScreenSpacePosition();
+	bDragged = false;
+	DragDistance = 0.f;
+	DragLocal = GetCachedGeometry().AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition());
 	return FReply::Handled().CaptureMouse(TakeWidget());
+}
+
+FReply USWGPlanetMapWidget::NativeOnMouseButtonDoubleClick(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	FVector2D Ground;
+	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && ScreenToGround(InMouseEvent.GetScreenSpacePosition(), Ground))
+	{
+		OnGroundDoubleClicked.Broadcast(Ground);
+	}
+	return FReply::Handled();
 }
 
 FReply USWGPlanetMapWidget::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
@@ -309,13 +409,20 @@ FReply USWGPlanetMapWidget::NativeOnMouseMove(const FGeometry& InGeometry, const
 	{
 		return Super::NativeOnMouseMove(InGeometry, InMouseEvent);
 	}
-	const FVector2D Position = InMouseEvent.GetScreenSpacePosition();
+	// Raw deltas, not positions: while a drag has the mouse captured the in-world
+	// input mode hides and locks the cursor, so its position stops changing.
 	const FGeometry& Geometry = GetCachedGeometry();
+	const FVector2D LocalDelta = InMouseEvent.GetCursorDelta() / FMath::Max(Geometry.Scale, KINDA_SMALL_NUMBER);
+	DragDistance += LocalDelta.Size();
+	if (!bDragged && DragDistance < ClickSlopPixels)
+	{
+		return FReply::Handled();
+	}
+	bDragged = true;
 	if (bOrbiting)
 	{
-		const FVector2D Delta = Geometry.AbsoluteToLocal(Position) - Geometry.AbsoluteToLocal(LastDragPosition);
-		Camera.Yaw = FRotator::NormalizeAxis(Camera.Yaw + Delta.X * OrbitDegreesPerPixel);
-		Camera.Tilt -= Delta.Y * TiltDegreesPerPixel;
+		Camera.Yaw = FRotator::NormalizeAxis(Camera.Yaw + LocalDelta.X * OrbitDegreesPerPixel);
+		Camera.Tilt -= LocalDelta.Y * TiltDegreesPerPixel;
 	}
 	else
 	{
@@ -323,29 +430,34 @@ FReply USWGPlanetMapWidget::NativeOnMouseMove(const FGeometry& InGeometry, const
 		// since a drag may leave the map while the mouse is captured.
 		const FIntPoint Viewport = MapScene->GetViewportSize();
 		const FVector2D LocalToPixel = FVector2D(Viewport.X, Viewport.Y) / Geometry.GetLocalSize();
+		const FVector2D Next = DragLocal + LocalDelta;
 		FVector2D Before;
 		FVector2D After;
-		if (MapScene->Deproject(Geometry.AbsoluteToLocal(LastDragPosition) * LocalToPixel, Before)
-			&& MapScene->Deproject(Geometry.AbsoluteToLocal(Position) * LocalToPixel, After))
+		if (MapScene->Deproject(DragLocal * LocalToPixel, Before) && MapScene->Deproject(Next * LocalToPixel, After))
 		{
 			Camera.Target += Before - After;
 		}
+		DragLocal = Next;
 	}
 	ClampCamera(Camera);
 	// Direct manipulation cancels any fly-to in progress.
 	GoalCamera = Camera;
 	MapScene->SetCamera(Camera);
-	LastDragPosition = Position;
 	return FReply::Handled();
 }
 
 FReply USWGPlanetMapWidget::NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
-	if (bPanning || bOrbiting)
+	if (!bPanning && !bOrbiting)
 	{
-		bPanning = false;
-		bOrbiting = false;
-		return FReply::Handled().ReleaseMouseCapture();
+		return FReply::Handled();
 	}
-	return FReply::Handled();
+	FVector2D Ground;
+	if (bPanning && !bDragged && ScreenToGround(InMouseEvent.GetScreenSpacePosition(), Ground))
+	{
+		OnGroundClicked.Broadcast(Ground);
+	}
+	bPanning = false;
+	bOrbiting = false;
+	return FReply::Handled().ReleaseMouseCapture();
 }

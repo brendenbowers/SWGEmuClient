@@ -34,6 +34,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HUD")
 	void ToggleDatapad();
 
+	/** Opens the planet map window, or closes it if it is up. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HUD")
+	void TogglePlanetMap();
+
 	/** Fires the action bar slot at this index — the entry point for number-key hotkeys. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HUD")
 	bool TriggerActionSlot(int32 SlotIndex);

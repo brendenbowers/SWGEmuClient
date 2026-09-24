@@ -115,5 +115,8 @@ private:
 	/** Zeroes every field and hides the widget. */
 	void ClearDisplay();
 
+	/** Shows or collapses the three HAM bars with their labels; targets without HAM show only a name. */
+	void SetPoolsVisible(bool bVisible);
+
 	FTimerHandle RefreshTimer;
 };

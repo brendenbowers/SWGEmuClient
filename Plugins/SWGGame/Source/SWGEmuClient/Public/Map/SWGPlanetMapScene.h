@@ -24,6 +24,9 @@ struct SWGEMUCLIENT_API FSWGPlanetMapCamera
 	/** Metres from Target to the eye. */
 	float Distance = 36000.f;
 
+	/** Eye distance that shows the whole map straight down: the zoom-out limit and the top of the pitch curve. */
+	float OverviewDistance = 36000.f;
+
 	/** 0 looks north; positive turns toward east. */
 	float Yaw = 0.f;
 
@@ -31,7 +34,9 @@ struct SWGEMUCLIENT_API FSWGPlanetMapCamera
 	float Tilt = 0.f;
 
 	static constexpr float MinDistance = 180.f;
-	static constexpr float MaxDistance = 36000.f;
+
+	/** Whole-map overview for a map MapSize metres across (50° wide view, some margin). */
+	static float OverviewDistanceFor(float MapSize) { return FMath::Max(MinDistance * 4.f, MapSize * 2.2f); }
 
 	/** Straight down when zoomed out, leaning toward the horizon as it closes in. */
 	float GetPitch() const;

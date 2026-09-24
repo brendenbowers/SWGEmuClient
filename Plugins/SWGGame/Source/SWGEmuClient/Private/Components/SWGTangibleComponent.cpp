@@ -2,6 +2,9 @@
 #include "Network/SWGPacket.h"
 #include "Components/TextRenderComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Character.h"
 #include "Objects/SWGNetworkObjectInterface.h"
@@ -9,7 +12,63 @@
 
 USWGTangibleComponent::USWGTangibleComponent()
 {
-	PrimaryComponentTick.bCanEverTick = false;
+	// Only to keep the name label facing the camera; enabled when one is made.
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
+	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
+}
+
+void USWGTangibleComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	const UWorld* World = GetWorld();
+	const APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
+	if (!NameLabel || !PlayerController || !PlayerController->PlayerCameraManager || !NameLabel->IsVisible())
+	{
+		return;
+	}
+	// Text reads from its +X side; turn that toward the camera, yaw only.
+	const FVector ToCamera = PlayerController->PlayerCameraManager->GetCameraLocation() - NameLabel->GetComponentLocation();
+	NameLabel->SetWorldRotation(FRotator(0.f, ToCamera.Rotation().Yaw, 0.f));
+}
+
+void USWGTangibleComponent::SetNameLabelHidden(bool bHidden)
+{
+	bNameLabelHidden = bHidden;
+	if (NameLabel)
+	{
+		NameLabel->SetVisibility(!bHidden);
+	}
+}
+
+FString USWGTangibleComponent::StripColorCodes(const FString& Text)
+{
+	FString Result;
+	Result.Reserve(Text.Len());
+	for (int32 Index = 0; Index < Text.Len(); ++Index)
+	{
+		if (Text[Index] == TEXT('\\') && Index + 1 < Text.Len() && Text[Index + 1] == TEXT('#'))
+		{
+			// "\#." resets; "\#rrggbb" sets. Anything else after "\#" is kept as typed.
+			if (Index + 2 < Text.Len() && Text[Index + 2] == TEXT('.'))
+			{
+				Index += 2;
+				continue;
+			}
+			int32 HexDigits = 0;
+			while (HexDigits < 6 && Index + 2 + HexDigits < Text.Len() && FChar::IsHexDigit(Text[Index + 2 + HexDigits]))
+			{
+				++HexDigits;
+			}
+			if (HexDigits == 6)
+			{
+				Index += 7;
+				continue;
+			}
+		}
+		Result.AppendChar(Text[Index]);
+	}
+	return Result.TrimStartAndEnd();
 }
 
 void USWGTangibleComponent::ApplyBase3(const FTangibleObjectBaseline& Baseline)
@@ -125,7 +184,9 @@ void USWGTangibleComponent::UpdateNameLabel()
 		// No lighting/depth-test dependency for a debug label — always readable.
 		NameLabel->SetCastShadow(false);
 		NameLabel->SetRelativeLocation(FVector(0.0f, 0.0f, ComputeHeightAboveRoot(Owner)));
+		NameLabel->SetVisibility(!bNameLabelHidden);
 		NameLabel->RegisterComponent();
+		SetComponentTickEnabled(true);
 	}
 
 	NameLabel->SetText(FText::FromString(GetDisplayName()));
@@ -145,7 +206,8 @@ FString USWGTangibleComponent::GetDisplayName() const
 {
 	if (!CustomName.IsEmpty())
 	{
-		return CustomName;
+		// Player names carry inline colour codes (a guild tag, say) that nothing here renders.
+		return StripColorCodes(CustomName);
 	}
 
 	const AActor* Owner = GetOwner();

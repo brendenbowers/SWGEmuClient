@@ -4,6 +4,9 @@
 #include "Components/SWGHealthComponent.h"
 #include "Components/SWGTangibleComponent.h"
 #include "Objects/Creature/SWGCreature.h"
+#include "Components/PanelWidget.h"
+#include "Components/ProgressBar.h"
+#include "Components/TextBlock.h"
 #include "Engine/GameInstance.h"
 #include "TimerManager.h"
 #include "SWGHamPoolDisplay.h"
@@ -64,6 +67,8 @@ void USWGTargetBoxWidget::HandleTargetChanged(int64 NewTargetId, AActor* NewTarg
 	}
 	else
 	{
+		// Pools from the previous target mustn't suppress this one's first write.
+		Health = MaxHealth = Action = MaxAction = Mind = MaxMind = INDEX_NONE;
 		// HitTestInvisible, not SelfHitTestInvisible: the cursor is live
 		// in-world now, and SelfHitTestInvisible only exempts this widget —
 		// its child bars and labels would still swallow clicks aimed at the
@@ -78,7 +83,8 @@ void USWGTargetBoxWidget::HandleTargetChanged(int64 NewTargetId, AActor* NewTarg
 
 void USWGTargetBoxWidget::ClearDisplay()
 {
-	Health = MaxHealth = Action = MaxAction = Mind = MaxMind = 0;
+	// Never a real pool value, so the next target's first refresh always writes its labels.
+	Health = MaxHealth = Action = MaxAction = Mind = MaxMind = INDEX_NONE;
 	TargetLevel = 0;
 	TargetName = FText::GetEmpty();
 
@@ -106,7 +112,25 @@ void USWGTargetBoxWidget::RefreshIdentity()
 	}
 
 	if (NameText)  { NameText->SetText(TargetName); }
-	if (LevelText) { LevelText->SetText(FText::AsNumber(TargetLevel)); }
+	if (LevelText)
+	{
+		// Only creatures have a level; a terminal or building would read "0".
+		LevelText->SetText(TargetLevel > 0 ? FText::AsNumber(TargetLevel) : FText::GetEmpty());
+		LevelText->SetVisibility(TargetLevel > 0 ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
+}
+
+void USWGTargetBoxWidget::SetPoolsVisible(bool bVisible)
+{
+	const ESlateVisibility RowVisibility = bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed;
+	for (UProgressBar* Bar : { HealthBar.Get(), ActionBar.Get(), MindBar.Get() })
+	{
+		// Each bar sits in an overlay with its label; hide the pair.
+		if (UPanelWidget* Row = Bar ? Bar->GetParent() : nullptr)
+		{
+			Row->SetVisibility(RowVisibility);
+		}
+	}
 }
 
 float USWGTargetBoxWidget::GetPoolFraction(ESWGHamPool Pool) const
@@ -162,10 +186,12 @@ void USWGTargetBoxWidget::RefreshTarget()
 	if (!HealthComponent)
 	{
 		// The id is live but its actor hasn't spawned (or isn't a creature —
-		// a targeted item has no HAM). Keep the box up with its name; the
+		// a targeted item has no HAM). Keep the box up with just its name; the
 		// next poll picks the pools up if they arrive.
+		SetPoolsVisible(false);
 		return;
 	}
+	SetPoolsVisible(true);
 
 	const int32 NewHealth = SWGHamPoolDisplay::PoolValue(HealthComponent->HAM, ESWGHamPool::Health);
 	const int32 NewMaxHealth = SWGHamPoolDisplay::PoolValue(HealthComponent->MaxHAM, ESWGHamPool::Health);

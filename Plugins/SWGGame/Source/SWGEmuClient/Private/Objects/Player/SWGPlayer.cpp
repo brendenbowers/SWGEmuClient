@@ -254,6 +254,7 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	PlayerInputComponent->BindKey(GamepadInventoryKey, IE_Pressed, this, &ASWGPlayer::ToggleInventory);
 	PlayerInputComponent->BindKey(WaypointListKey, IE_Pressed, this, &ASWGPlayer::ToggleWaypointList);
 	PlayerInputComponent->BindKey(DatapadKey, IE_Pressed, this, &ASWGPlayer::ToggleDatapad);
+	PlayerInputComponent->BindKey(PlanetMapKey, IE_Pressed, this, &ASWGPlayer::TogglePlanetMap);
 
 	// Action bar hotkeys: 1-9, 0, then hyphen and equals — SWG's twelve-slot
 	// bank. Bound the same legacy way as the mouse keys above rather than
@@ -299,6 +300,11 @@ void ASWGPlayer::ToggleInventory()
 void ASWGPlayer::ToggleWaypointList()
 {
 	OnToggleWaypointList.Broadcast();
+}
+
+void ASWGPlayer::TogglePlanetMap()
+{
+	OnTogglePlanetMap.Broadcast();
 }
 
 void ASWGPlayer::ToggleDatapad()

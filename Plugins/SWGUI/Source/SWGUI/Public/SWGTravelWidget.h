@@ -47,7 +47,8 @@ private:
 	/** The local player's balances; false before its creature baseline arrives. */
 	bool GetPlayerCredits(int32& OutCash, int32& OutBank) const;
 	void ApplyControllerMode();
-	void HandleMapMarkerClicked(FName Layer, FName MarkerId);
+	UFUNCTION() void HandleMapMarkerClicked(FName Layer, FName MarkerId);
+	UFUNCTION() void HandleMapPressed();
 	static FText PlanetDisplayName(const FString& Planet);
 	FText LocationDisplayName(const FString& Location) const;
 
