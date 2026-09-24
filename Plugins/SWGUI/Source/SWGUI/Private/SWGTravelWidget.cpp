@@ -1,32 +1,29 @@
 #include "SWGTravelWidget.h"
+#include "SWGPlanetMapWidget.h"
+#include "SWGRetailStyle.h"
 #include "Blueprint/WidgetTree.h"
-#include "Components/Border.h"
 #include "Components/Button.h"
-#include "Components/ButtonSlot.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/CheckBox.h"
-#include "Components/HorizontalBox.h"
-#include "Components/HorizontalBoxSlot.h"
 #include "Components/Image.h"
-#include "Components/Overlay.h"
-#include "Components/OverlaySlot.h"
 #include "Components/SizeBox.h"
-#include "Components/Spacer.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
-#include "Components/VerticalBoxSlot.h"
 #include "Engine/GameInstance.h"
+#include "Objects/Player/SWGPlayer.h"
 #include "Subsystems/SWGTreSubsystem.h"
+#include "Subsystems/SWGWaypointSubsystem.h"
+#include "TRE/SWGCrc32.h"
 
 namespace
 {
-	const FLinearColor Cyan = FLinearColor::FromSRGBColor(FColor(0x69, 0xDD, 0xEE));
 	const FLinearColor BrightCyan = FLinearColor::FromSRGBColor(FColor(0x96, 0xF4, 0xFC));
 	const FLinearColor Green = FLinearColor::FromSRGBColor(FColor(0x37, 0xFD, 0x06));
-	const FLinearColor Panel = FLinearColor(0.015f, 0.055f, 0.075f, 0.96f);
-	constexpr float MapWidth = 740.f;
-	constexpr float MapHeight = 380.f;
+	const FName TravelLayer(TEXT("Travel"));
+	const FName WaypointLayer(TEXT("Waypoints"));
+	/** Fly-to eye distance when a travel point or waypoint is picked, in metres. */
+	constexpr float MarkerViewDistance = 1400.f;
 
 	FString PlanetIconPath(const FString& Planet)
 	{
@@ -51,150 +48,6 @@ namespace
 		Block->SetFont(Font);
 		return Block;
 	}
-
-	void AddVertical(UVerticalBox* Box, UWidget* Child, float Padding = 5.f, bool bFill = false)
-	{
-		if (UVerticalBoxSlot* Slot = Cast<UVerticalBoxSlot>(Box->AddChild(Child)))
-		{
-			Slot->SetPadding(FMargin(0.f, Padding));
-			Slot->SetHorizontalAlignment(HAlign_Fill);
-			Slot->SetSize(FSlateChildSize(bFill ? ESlateSizeRule::Fill : ESlateSizeRule::Automatic));
-		}
-	}
-}
-
-void USWGTravelWidget::BuildLayout()
-{
-	RootCanvas = WidgetTree->ConstructWidget<UCanvasPanel>();
-	WidgetTree->RootWidget = RootCanvas;
-
-	Frame = WidgetTree->ConstructWidget<USizeBox>();
-	Frame->SetWidthOverride(820.f);
-	Frame->SetHeightOverride(680.f);
-	RootCanvas->AddChild(Frame);
-	if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Frame->Slot))
-	{
-		CanvasSlot->SetPosition(FVector2D(160.f, 120.f));
-		CanvasSlot->SetSize(FVector2D(820.f, 680.f));
-	}
-
-	UOverlay* FrameOverlay = WidgetTree->ConstructWidget<UOverlay>();
-	Frame->AddChild(FrameOverlay);
-
-	UBorder* Outer = WidgetTree->ConstructWidget<UBorder>();
-	Outer->SetBrushColor(Cyan);
-	Outer->SetPadding(FMargin(2.f));
-	FrameOverlay->AddChild(Outer);
-
-	UBorder* Inner = WidgetTree->ConstructWidget<UBorder>();
-	Inner->SetBrushColor(Panel);
-	Outer->SetContent(Inner);
-
-	UVerticalBox* WindowBox = WidgetTree->ConstructWidget<UVerticalBox>();
-	Inner->SetContent(WindowBox);
-
-	Caption = WidgetTree->ConstructWidget<UBorder>();
-	Caption->SetBrushColor(FLinearColor(0.02f, 0.18f, 0.23f, 1.f));
-	Caption->SetPadding(FMargin(12.f, 6.f));
-	AddVertical(WindowBox, Caption, 0.f);
-
-	UHorizontalBox* CaptionRow = WidgetTree->ConstructWidget<UHorizontalBox>();
-	Caption->SetContent(CaptionRow);
-	TitleText = MakeText(WidgetTree, FText::GetEmpty(), BrightCyan, 17);
-	if (UHorizontalBoxSlot* TitleSlot = Cast<UHorizontalBoxSlot>(CaptionRow->AddChild(TitleText)))
-	{
-		TitleSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-		TitleSlot->SetVerticalAlignment(VAlign_Center);
-	}
-	CloseButton = WidgetTree->ConstructWidget<UButton>();
-	CloseButton->AddChild(MakeText(WidgetTree, FText::FromString(TEXT("×")), BrightCyan, 18));
-	CaptionRow->AddChild(CloseButton);
-
-	Content = WidgetTree->ConstructWidget<UVerticalBox>();
-	if (UVerticalBoxSlot* ContentSlot = Cast<UVerticalBoxSlot>(WindowBox->AddChild(Content)))
-	{
-		ContentSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-		ContentSlot->SetPadding(FMargin(18.f, 12.f, 18.f, 8.f));
-		ContentSlot->SetHorizontalAlignment(HAlign_Fill);
-	}
-	UVerticalBox* Body = CastChecked<UVerticalBox>(Content);
-
-	DepartureText = MakeText(WidgetTree, FText::GetEmpty(), BrightCyan, 15);
-	AddVertical(Body, DepartureText, 4.f);
-
-	UHorizontalBox* MapHeader = WidgetTree->ConstructWidget<UHorizontalBox>();
-	AddVertical(Body, MapHeader, 4.f);
-	MapTitleText = MakeText(WidgetTree, FText::GetEmpty(), Cyan, 14);
-	if (UHorizontalBoxSlot* MapTitleSlot = Cast<UHorizontalBoxSlot>(MapHeader->AddChild(MapTitleText)))
-	{
-		MapTitleSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-		MapTitleSlot->SetVerticalAlignment(VAlign_Center);
-	}
-	GalaxyButton = WidgetTree->ConstructWidget<UButton>();
-	GalaxyButton->AddChild(MakeText(WidgetTree, NSLOCTEXT("SWGEmu", "TravelGalaxy", "GALAXY MAP"), BrightCyan, 13));
-	if (UHorizontalBoxSlot* GalaxySlot = Cast<UHorizontalBoxSlot>(MapHeader->AddChild(GalaxyButton)))
-	{
-		GalaxySlot->SetPadding(FMargin(8.f, 0.f));
-	}
-
-	USizeBox* MapSize = WidgetTree->ConstructWidget<USizeBox>();
-	MapSize->SetWidthOverride(MapWidth);
-	MapSize->SetHeightOverride(MapHeight);
-	AddVertical(Body, MapSize, 5.f, true);
-	MapCanvas = WidgetTree->ConstructWidget<UCanvasPanel>();
-	MapSize->AddChild(MapCanvas);
-	MapImage = WidgetTree->ConstructWidget<UImage>();
-
-	UBorder* Divider = WidgetTree->ConstructWidget<UBorder>();
-	Divider->SetBrushColor(FLinearColor(0.2f, 0.7f, 0.8f, 0.35f));
-	Divider->SetDesiredSizeScale(FVector2D(1.f, 0.06f));
-	AddVertical(Body, Divider, 8.f);
-
-	UHorizontalBox* Options = WidgetTree->ConstructWidget<UHorizontalBox>();
-	AddVertical(Body, Options, 7.f);
-	RoundTripCheck = WidgetTree->ConstructWidget<UCheckBox>();
-	Options->AddChild(RoundTripCheck);
-	if (UHorizontalBoxSlot* RoundTripSlot = Cast<UHorizontalBoxSlot>(Options->AddChild(MakeText(WidgetTree, NSLOCTEXT("SWGEmu", "TravelRoundTrip", "Round trip"), BrightCyan))))
-	{
-		RoundTripSlot->SetPadding(FMargin(7.f, 0.f));
-		RoundTripSlot->SetVerticalAlignment(VAlign_Center);
-	}
-	FareText = MakeText(WidgetTree, FText::GetEmpty(), Green, 18);
-	if (UHorizontalBoxSlot* FareSlot = Cast<UHorizontalBoxSlot>(Options->AddChild(FareText)))
-	{
-		FareSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-		FareSlot->SetHorizontalAlignment(HAlign_Right);
-		FareSlot->SetVerticalAlignment(VAlign_Center);
-	}
-
-	StatusText = MakeText(WidgetTree, FText::GetEmpty(), FLinearColor(0.75f, 0.85f, 0.9f), 13);
-	AddVertical(Body, StatusText, 4.f);
-
-	PurchaseButton = WidgetTree->ConstructWidget<UButton>();
-	PurchaseButton->AddChild(MakeText(WidgetTree, NSLOCTEXT("SWGEmu", "TravelPurchase", "PURCHASE TICKET"), BrightCyan, 16));
-	AddVertical(Body, PurchaseButton, 7.f);
-
-	ControllerHelpText = MakeText(WidgetTree,
-		NSLOCTEXT("SWGEmu", "TravelControllerHelp", "←/→ FIELD    ↑/↓ SELECT    A PURCHASE    X ROUND TRIP    B CLOSE"), Cyan, 12);
-	ControllerHelpText->SetJustification(ETextJustify::Center);
-	AddVertical(Body, ControllerHelpText, 5.f);
-
-	ResizeGrip = MakeText(WidgetTree, FText::FromString(TEXT("◢")), Cyan, 12);
-	if (UOverlaySlot* GripSlot = Cast<UOverlaySlot>(FrameOverlay->AddChild(ResizeGrip)))
-	{
-		GripSlot->SetHorizontalAlignment(HAlign_Right);
-		GripSlot->SetVerticalAlignment(VAlign_Bottom);
-		GripSlot->SetPadding(FMargin(4.f));
-	}
-}
-
-void USWGTravelWidget::NativeOnInitialized()
-{
-	if (!RootCanvas)
-	{
-		BuildLayout();
-	}
-	Super::NativeOnInitialized();
 }
 
 void USWGTravelWidget::NativeConstruct()
@@ -204,14 +57,49 @@ void USWGTravelWidget::NativeConstruct()
 	MinimumSize = FVector2D(720.f, 620.f);
 
 	GalaxyButton->OnClicked.AddUniqueDynamic(this, &USWGTravelWidget::HandleGalaxyClicked);
+	ZoomInButton->OnClicked.AddUniqueDynamic(this, &USWGTravelWidget::HandleZoomInClicked);
+	ZoomOutButton->OnClicked.AddUniqueDynamic(this, &USWGTravelWidget::HandleZoomOutClicked);
 	RoundTripCheck->OnCheckStateChanged.AddUniqueDynamic(this, &USWGTravelWidget::HandleRoundTripChanged);
 	PurchaseButton->OnClicked.AddUniqueDynamic(this, &USWGTravelWidget::HandlePurchaseClicked);
 
-	Travel = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGTravelSubsystem>() : nullptr;
-	Tre = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGTreSubsystem>() : nullptr;
+	UGameInstance* GameInstance = GetGameInstance();
+	Travel = GameInstance ? GameInstance->GetSubsystem<USWGTravelSubsystem>() : nullptr;
+	Tre = GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
+	Waypoints = GameInstance ? GameInstance->GetSubsystem<USWGWaypointSubsystem>() : nullptr;
 	if (Travel)
 	{
 		Travel->OnTravelDataChanged.AddDynamic(this, &USWGTravelWidget::HandleTravelDataChanged);
+	}
+	if (Waypoints)
+	{
+		Waypoints->OnWaypointListChanged.AddDynamic(this, &USWGTravelWidget::RefreshWaypointMarkers);
+	}
+
+	if (MapImage)
+	{
+		MapImage->SetVisibility(ESlateVisibility::Collapsed);
+	}
+	if (ButtonTextTints.IsEmpty())
+	{
+		for (UButton* Button : { GalaxyButton.Get(), PurchaseButton.Get(), ZoomInButton.Get(), ZoomOutButton.Get() })
+		{
+			if (UObject* TextTint = SWGRetailStyle::ApplyHudButton(Button, Tre))
+			{
+				ButtonTextTints.Add(TextTint);
+			}
+		}
+	}
+	if (!MapView)
+	{
+		MapView = CreateWidget<USWGPlanetMapWidget>(this, USWGPlanetMapWidget::StaticClass());
+		MapView->OnMarkerClicked.AddUObject(this, &USWGTravelWidget::HandleMapMarkerClicked);
+		MapView->OnPressed.AddWeakLambda(this, [this]() { OnPressed.Broadcast(this); });
+		MapCanvas->AddChild(MapView);
+		if (UCanvasPanelSlot* ViewSlot = Cast<UCanvasPanelSlot>(MapView->Slot))
+		{
+			ViewSlot->SetAnchors(FAnchors(0.f, 0.f, 1.f, 1.f));
+			ViewSlot->SetOffsets(FMargin(0.f));
+		}
 	}
 	ApplyControllerMode();
 	RefreshTravelData();
@@ -223,7 +111,27 @@ void USWGTravelWidget::NativeDestruct()
 	{
 		Travel->OnTravelDataChanged.RemoveDynamic(this, &USWGTravelWidget::HandleTravelDataChanged);
 	}
+	if (Waypoints)
+	{
+		Waypoints->OnWaypointListChanged.RemoveDynamic(this, &USWGTravelWidget::RefreshWaypointMarkers);
+	}
 	Super::NativeDestruct();
+}
+
+void USWGTravelWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+	int32 Cash = 0;
+	int32 Bank = 0;
+	if (GetPlayerCredits(Cash, Bank) && (Cash != ShownCash || Bank != ShownBank))
+	{
+		RefreshFare();
+	}
+	if (!bGalaxyView && MapView && MapView->IsTerrainReady() != bTerrainWasReady)
+	{
+		bTerrainWasReady = MapView->IsTerrainReady();
+		RefreshFare();
+	}
 }
 
 void USWGTravelWidget::SetControllerMode(bool bEnabled)
@@ -247,7 +155,7 @@ void USWGTravelWidget::ApplyControllerMode()
 	}
 	ControllerHelpText->SetText(bGalaxyView
 		? NSLOCTEXT("SWGEmu", "TravelGalaxyControllerHelp", "D-PAD PLANET    A OPEN    B CLOSE")
-		: NSLOCTEXT("SWGEmu", "TravelPlanetControllerHelp", "D-PAD STARPORT    A PURCHASE    X ROUND TRIP    B GALAXY"));
+		: NSLOCTEXT("SWGEmu", "TravelPlanetControllerHelp", "D-PAD STARPORT    A PURCHASE    X ROUND TRIP    LB/RB ZOOM    RS ORBIT    B GALAXY"));
 }
 
 FText USWGTravelWidget::PlanetDisplayName(const FString& Planet)
@@ -307,10 +215,11 @@ void USWGTravelWidget::ShowGalaxyMap()
 }
 
 void USWGTravelWidget::ShowPlanetMap(const FString& Planet)
-	{
+{
 	const FString PreviousPlanet = SelectedPlanet;
 	const FString PreviousLocation = VisibleDestinations.IsValidIndex(SelectedDestinationIndex)
 		? VisibleDestinations[SelectedDestinationIndex].Location : FString();
+	const bool bWasGalaxy = bGalaxyView;
 	bGalaxyView = false;
 	SelectedPlanet = Planet.ToLower();
 	SelectedPlanetIndex = VisiblePlanets.IndexOfByKey(SelectedPlanet);
@@ -325,98 +234,150 @@ void USWGTravelWidget::ShowPlanetMap(const FString& Planet)
 	{
 		SelectedDestinationIndex = 0;
 	}
+	if (MapView)
+	{
+		if (bWasGalaxy)
+		{
+			// Coming back from the galaxy always opens on the overview.
+			MapView->ResetView();
+		}
+		TArray<FVector2D> FocusPoints;
+		for (const FSWGTravelDestination& Destination : VisibleDestinations)
+		{
+			FocusPoints.Add(Destination.Position);
+		}
+		MapView->ShowPlanet(SelectedPlanet, FocusPoints);
+	}
 	RebuildMap();
 	RefreshFare();
 	ApplyControllerMode();
 }
 
 void USWGTravelWidget::RebuildMap()
+{
+	for (UButton* Button : PlanetButtons)
 	{
-	if (!MapCanvas)
-	{
-		return;
+		Button->RemoveFromParent();
 	}
-	MapCanvas->ClearChildren();
-	MapClickForwarders.Reset();
-	MapButtons.Reset();
+	PlanetButtons.Reset();
+	PlanetClickForwarders.Reset();
 
-	MapCanvas->AddChild(MapImage);
-	if (UCanvasPanelSlot* ImageSlot = Cast<UCanvasPanelSlot>(MapImage->Slot))
-	{
-		ImageSlot->SetAnchors(FAnchors(0.f, 0.f, 1.f, 1.f));
-		ImageSlot->SetOffsets(FMargin(0.f));
-	}
-
-	if (bGalaxyView)
-	{
-		MapTitleText->SetText(NSLOCTEXT("SWGEmu", "TravelSelectPlanet", "SELECT A DESTINATION PLANET"));
-		GalaxyButton->SetVisibility(ESlateVisibility::Collapsed);
-		MapImage->SetVisibility(ESlateVisibility::Collapsed);
-		for (int32 Index = 0; Index < VisiblePlanets.Num(); ++Index)
-		{
-			const FString Planet = VisiblePlanets[Index];
-			UButton* Button = WidgetTree->ConstructWidget<UButton>();
-			UVerticalBox* PlanetBox = WidgetTree->ConstructWidget<UVerticalBox>();
-			const FString IconPath = PlanetIconPath(Planet);
-			if (Tre && !IconPath.IsEmpty())
-			{
-				UImage* Icon = WidgetTree->ConstructWidget<UImage>();
-				Icon->SetBrushFromTexture(Tre->GetOrLoadTexture(IconPath));
-				USizeBox* IconSize = WidgetTree->ConstructWidget<USizeBox>();
-				IconSize->SetWidthOverride(72.f);
-				IconSize->SetHeightOverride(72.f);
-				IconSize->AddChild(Icon);
-				PlanetBox->AddChild(IconSize);
-			}
-			PlanetBox->AddChild(MakeText(WidgetTree,
-				FText::Format(FText::FromString(Index == SelectedPlanetIndex ? TEXT("◆ {0}") : TEXT("{0}")), PlanetDisplayName(Planet)),
-				Index == SelectedPlanetIndex ? Green : BrightCyan, 13));
-			Button->AddChild(PlanetBox);
-			MapCanvas->AddChild(Button);
-			if (UCanvasPanelSlot* MapSlot = Cast<UCanvasPanelSlot>(Button->Slot))
-			{
-				MapSlot->SetPosition(FVector2D(18.f + (Index % 5) * 144.f, 28.f + (Index / 5) * 168.f));
-				MapSlot->SetSize(FVector2D(128.f, 140.f));
-			}
-			USWGTravelMapClickForwarder* Forwarder = NewObject<USWGTravelMapClickForwarder>(this);
-			Forwarder->Action = [this, Planet]() { ShowPlanetMap(Planet); };
-			Button->OnClicked.AddDynamic(Forwarder, &USWGTravelMapClickForwarder::HandleClicked);
-			MapClickForwarders.Add(Forwarder);
-			MapButtons.Add(Button);
-		}
-	}
-	else
+	if (!bGalaxyView)
 	{
 		MapTitleText->SetText(FText::Format(NSLOCTEXT("SWGEmu", "TravelSelectPort", "{0} — SELECT A STARPORT"), PlanetDisplayName(SelectedPlanet)));
 		GalaxyButton->SetVisibility(ESlateVisibility::Visible);
-		MapImage->SetVisibility(ESlateVisibility::HitTestInvisible);
-		if (Tre)
+		ZoomInButton->SetVisibility(ESlateVisibility::Visible);
+		ZoomOutButton->SetVisibility(ESlateVisibility::Visible);
+		if (MapView)
 		{
-			MapImage->SetBrushFromTexture(Tre->GetOrLoadTexture(FString::Printf(TEXT("texture/ui_map_%s.dds"), *SelectedPlanet)));
+			MapView->SetVisibility(ESlateVisibility::Visible);
 		}
-		for (int32 Index = 0; Index < VisibleDestinations.Num(); ++Index)
+		RefreshTravelMarkers();
+		RefreshWaypointMarkers();
+		return;
+	}
+
+	MapTitleText->SetText(NSLOCTEXT("SWGEmu", "TravelSelectPlanet", "SELECT A DESTINATION PLANET"));
+	GalaxyButton->SetVisibility(ESlateVisibility::Collapsed);
+	ZoomInButton->SetVisibility(ESlateVisibility::Collapsed);
+	ZoomOutButton->SetVisibility(ESlateVisibility::Collapsed);
+	if (MapView)
+	{
+		MapView->SetVisibility(ESlateVisibility::Collapsed);
+	}
+	for (int32 Index = 0; Index < VisiblePlanets.Num(); ++Index)
+	{
+		const FString Planet = VisiblePlanets[Index];
+		UButton* Button = WidgetTree->ConstructWidget<UButton>();
+		Button->SetStyle(SWGRetailStyle::MakeHudButtonStyle(Tre, /*bTransparentIdle=*/true));
+		UVerticalBox* PlanetBox = WidgetTree->ConstructWidget<UVerticalBox>();
+		const FString IconPath = PlanetIconPath(Planet);
+		if (Tre && !IconPath.IsEmpty())
 		{
-			const FSWGTravelDestination& Destination = VisibleDestinations[Index];
-			UButton* Button = WidgetTree->ConstructWidget<UButton>();
-			Button->AddChild(MakeText(WidgetTree,
-				FText::Format(Index == SelectedDestinationIndex
-					? NSLOCTEXT("SWGEmu", "TravelSelectedLocation", "◆ {0}")
-					: NSLOCTEXT("SWGEmu", "TravelLocation", "• {0}"), LocationDisplayName(Destination.Location)),
-				Index == SelectedDestinationIndex ? Green : BrightCyan, 12));
-			MapCanvas->AddChild(Button);
-			if (UCanvasPanelSlot* MapSlot = Cast<UCanvasPanelSlot>(Button->Slot))
-			{
-				const float X = FMath::Clamp((Destination.Position.X + 8192.f) / 16384.f, 0.f, 1.f) * MapWidth;
-				const float Y = (1.f - FMath::Clamp((Destination.Position.Y + 8192.f) / 16384.f, 0.f, 1.f)) * MapHeight;
-				MapSlot->SetPosition(FVector2D(FMath::Clamp(X - 95.f, 0.f, MapWidth - 190.f), FMath::Clamp(Y - 14.f, 0.f, MapHeight - 28.f)));
-				MapSlot->SetSize(FVector2D(190.f, 28.f));
-			}
-			USWGTravelMapClickForwarder* Forwarder = NewObject<USWGTravelMapClickForwarder>(this);
-			Forwarder->Action = [this, Index]() { SelectDestination(Index); };
-			Button->OnClicked.AddDynamic(Forwarder, &USWGTravelMapClickForwarder::HandleClicked);
-			MapClickForwarders.Add(Forwarder);
-			MapButtons.Add(Button);
+			UImage* Icon = WidgetTree->ConstructWidget<UImage>();
+			Icon->SetBrushFromTexture(Tre->GetOrLoadTexture(IconPath));
+			USizeBox* IconSize = WidgetTree->ConstructWidget<USizeBox>();
+			IconSize->SetWidthOverride(72.f);
+			IconSize->SetHeightOverride(72.f);
+			IconSize->AddChild(Icon);
+			PlanetBox->AddChild(IconSize);
 		}
+		PlanetBox->AddChild(MakeText(WidgetTree,
+			FText::Format(FText::FromString(Index == SelectedPlanetIndex ? TEXT("◆ {0}") : TEXT("{0}")), PlanetDisplayName(Planet)),
+			Index == SelectedPlanetIndex ? Green : BrightCyan, 13));
+		Button->AddChild(PlanetBox);
+		MapCanvas->AddChild(Button);
+		if (UCanvasPanelSlot* MapSlot = Cast<UCanvasPanelSlot>(Button->Slot))
+		{
+			MapSlot->SetPosition(FVector2D(18.f + (Index % 5) * 144.f, 28.f + (Index / 5) * 168.f));
+			MapSlot->SetSize(FVector2D(128.f, 140.f));
+		}
+		USWGTravelPlanetClickForwarder* Forwarder = NewObject<USWGTravelPlanetClickForwarder>(this);
+		Forwarder->Action = [this, Planet]() { ShowPlanetMap(Planet); };
+		Button->OnClicked.AddDynamic(Forwarder, &USWGTravelPlanetClickForwarder::HandleClicked);
+		PlanetClickForwarders.Add(Forwarder);
+		PlanetButtons.Add(Button);
+	}
+}
+
+void USWGTravelWidget::RefreshTravelMarkers()
+{
+	if (!MapView)
+	{
+		return;
+	}
+	TArray<FSWGMapMarker> Markers;
+	for (int32 Index = 0; Index < VisibleDestinations.Num(); ++Index)
+	{
+		const bool bSelected = Index == SelectedDestinationIndex;
+		FSWGMapMarker& Marker = Markers.AddDefaulted_GetRef();
+		Marker.Id = FName(*FString::FromInt(Index));
+		Marker.Position = VisibleDestinations[Index].Position;
+		Marker.Label = LocationDisplayName(VisibleDestinations[Index].Location);
+		Marker.bSelected = bSelected;
+	}
+	MapView->SetMarkers(TravelLayer, Markers);
+}
+
+void USWGTravelWidget::RefreshWaypointMarkers()
+{
+	if (!MapView)
+	{
+		return;
+	}
+	WaypointPositions.Reset();
+	TArray<FSWGMapMarker> Markers;
+	// Core3's waypoint planet CRC is the zone name's String::hashCode.
+	const int32 PlanetCrc = static_cast<int32>(FSWGCrc32::HashString(SelectedPlanet));
+	for (const FSWGWaypointEntry& Waypoint : Waypoints ? Waypoints->GetWaypoints() : TArray<FSWGWaypointEntry>())
+	{
+		// A cell waypoint's position is local to its room, not placeable on the map.
+		if (Waypoint.PlanetCRC != PlanetCrc || Waypoint.CellId != 0)
+		{
+			continue;
+		}
+		FSWGMapMarker& Marker = Markers.AddDefaulted_GetRef();
+		Marker.Id = FName(*LexToString(Waypoint.WaypointObjectId));
+		Marker.Position = FVector2D(Waypoint.RawPosition.X, Waypoint.RawPosition.Y);
+		Marker.Label = Waypoint.Name;
+		Marker.bCustomPinColor = true;
+		Marker.PinColor = USWGWaypointSubsystem::GetWaypointColor(Waypoint.Color);
+		Marker.PinColor.A = Waypoint.bActive ? 1.f : 0.55f;
+		Marker.LabelColor = Marker.PinColor;
+		WaypointPositions.Add(Marker.Id, Marker.Position);
+	}
+	MapView->SetMarkers(WaypointLayer, Markers);
+}
+
+void USWGTravelWidget::HandleMapMarkerClicked(FName Layer, FName MarkerId)
+{
+	if (Layer == TravelLayer)
+	{
+		SelectDestination(FCString::Atoi(*MarkerId.ToString()));
+	}
+	else if (const FVector2D* Position = WaypointPositions.Find(MarkerId))
+	{
+		MapView->FlyTo(*Position, MarkerViewDistance);
 	}
 }
 
@@ -430,21 +391,57 @@ void USWGTravelWidget::RefreshFare()
 		return;
 	}
 	const int32 Fare = Destination && Travel ? Travel->GetFare(Destination->Planet, RoundTripCheck->IsChecked()) : 0;
-	FareText->SetText(Fare > 0
-		? FText::Format(NSLOCTEXT("SWGEmu", "TravelFare", "{0} CREDITS"), FText::AsNumber(Fare))
-		: FText::GetEmpty());
-	PurchaseButton->SetIsEnabled(Destination && Fare > 0);
+	int32 Cash = 0;
+	int32 Bank = 0;
+	const bool bKnowCredits = GetPlayerCredits(Cash, Bank);
+	ShownCash = bKnowCredits ? Cash : INDEX_NONE;
+	ShownBank = bKnowCredits ? Bank : INDEX_NONE;
+	// Core3's PurchaseTicketCommand takes bank first, then cash. It also adds a
+	// player-city travel tax the client can't see, so Fare is a lower bound.
+	const bool bCanAfford = !bKnowCredits || Cash + Bank >= Fare;
+
+	const FText FareLine = Fare > 0
+		? FText::Format(NSLOCTEXT("SWGEmu", "TravelFare", "TICKET  {0} CR"), FText::AsNumber(Fare))
+		: FText::GetEmpty();
+	const FText CreditsLine = bKnowCredits
+		? FText::Format(NSLOCTEXT("SWGEmu", "TravelCredits", "AVAILABLE  {0} CR  (cash {1} · bank {2})"),
+			FText::AsNumber(Cash + Bank), FText::AsNumber(Cash), FText::AsNumber(Bank))
+		: FText::GetEmpty();
+	FareText->SetText(FareLine.IsEmpty() || CreditsLine.IsEmpty()
+		? (FareLine.IsEmpty() ? CreditsLine : FareLine)
+		: FText::Format(FText::FromString(TEXT("{0}\n{1}")), FareLine, CreditsLine));
+	FareText->SetColorAndOpacity(FSlateColor(bCanAfford ? Green : FLinearColor::FromSRGBColor(FColor(0xFF, 0x5A, 0x4A))));
+	PurchaseButton->SetIsEnabled(Destination && Fare > 0 && bCanAfford);
 	StatusText->SetText(bGalaxyView
 		? NSLOCTEXT("SWGEmu", "TravelChoosePlanet", "Choose a planet to view its arrival points.")
+		: Destination && Fare > 0 && !bCanAfford
+		? FText::Format(NSLOCTEXT("SWGEmu", "TravelInsufficientCredits", "Insufficient credits — you need {0} more."),
+			FText::AsNumber(Fare - Cash - Bank))
+		: MapView && !MapView->IsTerrainReady()
+		? NSLOCTEXT("SWGEmu", "TravelChartingTerrain", "Charting terrain…")
 		: Destination
 		? FText::Format(NSLOCTEXT("SWGEmu", "TravelCoordinates", "Arrival coordinates: {0}, {1}"),
 			FText::AsNumber(FMath::RoundToInt(Destination->Position.X)), FText::AsNumber(FMath::RoundToInt(Destination->Position.Y)))
 		: NSLOCTEXT("SWGEmu", "TravelLoading", "Loading available routes…"));
 }
 
+bool USWGTravelWidget::GetPlayerCredits(int32& OutCash, int32& OutBank) const
+{
+	const ASWGPlayer* Player = Cast<ASWGPlayer>(GetOwningPlayerPawn());
+	if (!Player)
+	{
+		return false;
+	}
+	OutCash = Player->CashCredits;
+	OutBank = Player->BankCredits;
+	return true;
+}
+
 void USWGTravelWidget::HandleGalaxyClicked() { ShowGalaxyMap(); }
 void USWGTravelWidget::HandleRoundTripChanged(bool bChecked) { RefreshFare(); }
 void USWGTravelWidget::HandleTravelDataChanged() { RefreshTravelData(); }
+void USWGTravelWidget::HandleZoomInClicked() { if (MapView) { MapView->ZoomBy(0.5f); } }
+void USWGTravelWidget::HandleZoomOutClicked() { if (MapView) { MapView->ZoomBy(2.f); } }
 
 void USWGTravelWidget::HandlePurchaseClicked()
 {
@@ -470,7 +467,11 @@ void USWGTravelWidget::SelectDestination(int32 Index)
 	if (VisibleDestinations.IsValidIndex(Index))
 	{
 		SelectedDestinationIndex = Index;
-		RebuildMap();
+		if (MapView)
+		{
+			MapView->FlyTo(VisibleDestinations[Index].Position, MarkerViewDistance);
+		}
+		RefreshTravelMarkers();
 		RefreshFare();
 	}
 }
@@ -494,6 +495,10 @@ FReply USWGTravelWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKey
 		return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
 	}
 	const FKey Key = InKeyEvent.GetKey();
+	if (!bGalaxyView && MapView && MapView->HandleControllerKey(Key))
+	{
+		return FReply::Handled();
+	}
 	if (Key == EKeys::Gamepad_DPad_Left || Key == EKeys::Gamepad_LeftStick_Left
 		|| Key == EKeys::Gamepad_DPad_Up || Key == EKeys::Gamepad_LeftStick_Up)
 	{

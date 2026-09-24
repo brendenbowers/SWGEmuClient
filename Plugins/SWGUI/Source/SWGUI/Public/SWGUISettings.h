@@ -40,6 +40,10 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGMissionBrowserDockWidget> MissionBrowserDockClass;
 
+	/** Ticket terminal window (WBP_Travel). */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGTravelWidget> TravelClass;
+
 	/** Damage-number layer put under the HUD while in world. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGFloatingTextWidget> FloatingTextClass;

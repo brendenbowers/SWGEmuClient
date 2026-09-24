@@ -25,7 +25,6 @@ void USWGTravelSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Network = Collection.InitializeDependency<USWGNetworkSubsystem>();
 	Commands = Collection.InitializeDependency<USWGCommandSubsystem>();
 	Tre = Collection.InitializeDependency<USWGTreSubsystem>();
-	LoadTravelTable();
 	if (Network)
 	{
 		MessageHandle = Network->OnMessageReceived.AddUObject(this, &USWGTravelSubsystem::HandleMessageReceived);
@@ -101,6 +100,11 @@ void USWGTravelSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> Messa
 			DepartureLocation = Enter.DepartureLocation;
 			DestinationsByPlanet.Reset();
 			bDepartureInterplanetary = false;
+			// Not at Initialize: the TRE archives mount after the subsystems do.
+			if (PlanetOrder.IsEmpty())
+			{
+				LoadTravelTable();
+			}
 			RequestPlanetLocations();
 			OnTravelWindowRequested.Broadcast();
 			OnTravelDataChanged.Broadcast();
@@ -142,7 +146,9 @@ TArray<FString> USWGTravelSubsystem::GetAvailablePlanets() const
 	TArray<FString> Result;
 	for (const FString& Planet : PlanetOrder)
 	{
-		if (Planet == DeparturePlanet || bDepartureInterplanetary)
+		// travel.iff is sparse: a 0 fare is a route Core3 rejects outright
+		// (Tatooine flies only to Corellia, Lok and Naboo).
+		if (Planet == DeparturePlanet || (bDepartureInterplanetary && GetFare(Planet, false) > 0))
 		{
 			Result.Add(Planet);
 		}
@@ -155,7 +161,9 @@ TArray<FSWGTravelDestination> USWGTravelSubsystem::GetDestinations(const FString
 	TArray<FSWGTravelDestination> Result = DestinationsByPlanet.FindRef(Planet.ToLower());
 	Result.RemoveAll([this](const FSWGTravelDestination& Destination)
 	{
-		return Destination.Planet == DeparturePlanet && Destination.Location.Equals(DepartureLocation, ESearchCase::IgnoreCase);
+		// Mirrors Core3's isTravelToLocationPermitted: off-planet arrivals must be interplanetary points.
+		return (Destination.Planet == DeparturePlanet && Destination.Location.Equals(DepartureLocation, ESearchCase::IgnoreCase))
+			|| (Destination.Planet != DeparturePlanet && !Destination.bInterplanetary);
 	});
 	return Result;
 }

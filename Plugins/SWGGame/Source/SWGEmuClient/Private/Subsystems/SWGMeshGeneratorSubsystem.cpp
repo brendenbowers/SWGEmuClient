@@ -717,6 +717,23 @@ void USWGMeshGeneratorSubsystem::RequestAppearanceMesh(const FString& Appearance
 	PendingRequests.Add(MoveTemp(Request));
 }
 
+void USWGMeshGeneratorSubsystem::RequestTemplateStaticMesh(const FString& TemplatePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)> OnComplete)
+{
+	if (!OnComplete)
+	{
+		return;
+	}
+
+	FSWGPendingMeshRequest Request;
+	Request.TemplatePath = TemplatePath;
+	Request.bStatic = true;
+	Request.OnItemMeshReady = [OnComplete = MoveTemp(OnComplete)](UStaticMesh* Mesh, const FSWGMeshData, const TArray<UMaterialInterface*>& Materials)
+		{
+			OnComplete(Mesh, Materials);
+		};
+	PendingRequests.Add(MoveTemp(Request));
+}
+
 void USWGMeshGeneratorSubsystem::RequestAppearanceMeshWithHardpoints(const FString& AppearancePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials, const TArray<FSWGMeshHardpoint>& Hardpoints)> OnComplete, const FSWGCustomizationVariables& Customization)
 {
 	if (!OnComplete)

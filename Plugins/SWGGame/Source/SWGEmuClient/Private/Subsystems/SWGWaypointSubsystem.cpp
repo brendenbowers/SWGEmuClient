@@ -20,24 +20,24 @@
 namespace
 {
 	/** 8-point compass bearing from PlayerRaw to TargetRaw, both in raw (x east, y north) space. Empty/zero if they're on top of each other. Mirrors USWGMissionSubsystem's own copy of this. */
-	FString CompassDirection(const FVector& PlayerRaw, const FVector& TargetRaw, float& OutBearingDegrees)
-	{
-		const float East = TargetRaw.X - PlayerRaw.X;
-		const float North = TargetRaw.Y - PlayerRaw.Y;
-		if (FMath::IsNearlyZero(East) && FMath::IsNearlyZero(North))
-		{
-			OutBearingDegrees = 0.f;
-			return FString();
-		}
+	//FString CompassDirection(const FVector& PlayerRaw, const FVector& TargetRaw, float& OutBearingDegrees)
+	//{
+	//	const float East = TargetRaw.X - PlayerRaw.X;
+	//	const float North = TargetRaw.Y - PlayerRaw.Y;
+	//	if (FMath::IsNearlyZero(East) && FMath::IsNearlyZero(North))
+	//	{
+	//		OutBearingDegrees = 0.f;
+	//		return FString();
+	//	}
 
-		float Bearing = FMath::RadiansToDegrees(FMath::Atan2(East, North));
-		if (Bearing < 0.f) { Bearing += 360.f; }
-		OutBearingDegrees = Bearing;
+	//	float Bearing = FMath::RadiansToDegrees(FMath::Atan2(East, North));
+	//	if (Bearing < 0.f) { Bearing += 360.f; }
+	//	OutBearingDegrees = Bearing;
 
-		static const TCHAR* Points[] = { TEXT("N"), TEXT("NE"), TEXT("E"), TEXT("SE"), TEXT("S"), TEXT("SW"), TEXT("W"), TEXT("NW") };
-		const int32 Index = FMath::RoundToInt(Bearing / 45.f) % 8;
-		return Points[Index];
-	}
+	//	static const TCHAR* Points[] = { TEXT("N"), TEXT("NE"), TEXT("E"), TEXT("SE"), TEXT("S"), TEXT("SW"), TEXT("W"), TEXT("NW") };
+	//	const int32 Index = FMath::RoundToInt(Bearing / 45.f) % 8;
+	//	return Points[Index];
+	//}
 
 	/**
 	 * A waypoint's WaypointName often arrives as a raw "@table:key" StringId
@@ -293,7 +293,7 @@ TArray<FSWGWaypointEntry> USWGWaypointSubsystem::GetWaypoints() const
 			// Nothing here checks PlanetCRC against the player's current planet yet —
 			// same known gap as USWGMissionSubsystem::GetMissions.
 			Entry.DistanceMeters = FVector::Dist2D(*PlayerRaw, Entry.RawPosition);
-			Entry.Direction = CompassDirection(*PlayerRaw, Entry.RawPosition, Entry.BearingDegrees);
+			//Entry.Direction = CompassDirection(*PlayerRaw, Entry.RawPosition, Entry.BearingDegrees);
 			Entry.bHasDistance = true;
 		}
 

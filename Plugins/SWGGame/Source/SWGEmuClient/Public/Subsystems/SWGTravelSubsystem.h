@@ -53,7 +53,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|Travel")
 	const FString& GetDepartureLocation() const { return DepartureLocation; }
 
-	/** Planets reachable from the current terminal, in retail table order. */
+	/** Planets with a direct route (non-zero fare) from the current terminal, in retail table order. */
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|Travel")
 	TArray<FString> GetAvailablePlanets() const;
 

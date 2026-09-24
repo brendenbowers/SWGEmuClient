@@ -264,7 +264,13 @@ void USWGUISubsystem::HandleTravelWindowRequested()
 	{
 		return;
 	}
-	TravelWindow = CreateWidget<USWGTravelWidget>(PlayerController, USWGTravelWidget::StaticClass());
+	TSubclassOf<USWGTravelWidget> TravelClass = USWGUISettings::Get().TravelClass.LoadSynchronous();
+	if (!TravelClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: no TravelClass set in Project Settings > SWG UI"));
+		return;
+	}
+	TravelWindow = CreateWidget<USWGTravelWidget>(PlayerController, TravelClass);
 	TravelWindow->SetControllerMode(IsGamepadActive());
 	ShowWindow(TravelWindow);
 	TravelWindow->CenterOnScreen();
