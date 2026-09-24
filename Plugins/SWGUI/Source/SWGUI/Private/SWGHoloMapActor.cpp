@@ -39,7 +39,14 @@ namespace
 	/** How far above the projector the content floats, world units. */
 	constexpr float ContentLift = 12.f;
 	constexpr float FadeInSeconds = 0.5f;
-	const FName PlayerStyle(TEXT("Player"));
+	constexpr float LabelWorldSize = 4.f;
+	/** Crowded marker labels rise in steps of about one text line, world units. */
+	constexpr float LabelTierStep = LabelWorldSize * 1.25f;
+	constexpr int32 MaxLabelTiers = 6;
+	/** The player's marker glows brighter than the map and pulses at this period. */
+	constexpr float PlayerMarkerGlow = 4.f;
+	constexpr float PlayerPulseSeconds = 1.6f;
+	const FName HoloPlayerStyle(TEXT("Player"));
 
 	/** Raw offset (x east, y north, z up, metres) to UE axes, unscaled. */
 	FVector RawAxes(const FVector& Raw)
@@ -153,10 +160,20 @@ ASWGHoloMapActor::ASWGHoloMapActor()
 	DroidRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Droid"));
 	DroidRoot->SetupAttachment(GetRootComponent());
 
-	ProjectionBeam = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ProjectionBeam"));
-	ProjectionBeam->SetupAttachment(GetRootComponent());
-	ProjectionBeam->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	ProjectionBeam->SetCastShadow(false);
+	DroidLens = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DroidLens"));
+	DroidLens->SetupAttachment(DroidRoot);
+	DroidLens->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	DroidLens->SetCastShadow(false);
+	DroidLens->SetRelativeLocation(FVector(0.f, 0.f, -8.f));
+	DroidLens->SetRelativeScale3D(FVector(0.04f));
+
+	DroidLensLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("DroidLensLight"));
+	DroidLensLight->SetupAttachment(DroidLens);
+	DroidLensLight->SetCastShadows(false);
+	DroidLensLight->SetIntensityUnits(ELightUnits::Candelas);
+	DroidLensLight->SetIntensity(4.f);
+	DroidLensLight->SetLightColor(FLinearColor(0.12f, 0.55f, 1.f));
+	DroidLensLight->SetAttenuationRadius(55.f);
 
 	GlowLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("Glow"));
 	GlowLight->SetupAttachment(GetRootComponent());
@@ -174,8 +191,9 @@ ASWGHoloMapActor::ASWGHoloMapActor()
 	BeamMesh = CylinderFinder.Object;
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> ConeFinder(TEXT("/Engine/BasicShapes/Cone.Cone"));
 	ArrowMesh = ConeFinder.Object;
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereFinder(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	BaseComponent->SetStaticMesh(BeamMesh);
-	ProjectionBeam->SetStaticMesh(ArrowMesh);
+	DroidLens->SetStaticMesh(SphereFinder.Object);
 }
 
 UMaterialInstanceDynamic* ASWGHoloMapActor::MakeHoloMaterial(const FLinearColor& Color, float Intensity)
@@ -205,7 +223,29 @@ void ASWGHoloMapActor::BeginPlay()
 	BaseComponent->SetRelativeScale3D(FVector(BaseScale, BaseScale, 0.03f));
 	// A faint light field under the image; the droid above is the projector now.
 	BaseComponent->SetMaterial(0, MakeHoloMaterial(HoloColor, HoloIntensity * 0.12f));
-	ProjectionBeam->SetMaterial(0, MakeHoloMaterial(HoloColor, HoloIntensity * 0.1f));
+	DroidLens->SetMaterial(0, MakeHoloMaterial(HoloColor, HoloIntensity * 2.f));
+	for (int32 Index = 0; Index < 4; ++Index)
+	{
+		UStaticMeshComponent* Line = NewObject<UStaticMeshComponent>(this);
+		Line->SetStaticMesh(BeamMesh);
+		Line->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Line->SetCastShadow(false);
+		Line->SetMaterial(0, MakeHoloMaterial(HoloColor, HoloIntensity * 0.12f));
+		Line->SetupAttachment(GetRootComponent());
+		Line->RegisterComponent();
+		ProjectionLines.Add(Line);
+	}
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		UStaticMeshComponent* Line = NewObject<UStaticMeshComponent>(this);
+		Line->SetStaticMesh(BeamMesh);
+		Line->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Line->SetCastShadow(false);
+		Line->SetMaterial(0, MakeHoloMaterial(HoloColor, 0.f));
+		Line->SetupAttachment(GetRootComponent());
+		Line->RegisterComponent();
+		SweepLines.Add(Line);
+	}
 	LastViewChangeTime = FPlatformTime::Seconds();
 	RequestDroid();
 	UpdateDroid();
@@ -279,24 +319,58 @@ void ASWGHoloMapActor::UpdateDroid()
 		+ FVector(0.f, 0.f, ContentLift + DiscRadius * DroidHeight + Bob);
 	const FVector ToCentre = FVector(0.f, 0.f, ContentLift) - Hover;
 	DroidRoot->SetRelativeLocation(Hover);
-	DroidRoot->SetRelativeRotation(FRotator(0.f, ToCentre.Rotation().Yaw + FMath::Sin(DroidTime * 0.7f) * 8.f, 0.f));
+	DroidRoot->SetRelativeRotation(FRotator(0.f, ToCentre.Rotation().Yaw + ViewYaw + FMath::Sin(DroidTime * 0.7f) * 8.f, 0.f));
 
-	// The engine cone is 100 units tall about its centre, 50 in radius, its
-	// wide end at +Z (measured): centre it between droid and disc, wide end down.
-	const FVector Apex = Hover;
-	const FVector Base(0.f, 0.f, ContentLift);
-	const FVector Axis = Apex - Base;
-	ProjectionBeam->SetRelativeLocation((Apex + Base) * 0.5f);
-	ProjectionBeam->SetRelativeRotation(FRotationMatrix::MakeFromZ(-Axis).Rotator());
-	// The axis leans toward the droid, so a full-disc base would tilt through the map; a narrower spot reads as the projection.
-	const float BeamRadius = DiscRadius * 0.55f;
-	ProjectionBeam->SetRelativeScale3D(FVector(BeamRadius / 50.f, BeamRadius / 50.f, Axis.Size() / 100.f));
+	const FVector Origin = Hover + FVector(0.f, 0.f, -8.f);
+	auto PlaceRay = [this, &Origin, DiscRadius](UStaticMeshComponent* Line, float Angle)
+	{
+		const FVector2D RimDirection = DroidSide.GetRotated(Angle + ProjectionYawOffset);
+		const FVector Rim(RimDirection.X * DiscRadius * 0.96f,
+			RimDirection.Y * DiscRadius * 0.96f, ContentLift);
+		const FVector Ray = Rim - Origin;
+		Line->SetRelativeLocation((Origin + Rim) * 0.5f);
+		Line->SetRelativeRotation(FRotationMatrix::MakeFromZ(Ray).Rotator());
+		Line->SetRelativeScale3D(FVector(0.007f, 0.007f, Ray.Size() / 100.f));
+	};
+	for (int32 Index = 0; Index < ProjectionLines.Num(); ++Index)
+	{
+		// Span the far half of the rim, leaving the two near-side rays out of the player's view.
+		PlaceRay(ProjectionLines[Index], -90.f + 60.f * Index);
+	}
+	const float IdleSeconds = FPlatformTime::Seconds() - LastProjectionChangeTime;
+	const float SweepFade = FMath::Clamp((0.65f - IdleSeconds) / 0.4f, 0.f, 1.f);
+	for (int32 Index = 0; Index < SweepLines.Num(); ++Index)
+	{
+		UStaticMeshComponent* Line = SweepLines[Index];
+		const float Phase = FMath::Frac((DroidTime - SweepStartTime) * 1.2f);
+		PlaceRay(Line, Index == 0 ? -90.f + 180.f * Phase : 90.f - 180.f * Phase);
+		Line->SetVisibility(SweepFade > 0.01f);
+		if (UMaterialInstanceDynamic* Material = Cast<UMaterialInstanceDynamic>(Line->GetMaterial(0)))
+		{
+			Material->SetScalarParameterValue(TEXT("Intensity"), HoloIntensity * 0.16f * SweepFade);
+		}
+	}
+}
+
+void ASWGHoloMapActor::NoteProjectionChange()
+{
+	const double Now = FPlatformTime::Seconds();
+	if (Now - LastProjectionChangeTime > 0.65)
+	{
+		SweepStartTime = DroidTime;
+	}
+	LastProjectionChangeTime = Now;
 }
 
 void ASWGHoloMapActor::SetViewCenter(const FVector2D& RawCenter)
 {
+	if (RawCenter.Equals(ViewCenter))
+	{
+		return;
+	}
 	ViewCenter = RawCenter;
 	LastViewChangeTime = FPlatformTime::Seconds();
+	NoteProjectionChange();
 	if (!bHasBake)
 	{
 		bBakeWanted = true;
@@ -306,14 +380,27 @@ void ASWGHoloMapActor::SetViewCenter(const FVector2D& RawCenter)
 
 void ASWGHoloMapActor::SetViewRadius(float RawRadius)
 {
-	ViewRadius = FMath::Clamp(RawRadius, MinRadius, MaxRadius);
+	const float NewRadius = FMath::Clamp(RawRadius, MinRadius, MaxRadius);
+	if (FMath::IsNearlyEqual(NewRadius, ViewRadius))
+	{
+		return;
+	}
+	ViewRadius = NewRadius;
 	LastViewChangeTime = FPlatformTime::Seconds();
+	NoteProjectionChange();
 	UpdateContentTransform();
 }
 
 void ASWGHoloMapActor::SetViewYaw(float Degrees)
 {
-	ViewYaw = FRotator::NormalizeAxis(Degrees);
+	const float NewYaw = FRotator::NormalizeAxis(Degrees);
+	if (FMath::IsNearlyEqual(NewYaw, ViewYaw))
+	{
+		return;
+	}
+	ProjectionYawOffset = FRotator::NormalizeAxis(ProjectionYawOffset + FMath::FindDeltaAngleDegrees(ViewYaw, NewYaw));
+	ViewYaw = NewYaw;
+	NoteProjectionChange();
 	UpdateContentTransform();
 }
 
@@ -362,6 +449,10 @@ void ASWGHoloMapActor::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 	FadeAlpha = FMath::Min(1.f, FadeAlpha + DeltaSeconds / FadeInSeconds);
 	DroidTime += DeltaSeconds;
+	if (FPlatformTime::Seconds() - LastProjectionChangeTime > 0.25)
+	{
+		ProjectionYawOffset = FMath::FInterpTo(ProjectionYawOffset, 0.f, DeltaSeconds, 3.f);
+	}
 	UpdateDroid();
 	// The material fades everything past the rim, measured from here.
 	const FVector Centre = GetActorLocation();
@@ -493,7 +584,7 @@ void ASWGHoloMapActor::AddDynamicStructure(AActor& Structure)
 	TArray<TWeakObjectPtr<UStaticMeshComponent>>& Copies = DynamicStructures.Add(&Structure);
 	TArray<UStaticMeshComponent*> Sources;
 	Structure.GetComponents(Sources);
-	const float MeshScale = BakedUnitsPerMetre() / SWGWorldScale;
+	const float MeshScale = BakedUnitsPerMetre() / SWGWorldScale * BuildingScale;
 	for (const UStaticMeshComponent* Source : Sources)
 	{
 		UStaticMesh* Mesh = Source->GetStaticMesh();
@@ -581,7 +672,7 @@ void ASWGHoloMapActor::RequestBuildings()
 
 	// One request per template; cities reuse a handful of building types.
 	TMap<FString, TArray<FTransform>> TransformsByTemplate;
-	const float MeshScale = BakedUnitsPerMetre() / SWGWorldScale;
+	const float MeshScale = BakedUnitsPerMetre() / SWGWorldScale * BuildingScale;
 	for (int32 CandidateIndex = 0; CandidateIndex < FMath::Min(Candidates.Num(), MaxBuildings); ++CandidateIndex)
 	{
 		const FSWGWorldSnapshotNode& Node = Snapshot->Nodes[Candidates[CandidateIndex].Value];
@@ -642,32 +733,54 @@ void ASWGHoloMapActor::SetMarkers(FName Layer, const TArray<FSWGMapMarker>& Mark
 	}
 	for (FMarkerVisual& Visual : Visuals)
 	{
-		if (Visual.Beam) { Visual.Beam->DestroyComponent(); }
-		if (Visual.Label) { Visual.Label->DestroyComponent(); }
+		for (UPrimitiveComponent* Component : { (UPrimitiveComponent*)Visual.Beam, (UPrimitiveComponent*)Visual.Label, (UPrimitiveComponent*)Visual.Locator, (UPrimitiveComponent*)Visual.Ping })
+		{
+			if (Component) { Component->DestroyComponent(); }
+		}
 	}
 	Visuals.Reset();
 	for (const FSWGMapMarker& Marker : Markers)
 	{
 		FMarkerVisual& Visual = Visuals.AddDefaulted_GetRef();
 		Visual.Marker = Marker;
-		const bool bPlayer = Marker.Style == PlayerStyle;
+		const bool bPlayer = Marker.Style == HoloPlayerStyle;
 		const FLinearColor Color = Marker.bCustomPinColor ? Marker.PinColor : (bPlayer ? FLinearColor(0.6f, 0.95f, 1.f) : FLinearColor(1.f, 0.45f, 0.1f));
 
 		Visual.Beam = NewObject<UStaticMeshComponent>(this);
 		Visual.Beam->SetStaticMesh(bPlayer ? ArrowMesh : BeamMesh);
 		Visual.Beam->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Visual.Beam->SetCastShadow(false);
-		Visual.Beam->SetMaterial(0, MakeHoloMaterial(Color, HoloIntensity * 2.f));
+		Visual.Beam->SetMaterial(0, MakeHoloMaterial(Color, HoloIntensity * (bPlayer ? PlayerMarkerGlow : 2.f)));
 		Visual.Beam->SetupAttachment(GetRootComponent());
 		Visual.Beam->RegisterComponent();
 		MarkerObjects.Add(Visual.Beam);
+
+		if (bPlayer)
+		{
+			auto MakePlayerPart = [this](UMaterialInterface* Material)
+				{
+					UStaticMeshComponent* Part = NewObject<UStaticMeshComponent>(this);
+					Part->SetStaticMesh(BeamMesh);
+					Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+					Part->SetCastShadow(false);
+					Part->SetMaterial(0, Material);
+					Part->SetupAttachment(GetRootComponent());
+					Part->RegisterComponent();
+					MarkerObjects.Add(Part);
+					return Part;
+				};
+			Visual.Locator = MakePlayerPart(MakeHoloMaterial(Color, HoloIntensity * PlayerMarkerGlow));
+			Visual.PingMaterial = MakeHoloMaterial(Color, HoloIntensity * PlayerMarkerGlow);
+			MarkerObjects.Add(Visual.PingMaterial);
+			Visual.Ping = MakePlayerPart(Visual.PingMaterial);
+		}
 
 		if (!Marker.Label.IsEmpty())
 		{
 			Visual.Label = NewObject<UTextRenderComponent>(this);
 			Visual.Label->SetText(Marker.Label);
 			Visual.Label->SetTextRenderColor(Marker.LabelColor.ToFColor(true));
-			Visual.Label->SetWorldSize(4.f);
+			Visual.Label->SetWorldSize(LabelWorldSize);
 			Visual.Label->SetHorizontalAlignment(EHTA_Center);
 			Visual.Label->SetVerticalAlignment(EVRTA_TextBottom);
 			Visual.Label->SetupAttachment(GetRootComponent());
@@ -689,46 +802,113 @@ void ASWGHoloMapActor::UpdateMarkers()
 	}
 	const FTransform ContentToWorld = ContentRoot->GetComponentTransform();
 	const float BeamHeight = DiscDiameter * 0.12f;
+
+	struct FPlacedMarker
+	{
+		FMarkerVisual* Visual;
+		FVector Ground;
+		/** Zero for markers that don't take part in staggering. */
+		float LabelHalfWidth = 0.f;
+		int32 Tier = 0;
+	};
+	TArray<FPlacedMarker> Placed;
 	for (TPair<FName, TArray<FMarkerVisual>>& Layer : MarkerLayers)
 	{
 		for (FMarkerVisual& Visual : Layer.Value)
 		{
 			const FSWGMapMarker& Marker = Visual.Marker;
 			const bool bOnDisc = bHasBake && FVector2D::Distance(Marker.Position, ViewCenter) <= ViewRadius;
-			if (Visual.Beam) { Visual.Beam->SetVisibility(bOnDisc); }
-			if (Visual.Label) { Visual.Label->SetVisibility(bOnDisc); }
-			if (!bOnDisc)
+			for (UPrimitiveComponent* Component : { (UPrimitiveComponent*)Visual.Beam, (UPrimitiveComponent*)Visual.Label, (UPrimitiveComponent*)Visual.Locator, (UPrimitiveComponent*)Visual.Ping })
 			{
-				continue;
+				if (Component) { Component->SetVisibility(bOnDisc); }
 			}
-			const FVector Ground = ContentToWorld.TransformPosition(RawToContent(FVector(Marker.Position - BakedCenter, BakedHeightAt(Marker.Position))));
-			const bool bPlayer = Marker.Style == PlayerStyle;
-			if (bPlayer)
+			if (bOnDisc)
 			{
-				// A cone lying flat, tip toward the heading, hovering just over the ground.
-				Visual.Beam->SetWorldLocation(Ground + FVector(0.f, 0.f, 3.f));
-				Visual.Beam->SetWorldRotation(FRotator(-90.f, Marker.Heading + ViewYaw, 0.f));
-				Visual.Beam->SetWorldScale3D(FVector(0.04f, 0.04f, 0.06f));
+				const bool bStaggered = Visual.Label && Marker.Style != HoloPlayerStyle;
+				Placed.Add({ &Visual, ContentToWorld.TransformPosition(RawToContent(FVector(Marker.Position - BakedCenter, BakedHeightAt(Marker.Position)))),
+					bStaggered ? LabelWorldSize * 0.3f * Marker.Label.ToString().Len() : 0.f });
 			}
-			else
+		}
+	}
+
+	// Stagger crowded labels upward: each takes the lowest tier where it clears
+	// every label already placed. Labels turn to face the camera, so the
+	// footprint is the text's half-width in any direction. A fixed order keeps
+	// tiers from flickering as the view moves.
+	Placed.Sort([](const FPlacedMarker& Left, const FPlacedMarker& Right)
+		{
+			return Left.Visual->Marker.Position.X != Right.Visual->Marker.Position.X
+				? Left.Visual->Marker.Position.X < Right.Visual->Marker.Position.X
+				: Left.Visual->Marker.Position.Y < Right.Visual->Marker.Position.Y;
+		});
+	for (int32 Index = 0; Index < Placed.Num(); ++Index)
+	{
+		FPlacedMarker& Current = Placed[Index];
+		if (Current.LabelHalfWidth <= 0.f)
+		{
+			continue;
+		}
+		for (bool bBlocked = true; bBlocked && Current.Tier < MaxLabelTiers; )
+		{
+			bBlocked = false;
+			for (int32 Other = 0; Other < Index && !bBlocked; ++Other)
 			{
-				// A thin beam standing on the point; engine cylinders are 100 units tall about their centre.
-				Visual.Beam->SetWorldLocation(Ground + FVector(0.f, 0.f, BeamHeight * 0.5f));
-				Visual.Beam->SetWorldRotation(FRotator::ZeroRotator);
-				Visual.Beam->SetWorldScale3D(FVector(0.012f, 0.012f, BeamHeight / 100.f));
+				const FPlacedMarker& Neighbour = Placed[Other];
+				bBlocked = Neighbour.LabelHalfWidth > 0.f && Neighbour.Tier == Current.Tier
+					&& FVector::Dist2D(Neighbour.Ground, Current.Ground) < Current.LabelHalfWidth + Neighbour.LabelHalfWidth;
 			}
-			if (Visual.Label)
+			Current.Tier += bBlocked ? 1 : 0;
+		}
+	}
+
+	for (const FPlacedMarker& Entry : Placed)
+	{
+		FMarkerVisual& Visual = *Entry.Visual;
+		const FSWGMapMarker& Marker = Visual.Marker;
+		const FVector& Ground = Entry.Ground;
+		const bool bPlayer = Marker.Style == HoloPlayerStyle;
+		const float StemHeight = BeamHeight + Entry.Tier * LabelTierStep;
+		if (bPlayer)
+		{
+			// A cone lying flat, tip toward the heading, hovering just over the ground and breathing gently.
+			const float Pulse = 0.5f + 0.5f * FMath::Sin(DroidTime * UE_TWO_PI / PlayerPulseSeconds);
+			Visual.Beam->SetWorldLocation(Ground + FVector(0.f, 0.f, 4.f));
+			Visual.Beam->SetWorldRotation(FRotator(-90.f, Marker.Heading + ViewYaw, 0.f));
+			Visual.Beam->SetWorldScale3D(FVector(0.07f, 0.07f, 0.1f) * (1.f + 0.15f * Pulse));
+			if (Visual.Locator)
 			{
-				Visual.Label->SetWorldLocation(Ground + FVector(0.f, 0.f, bPlayer ? 6.f : BeamHeight + 1.f));
-				// Face the viewer; text renders along its component's +X.
-				const FVector ToCamera = (CameraLocation - Visual.Label->GetComponentLocation()).GetSafeNormal2D();
-				Visual.Label->SetWorldRotation(ToCamera.Rotation());
+				const float LocatorHeight = BeamHeight * 2.2f;
+				Visual.Locator->SetWorldLocation(Ground + FVector(0.f, 0.f, LocatorHeight * 0.5f));
+				Visual.Locator->SetWorldScale3D(FVector(0.02f, 0.02f, LocatorHeight / 100.f));
 			}
+			if (Visual.Ping)
+			{
+				// Expands from under the arrow and fades out, then starts again. Engine cylinders are 100 units across.
+				const float Phase = FMath::Frac(DroidTime / PlayerPulseSeconds);
+				const float PingRadius = 2.f + Phase * 16.f;
+				Visual.Ping->SetWorldLocation(Ground + FVector(0.f, 0.f, 1.f));
+				Visual.Ping->SetWorldScale3D(FVector(PingRadius / 50.f, PingRadius / 50.f, 0.002f));
+				Visual.PingMaterial->SetScalarParameterValue(TEXT("Intensity"), HoloIntensity * PlayerMarkerGlow * (1.f - Phase) * 0.6f);
+			}
+		}
+		else
+		{
+			// A thin beam standing on the point, reaching its label; engine cylinders are 100 units tall about their centre.
+			Visual.Beam->SetWorldLocation(Ground + FVector(0.f, 0.f, StemHeight * 0.5f));
+			Visual.Beam->SetWorldRotation(FRotator::ZeroRotator);
+			Visual.Beam->SetWorldScale3D(FVector(0.012f, 0.012f, StemHeight / 100.f));
+		}
+		if (Visual.Label)
+		{
+			Visual.Label->SetWorldLocation(Ground + FVector(0.f, 0.f, bPlayer ? 6.f : StemHeight + 1.f));
+			// Face the viewer; text renders along its component's +X.
+			const FVector ToCamera = (CameraLocation - Visual.Label->GetComponentLocation()).GetSafeNormal2D();
+			Visual.Label->SetWorldRotation(ToCamera.Rotation());
 		}
 	}
 }
 
-bool ASWGHoloMapActor::RayToRaw(const FVector& Origin, const FVector& Direction, FVector2D& OutRaw) const
+bool ASWGHoloMapActor::RayToRaw(const FVector& Origin, const FVector& Direction, FVector2D& OutRaw, bool bRequireOnDisc) const
 {
 	if (!bHasBake || FMath::IsNearlyZero(Direction.Z))
 	{
@@ -744,7 +924,7 @@ bool ASWGHoloMapActor::RayToRaw(const FVector& Origin, const FVector& Direction,
 	const FVector Local = ContentToWorld.InverseTransformPosition(Origin + Direction * Distance);
 	// Content X is north, Y is east (raw y, x).
 	OutRaw = BakedCenter + FVector2D(Local.Y, Local.X) / BakedUnitsPerMetre();
-	return FVector2D::Distance(OutRaw, ViewCenter) <= ViewRadius;
+	return !bRequireOnDisc || FVector2D::Distance(OutRaw, ViewCenter) <= ViewRadius;
 }
 
 FVector ASWGHoloMapActor::GetFocusLocation() const

@@ -86,6 +86,7 @@ public:
 	/** Where the camera looks, raw metres. */
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|Map")
 	FVector2D GetViewTarget() const { return Camera.Target; }
+	float GetViewDistance() const { return Camera.Distance; }
 
 	/** Raw point to this widget's local space; false when off the view or behind the camera. */
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|Map")

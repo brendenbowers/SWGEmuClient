@@ -1232,7 +1232,7 @@ bool USWGMeshGeneratorSubsystem::ResolveAppearanceMeshPaths(const FString& Appea
 	// A handful of assets (retail's own tutorial path-arrow among them) are
 	// referenced directly by their .msh with no .apt/.lod wrapper at all —
 	// same one-mesh-group shape as the bare-.lod case below.
-	const bool bIsMsh = AppearancePath.EndsWith(TEXT(".msh"));
+	const bool bIsMsh = AppearancePath.EndsWith(TEXT(".msh")) || AppearancePath.EndsWith(TEXT(".cmp"));
 	if (!bIsSat && !bIsApt && !bIsLod && !bIsMsh)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: unrecognized appearanceFilename extension: %s"), *AppearancePath);
@@ -1305,7 +1305,7 @@ bool USWGMeshGeneratorSubsystem::ResolveAppearanceMeshPaths(const FString& Appea
 			*OutCollisionSourcePath = MeshGroupPath;
 		}
 
-		if (MeshGroupPath.EndsWith(TEXT(".mgn")) || MeshGroupPath.EndsWith(TEXT(".msh")))
+		if (MeshGroupPath.EndsWith(TEXT(".mgn")) || MeshGroupPath.EndsWith(TEXT(".msh")) || MeshGroupPath.EndsWith(TEXT(".cmp")))
 		{
 			OutMeshVirtualPaths.Add(MeshGroupPath);
 			continue;
@@ -1925,6 +1925,25 @@ bool USWGMeshGeneratorSubsystem::IsAnySlotAppearanceRelated(const TArray<FString
 	return false;
 }
 
+bool USWGMeshGeneratorSubsystem::ReadStaticMeshFile(const FString& MeshPath, FSWGMeshData& OutData, int32 Depth)
+{
+	const FSWGIffReader Reader = TreSubsystem->CreateIffReader(MeshPath);
+	if (!Reader.IsValid())
+	{
+		return false;
+	}
+	if (!MeshPath.EndsWith(TEXT(".cmp")))
+	{
+		return FSWGMeshReader::ReadStaticMesh(Reader, OutData);
+	}
+	// Components can nest; the bound only guards against cyclic data.
+	return Depth <= 4 && FSWGMeshReader::ReadComponentMesh(Reader, [this, Depth](const FString& PartPath, FSWGMeshData& OutPart)
+		{
+			FString PartMeshPath;
+			return ResolveLodMeshPath(PartPath, PartMeshPath) && ReadStaticMeshFile(PartMeshPath, OutPart, Depth + 1);
+		}, OutData);
+}
+
 bool USWGMeshGeneratorSubsystem::ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData, TArray<FSWGMeshData>& OutLodMeshData)
 {
 	// A level that fails to parse is dropped rather than failing the request;
@@ -1932,8 +1951,7 @@ bool USWGMeshGeneratorSubsystem::ParseMesh(const FSWGPendingMeshRequest& Request
 	OutLodMeshData.SetNum(Request.LodLevels.Num());
 	for (int32 i = 0; i < Request.LodLevels.Num(); ++i)
 	{
-		FSWGIffReader LodReader = TreSubsystem->CreateIffReader(Request.LodLevels[i].MeshPath);
-		if (!LodReader.IsValid() || !FSWGMeshReader::ReadStaticMesh(LodReader, OutLodMeshData[i]))
+		if (!ReadStaticMeshFile(Request.LodLevels[i].MeshPath, OutLodMeshData[i]))
 		{
 			UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: failed to read LOD %d mesh %s"), i + 1, *Request.LodLevels[i].MeshPath);
 			OutLodMeshData[i].Submeshes.Reset();
@@ -1983,7 +2001,7 @@ bool USWGMeshGeneratorSubsystem::ParseMesh(const FSWGPendingMeshRequest& Request
 		}
 		else
 		{
-			if (!FSWGMeshReader::ReadStaticMesh(IffReader, PartData))
+			if (!ReadStaticMeshFile(MeshVirtualPath, PartData))
 			{
 				UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: Failed to read static mesh for %s"), *MeshVirtualPath);
 				continue;

@@ -49,7 +49,7 @@ public:
 	void SetMarkers(FName Layer, const TArray<FSWGMapMarker>& Markers);
 
 	/** Where a world-space ray meets the hologram's ground plane, in raw metres. */
-	bool RayToRaw(const FVector& Origin, const FVector& Direction, FVector2D& OutRaw) const;
+	bool RayToRaw(const FVector& Origin, const FVector& Direction, FVector2D& OutRaw, bool bRequireOnDisc = true) const;
 
 	/** World position of the disc's centre at terrain level, for the camera to look at. */
 	FVector GetFocusLocation() const;
@@ -81,6 +81,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
 	float DynamicStructureScanSeconds = 3.f;
 
+	/** Buildings shrink about their own origin so crowded cities read inside the disc; positions stay true. */
+	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap", meta = (ClampMin = "0.1", ClampMax = "1"))
+	float BuildingScale = 0.8f;
+
 	/** Height relief multiplier; real relief at arm's length reads as flat. */
 	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
 	float HeightExaggeration = 2.f;
@@ -95,7 +99,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
 	float HoloIntensity = 0.7f;
 
-	static constexpr float MinRadius = 250.f;
+	static constexpr float MinRadius = 100.f;
 	static constexpr float MaxRadius = 6000.f;
 
 protected:
@@ -118,6 +122,10 @@ private:
 		FSWGMapMarker Marker;
 		TObjectPtr<UStaticMeshComponent> Beam;
 		TObjectPtr<UTextRenderComponent> Label;
+		/** Player only: a tall locator beam and a ground ring that ripples outward. */
+		TObjectPtr<UStaticMeshComponent> Locator;
+		TObjectPtr<UStaticMeshComponent> Ping;
+		TObjectPtr<UMaterialInstanceDynamic> PingMaterial;
 	};
 
 	void RequestBake();
@@ -158,15 +166,29 @@ private:
 	UPROPERTY()
 	TObjectPtr<USceneComponent> DroidRoot;
 
-	/** A faint cone of light from the droid down onto the disc. */
+	/** Sparse projection rays from the droid to the rim of the map. */
 	UPROPERTY()
-	TObjectPtr<UStaticMeshComponent> ProjectionBeam;
+	TArray<TObjectPtr<UStaticMeshComponent>> ProjectionLines;
+
+	/** Extra rays that sweep the rim while the view is moving. */
+	UPROPERTY()
+	TArray<TObjectPtr<UStaticMeshComponent>> SweepLines;
+
+	UPROPERTY()
+	TObjectPtr<UStaticMeshComponent> DroidLens;
+
+	UPROPERTY()
+	TObjectPtr<UPointLightComponent> DroidLensLight;
 
 	void RequestDroid();
 	void UpdateDroid();
+	void NoteProjectionChange();
 
 	FVector2D DroidSide = FVector2D(1.f, 0.f);
 	float DroidTime = 0.f;
+	float ProjectionYawOffset = 0.f;
+	float SweepStartTime = 0.f;
+	double LastProjectionChangeTime = 0.0;
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> HoloMaterial;

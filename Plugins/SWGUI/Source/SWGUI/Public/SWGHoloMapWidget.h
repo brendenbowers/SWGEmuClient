@@ -9,6 +9,8 @@ class ASWGHoloMapActor;
 class UButton;
 class UTextBlock;
 class USWGWaypointSubsystem;
+class USWGMapLocationSubsystem;
+class USWGTreSubsystem;
 
 DECLARE_MULTICAST_DELEGATE(FSWGOnHoloMapClosed);
 DECLARE_MULTICAST_DELEGATE(FSWGOnHoloMapSwitchToWindow);
@@ -99,10 +101,12 @@ private:
 	/** Where the mouse's ray meets the hologram, raw metres. */
 	bool MouseToRaw(FVector2D& OutRaw) const;
 	/** Same for any viewport pixel. */
-	bool ScreenToRaw(const FVector2D& ViewportPosition, FVector2D& OutRaw) const;
+	bool ScreenToRaw(const FVector2D& ViewportPosition, FVector2D& OutRaw, bool bRequireOnDisc = true) const;
 	/** Moves the view by the analog sticks and triggers. */
 	void ApplyAnalog(float DeltaSeconds);
 	void Zoom(float Factor);
+	void RefreshLocationMarkers();
+	void HandleLocationsChanged(const FString& Planet);
 	FString GetPlanetName() const;
 
 	UFUNCTION() void RefreshWaypoints();
@@ -112,6 +116,12 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<ASWGHoloMapActor> Hologram;
+
+	UPROPERTY()
+	TObjectPtr<USWGMapLocationSubsystem> MapLocations;
+
+	UPROPERTY()
+	TObjectPtr<USWGTreSubsystem> Tre;
 
 	UPROPERTY()
 	TObjectPtr<ACameraActor> ShoulderCamera;
@@ -124,12 +134,13 @@ private:
 
 	UPROPERTY()
 	TArray<TObjectPtr<UObject>> ButtonTextTints;
+	FDelegateHandle LocationsChangedHandle;
+	FVector2D LastLocationCenter = FVector2D::ZeroVector;
+	int32 LastLocationDetail = -1;
 
 	float PreviousHudOpacity = 1.f;
-	FVector2D LastMouse = FVector2D::ZeroVector;
 	/** Where the cursor would be, in viewport pixels, moved by raw deltas while a drag has it captured. */
 	FVector2D VirtualCursor = FVector2D::ZeroVector;
-	bool bHasVirtualCursor = false;
 	/** Latest analog readings, applied every tick: left stick pans, right stick turns, triggers zoom. */
 	FVector2D LeftStick = FVector2D::ZeroVector;
 	FVector2D RightStick = FVector2D::ZeroVector;

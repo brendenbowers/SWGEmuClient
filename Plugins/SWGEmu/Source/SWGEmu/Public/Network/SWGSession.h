@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Queue.h"
 #include "SWGPacket.h"
 #include "SWGSessionData.h"
 

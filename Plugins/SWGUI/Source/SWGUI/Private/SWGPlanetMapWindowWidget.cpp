@@ -10,14 +10,16 @@
 #include "Engine/GameInstance.h"
 #include "GameFramework/Pawn.h"
 #include "Subsystems/SWGCommandSubsystem.h"
+#include "Subsystems/SWGMapLocationSubsystem.h"
 #include "Subsystems/SWGTerrainSubsystem.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGWaypointSubsystem.h"
 
 namespace
 {
-	const FName PlayerLayer(TEXT("Player"));
-	const FName WaypointLayer(TEXT("Waypoints"));
+	const FName PlanetPlayerLayer(TEXT("Player"));
+	const FName PlanetWaypointLayer(TEXT("Waypoints"));
+	const FName PlanetLocationLayer(TEXT("Locations"));
 
 	FText PlanetDisplayName(const FString& Planet)
 	{
@@ -41,10 +43,15 @@ void USWGPlanetMapWindowWidget::NativeConstruct()
 
 	UGameInstance* GameInstance = GetGameInstance();
 	Waypoints = GameInstance ? GameInstance->GetSubsystem<USWGWaypointSubsystem>() : nullptr;
+	MapLocations = GameInstance ? GameInstance->GetSubsystem<USWGMapLocationSubsystem>() : nullptr;
 	Tre = GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
 	if (Waypoints)
 	{
 		Waypoints->OnWaypointListChanged.AddUniqueDynamic(this, &USWGPlanetMapWindowWidget::RefreshWaypointMarkers);
+	}
+	if (MapLocations)
+	{
+		LocationsChangedHandle = MapLocations->OnLocationsChanged.AddUObject(this, &USWGPlanetMapWindowWidget::HandleLocationsChanged);
 	}
 
 	MapView->OnMarkerClicked.AddUniqueDynamic(this, &USWGPlanetMapWindowWidget::HandleMarkerClicked);
@@ -84,6 +91,10 @@ void USWGPlanetMapWindowWidget::NativeDestruct()
 	{
 		Waypoints->OnWaypointListChanged.RemoveDynamic(this, &USWGPlanetMapWindowWidget::RefreshWaypointMarkers);
 	}
+	if (MapLocations)
+	{
+		MapLocations->OnLocationsChanged.Remove(LocationsChangedHandle);
+	}
 	Super::NativeDestruct();
 }
 
@@ -119,6 +130,11 @@ void USWGPlanetMapWindowWidget::RefreshPlanet()
 	GetPlayerPosition(Position, Heading);
 	BuildingFocus = Position;
 	MapView->ShowPlanet(Planet, { BuildingFocus });
+	LastLocationDetail = -1;
+	if (MapLocations)
+	{
+		MapLocations->RequestPlanet(Planet);
+	}
 	if (bStartOnPlayer)
 	{
 		MapView->JumpTo(Position, FocusDistance);
@@ -134,11 +150,12 @@ void USWGPlanetMapWindowWidget::NativeTick(const FGeometry& MyGeometry, float In
 	{
 		return;
 	}
+	RefreshLocationMarkers();
 
 	FSWGMapMarker Self;
 	if (SWGMapMarkers::MakePlayerMarker(GetOwningPlayerPawn(), Self))
 	{
-		MapView->UpdateMarker(PlayerLayer, Self);
+		MapView->UpdateMarker(PlanetPlayerLayer, Self);
 	}
 
 	if (FVector2D::Distance(Position, BuildingFocus) > BuildingRefocusDistance)
@@ -161,7 +178,42 @@ void USWGPlanetMapWindowWidget::RefreshWaypointMarkers()
 	{
 		WaypointPositions.Add(Marker.Id, Marker.Position);
 	}
-	MapView->SetMarkers(WaypointLayer, Markers);
+	MapView->SetMarkers(PlanetWaypointLayer, Markers);
+}
+
+void USWGPlanetMapWindowWidget::HandleLocationsChanged(const FString& InPlanet)
+{
+	if (InPlanet == Planet)
+	{
+		LastLocationDetail = -1;
+		RefreshLocationMarkers();
+	}
+}
+
+void USWGPlanetMapWindowWidget::RefreshLocationMarkers()
+{
+	if (!MapView)
+	{
+		return;
+	}
+	const float Distance = MapView->GetViewDistance();
+	const int32 Detail = Distance <= 650.f ? 2 : Distance <= 1700.f ? 1 : 0;
+	const FVector2D Center = MapView->GetViewTarget();
+	if (Detail == LastLocationDetail && (Detail == 0 || FVector2D::Distance(Center, LastLocationCenter) < Distance * 0.2f))
+	{
+		return;
+	}
+	LastLocationDetail = Detail;
+	LastLocationCenter = Center;
+	const TArray<FSWGMapLocation>* Locations = MapLocations ? MapLocations->GetLocations(Planet) : nullptr;
+	const TArray<FSWGMapMarker> Markers = Locations
+		? SWGMapMarkers::MakeLocationMarkers(*Locations, Center, Distance * 2.f, Detail, Tre) : TArray<FSWGMapMarker>();
+	LocationPositions.Reset();
+	for (const FSWGMapMarker& Marker : Markers)
+	{
+		LocationPositions.Add(Marker.Id, Marker.Position);
+	}
+	MapView->SetMarkers(PlanetLocationLayer, Markers);
 }
 
 void USWGPlanetMapWindowWidget::CenterOnPlayer()
@@ -176,13 +228,23 @@ void USWGPlanetMapWindowWidget::CenterOnPlayer()
 
 void USWGPlanetMapWindowWidget::HandleMarkerClicked(FName Layer, FName MarkerId)
 {
-	if (const FVector2D* Position = WaypointPositions.Find(MarkerId))
+	if (Layer == PlanetWaypointLayer)
 	{
-		MapView->FlyTo(*Position, FocusDistance);
+		if (const FVector2D* Position = WaypointPositions.Find(MarkerId))
+		{
+			MapView->FlyTo(*Position, FocusDistance);
+		}
 	}
-	else if (Layer == PlayerLayer)
+	else if (Layer == PlanetPlayerLayer)
 	{
 		CenterOnPlayer();
+	}
+	else if (Layer == PlanetLocationLayer)
+	{
+		if (const FVector2D* Position = LocationPositions.Find(MarkerId))
+		{
+			MapView->FlyTo(*Position, 600.f);
+		}
 	}
 }
 

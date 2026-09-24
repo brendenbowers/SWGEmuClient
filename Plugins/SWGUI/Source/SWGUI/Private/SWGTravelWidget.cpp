@@ -21,7 +21,7 @@ namespace
 	const FLinearColor BrightCyan = FLinearColor::FromSRGBColor(FColor(0x96, 0xF4, 0xFC));
 	const FLinearColor Green = FLinearColor::FromSRGBColor(FColor(0x37, 0xFD, 0x06));
 	const FName TravelLayer(TEXT("Travel"));
-	const FName WaypointLayer(TEXT("Waypoints"));
+	const FName TravelWaypointLayer(TEXT("Waypoints"));
 	/** Fly-to eye distance when a travel point or waypoint is picked, in metres. */
 	constexpr float MarkerViewDistance = 1400.f;
 
@@ -357,7 +357,7 @@ void USWGTravelWidget::RefreshWaypointMarkers()
 	{
 		WaypointPositions.Add(Marker.Id, Marker.Position);
 	}
-	MapView->SetMarkers(WaypointLayer, Markers);
+	MapView->SetMarkers(TravelWaypointLayer, Markers);
 }
 
 void USWGTravelWidget::HandleMapPressed()

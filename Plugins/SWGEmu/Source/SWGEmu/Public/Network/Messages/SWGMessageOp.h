@@ -70,6 +70,8 @@ enum class ESWGMessageOp : uint32
 	EnterTicketPurchaseMode = 0x904DAE1Au, // Server: departure planet/location for the ticket window
 	PlanetTravelPointListRequest = 0x96405D4Du,
 	PlanetTravelPointListResponse = 0x4D32541Fu,
+	GetMapLocations = 0x1A7AB839u,
+	GetMapLocationsResponse = 0x9F80464Cu,
 
 	// Add more as needed during implementation
 	Null = 0x0u,

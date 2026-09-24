@@ -100,6 +100,16 @@ struct FSWGMeshData
 	TArray<FString> BoneNames;
 };
 
+/** A .cmp PART's placement: three rows of [rotation x3, translation metres], raw SWG axes. */
+struct SWGANIMATION_API FSWGMeshPartTransform
+{
+	float Rows[3][4] = {};
+
+	/** Rotates Value and adds the translation times TranslationScale (0 for directions). */
+	FVector Apply(const FVector& Value, float TranslationScale) const;
+	bool IsIdentity() const;
+};
+
 /**
  * Parses SWG's .msh (static, FORM MESH) and .mgn (skeletal, FORM SKMG) mesh formats
  * into engine-agnostic geometry data, read directly from TRE bytes at runtime —
@@ -122,6 +132,16 @@ public:
 	/** Parses a .msh buffer (FORM MESH). Returns false if the buffer isn't a recognizable static mesh. */
 	static bool ReadStaticMesh(const FSWGIffReader& Reader, FSWGMeshData& OutMesh);
 
+	/** Loads one component part (full "appearance/..." .lod, .msh or .cmp path) as static geometry. */
+	using FReadComponentPart = TFunctionRef<bool(const FString& PartPath, FSWGMeshData& OutPart)>;
+
+	/**
+	 * Parses a .cmp buffer (FORM CMPA, versions 0003-0005) into one static mesh:
+	 * each geometry PART is loaded through ReadPart and placed by its transform.
+	 * Particle and sprite parts are skipped.
+	 */
+	static bool ReadComponentMesh(const FSWGIffReader& Reader, FReadComponentPart ReadPart, FSWGMeshData& OutMesh);
+
 	/** Parses a .mgn buffer (FORM SKMG) in bind pose, no skinning applied. Returns false if unrecognized. */
 	static bool ReadSkeletalMeshBindPose(const FSWGIffReader& Reader, FSWGMeshData& OutMesh);
 
@@ -133,6 +153,9 @@ public:
 
 private:
 	static FString ReadNullTerminatedString(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk);
+
+	/** Moves a component part into place: vertices, normals, bounds and (UE-axis) hardpoints. */
+	static void TransformMesh(FSWGMeshData& Mesh, const FSWGMeshPartTransform& Transform);
 
 	/** Best-effort bounding box from FORM APPR > FORM 0003 > FORM EXBX > FORM 0001 > "BOX ". Leaves OutMesh untouched if any step is missing. */
 	static void TryReadAppearance(const FSWGIffReader& Reader, const FSWGIffChunk& Form0004, FSWGMeshData& OutMesh);

@@ -444,6 +444,143 @@ bool FSWGMeshReader::ReadStaticMesh(const FSWGIffReader& Reader, FSWGMeshData& O
 	return OutMesh.Submeshes.Num() > 0;
 }
 
+FVector FSWGMeshPartTransform::Apply(const FVector& Value, float TranslationScale) const
+{
+	FVector Result;
+	for (int32 Row = 0; Row < 3; ++Row)
+	{
+		Result[Row] = Rows[Row][0] * Value.X + Rows[Row][1] * Value.Y + Rows[Row][2] * Value.Z + Rows[Row][3] * TranslationScale;
+	}
+	return Result;
+}
+
+bool FSWGMeshPartTransform::IsIdentity() const
+{
+	for (int32 Row = 0; Row < 3; ++Row)
+	{
+		for (int32 Column = 0; Column < 4; ++Column)
+		{
+			if (!FMath::IsNearlyEqual(Rows[Row][Column], Row == Column ? 1.f : 0.f, 1e-5f))
+			{
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+void FSWGMeshReader::TransformMesh(FSWGMeshData& Mesh, const FSWGMeshPartTransform& Transform)
+{
+	for (FSWGMeshSubmesh& Submesh : Mesh.Submeshes)
+	{
+		for (FSWGMeshVertex& Vertex : Submesh.Vertices)
+		{
+			Vertex.Position = Transform.Apply(Vertex.Position, SWGWorldScale);
+			Vertex.Normal = Transform.Apply(Vertex.Normal, 0.f).GetSafeNormal();
+		}
+	}
+	if (Mesh.bHasBoundingBox)
+	{
+		FBox Moved(ForceInit);
+		for (int32 Corner = 0; Corner < 8; ++Corner)
+		{
+			const FVector Point((Corner & 1) ? Mesh.BoundingBox.Max.X : Mesh.BoundingBox.Min.X,
+				(Corner & 2) ? Mesh.BoundingBox.Max.Y : Mesh.BoundingBox.Min.Y,
+				(Corner & 4) ? Mesh.BoundingBox.Max.Z : Mesh.BoundingBox.Min.Z);
+			Moved += Transform.Apply(Point, SWGWorldScale);
+		}
+		Mesh.BoundingBox = Moved;
+	}
+	// Hardpoints are already in UE axes (see ReadHardpoints' axis map).
+	static constexpr int32 SwgAxis[3] = { 2, 0, 1 };
+	FMatrix PartRotation = FMatrix::Identity;
+	FVector PartTranslation;
+	for (int32 Row = 0; Row < 3; ++Row)
+	{
+		for (int32 Column = 0; Column < 3; ++Column)
+		{
+			PartRotation.M[Row][Column] = Transform.Rows[SwgAxis[Row]][SwgAxis[Column]];
+		}
+		PartTranslation[Row] = Transform.Rows[SwgAxis[Row]][3] * SWGWorldScale;
+	}
+	for (FSWGMeshHardpoint& Hardpoint : Mesh.Hardpoints)
+	{
+		const FVector Old = Hardpoint.Translation;
+		for (int32 Row = 0; Row < 3; ++Row)
+		{
+			Hardpoint.Translation[Row] = PartRotation.M[Row][0] * Old.X + PartRotation.M[Row][1] * Old.Y + PartRotation.M[Row][2] * Old.Z + PartTranslation[Row];
+		}
+		Hardpoint.Rotation = (PartRotation * FRotationMatrix::Make(Hardpoint.Rotation)).ToQuat();
+	}
+}
+
+bool FSWGMeshReader::ReadComponentMesh(const FSWGIffReader& Reader, FReadComponentPart ReadPart, FSWGMeshData& OutMesh)
+{
+	// FORM CMPA > FORM 0003|0004|0005 > [APPR, RADR (0005)], PART...
+	FSWGIffChunk CmpaForm;
+	if (!Reader.FindForm(SWG_IFF_TAG('C','M','P','A'), CmpaForm))
+	{
+		return false;
+	}
+	const TArray<FSWGIffChunk> Versions = Reader.ReadChildren(CmpaForm);
+	if (Versions.IsEmpty() || !Versions[0].IsForm())
+	{
+		return false;
+	}
+	for (const FSWGIffChunk& Chunk : Reader.ReadChildren(Versions[0]))
+	{
+		if (Chunk.IsForm() || Chunk.Tag != SWG_IFF_TAG('P','A','R','T'))
+		{
+			continue;
+		}
+		// PART: [path, relative to "appearance/" unless already full][12 floats].
+		FSWGIFFChunkReader PartReader(Chunk, Reader);
+		FString PartPath;
+		FSWGMeshPartTransform Transform;
+		bool bReadOk = PartReader.ReadTerminiatedString(PartPath);
+		for (int32 Row = 0; Row < 3 && bReadOk; ++Row)
+		{
+			for (int32 Column = 0; Column < 4 && bReadOk; ++Column)
+			{
+				bReadOk = PartReader.ReadValueLE(Transform.Rows[Row][Column]);
+			}
+		}
+		if (!bReadOk)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: truncated CMPA PART"));
+			continue;
+		}
+		// Particle (.prt) and sprite (.spr) parts are effects, not geometry.
+		if (!PartPath.EndsWith(TEXT(".lod")) && !PartPath.EndsWith(TEXT(".msh")) && !PartPath.EndsWith(TEXT(".cmp")))
+		{
+			continue;
+		}
+		if (!PartPath.StartsWith(TEXT("appearance/")))
+		{
+			PartPath = TEXT("appearance/") + PartPath;
+		}
+
+		FSWGMeshData PartData;
+		if (!ReadPart(PartPath, PartData))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: component part %s failed to read"), *PartPath);
+			continue;
+		}
+		if (!Transform.IsIdentity())
+		{
+			TransformMesh(PartData, Transform);
+		}
+		OutMesh.Submeshes.Append(MoveTemp(PartData.Submeshes));
+		OutMesh.Hardpoints.Append(MoveTemp(PartData.Hardpoints));
+		if (PartData.bHasBoundingBox)
+		{
+			OutMesh.BoundingBox = OutMesh.bHasBoundingBox ? OutMesh.BoundingBox + PartData.BoundingBox : PartData.BoundingBox;
+			OutMesh.bHasBoundingBox = true;
+		}
+	}
+	return OutMesh.Submeshes.Num() > 0;
+}
+
 bool FSWGMeshReader::ReadMgnSubmesh(const FSWGIffReader& Reader, const FSWGIffChunk& PsdtForm, const TArray<FVector>& Positions, const TArray<FVector>& Normals,
 	const TArray<TArray<FSWGBoneWeight>>& VertexWeights, FSWGMeshSubmesh& OutSubmesh)
 {

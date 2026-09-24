@@ -4,6 +4,7 @@
 #include "SWGMapMarkers.h"
 #include "SWGRetailStyle.h"
 #include "Blueprint/WidgetTree.h"
+#include "Blueprint/SlateBlueprintLibrary.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "Common/SWGWorldScale.h"
@@ -19,6 +20,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "Subsystems/SWGCommandSubsystem.h"
+#include "Subsystems/SWGMapLocationSubsystem.h"
 #include "Subsystems/SWGTerrainSubsystem.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGWaypointSubsystem.h"
@@ -27,6 +29,7 @@ namespace
 {
 	const FName PlayerLayer(TEXT("Player"));
 	const FName WaypointLayer(TEXT("Waypoints"));
+	const FName HoloLocationLayer(TEXT("Locations"));
 	constexpr float TurnDegreesPerPixel = 0.3f;
 	constexpr float WheelZoomFactor = 0.8f;
 	/** Fraction of the radius one D-pad pan step moves. */
@@ -92,10 +95,15 @@ void USWGHoloMapWidget::NativeConstruct()
 	Super::NativeConstruct();
 	UGameInstance* GameInstance = GetGameInstance();
 	Waypoints = GameInstance ? GameInstance->GetSubsystem<USWGWaypointSubsystem>() : nullptr;
-	USWGTreSubsystem* Tre = GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
+	MapLocations = GameInstance ? GameInstance->GetSubsystem<USWGMapLocationSubsystem>() : nullptr;
+	Tre = GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
 	if (Waypoints)
 	{
 		Waypoints->OnWaypointListChanged.AddUniqueDynamic(this, &USWGHoloMapWidget::RefreshWaypoints);
+	}
+	if (MapLocations)
+	{
+		LocationsChangedHandle = MapLocations->OnLocationsChanged.AddUObject(this, &USWGHoloMapWidget::HandleLocationsChanged);
 	}
 	if (CenterButton) { CenterButton->OnClicked.AddUniqueDynamic(this, &USWGHoloMapWidget::HandleCenterClicked); }
 	if (WindowButton) { WindowButton->OnClicked.AddUniqueDynamic(this, &USWGHoloMapWidget::HandleWindowClicked); }
@@ -131,6 +139,10 @@ void USWGHoloMapWidget::NativeDestruct()
 	if (Waypoints)
 	{
 		Waypoints->OnWaypointListChanged.RemoveDynamic(this, &USWGHoloMapWidget::RefreshWaypoints);
+	}
+	if (MapLocations)
+	{
+		MapLocations->OnLocationsChanged.Remove(LocationsChangedHandle);
 	}
 	RestoreView();
 	Super::NativeDestruct();
@@ -178,6 +190,10 @@ void USWGHoloMapWidget::Project()
 	Hologram->SetViewCenter(Self.Position);
 	// The projector droid hovers over the far side, out of the camera's way.
 	Hologram->SetDroidSide(FVector2D(Facing.Vector()));
+	if (MapLocations)
+	{
+		MapLocations->RequestPlanet(GetPlanetName());
+	}
 
 	const FVector CameraLocation = ProjectorLocation + Facing.RotateVector(CameraOffset);
 	ShoulderCamera = World->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), CameraLocation,
@@ -272,6 +288,35 @@ void USWGHoloMapWidget::RefreshWaypoints()
 	}
 }
 
+void USWGHoloMapWidget::HandleLocationsChanged(const FString& Planet)
+{
+	if (Planet == GetPlanetName().ToLower())
+	{
+		LastLocationDetail = -1;
+		RefreshLocationMarkers();
+	}
+}
+
+void USWGHoloMapWidget::RefreshLocationMarkers()
+{
+	if (!Hologram)
+	{
+		return;
+	}
+	const float Radius = Hologram->GetViewRadius();
+	const int32 Detail = Radius <= 220.f ? 2 : Radius <= 500.f ? 1 : 0;
+	const FVector2D Center = Hologram->GetViewCenter();
+	if (Detail == LastLocationDetail && (Detail == 0 || FVector2D::Distance(Center, LastLocationCenter) < Radius * 0.2f))
+	{
+		return;
+	}
+	LastLocationDetail = Detail;
+	LastLocationCenter = Center;
+	const TArray<FSWGMapLocation>* Locations = MapLocations ? MapLocations->GetLocations(GetPlanetName()) : nullptr;
+	Hologram->SetMarkers(HoloLocationLayer, Locations
+		? SWGMapMarkers::MakeLocationMarkers(*Locations, Center, Radius * 1.2f, Detail, Tre) : TArray<FSWGMapMarker>());
+}
+
 void USWGHoloMapWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
@@ -280,6 +325,7 @@ void USWGHoloMapWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTim
 		return;
 	}
 	ApplyAnalog(InDeltaTime);
+	RefreshLocationMarkers();
 	FSWGMapMarker Self;
 	if (SWGMapMarkers::MakePlayerMarker(GetOwningPlayerPawn(), Self))
 	{
@@ -300,14 +346,14 @@ bool USWGHoloMapWidget::MouseToRaw(FVector2D& OutRaw) const
 	return PlayerController && PlayerController->GetMousePosition(MouseX, MouseY) && ScreenToRaw(FVector2D(MouseX, MouseY), OutRaw);
 }
 
-bool USWGHoloMapWidget::ScreenToRaw(const FVector2D& ViewportPosition, FVector2D& OutRaw) const
+bool USWGHoloMapWidget::ScreenToRaw(const FVector2D& ViewportPosition, FVector2D& OutRaw, bool bRequireOnDisc) const
 {
 	const APlayerController* PlayerController = GetOwningPlayer();
 	FVector Origin;
 	FVector Direction;
 	return Hologram && PlayerController
 		&& PlayerController->DeprojectScreenPositionToWorld(ViewportPosition.X, ViewportPosition.Y, Origin, Direction)
-		&& Hologram->RayToRaw(Origin, Direction, OutRaw);
+		&& Hologram->RayToRaw(Origin, Direction, OutRaw, bRequireOnDisc);
 }
 
 void USWGHoloMapWidget::Zoom(float Factor)
@@ -329,19 +375,15 @@ FReply USWGHoloMapWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, c
 	const FKey Button = InMouseEvent.GetEffectingButton();
 	bTurning = Button == EKeys::RightMouseButton || (Button == EKeys::LeftMouseButton && InMouseEvent.IsControlDown());
 	bPanning = !bTurning && Button == EKeys::LeftMouseButton;
-	// Tracked from deltas: while the mouse is captured the in-world input mode
-	// hides and locks the cursor, so its reported position stops moving.
-	float MouseX = 0.f;
-	float MouseY = 0.f;
-	const APlayerController* PlayerController = GetOwningPlayer();
-	bHasVirtualCursor = PlayerController && PlayerController->GetMousePosition(MouseX, MouseY);
-	VirtualCursor = FVector2D(MouseX, MouseY);
+	// Pointer events still give us the initial position when input mode hides the OS cursor.
+	FVector2D ViewportPosition;
+	USlateBlueprintLibrary::AbsoluteToViewport(this, InMouseEvent.GetScreenSpacePosition(), VirtualCursor, ViewportPosition);
 	return FReply::Handled().CaptureMouse(TakeWidget()).SetUserFocus(TakeWidget(), EFocusCause::Mouse);
 }
 
 FReply USWGHoloMapWidget::NativeOnMouseButtonDoubleClick(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
-	FVector2D Raw;
+	FVector2D Raw = FVector2D::ZeroVector;
 	USWGCommandSubsystem* Commands = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGCommandSubsystem>() : nullptr;
 	if (bCreateWaypointOnDoubleClick && Commands && InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && MouseToRaw(Raw))
 	{
@@ -362,9 +404,13 @@ FReply USWGHoloMapWidget::NativeOnMouseMove(const FGeometry& InGeometry, const F
 	{
 		Hologram->SetViewYaw(Hologram->GetViewYaw() + Delta.X * TurnDegreesPerPixel);
 	}
-	else if (bHasVirtualCursor)
+	else if (bPanning)
 	{
 		// Grab the ground: the point that was under the cursor follows it.
+		FVector2D PixelPosition, ViewportPosition, DeltaPosition, Unused;
+		USlateBlueprintLibrary::AbsoluteToViewport(this, InMouseEvent.GetScreenSpacePosition(), PixelPosition, ViewportPosition);
+		USlateBlueprintLibrary::AbsoluteToViewport(this, InMouseEvent.GetScreenSpacePosition() + Delta, DeltaPosition, Unused);
+		const FVector2D PixelDelta = DeltaPosition - PixelPosition;
 		const APlayerController* PlayerController = GetOwningPlayer();
 		int32 ViewportWidth = 0;
 		int32 ViewportHeight = 0;
@@ -372,10 +418,10 @@ FReply USWGHoloMapWidget::NativeOnMouseMove(const FGeometry& InGeometry, const F
 		{
 			PlayerController->GetViewportSize(ViewportWidth, ViewportHeight);
 		}
-		const FVector2D Next(FMath::Clamp(VirtualCursor.X + Delta.X, 0.f, (float)ViewportWidth), FMath::Clamp(VirtualCursor.Y + Delta.Y, 0.f, (float)ViewportHeight));
+		const FVector2D Next(FMath::Clamp(VirtualCursor.X + PixelDelta.X, 0.f, (float)ViewportWidth), FMath::Clamp(VirtualCursor.Y + PixelDelta.Y, 0.f, (float)ViewportHeight));
 		FVector2D Before;
 		FVector2D After;
-		if (ScreenToRaw(VirtualCursor, Before) && ScreenToRaw(Next, After))
+		if (ScreenToRaw(VirtualCursor, Before, false) && ScreenToRaw(Next, After, false))
 		{
 			Hologram->SetViewCenter(Hologram->GetViewCenter() + Before - After);
 		}

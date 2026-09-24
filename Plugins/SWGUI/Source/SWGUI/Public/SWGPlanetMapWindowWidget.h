@@ -8,6 +8,7 @@ class UButton;
 class UTextBlock;
 class USWGPlanetMapWidget;
 class USWGWaypointSubsystem;
+class USWGMapLocationSubsystem;
 class USWGTreSubsystem;
 
 /**
@@ -81,6 +82,8 @@ private:
 	/** Raw position and heading (degrees clockwise from north) of the local player. */
 	bool GetPlayerPosition(FVector2D& OutPosition, float& OutHeading) const;
 	void RefreshPlanet();
+	void RefreshLocationMarkers();
+	void HandleLocationsChanged(const FString& Planet);
 
 	UFUNCTION() void RefreshWaypointMarkers();
 	UFUNCTION() void HandleMarkerClicked(FName Layer, FName MarkerId);
@@ -96,6 +99,9 @@ private:
 	TObjectPtr<USWGWaypointSubsystem> Waypoints;
 
 	UPROPERTY()
+	TObjectPtr<USWGMapLocationSubsystem> MapLocations;
+
+	UPROPERTY()
 	TObjectPtr<USWGTreSubsystem> Tre;
 
 	UPROPERTY()
@@ -103,6 +109,10 @@ private:
 
 	/** Waypoint marker id -> raw position, for fly-to on click. */
 	TMap<FName, FVector2D> WaypointPositions;
+	TMap<FName, FVector2D> LocationPositions;
+	FDelegateHandle LocationsChangedHandle;
+	FVector2D LastLocationCenter = FVector2D::ZeroVector;
+	int32 LastLocationDetail = -1;
 	FString Planet;
 	FVector2D BuildingFocus = FVector2D::ZeroVector;
 	bool bControllerMode = false;

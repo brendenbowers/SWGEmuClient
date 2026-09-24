@@ -495,6 +495,12 @@ private:
 	bool ParseMesh(const FSWGPendingMeshRequest& Request, FSWGMeshData& OutMeshData, TArray<FSWGMeshData>& OutLodMeshData);
 
 	/**
+	 * Loads a .msh, or a .cmp through FSWGMeshReader::ReadComponentMesh with
+	 * its parts fetched from the TRE; a .lod part contributes its highest detail level.
+	 */
+	bool ReadStaticMeshFile(const FString& MeshPath, FSWGMeshData& OutData, int32 Depth = 0);
+
+	/**
 	 * Loads the once-built UStaticMesh for CacheHash (package name hashed
 	 * under /Game/SWGEmu/Generated/SM_<hash> — see ProcessNextRequest for how
 	 * static vs. dynamic requests compute this hash differently), or builds

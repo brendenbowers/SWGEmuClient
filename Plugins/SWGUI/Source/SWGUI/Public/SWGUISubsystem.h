@@ -165,7 +165,7 @@ private:
 	UPROPERTY()
 	TObjectPtr<class USWGHoloMapWidget> HoloMap;
 
-	ESWGPlanetMapMode PlanetMapMode = ESWGPlanetMapMode::Window;
+	ESWGPlanetMapMode PlanetMapMode = ESWGPlanetMapMode::Hologram;
 
 	void OpenPlanetMap();
 	void HandleHoloMapClosed();
