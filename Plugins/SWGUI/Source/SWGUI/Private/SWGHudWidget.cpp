@@ -2,6 +2,7 @@
 #include "SWGActionBarWidget.h"
 #include "SWGConditionWidget.h"
 #include "SWGFloatingTextWidget.h"
+#include "SWGHoloInventoryWidget.h"
 #include "SWGUISubsystem.h"
 #include "SWGUISettings.h"
 #include "Objects/Player/SWGPlayer.h"
@@ -9,6 +10,7 @@
 #include "Components/CanvasPanelSlot.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
+#include "UObject/UObjectIterator.h"
 
 TWeakObjectPtr<USWGHudWidget> USWGHudWidget::ActiveHud;
 
@@ -234,6 +236,59 @@ namespace
 			if (UI && !Args.IsEmpty())
 			{
 				UI->SetPlanetMapMode(Args[0].StartsWith(TEXT("holo"), ESearchCase::IgnoreCase) ? ESWGPlanetMapMode::Hologram : ESWGPlanetMapMode::Window);
+			}
+		}));
+
+	FAutoConsoleCommand CmdInventoryMode(
+		TEXT("swg.InvMode"),
+		TEXT("Chooses the inventory's form: 'swg.InvMode window' or 'swg.InvMode holo'. An open inventory swaps in place."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			USWGHudWidget* Hud = USWGHudWidget::GetActiveHud();
+			USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr;
+			if (UI && !Args.IsEmpty())
+			{
+				UI->SetInventoryMode(Args[0].StartsWith(TEXT("holo"), ESearchCase::IgnoreCase) ? ESWGInventoryMode::Hologram : ESWGInventoryMode::Window);
+			}
+		}));
+
+	FAutoConsoleCommand CmdHoloMode(
+		TEXT("swg.HoloMode"),
+		TEXT("Sets every window that has a holographic form at once: 'swg.HoloMode on' or 'swg.HoloMode off'."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			USWGHudWidget* Hud = USWGHudWidget::GetActiveHud();
+			USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr;
+			if (UI && !Args.IsEmpty())
+			{
+				const bool bHolo = Args[0].Equals(TEXT("on"), ESearchCase::IgnoreCase) || Args[0].StartsWith(TEXT("holo"), ESearchCase::IgnoreCase) || Args[0] == TEXT("1");
+				UI->SetPlanetMapMode(bHolo ? ESWGPlanetMapMode::Hologram : ESWGPlanetMapMode::Window);
+				UI->SetInventoryMode(bHolo ? ESWGInventoryMode::Hologram : ESWGInventoryMode::Window);
+			}
+		}));
+
+	FAutoConsoleCommand CmdHoloInventorySelect(
+		TEXT("swg.HoloInventory.Select"),
+		TEXT("Pins the next ('swg.HoloInventory.Select 1') or previous (-1) worn item's details on an open holo inventory, as the D-pad does; 'swg.HoloInventory.Select bag 1' steps through the bag instead."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const bool bBag = !Args.IsEmpty() && Args[0].Equals(TEXT("bag"), ESearchCase::IgnoreCase);
+			const int32 DirectionArg = bBag ? 1 : 0;
+			const int32 Direction = Args.IsValidIndex(DirectionArg) ? FCString::Atoi(*Args[DirectionArg]) : 1;
+			for (TObjectIterator<USWGHoloInventoryWidget> It; It; ++It)
+			{
+				// Only one that is on screen; the class default object never is.
+				if (It->GetCachedWidget().IsValid())
+				{
+					if (bBag)
+					{
+						It->SelectNextInBag(Direction);
+					}
+					else
+					{
+						It->SelectNext(Direction);
+					}
+				}
 			}
 		}));
 

@@ -1,14 +1,11 @@
 #include "SWGHoloMapWidget.h"
 #include "SWGHoloMapActor.h"
-#include "SWGGameLayout.h"
 #include "SWGMapMarkers.h"
 #include "SWGRetailStyle.h"
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/SlateBlueprintLibrary.h"
 #include "Camera/CameraActor.h"
-#include "Camera/CameraComponent.h"
 #include "Common/SWGWorldScale.h"
-#include "Components/SWGTangibleComponent.h"
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
@@ -164,16 +161,9 @@ void USWGHoloMapWidget::Project()
 		return;
 	}
 	const FRotator Facing(0.f, Pawn->GetActorRotation().Yaw, 0.f);
-	// Stand the projector on the ground in front, at table height; the pawn's own
-	// origin isn't a reliable ground reference (it sits at the feet here).
-	FVector ProjectorLocation = Pawn->GetActorLocation() + Facing.Vector() * ProjectorDistance;
-	FHitResult Ground;
-	FCollisionQueryParams Query(SCENE_QUERY_STAT(SWGHoloMapGround), false, Pawn);
-	if (World->LineTraceSingleByChannel(Ground, ProjectorLocation + FVector(0.f, 0.f, 200.f), ProjectorLocation - FVector(0.f, 0.f, 500.f), ECC_Visibility, Query))
-	{
-		ProjectorLocation.Z = Ground.ImpactPoint.Z;
-	}
-	ProjectorLocation.Z += ProjectorHeight;
+	// Stand the projector on the ground in front, at table height.
+	FVector ProjectorLocation;
+	FSWGHoloView::FindProjectorLocation(Pawn, ProjectorDistance, ProjectorHeight, ProjectorLocation);
 
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -195,63 +185,12 @@ void USWGHoloMapWidget::Project()
 		MapLocations->RequestPlanet(GetPlanetName());
 	}
 
-	const FVector CameraLocation = ProjectorLocation + Facing.RotateVector(CameraOffset);
-	ShoulderCamera = World->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), CameraLocation,
-		(Hologram->GetFocusLocation() - CameraLocation).Rotation(), Params);
-	if (ShoulderCamera)
-	{
-		ShoulderCamera->GetCameraComponent()->SetFieldOfView(70.f);
-		ShoulderCamera->GetCameraComponent()->bConstrainAspectRatio = false;
-		PreviousViewTarget = PlayerController->GetViewTarget();
-		PlayerController->SetViewTargetWithBlend(ShoulderCamera, CameraBlendSeconds, VTBlend_EaseInOut, 2.f);
-	}
-	PlayerController->SetIgnoreMoveInput(true);
-	PlayerController->SetIgnoreLookInput(true);
-	// From over the shoulder the player's own name hangs right across the view.
-	if (USWGTangibleComponent* Tangible = Pawn->FindComponentByClass<USWGTangibleComponent>())
-	{
-		Tangible->SetNameLabelHidden(true);
-	}
-	// The HUD fades back so the hologram reads; this overlay's own controls stay solid.
-	if (USWGGameLayout* Layout = USWGGameLayout::GetLayout(this))
-	{
-		PreviousHudOpacity = Layout->GetRenderOpacity();
-		Layout->SetRenderOpacity(HudOpacity);
-	}
+	View.Begin(*this, ProjectorLocation + Facing.RotateVector(CameraOffset), Hologram->GetFocusLocation(), 70.f, CameraBlendSeconds, HudOpacity);
 }
 
 void USWGHoloMapWidget::RestoreView()
 {
-	if (bClosing)
-	{
-		return;
-	}
-	bClosing = true;
-	APlayerController* PlayerController = GetOwningPlayer();
-	if (PlayerController)
-	{
-		AActor* Target = PreviousViewTarget ? PreviousViewTarget.Get() : PlayerController->GetPawn();
-		if (Target && ShoulderCamera)
-		{
-			PlayerController->SetViewTargetWithBlend(Target, CameraBlendSeconds, VTBlend_EaseInOut, 2.f);
-		}
-		PlayerController->SetIgnoreMoveInput(false);
-		PlayerController->SetIgnoreLookInput(false);
-		if (USWGTangibleComponent* Tangible = PlayerController->GetPawn() ? PlayerController->GetPawn()->FindComponentByClass<USWGTangibleComponent>() : nullptr)
-		{
-			Tangible->SetNameLabelHidden(false);
-		}
-	}
-	if (USWGGameLayout* Layout = USWGGameLayout::GetLayout(this))
-	{
-		Layout->SetRenderOpacity(PreviousHudOpacity);
-	}
-	if (ShoulderCamera)
-	{
-		// Kept until the blend back has left it.
-		ShoulderCamera->SetLifeSpan(CameraBlendSeconds + 0.2f);
-		ShoulderCamera = nullptr;
-	}
+	View.End(*this);
 	if (Hologram)
 	{
 		Hologram->Destroy();
@@ -331,7 +270,7 @@ void USWGHoloMapWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTim
 	{
 		Hologram->SetMarkers(PlayerLayer, { Self });
 	}
-	if (ShoulderCamera)
+	if (ACameraActor* ShoulderCamera = View.GetCamera())
 	{
 		// The terrain's height under the centre changes as it rebakes; keep looking at it.
 		ShoulderCamera->SetActorRotation((Hologram->GetFocusLocation() - ShoulderCamera->GetActorLocation()).Rotation());
@@ -471,7 +410,7 @@ FReply USWGHoloMapWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKe
 	if (const FVector2D* Step = PanKeys.Find(Key))
 	{
 		// Away from the camera is "up": the camera's yaw, less the content's own turn.
-		const float CameraYaw = ShoulderCamera ? ShoulderCamera->GetActorRotation().Yaw : 0.f;
+		const float CameraYaw = View.GetCamera() ? View.GetCamera()->GetActorRotation().Yaw : 0.f;
 		const float Heading = FMath::DegreesToRadians(CameraYaw - Hologram->GetViewYaw());
 		const FVector2D North(FMath::Sin(Heading), FMath::Cos(Heading));
 		const FVector2D East(North.Y, -North.X);
@@ -519,7 +458,7 @@ void USWGHoloMapWidget::ApplyAnalog(float DeltaSeconds)
 	if (!Pan.IsZero())
 	{
 		// Stick up pans away from the camera, the same frame the D-pad uses.
-		const float CameraYaw = ShoulderCamera ? ShoulderCamera->GetActorRotation().Yaw : 0.f;
+		const float CameraYaw = View.GetCamera() ? View.GetCamera()->GetActorRotation().Yaw : 0.f;
 		const float Heading = FMath::DegreesToRadians(CameraYaw - Hologram->GetViewYaw());
 		const FVector2D North(FMath::Sin(Heading), FMath::Cos(Heading));
 		const FVector2D East(North.Y, -North.X);

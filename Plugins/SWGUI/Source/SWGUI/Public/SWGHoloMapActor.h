@@ -1,16 +1,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GameFramework/Actor.h"
+#include "SWGHoloProjectorActor.h"
 #include "SWGMapMarkerWidget.h"
 #include "SWGHoloMapActor.generated.h"
 
 class UDynamicMeshComponent;
-class UMaterialInstanceDynamic;
-class UMaterialInterface;
-class UPointLightComponent;
-class UStaticMesh;
-class UStaticMeshComponent;
 class UTextRenderComponent;
 
 namespace UE::Geometry { class FDynamicMesh3; }
@@ -18,7 +13,8 @@ namespace UE::Geometry { class FDynamicMesh3; }
 /**
  * A hologram of the ground around a point, projected in the world: a round
  * patch of real terrain (planet data plus building pads), the lowest LOD of
- * the snapshot buildings on it and marker beams, all in M_SWGHologram.
+ * the snapshot buildings on it and marker beams, all in M_SWGHologram. The
+ * droid's rays land on the disc's rim and follow the content round as it turns.
  *
  * Pan, turn and zoom apply at once by moving and scaling the content under
  * the fixed disc (the material fades anything past its rim); the patch is
@@ -26,7 +22,7 @@ namespace UE::Geometry { class FDynamicMesh3; }
  * metres, x east, y north, as everywhere else.
  */
 UCLASS(NotPlaceable)
-class SWGUI_API ASWGHoloMapActor : public AActor
+class SWGUI_API ASWGHoloMapActor : public ASWGHoloProjectorActor
 {
 	GENERATED_BODY()
 
@@ -54,29 +50,6 @@ public:
 	/** World position of the disc's centre at terrain level, for the camera to look at. */
 	FVector GetFocusLocation() const;
 
-	/** Which side of the disc the projector droid hovers over (world XY); the far side from the viewer keeps it out of the way. */
-	void SetDroidSide(const FVector2D& Direction);
-
-	/** The hovering droid that projects the image; a mobile template, loaded through the item mesh path. */
-	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
-	FString DroidTemplate = TEXT("object/mobile/shared_training_remote.iff");
-
-	/** Droid height above the disc, as a fraction of the disc's radius. */
-	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
-	float DroidHeight = 0.5f;
-
-	/** The training remote's model is about 10 cm across; scaled up so it reads at arm's length. */
-	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
-	float DroidScale = 2.5f;
-
-	/** How far past the centre toward DroidSide it hovers, as a fraction of the disc's radius. */
-	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
-	float DroidReach = 0.75f;
-
-	/** Disc diameter in world units. */
-	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
-	float DiscDiameter = 240.f;
-
 	/** Seconds between looks for server-sent structures (player houses, installations) arriving or leaving. */
 	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
 	float DynamicStructureScanSeconds = 3.f;
@@ -93,18 +66,14 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
 	float ContourMetres = 20.f;
 
-	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
-	FLinearColor HoloColor = FLinearColor(0.12f, 0.55f, 1.f);
-
-	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
-	float HoloIntensity = 0.7f;
-
 	static constexpr float MinRadius = 100.f;
 	static constexpr float MaxRadius = 6000.f;
 
 protected:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
+	virtual float GetDroidExtraYaw() const override { return ViewYaw; }
+	virtual float GetRimAngleOffset() const override { return ProjectionYawOffset; }
 
 private:
 public:
@@ -143,7 +112,6 @@ private:
 	void RemoveDynamicStructure(const TWeakObjectPtr<AActor>& Structure);
 	void UpdateContentTransform();
 	void UpdateMarkers();
-	UMaterialInstanceDynamic* MakeHoloMaterial(const FLinearColor& Color, float Intensity);
 
 	/** Raw offset from the baked centre to content-local units. */
 	FVector RawToContent(const FVector& RawOffset) const;
@@ -156,50 +124,12 @@ private:
 	UPROPERTY()
 	TObjectPtr<UDynamicMeshComponent> TerrainComponent;
 
-	UPROPERTY()
-	TObjectPtr<UStaticMeshComponent> BaseComponent;
-
-	UPROPERTY()
-	TObjectPtr<UPointLightComponent> GlowLight;
-
-	/** Bobs and turns in Tick; carries whichever mesh component the droid's template resolves to. */
-	UPROPERTY()
-	TObjectPtr<USceneComponent> DroidRoot;
-
-	/** Sparse projection rays from the droid to the rim of the map. */
-	UPROPERTY()
-	TArray<TObjectPtr<UStaticMeshComponent>> ProjectionLines;
-
-	/** Extra rays that sweep the rim while the view is moving. */
-	UPROPERTY()
-	TArray<TObjectPtr<UStaticMeshComponent>> SweepLines;
-
-	UPROPERTY()
-	TObjectPtr<UStaticMeshComponent> DroidLens;
-
-	UPROPERTY()
-	TObjectPtr<UPointLightComponent> DroidLensLight;
-
-	void RequestDroid();
-	void UpdateDroid();
-	void NoteProjectionChange();
-
-	FVector2D DroidSide = FVector2D(1.f, 0.f);
-	float DroidTime = 0.f;
+	/** Keeps the rays on the same patch of ground while the content turns; eases back once it stops. */
 	float ProjectionYawOffset = 0.f;
-	float SweepStartTime = 0.f;
-	double LastProjectionChangeTime = 0.0;
-
-	UPROPERTY()
-	TObjectPtr<UMaterialInterface> HoloMaterial;
 
 	/** Shared by terrain and buildings. */
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> ContentMaterial;
-
-	/** Every hologram material this actor made; their Center/Fade follow the actor each tick. */
-	UPROPERTY()
-	TArray<TObjectPtr<UMaterialInstanceDynamic>> HoloMaterials;
 
 	UPROPERTY()
 	TArray<TObjectPtr<UStaticMeshComponent>> BuildingComponents;
@@ -207,9 +137,6 @@ private:
 	/** Hologram copies of each mirrored structure's mesh components; the components themselves are owned by this actor. */
 	TMap<TWeakObjectPtr<AActor>, TArray<TWeakObjectPtr<UStaticMeshComponent>>> DynamicStructures;
 	double NextDynamicScanTime = 0.0;
-
-	UPROPERTY()
-	TObjectPtr<UStaticMesh> BeamMesh;
 
 	UPROPERTY()
 	TObjectPtr<UStaticMesh> ArrowMesh;
@@ -234,5 +161,4 @@ private:
 	int32 BakeGeneration = 0;
 	int32 BuildingGeneration = 0;
 	double LastViewChangeTime = 0.0;
-	float FadeAlpha = 0.f;
 };

@@ -24,7 +24,7 @@ namespace
 	const FLinearColor Gold(1.f, 0.8f, 0.2f);
 	const FLinearColor Orange(1.f, 0.5f, 0.15f);
 	const FLinearColor Medical(1.f, 0.3f, 0.35f);
-	const FLinearColor Travel(0.35f, 1.f, 0.35f);
+	const FLinearColor TravelColor(0.35f, 1.f, 0.35f);
 	const FLinearColor Lime(0.75f, 1.f, 0.25f);
 	const FLinearColor Magenta(1.f, 0.4f, 1.f);
 	const FLinearColor Civic(0.92f, 0.92f, 0.92f);
@@ -39,8 +39,8 @@ namespace
 		{ 7, 0, TEXT("guild"), TEXT("Guild Hall"), false, Civic },
 		{ 12, 0, TEXT("hotel"), TEXT("Hotel"), false, Civic },
 		{ 13, 0, TEXT("medicalcenter"), TEXT("Medical Center"), false, Medical },
-		{ 14, 0, TEXT("shuttleport"), TEXT("Shuttleport"), false, Travel },
-		{ 15, 0, TEXT("starport"), TEXT("Starport"), false, Travel },
+		{ 14, 0, TEXT("shuttleport"), TEXT("Shuttleport"), false, TravelColor },
+		{ 15, 0, TEXT("starport"), TEXT("Starport"), false, TravelColor },
 		{ 16, 0, TEXT("themepark"), TEXT("Theme Park"), false, Civic },
 		{ 26, 0, TEXT("junkshop"), TEXT("Junk Shop"), false, Civic },
 		{ 27, 0, TEXT("tavern"), TEXT("Tavern"), false, Orange },

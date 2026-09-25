@@ -2,9 +2,9 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "SWGHoloView.h"
 #include "SWGHoloMapWidget.generated.h"
 
-class ACameraActor;
 class ASWGHoloMapActor;
 class UButton;
 class UTextBlock;
@@ -123,11 +123,7 @@ private:
 	UPROPERTY()
 	TObjectPtr<USWGTreSubsystem> Tre;
 
-	UPROPERTY()
-	TObjectPtr<ACameraActor> ShoulderCamera;
-
-	UPROPERTY()
-	TObjectPtr<AActor> PreviousViewTarget;
+	FSWGHoloView View;
 
 	UPROPERTY()
 	TObjectPtr<USWGWaypointSubsystem> Waypoints;
@@ -138,7 +134,6 @@ private:
 	FVector2D LastLocationCenter = FVector2D::ZeroVector;
 	int32 LastLocationDetail = -1;
 
-	float PreviousHudOpacity = 1.f;
 	/** Where the cursor would be, in viewport pixels, moved by raw deltas while a drag has it captured. */
 	FVector2D VirtualCursor = FVector2D::ZeroVector;
 	/** Latest analog readings, applied every tick: left stick pans, right stick turns, triggers zoom. */
@@ -148,5 +143,4 @@ private:
 	float RightTrigger = 0.f;
 	bool bPanning = false;
 	bool bTurning = false;
-	bool bClosing = false;
 };

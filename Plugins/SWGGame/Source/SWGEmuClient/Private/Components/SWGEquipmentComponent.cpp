@@ -240,6 +240,15 @@ void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquipt
 }
 
 
+UMeshComponent* USWGEquipmentComponent::FindItemVisual(uint64 ObjectId) const
+{
+	if (USkeletalMeshComponent* Wearable = WearableComponentsByObjectId.FindRef(ObjectId))
+	{
+		return Wearable;
+	}
+	return HardpointComponentsByObjectId.FindRef(ObjectId);
+}
+
 void USWGEquipmentComponent::AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials, int32 RetryCount)
 {
 	if (!Mesh || !GetOwner())

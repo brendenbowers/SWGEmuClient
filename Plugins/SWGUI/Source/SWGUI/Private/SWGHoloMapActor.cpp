@@ -38,7 +38,6 @@ namespace
 	constexpr int32 MaxBuildings = 150;
 	/** How far above the projector the content floats, world units. */
 	constexpr float ContentLift = 12.f;
-	constexpr float FadeInSeconds = 0.5f;
 	constexpr float LabelWorldSize = 4.f;
 	/** Crowded marker labels rise in steps of about one text line, world units. */
 	constexpr float LabelTierStep = LabelWorldSize * 1.25f;
@@ -141,8 +140,7 @@ namespace
 
 ASWGHoloMapActor::ASWGHoloMapActor()
 {
-	PrimaryActorTick.bCanEverTick = true;
-	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Projector")));
+	ProjectionLift = ContentLift;
 
 	ContentRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Content"));
 	ContentRoot->SetupAttachment(GetRootComponent());
@@ -152,63 +150,8 @@ ASWGHoloMapActor::ASWGHoloMapActor()
 	TerrainComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	TerrainComponent->SetCastShadow(false);
 
-	BaseComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Base"));
-	BaseComponent->SetupAttachment(GetRootComponent());
-	BaseComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	BaseComponent->SetCastShadow(false);
-
-	DroidRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Droid"));
-	DroidRoot->SetupAttachment(GetRootComponent());
-
-	DroidLens = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DroidLens"));
-	DroidLens->SetupAttachment(DroidRoot);
-	DroidLens->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	DroidLens->SetCastShadow(false);
-	DroidLens->SetRelativeLocation(FVector(0.f, 0.f, -8.f));
-	DroidLens->SetRelativeScale3D(FVector(0.04f));
-
-	DroidLensLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("DroidLensLight"));
-	DroidLensLight->SetupAttachment(DroidLens);
-	DroidLensLight->SetCastShadows(false);
-	DroidLensLight->SetIntensityUnits(ELightUnits::Candelas);
-	DroidLensLight->SetIntensity(4.f);
-	DroidLensLight->SetLightColor(FLinearColor(0.12f, 0.55f, 1.f));
-	DroidLensLight->SetAttenuationRadius(55.f);
-
-	GlowLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("Glow"));
-	GlowLight->SetupAttachment(GetRootComponent());
-	GlowLight->SetCastShadows(false);
-	GlowLight->SetIntensityUnits(ELightUnits::Candelas);
-	// A faint blue spill on whatever is near, not a lamp.
-	GlowLight->SetIntensity(1.5f);
-	GlowLight->SetLightColor(FLinearColor(0.2f, 0.55f, 1.f));
-	GlowLight->SetAttenuationRadius(250.f);
-	GlowLight->SetRelativeLocation(FVector(0.f, 0.f, 30.f));
-
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HoloFinder(TEXT("/Game/SWGEmu/Materials/M_SWGHologram.M_SWGHologram"));
-	HoloMaterial = HoloFinder.Object;
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CylinderFinder(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	BeamMesh = CylinderFinder.Object;
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> ConeFinder(TEXT("/Engine/BasicShapes/Cone.Cone"));
 	ArrowMesh = ConeFinder.Object;
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereFinder(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-	BaseComponent->SetStaticMesh(BeamMesh);
-	DroidLens->SetStaticMesh(SphereFinder.Object);
-}
-
-UMaterialInstanceDynamic* ASWGHoloMapActor::MakeHoloMaterial(const FLinearColor& Color, float Intensity)
-{
-	UMaterialInstanceDynamic* Material = HoloMaterial ? UMaterialInstanceDynamic::Create(HoloMaterial, this) : nullptr;
-	if (Material)
-	{
-		Material->SetVectorParameterValue(TEXT("Color"), Color);
-		Material->SetScalarParameterValue(TEXT("Intensity"), Intensity);
-		// A little past the disc so pins standing on the rim aren't cut.
-		Material->SetScalarParameterValue(TEXT("Radius"), DiscDiameter * 0.52f);
-		Material->SetScalarParameterValue(TEXT("Fade"), FadeAlpha);
-		HoloMaterials.Add(Material);
-	}
-	return Material;
 }
 
 void ASWGHoloMapActor::BeginPlay()
@@ -217,149 +160,7 @@ void ASWGHoloMapActor::BeginPlay()
 	ContentMaterial = MakeHoloMaterial(HoloColor, HoloIntensity);
 	TerrainComponent->SetMaterial(0, ContentMaterial);
 	ContentRoot->SetRelativeLocation(FVector(0.f, 0.f, ContentLift));
-
-	// The projector: a thin glowing disc a touch wider than the image.
-	const float BaseScale = DiscDiameter * 1.05f / 100.f;
-	BaseComponent->SetRelativeScale3D(FVector(BaseScale, BaseScale, 0.03f));
-	// A faint light field under the image; the droid above is the projector now.
-	BaseComponent->SetMaterial(0, MakeHoloMaterial(HoloColor, HoloIntensity * 0.12f));
-	DroidLens->SetMaterial(0, MakeHoloMaterial(HoloColor, HoloIntensity * 2.f));
-	for (int32 Index = 0; Index < 4; ++Index)
-	{
-		UStaticMeshComponent* Line = NewObject<UStaticMeshComponent>(this);
-		Line->SetStaticMesh(BeamMesh);
-		Line->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Line->SetCastShadow(false);
-		Line->SetMaterial(0, MakeHoloMaterial(HoloColor, HoloIntensity * 0.12f));
-		Line->SetupAttachment(GetRootComponent());
-		Line->RegisterComponent();
-		ProjectionLines.Add(Line);
-	}
-	for (int32 Index = 0; Index < 2; ++Index)
-	{
-		UStaticMeshComponent* Line = NewObject<UStaticMeshComponent>(this);
-		Line->SetStaticMesh(BeamMesh);
-		Line->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Line->SetCastShadow(false);
-		Line->SetMaterial(0, MakeHoloMaterial(HoloColor, 0.f));
-		Line->SetupAttachment(GetRootComponent());
-		Line->RegisterComponent();
-		SweepLines.Add(Line);
-	}
 	LastViewChangeTime = FPlatformTime::Seconds();
-	RequestDroid();
-	UpdateDroid();
-}
-
-void ASWGHoloMapActor::SetDroidSide(const FVector2D& Direction)
-{
-	DroidSide = Direction.GetSafeNormal();
-	if (DroidSide.IsNearlyZero())
-	{
-		DroidSide = FVector2D(1.f, 0.f);
-	}
-	UpdateDroid();
-}
-
-void ASWGHoloMapActor::RequestDroid()
-{
-	UGameInstance* GameInstance = GetGameInstance();
-	USWGMeshGeneratorSubsystem* MeshGenerator = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr;
-	if (!MeshGenerator || DroidTemplate.IsEmpty())
-	{
-		return;
-	}
-	TWeakObjectPtr<ASWGHoloMapActor> WeakThis(this);
-	auto Attach = [WeakThis](UMeshComponent* Mesh, const TArray<UMaterialInterface*>& Materials)
-	{
-		ASWGHoloMapActor* Actor = WeakThis.Get();
-		if (!Actor)
-		{
-			return;
-		}
-		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Mesh->SetupAttachment(Actor->DroidRoot);
-		Mesh->SetRelativeScale3D(FVector(Actor->DroidScale));
-		for (int32 MaterialIndex = 0; MaterialIndex < Materials.Num(); ++MaterialIndex)
-		{
-			Mesh->SetMaterial(MaterialIndex, Materials[MaterialIndex]);
-		}
-		Mesh->RegisterComponent();
-	};
-	// A mobile template: skeletal when its appearance is a .sat, shown in bind pose.
-	MeshGenerator->RequestItemMesh(FSWGCrc32::HashString(DroidTemplate), INDEX_NONE, FSWGCustomizationVariables(),
-		[WeakThis, Attach](UStaticMesh* Mesh, const FSWGMeshData, const TArray<UMaterialInterface*>& Materials)
-		{
-			ASWGHoloMapActor* Actor = WeakThis.Get();
-			if (Actor && Mesh)
-			{
-				UStaticMeshComponent* Component = NewObject<UStaticMeshComponent>(Actor);
-				Component->SetStaticMesh(Mesh);
-				Attach(Component, Materials);
-			}
-		},
-		[WeakThis, Attach](USkeletalMesh* Mesh, const FSWGMeshData, const TArray<UMaterialInterface*>& Materials)
-		{
-			ASWGHoloMapActor* Actor = WeakThis.Get();
-			if (Actor && Mesh)
-			{
-				USkeletalMeshComponent* Component = NewObject<USkeletalMeshComponent>(Actor);
-				Component->SetSkeletalMeshAsset(Mesh);
-				Attach(Component, Materials);
-			}
-		});
-}
-
-void ASWGHoloMapActor::UpdateDroid()
-{
-	const float DiscRadius = DiscDiameter * 0.5f;
-	// A slow bob and a slight sway, so it reads as hovering rather than fixed.
-	const float Bob = FMath::Sin(DroidTime * 1.6f) * 3.f;
-	const FVector Hover = FVector(DroidSide.X, DroidSide.Y, 0.f) * DiscRadius * DroidReach
-		+ FVector(0.f, 0.f, ContentLift + DiscRadius * DroidHeight + Bob);
-	const FVector ToCentre = FVector(0.f, 0.f, ContentLift) - Hover;
-	DroidRoot->SetRelativeLocation(Hover);
-	DroidRoot->SetRelativeRotation(FRotator(0.f, ToCentre.Rotation().Yaw + ViewYaw + FMath::Sin(DroidTime * 0.7f) * 8.f, 0.f));
-
-	const FVector Origin = Hover + FVector(0.f, 0.f, -8.f);
-	auto PlaceRay = [this, &Origin, DiscRadius](UStaticMeshComponent* Line, float Angle)
-	{
-		const FVector2D RimDirection = DroidSide.GetRotated(Angle + ProjectionYawOffset);
-		const FVector Rim(RimDirection.X * DiscRadius * 0.96f,
-			RimDirection.Y * DiscRadius * 0.96f, ContentLift);
-		const FVector Ray = Rim - Origin;
-		Line->SetRelativeLocation((Origin + Rim) * 0.5f);
-		Line->SetRelativeRotation(FRotationMatrix::MakeFromZ(Ray).Rotator());
-		Line->SetRelativeScale3D(FVector(0.007f, 0.007f, Ray.Size() / 100.f));
-	};
-	for (int32 Index = 0; Index < ProjectionLines.Num(); ++Index)
-	{
-		// Span the far half of the rim, leaving the two near-side rays out of the player's view.
-		PlaceRay(ProjectionLines[Index], -90.f + 60.f * Index);
-	}
-	const float IdleSeconds = FPlatformTime::Seconds() - LastProjectionChangeTime;
-	const float SweepFade = FMath::Clamp((0.65f - IdleSeconds) / 0.4f, 0.f, 1.f);
-	for (int32 Index = 0; Index < SweepLines.Num(); ++Index)
-	{
-		UStaticMeshComponent* Line = SweepLines[Index];
-		const float Phase = FMath::Frac((DroidTime - SweepStartTime) * 1.2f);
-		PlaceRay(Line, Index == 0 ? -90.f + 180.f * Phase : 90.f - 180.f * Phase);
-		Line->SetVisibility(SweepFade > 0.01f);
-		if (UMaterialInstanceDynamic* Material = Cast<UMaterialInstanceDynamic>(Line->GetMaterial(0)))
-		{
-			Material->SetScalarParameterValue(TEXT("Intensity"), HoloIntensity * 0.16f * SweepFade);
-		}
-	}
-}
-
-void ASWGHoloMapActor::NoteProjectionChange()
-{
-	const double Now = FPlatformTime::Seconds();
-	if (Now - LastProjectionChangeTime > 0.65)
-	{
-		SweepStartTime = DroidTime;
-	}
-	LastProjectionChangeTime = Now;
 }
 
 void ASWGHoloMapActor::SetViewCenter(const FVector2D& RawCenter)
@@ -446,22 +247,12 @@ void ASWGHoloMapActor::UpdateContentTransform()
 
 void ASWGHoloMapActor::Tick(float DeltaSeconds)
 {
-	Super::Tick(DeltaSeconds);
-	FadeAlpha = FMath::Min(1.f, FadeAlpha + DeltaSeconds / FadeInSeconds);
-	DroidTime += DeltaSeconds;
+	// Before Super::Tick, which places the droid's rays with it.
 	if (FPlatformTime::Seconds() - LastProjectionChangeTime > 0.25)
 	{
 		ProjectionYawOffset = FMath::FInterpTo(ProjectionYawOffset, 0.f, DeltaSeconds, 3.f);
 	}
-	UpdateDroid();
-	// The material fades everything past the rim, measured from here.
-	const FVector Centre = GetActorLocation();
-	HoloMaterials.RemoveAll([](const TObjectPtr<UMaterialInstanceDynamic>& Material) { return !Material; });
-	for (UMaterialInstanceDynamic* Material : HoloMaterials)
-	{
-		Material->SetVectorParameterValue(TEXT("Center"), FLinearColor(Centre.X, Centre.Y, Centre.Z, 0.f));
-		Material->SetScalarParameterValue(TEXT("Fade"), FadeAlpha);
-	}
+	Super::Tick(DeltaSeconds);
 
 	const bool bDrifted = bHasBake && (FVector2D::Distance(ViewCenter, BakedCenter) > BakedRadius * RebakeDrift
 		|| FMath::Max(ViewRadius / BakedRadius, BakedRadius / ViewRadius) > RebakeZoomRatio);

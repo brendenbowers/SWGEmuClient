@@ -20,6 +20,16 @@ enum class ESWGPlanetMapMode : uint8
 	Hologram
 };
 
+/** Which form the inventory opens in. */
+UENUM(BlueprintType)
+enum class ESWGInventoryMode : uint8
+{
+	/** The floating window, or the docked panel on a gamepad. */
+	Window,
+	/** USWGHoloInventoryWidget: a hologram of the player projected in front of them. */
+	Hologram
+};
+
 /**
  * Owns the UI side of the client flow: creates the layout for the local
  * player and pushes/clears layer widgets as USWGClientFlowSubsystem changes
@@ -37,9 +47,10 @@ public:
 	virtual void PlayerControllerChanged(APlayerController* NewPlayerController) override;
 
 	/**
-	 * Opens the inventory, or closes it if it is up. Mouse and keyboard get the
-	 * classic floating window; a gamepad gets the docked panel, and the two swap
-	 * if the active device changes while it is open.
+	 * Opens the inventory, or closes it if it is up. In Hologram mode that is the
+	 * hologram for any device. Otherwise mouse and keyboard get the classic
+	 * floating window and a gamepad the docked panel, and the two swap if the
+	 * active device changes while it is open.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
 	void ToggleInventory();
@@ -53,6 +64,17 @@ public:
 	/** Opens a specific form of the inventory (closing nothing — see ToggleInventory for the usual path). */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
 	void OpenInventory(bool bDocked);
+
+	/** Opens the holographic inventory, closing a holographic map that would fight it for the camera. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void OpenHoloInventory();
+
+	/** Switches the inventory form; an open inventory is swapped for the other form in place. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void SetInventoryMode(ESWGInventoryMode Mode);
+
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
+	ESWGInventoryMode GetInventoryMode() const { return InventoryMode; }
 
 	/** Opens an examine window for the object, or raises the one already showing it. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
@@ -173,6 +195,13 @@ private:
 	/** The gamepad form; only one of this and InventoryWindow is ever up. */
 	UPROPERTY()
 	TObjectPtr<class USWGInventoryDockWidget> InventoryDock;
+
+	UPROPERTY()
+	TObjectPtr<class USWGHoloInventoryWidget> HoloInventory;
+
+	ESWGInventoryMode InventoryMode = ESWGInventoryMode::Window;
+
+	void HandleHoloInventoryClosed();
 
 	FDelegateHandle InputMethodChangedHandle;
 

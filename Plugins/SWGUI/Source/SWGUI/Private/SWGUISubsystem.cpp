@@ -15,6 +15,7 @@
 #include "SWGDatapadWidget.h"
 #include "SWGPlanetMapWindowWidget.h"
 #include "SWGHoloMapWidget.h"
+#include "SWGHoloInventoryWidget.h"
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
@@ -421,11 +422,21 @@ bool USWGUISubsystem::IsGamepadActive() const
 
 bool USWGUISubsystem::IsInventoryOpen() const
 {
-	return InventoryWindow != nullptr || InventoryDock != nullptr;
+	return InventoryWindow != nullptr || InventoryDock != nullptr || HoloInventory != nullptr;
 }
 
 void USWGUISubsystem::ToggleInventory()
 {
+	if (HoloInventory)
+	{
+		HoloInventory->Close();
+		return;
+	}
+	if (InventoryMode == ESWGInventoryMode::Hologram && !IsInventoryOpen())
+	{
+		OpenHoloInventory();
+		return;
+	}
 	if (InventoryDock && InventoryDock->GetTab() != ESWGInventoryTab::Equipped
 		&& InventoryDock->GetTab() != ESWGInventoryTab::Inventory
 		&& InventoryDock->GetTab() != ESWGInventoryTab::Examine)
@@ -451,6 +462,52 @@ void USWGUISubsystem::CloseInventory()
 	if (InventoryDock)
 	{
 		InventoryDock->Close();
+	}
+	if (HoloInventory)
+	{
+		HoloInventory->Close();
+	}
+}
+
+void USWGUISubsystem::OpenHoloInventory()
+{
+	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
+	if (!PlayerController || HoloInventory)
+	{
+		return;
+	}
+	// Both take over the camera; only one hologram at a time.
+	if (HoloMap)
+	{
+		HoloMap->Close();
+	}
+	HoloInventory = CreateWidget<USWGHoloInventoryWidget>(PlayerController, USWGHoloInventoryWidget::StaticClass());
+	HoloInventory->OnClosed.AddUObject(this, &USWGUISubsystem::HandleHoloInventoryClosed);
+	HoloInventory->OnSwitchToWindow.AddWeakLambda(this, [this]() { SetInventoryMode(ESWGInventoryMode::Window); });
+	// Under the layout (100) and windows, over the world, as the holo map.
+	HoloInventory->AddToPlayerScreen(90);
+}
+
+void USWGUISubsystem::HandleHoloInventoryClosed()
+{
+	HoloInventory = nullptr;
+}
+
+void USWGUISubsystem::SetInventoryMode(ESWGInventoryMode Mode)
+{
+	InventoryMode = Mode;
+	const bool bWasOpen = IsInventoryOpen();
+	if (HoloInventory && Mode != ESWGInventoryMode::Hologram)
+	{
+		HoloInventory->Close();
+	}
+	if ((InventoryWindow || InventoryDock) && Mode == ESWGInventoryMode::Hologram)
+	{
+		CloseInventory();
+	}
+	if (bWasOpen && !IsInventoryOpen())
+	{
+		ToggleInventory();
 	}
 }
 
@@ -694,6 +751,10 @@ void USWGUISubsystem::OpenPlanetMap()
 		if (!PlayerController)
 		{
 			return;
+		}
+		if (HoloInventory)
+		{
+			HoloInventory->Close();
 		}
 		HoloMap = CreateWidget<USWGHoloMapWidget>(PlayerController, HoloMapClass ? HoloMapClass.Get() : USWGHoloMapWidget::StaticClass());
 		HoloMap->OnClosed.AddUObject(this, &USWGUISubsystem::HandleHoloMapClosed);

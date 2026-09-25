@@ -13,6 +13,7 @@ struct FSWGPacket;
 struct FSWGMeshData;
 class USkeletalMesh;
 class USkeletalMeshComponent;
+class UMeshComponent;
 
 /** CREO base6 — equipped items + composite appearance override. */
 UCLASS(ClassGroup=(SWGEmu), meta=(BlueprintSpawnableComponent))
@@ -49,6 +50,9 @@ public:
 	 * RemoveUnequippedVisuals, since no equipment list ever names them.
 	 */
 	void SetClientDataWearables(const TArray<FSWGClientDataWearable>& Wearables);
+
+	/** The mesh showing an equipped item on the body (worn or held), if it has one yet. */
+	UMeshComponent* FindItemVisual(uint64 ObjectId) const;
 
 protected:
 	/**
