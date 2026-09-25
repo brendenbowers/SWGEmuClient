@@ -9,16 +9,16 @@ class UTextBlock;
 /**
  * One line of a holo detail card: an attribute ("Min Damage    110") or the
  * heading of a group of them. WBP_HoloAttributeLine lays it out, binding
- * LabelText and ValueText; without one it builds its own. OnLineSet tells a
- * Blueprint which kind it is showing, for styling.
+ * LabelText and ValueText. OnLineSet tells a Blueprint which kind it is
+ * showing, for styling.
  */
-UCLASS(Blueprintable)
+UCLASS(Abstract, Blueprintable)
 class SWGUI_API USWGHoloAttributeLineWidget : public UUserWidget
 {
 	GENERATED_BODY()
 
 public:
-	/** A line of the class set in Project Settings > SWG UI (HoloAttributeLineClass), or this one. */
+	/** A line of the class set in Project Settings > SWG UI (HoloAttributeLineClass); null, with a warning, while that's unset. */
 	static USWGHoloAttributeLineWidget* Create(APlayerController* Owner);
 
 	void SetHeading(const FText& Heading);
@@ -34,11 +34,9 @@ public:
 	bool bApplyHoloStyle = true;
 
 protected:
-	virtual void NativeOnInitialized() override;
-
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> LabelText;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> ValueText;
 };

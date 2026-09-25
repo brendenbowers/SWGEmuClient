@@ -1,7 +1,6 @@
 #include "SWGHoloLabelWidget.h"
 #include "SWGHoloStyle.h"
 #include "SWGUISettings.h"
-#include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
 #include "Components/TextBlock.h"
 #include "GameFramework/PlayerController.h"
@@ -9,23 +8,19 @@
 USWGHoloLabelWidget* USWGHoloLabelWidget::Create(APlayerController* Owner)
 {
 	TSubclassOf<USWGHoloLabelWidget> Class = USWGUISettings::Get().HoloLabelClass.LoadSynchronous();
-	return CreateWidget<USWGHoloLabelWidget>(Owner, Class ? Class.Get() : StaticClass());
+	if (!Class)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGHoloLabelWidget: HoloLabelClass is unset (Project Settings > SWG UI)."));
+		return nullptr;
+	}
+	return CreateWidget<USWGHoloLabelWidget>(Owner, Class);
 }
 
 void USWGHoloLabelWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
-	if (!WidgetTree->RootWidget)
-	{
-		Panel = WidgetTree->ConstructWidget<UBorder>();
-		Panel->SetPadding(FMargin(8.f, 3.f));
-		Label = WidgetTree->ConstructWidget<UTextBlock>();
-		Label->SetFont(SWGHoloStyle::Font(12));
-		Panel->SetContent(Label);
-		WidgetTree->RootWidget = Panel;
-	}
 	// The holo font is a system face, not an asset, so a Blueprint can't pick it.
-	if (bApplyHoloStyle && Label)
+	if (bApplyHoloStyle)
 	{
 		Label->SetFont(SWGHoloStyle::Font(12));
 	}
@@ -36,18 +31,12 @@ void USWGHoloLabelWidget::NativeOnInitialized()
 void USWGHoloLabelWidget::SetItem(int64 InObjectId, const FText& Text)
 {
 	ObjectId = InObjectId;
-	if (Label)
-	{
-		Label->SetText(Text);
-	}
+	Label->SetText(Text);
 }
 
 void USWGHoloLabelWidget::SetWrapWidth(float Width)
 {
-	if (Label)
-	{
-		Label->SetWrapTextAt(Width);
-	}
+	Label->SetWrapTextAt(Width);
 }
 
 void USWGHoloLabelWidget::SetLit(bool bInLit)
@@ -65,14 +54,8 @@ void USWGHoloLabelWidget::ApplyStyle()
 	const bool bBright = bHovered || bLit;
 	if (bApplyHoloStyle)
 	{
-		if (Panel)
-		{
-			Panel->SetBrush(SWGHoloStyle::PanelBrush(bBright));
-		}
-		if (Label)
-		{
-			Label->SetColorAndOpacity(FSlateColor(bBright ? SWGHoloStyle::BrightText : SWGHoloStyle::Text));
-		}
+		Panel->SetBrush(SWGHoloStyle::PanelBrush(bBright));
+		Label->SetColorAndOpacity(FSlateColor(bBright ? SWGHoloStyle::BrightText : SWGHoloStyle::Text));
 	}
 	OnBrightChanged(bBright);
 }

@@ -44,6 +44,16 @@ public:
 	/** The hovered or selected item turns faster and glows; zero for none. */
 	void SetHovered(int64 ObjectId);
 
+	/** Shows or hides every model, as when another pane takes the list's place. */
+	void SetShelfShown(bool bShown) { bShelfShown = bShown; }
+
+	/**
+	 * Asked for each model's world centre every layout; true hides it, as a
+	 * scan wipes past. Asked here rather than handed a list, because the
+	 * scene draws before widgets tick and a list would trail by a frame.
+	 */
+	void SetItemMask(TFunction<bool(const FVector&)> InItemMask) { ItemMask = MoveTemp(InItemMask); }
+
 	/** Middle of an item's model, world space; false if its row isn't showing. */
 	bool GetItemCenter(int64 ObjectId, FVector& OutWorld) const;
 
@@ -92,6 +102,8 @@ private:
 	int32 MaxScrollRow() const;
 
 	TArray<int64> ItemIds;
+	bool bShelfShown = true;
+	TFunction<bool(const FVector&)> ItemMask;
 	TArray<FShelfItem> Items;
 
 	/** Keeps the per-item components and materials alive; FShelfItem isn't reflected. */

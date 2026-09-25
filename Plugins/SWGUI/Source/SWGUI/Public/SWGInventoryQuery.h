@@ -44,4 +44,11 @@ namespace SWGInventoryQuery
 	SWGUI_API bool Gather(UGameInstance* GameInstance, TArray<FSWGInventoryEntry>& Equipped, TArray<FSWGInventoryEntry>& Contents);
 
 	SWGUI_API FSWGInventoryEntry Describe(UGameInstance* GameInstance, int64 ObjectId);
+
+	/**
+	 * How full the bag is, counted as Core3 counts it: every item in it and in
+	 * the containers inside it (a crafting tool's contents aside), against its
+	 * template's containerVolumeLimit. False until the bag has arrived.
+	 */
+	SWGUI_API bool GetBagCapacity(UGameInstance* GameInstance, int32& OutUsed, int32& OutLimit);
 }

@@ -1,4 +1,5 @@
 #include "SWGHoloInventoryWidget.h"
+#include "SWGHoloCharacterSheetWidget.h"
 #include "SWGHoloFigureActor.h"
 #include "SWGHoloDetailCardWidget.h"
 #include "SWGHoloLabelWidget.h"
@@ -17,7 +18,13 @@
 #include "Components/CanvasPanelSlot.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
+#include "Components/ProgressBar.h"
+#include "Components/SizeBox.h"
+#include "Components/SWGTangibleComponent.h"
 #include "Components/TextBlock.h"
+#include "Components/VerticalBox.h"
+#include "Components/VerticalBoxSlot.h"
+#include "Objects/Creature/SWGCreature.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
@@ -34,131 +41,67 @@ namespace
 	/** How long a hovered item's details linger after the pointer leaves its name, so moving onto the card doesn't drop it. */
 	constexpr double CardLingerSeconds = 0.25;
 
-	UButton* MakeHintButton(UWidgetTree* Tree, UHorizontalBox* Row, const FText& Label)
+	/** A retail string, else the fallback. */
+	FText Localized(UGameInstance* GameInstance, const TCHAR* Table, const TCHAR* Key, const FText& Fallback)
 	{
-		UButton* Button = Tree->ConstructWidget<UButton>();
-		UTextBlock* Text = Tree->ConstructWidget<UTextBlock>();
-		Text->SetText(Label);
-		Button->AddChild(Text);
-		if (UHorizontalBoxSlot* ButtonSlot = Row->AddChildToHorizontalBox(Button))
-		{
-			ButtonSlot->SetPadding(FMargin(6.f, 0.f));
-		}
-		return Button;
+		USWGTreSubsystem* Tre = GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
+		const FString Value = Tre ? Tre->LookupString(Table, Key) : FString();
+		return Value.IsEmpty() ? Fallback : FText::FromString(Value);
 	}
 }
 
 void USWGHoloInventoryWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
-	if (!WidgetTree->RootWidget)
-	{
-		UCanvasPanel* Root = WidgetTree->ConstructWidget<UCanvasPanel>();
-		WidgetTree->RootWidget = Root;
-		UHorizontalBox* Bar = WidgetTree->ConstructWidget<UHorizontalBox>();
-		Root->AddChild(Bar);
-		if (UCanvasPanelSlot* BarSlot = Cast<UCanvasPanelSlot>(Bar->Slot))
-		{
-			BarSlot->SetAnchors(FAnchors(0.5f, 1.f));
-			BarSlot->SetAlignment(FVector2D(0.5f, 1.f));
-			BarSlot->SetPosition(FVector2D(0.f, -40.f));
-			BarSlot->SetAutoSize(true);
-		}
-		HintText = WidgetTree->ConstructWidget<UTextBlock>();
-		HintText->SetFont(SWGRetailStyle::Font(13));
-		HintText->SetColorAndOpacity(FSlateColor(HintColor));
-		HintText->SetShadowOffset(FVector2D(1.f, 1.f));
-		HintText->SetText(NSLOCTEXT("SWGEmu", "HoloInventoryHint", "Hover for details, click to pin  •  Right-click for options  •  Wheel scrolls the bag  •  Drag to turn"));
-		if (UHorizontalBoxSlot* HintSlot = Bar->AddChildToHorizontalBox(HintText))
-		{
-			HintSlot->SetVerticalAlignment(VAlign_Center);
-			HintSlot->SetPadding(FMargin(0.f, 0.f, 12.f, 0.f));
-		}
-		WindowButton = MakeHintButton(WidgetTree, Bar, NSLOCTEXT("SWGEmu", "HoloInventoryWindow", "Window Inventory"));
-		CloseButton = MakeHintButton(WidgetTree, Bar, NSLOCTEXT("SWGEmu", "HoloInventoryClose", "Close"));
-	}
 	LabelLayer = Cast<UCanvasPanel>(WidgetTree->RootWidget);
-	BuildMissingOverlay();
+	// Out of sight until the first layout has somewhere to put them.
+	for (UWidget* Piece : { (UWidget*)BagFrame.Get(), (UWidget*)BagCaptionPanel.Get(), (UWidget*)EquippedCaptionPanel.Get(), (UWidget*)BagMoreBefore.Get(),
+		(UWidget*)BagMoreAfter.Get(), (UWidget*)PageIndicator.Get(), (UWidget*)BagFooter.Get(), (UWidget*)PageClip.Get() })
+	{
+		Piece->SetVisibility(ESlateVisibility::Collapsed);
+	}
+	// Sized each frame to the list's place (LayoutBag).
+	if (UCanvasPanelSlot* SheetSlot = Cast<UCanvasPanelSlot>(CharacterSheet->Slot))
+	{
+		SheetSlot->SetAutoSize(false);
+	}
+	ApplyHoloStyle();
 	// The whole screen is the hologram's control surface.
 	SetVisibility(ESlateVisibility::Visible);
 	SetIsFocusable(true);
 }
 
-void USWGHoloInventoryWidget::BuildMissingOverlay()
+void USWGHoloInventoryWidget::ApplyHoloStyle()
 {
-	if (!LabelLayer)
-	{
-		return;
-	}
-	auto MakeText = [this](int32 Size, const FLinearColor& Color)
-	{
-		UTextBlock* Text = WidgetTree->ConstructWidget<UTextBlock>();
-		Text->SetFont(SWGHoloStyle::Font(Size));
-		Text->SetColorAndOpacity(FSlateColor(Color));
-		Text->SetShadowOffset(FVector2D(1.f, 1.f));
-		return Text;
-	};
-	auto AddToLayer = [this](UWidget* Widget, int32 ZOrder)
-	{
-		if (UCanvasPanelSlot* WidgetSlot = LabelLayer->AddChildToCanvas(Widget))
-		{
-			WidgetSlot->SetAutoSize(true);
-			WidgetSlot->SetZOrder(ZOrder);
-		}
-	};
-	if (!BagFrame)
-	{
-		UBorder* Frame = WidgetTree->ConstructWidget<UBorder>();
-		Frame->SetBrush(SWGHoloStyle::FrameBrush());
-		BagFrame = Frame;
-		AddToLayer(Frame, /*ZOrder=*/-1);
-		// Sized each frame to the list rather than to its content.
-		Cast<UCanvasPanelSlot>(Frame->Slot)->SetAutoSize(false);
-	}
-	// Headings on a panel of their own, so they read over the ground and tell the two groups apart.
-	auto MakeCaption = [this, &MakeText, &AddToLayer](TObjectPtr<UTextBlock>& OutText, TObjectPtr<UWidget>& OutHolder)
-	{
-		if (OutText)
-		{
-			// The Blueprint's own; it holds itself unless a panel round it was bound too.
-			if (!OutHolder)
-			{
-				OutHolder = OutText;
-			}
-			return;
-		}
-		UBorder* Panel = WidgetTree->ConstructWidget<UBorder>();
-		Panel->SetBrush(SWGHoloStyle::PanelBrush(false));
-		Panel->SetPadding(FMargin(10.f, 3.f));
-		OutText = MakeText(13, SWGHoloStyle::BrightText);
-		Panel->SetContent(OutText);
-		OutHolder = Panel;
-		AddToLayer(Panel, 0);
-	};
-	MakeCaption(BagCaption, BagCaptionPanel);
-	MakeCaption(EquippedCaption, EquippedCaptionPanel);
-	for (TObjectPtr<UTextBlock>* More : { &BagMoreBefore, &BagMoreAfter })
-	{
-		if (!*More)
-		{
-			*More = MakeText(13, SWGHoloStyle::BrightText);
-			AddToLayer(*More, 0);
-		}
-	}
-	for (UWidget* Piece : { BagFrame.Get(), BagCaptionPanel.Get(), EquippedCaptionPanel.Get(), (UWidget*)BagMoreBefore.Get(), (UWidget*)BagMoreAfter.Get() })
-	{
-		Piece->SetVisibility(ESlateVisibility::Collapsed);
-	}
+	// Retail's own strings, over whatever the designer typed.
+	UGameInstance* GameInstance = GetGameInstance();
+	CapacityLabel->SetText(Localized(GameInstance, TEXT("ui"), TEXT("container_capacity"), NSLOCTEXT("SWGEmu", "HoloCapacity", "Capacity")));
+	CashLabel->SetText(Localized(GameInstance, TEXT("ui"), TEXT("inv_money_cash"), NSLOCTEXT("SWGEmu", "HoloCash", "Cash:")));
+	BankLabel->SetText(Localized(GameInstance, TEXT("ui"), TEXT("inv_money_bank"), NSLOCTEXT("SWGEmu", "HoloBank", "Bank:")));
 	if (!bApplyHoloStyle)
 	{
 		return;
 	}
 	// The holo font is a system face, not an asset, so a Blueprint can't pick it.
+	auto Style = [](UTextBlock* Text, const FSlateFontInfo& Font, const FLinearColor& Color)
+	{
+		Text->SetFont(Font);
+		Text->SetColorAndOpacity(FSlateColor(Color));
+		Text->SetShadowOffset(FVector2D(1.f, 1.f));
+	};
 	for (UTextBlock* Text : { BagCaption.Get(), EquippedCaption.Get(), BagMoreBefore.Get(), BagMoreAfter.Get() })
 	{
-		Text->SetFont(SWGHoloStyle::Font(13));
-		Text->SetColorAndOpacity(FSlateColor(SWGHoloStyle::BrightText));
+		Style(Text, SWGHoloStyle::Font(13), SWGHoloStyle::BrightText);
 	}
+	for (UTextBlock* Text : { CapacityText.Get(), CashText.Get(), BankText.Get(), PageDots.Get() })
+	{
+		Style(Text, SWGHoloStyle::Font(12), SWGHoloStyle::BrightText);
+	}
+	for (UTextBlock* Text : { CapacityLabel.Get(), CashLabel.Get(), BankLabel.Get() })
+	{
+		Style(Text, SWGHoloStyle::Font(12), SWGHoloStyle::DimText);
+	}
+	Style(HintText, SWGRetailStyle::Font(13), HintColor);
 	for (UWidget* Holder : { BagCaptionPanel.Get(), EquippedCaptionPanel.Get() })
 	{
 		if (UBorder* Panel = Cast<UBorder>(Holder))
@@ -170,19 +113,124 @@ void USWGHoloInventoryWidget::BuildMissingOverlay()
 	{
 		Frame->SetBrush(SWGHoloStyle::FrameBrush());
 	}
-	if (HintText)
+	// White fill, tinted per state through FillColorAndOpacity (RefreshFooter).
+	CapacityBar->SetWidgetStyle(SWGHoloStyle::BarStyle(FLinearColor::White));
+	for (UButton* Arrow : { PagePrevious.Get(), PageNext.Get() })
 	{
-		HintText->SetFont(SWGRetailStyle::Font(13));
-		HintText->SetColorAndOpacity(FSlateColor(HintColor));
-		HintText->SetShadowOffset(FVector2D(1.f, 1.f));
+		Arrow->SetStyle(SWGHoloStyle::ChipStyle());
+		if (UTextBlock* Text = Cast<UTextBlock>(Arrow->GetContent()))
+		{
+			Style(Text, SWGHoloStyle::Font(12), SWGHoloStyle::BrightText);
+		}
 	}
+}
+
+void USWGHoloInventoryWidget::RefreshFooter()
+{
+	int32 Used = 0;
+	int32 Limit = 0;
+	const bool bKnown = SWGInventoryQuery::GetBagCapacity(GetGameInstance(), Used, Limit);
+	CapacityText->SetText(bKnown ? FText::Format(NSLOCTEXT("SWGEmu", "HoloCapacityValue", "{0} / {1}"), FText::AsNumber(Used), FText::AsNumber(Limit)) : FText::GetEmpty());
+	CapacityBar->SetPercent(bKnown ? FMath::Clamp(float(Used) / Limit, 0.f, 1.f) : 0.f);
+	CapacityBar->SetFillColorAndOpacity(bKnown && Used >= Limit ? SWGHoloStyle::FullFill : SWGHoloStyle::CapacityFill);
+	const ASWGCreature* Creature = Cast<ASWGCreature>(GetOwningPlayerPawn());
+	auto Credits = [](int32 Amount) { return FText::Format(NSLOCTEXT("SWGEmu", "HoloCredits", "{0} cr"), FText::AsNumber(Amount)); };
+	CashText->SetText(Creature ? Credits(Creature->CashCredits) : FText::GetEmpty());
+	BankText->SetText(Creature ? Credits(Creature->BankCredits) : FText::GetEmpty());
+}
+
+void USWGHoloInventoryWidget::ShowPane(ESWGHoloInventoryPane NewPane)
+{
+	const ESWGHoloInventoryPane Heading = ScanPhase == EScanPhase::None ? Pane : PendingPane;
+	if (NewPane == Heading)
+	{
+		return;
+	}
+	PendingPane = NewPane;
+	const double Now = ScanClock();
+	if (ScanPhase == EScanPhase::Draw)
+	{
+		// Turn back mid-draw: wipe down from where the line already is.
+		ScanPhase = EScanPhase::Wipe;
+		ScanPhaseStart = Now - (1.f - ScanProgress()) * ScanSeconds;
+	}
+	else if (ScanPhase == EScanPhase::None)
+	{
+		ScanPhase = EScanPhase::Wipe;
+		ScanPhaseStart = Now;
+	}
+}
+
+double USWGHoloInventoryWidget::ScanClock() const
+{
+	const UWorld* World = GetWorld();
+	return World ? World->GetRealTimeSeconds() : 0.0;
+}
+
+float USWGHoloInventoryWidget::ScanProgress() const
+{
+	return FMath::Clamp(float((ScanClock() - ScanPhaseStart) / FMath::Max(ScanSeconds, 0.01f)), 0.f, 1.f);
+}
+
+float USWGHoloInventoryWidget::CurrentScanLine() const
+{
+	if (ScanPhase == EScanPhase::None)
+	{
+		return -FLT_MAX;
+	}
+	const float Eased = FMath::InterpEaseInOut(0.f, 1.f, ScanProgress(), 2.f);
+	return ScanPhase == EScanPhase::Wipe ? FMath::Lerp(ScanPageTop, ScanPageBottom, Eased) : FMath::Lerp(ScanPageBottom, ScanPageTop, Eased);
+}
+
+void USWGHoloInventoryWidget::TurnPage(int32 Direction)
+{
+	constexpr int32 PageCount = 2;
+	const int32 Current = static_cast<int32>(ScanPhase == EScanPhase::None ? Pane : PendingPane);
+	ShowPane(static_cast<ESWGHoloInventoryPane>((Current + (Direction >= 0 ? 1 : PageCount - 1)) % PageCount));
+}
+
+void USWGHoloInventoryWidget::UpdateScan()
+{
+	if (ScanPhase == EScanPhase::None || ScanProgress() < 1.f)
+	{
+		return;
+	}
+	if (ScanPhase == EScanPhase::Wipe)
+	{
+		// Wiped clean: swap the page and draw the new one back up.
+		Pane = PendingPane;
+		ApplyPane();
+		ScanPhase = EScanPhase::Draw;
+		ScanPhaseStart = ScanClock();
+	}
+	else
+	{
+		ScanPhase = EScanPhase::None;
+	}
+}
+
+void USWGHoloInventoryWidget::ApplyPane()
+{
+	if (Pane == ESWGHoloInventoryPane::Character)
+	{
+		// The bag's models go away with its list, and whatever of them was in focus.
+		HoveredShelfId = 0;
+		if (Shelf && Shelf->GetItems().Contains(PinnedObjectId))
+		{
+			PinnedObjectId = 0;
+		}
+		CharacterSheet->Refresh();
+	}
+	UpdateCard();
 }
 
 void USWGHoloInventoryWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
-	if (WindowButton) { WindowButton->OnClicked.AddUniqueDynamic(this, &USWGHoloInventoryWidget::HandleWindowClicked); }
-	if (CloseButton) { CloseButton->OnClicked.AddUniqueDynamic(this, &USWGHoloInventoryWidget::HandleCloseClicked); }
+	WindowButton->OnClicked.AddUniqueDynamic(this, &USWGHoloInventoryWidget::HandleWindowClicked);
+	CloseButton->OnClicked.AddUniqueDynamic(this, &USWGHoloInventoryWidget::HandleCloseClicked);
+	PagePrevious->OnClicked.AddUniqueDynamic(this, &USWGHoloInventoryWidget::HandlePagePreviousClicked);
+	PageNext->OnClicked.AddUniqueDynamic(this, &USWGHoloInventoryWidget::HandlePageNextClicked);
 	if (ButtonTextTints.IsEmpty())
 	{
 		USWGTreSubsystem* Tre = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGTreSubsystem>() : nullptr;
@@ -253,6 +301,19 @@ void USWGHoloInventoryWidget::Project()
 	View.Begin(*this, CameraLocation, Focus + Right * ToFocus.Size() * Offset, CameraFieldOfView, CameraBlendSeconds, HudOpacity);
 	// Laid out against the camera every tick (LayoutBag); anywhere will do until then.
 	Shelf = World->SpawnActor<ASWGHoloShelfActor>(ASWGHoloShelfActor::StaticClass(), ProjectorLocation, TowardCamera, Params);
+	if (Shelf)
+	{
+		// Models above the scan line are wiped with their names.
+		TWeakObjectPtr<USWGHoloInventoryWidget> WeakThis(this);
+		Shelf->SetItemMask([WeakThis](const FVector& World)
+		{
+			const USWGHoloInventoryWidget* Widget = WeakThis.Get();
+			FVector2D Screen;
+			return Widget && Widget->ScanPhase != EScanPhase::None
+				&& UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(Widget->GetOwningPlayer(), World, Screen, /*bPlayerViewportRelative=*/true)
+				&& Screen.Y < Widget->CurrentScanLine();
+		});
+	}
 }
 
 void USWGHoloInventoryWidget::RestoreView()
@@ -360,6 +421,12 @@ void USWGHoloInventoryWidget::RebuildBagLabels()
 		if (!Label)
 		{
 			Label = USWGHoloLabelWidget::Create(GetOwningPlayer());
+			if (!Label)
+			{
+				// No label class set; Create has said so.
+				BagLabels.Remove(Entry.ObjectId);
+				return;
+			}
 			Label->OnHovered.BindUObject(this, &USWGHoloInventoryWidget::HandleLabelHovered);
 			Label->OnPressed.BindUObject(this, &USWGHoloInventoryWidget::HandleLabelPressed);
 			if (UCanvasPanelSlot* LabelSlot = LabelLayer->AddChildToCanvas(Label))
@@ -376,17 +443,25 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 {
 	APlayerController* PlayerController = GetOwningPlayer();
 	const FVector2D Size = MyGeometry.GetLocalSize();
-	if (!Shelf || !PlayerController || !BagCaption || Size.X <= 0.f)
+	if (!Shelf || !PlayerController || Size.X <= 0.f)
 	{
 		return;
 	}
+	const bool bShowBag = Pane == ESWGHoloInventoryPane::Inventory;
 	const float Left = BagArea.X * Size.X;
 	const float Top = BagArea.Y * Size.Y;
 	const float Right = BagArea.Z * Size.X;
 	const float Bottom = BagArea.W * Size.Y;
+	constexpr float FramePad = 8.f;
+	constexpr float MoreLineHeight = 22.f;
+	constexpr float HeadingGap = 6.f;
+	constexpr float FooterGap = 6.f;
+	const float FooterHeight = BagFooter->GetDesiredSize().Y;
 	const int32 Columns = FMath::Max(1, BagColumns);
 	const float CellWidth = (Right - Left) / Columns;
-	const int32 Rows = FMath::Max(1, FMath::FloorToInt((Bottom - Top) / BagRowHeight));
+	// The footer comes out of the list's height, so the frame keeps to BagArea.
+	const int32 Rows = FMath::Max(1, FMath::FloorToInt((Bottom - Top - MoreLineHeight - FooterGap - FooterHeight) / BagRowHeight));
+	Shelf->SetShelfShown(bShowBag);
 	if (Shelf->GetColumns() != Columns || LastBagRows != Rows)
 	{
 		LastBagRows = Rows;
@@ -421,22 +496,62 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 	const FVector RowStep = NextRow - TopLeft;
 	Shelf->SetGridFrame(TopLeft, NextColumn - TopLeft, RowStep, RowStep.Size() * ModelSize / BagRowHeight);
 
-	// A frame round the list and its heading, with room below for the "more" count.
-	constexpr float FramePad = 8.f;
-	constexpr float MoreLineHeight = 22.f;
-	const float HeadingHeight = FMath::Max(BagCaptionPanel ? BagCaptionPanel->GetDesiredSize().Y : 0.f, 22.f);
+	// A frame round the heading, the list (or the sheet in its place), the page indicator and the footer.
+	const float HeadingHeight = FMath::Max(BagCaptionPanel->GetDesiredSize().Y, 22.f);
 	const float ListBottom = Top + Rows * BagRowHeight;
-	BagFrameRect = Contents.IsEmpty() ? FBox2D(ForceInit)
-		: FBox2D(FVector2D(Left - FramePad, Top - HeadingHeight - FramePad * 2.f), FVector2D(Right + FramePad, ListBottom + MoreLineHeight + FramePad));
-	if (BagFrame)
+	const float FooterTop = ListBottom + MoreLineHeight + FooterGap;
+	const float PageTop = Top - HeadingGap - HeadingHeight;
+	const float PageBottom = ListBottom + MoreLineHeight;
+	BagFrameRect = FBox2D(FVector2D(Left - FramePad, PageTop - FramePad), FVector2D(Right + FramePad, FooterTop + FooterHeight + FramePad));
+
+	// The scan: down the page wiping it, then back up drawing the next. Page content shows only below the line.
+	ScanPageTop = PageTop;
+	ScanPageBottom = PageBottom;
+	ScanLineY = CurrentScanLine();
+	ScanLineLeft = Left - FramePad;
+	ScanLineRight = Right + FramePad;
+	const bool bScanning = ScanPhase != EScanPhase::None;
+	// A zero size leaves the widget its own.
+	auto PlaceBox = [](UWidget* Widget, const FVector2D& Position, const FVector2D& BoxSize, ESlateVisibility Shown)
 	{
-		BagFrame->SetVisibility(BagFrameRect.bIsValid ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
-		if (UCanvasPanelSlot* FrameSlot = Cast<UCanvasPanelSlot>(BagFrame->Slot); FrameSlot && BagFrameRect.bIsValid)
+		Widget->SetVisibility(Shown);
+		if (UCanvasPanelSlot* BoxSlot = Cast<UCanvasPanelSlot>(Widget->Slot))
 		{
-			FrameSlot->SetAutoSize(false);
-			FrameSlot->SetPosition(BagFrameRect.Min);
-			FrameSlot->SetSize(BagFrameRect.GetSize());
+			BoxSlot->SetAlignment(FVector2D::ZeroVector);
+			BoxSlot->SetPosition(Position);
+			if (!BoxSize.IsZero())
+			{
+				BoxSlot->SetAutoSize(false);
+				BoxSlot->SetSize(BoxSize);
+			}
 		}
+	};
+	PlaceBox(BagFrame, BagFrameRect.Min, BagFrameRect.GetSize(), ESlateVisibility::HitTestInvisible);
+	PlaceBox(BagFooter, FVector2D(Left, FooterTop), FVector2D(Right - Left, FooterHeight), ESlateVisibility::HitTestInvisible);
+	// The indicator centred where the "more" count sits, under the page.
+	PageIndicator->SetVisibility(ESlateVisibility::Visible);
+	if (UCanvasPanelSlot* IndicatorSlot = Cast<UCanvasPanelSlot>(PageIndicator->Slot))
+	{
+		IndicatorSlot->SetAutoSize(true);
+		IndicatorSlot->SetAlignment(FVector2D(0.5f, 0.f));
+		IndicatorSlot->SetPosition(FVector2D((Left + Right) * 0.5f, ListBottom + 2.f));
+	}
+	const ESWGHoloInventoryPane Heading = bScanning ? PendingPane : Pane;
+	// The holo font has no dot glyphs, so the page is named and numbered instead.
+	PageDots->SetText(Heading == ESWGHoloInventoryPane::Inventory
+		? NSLOCTEXT("SWGEmu", "HoloPageInventory", "Inventory  1 / 2")
+		: NSLOCTEXT("SWGEmu", "HoloPageCharacter", "Character  2 / 2"));
+	// The sheet's clip starts at the scan line, the sheet itself staying put inside it.
+	const float SheetHeight = PageBottom - Top;
+	const float ClipTop = FMath::Max(Top, ScanLineY);
+	const bool bSheetShown = !bShowBag && ClipTop < PageBottom;
+	PlaceBox(PageClip, FVector2D(Left, ClipTop), FVector2D(Right - Left, FMath::Max(1.f, PageBottom - ClipTop)),
+		bSheetShown ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	CharacterSheet->SetVisibility(bSheetShown ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	if (UCanvasPanelSlot* SheetSlot = Cast<UCanvasPanelSlot>(CharacterSheet->Slot))
+	{
+		SheetSlot->SetPosition(FVector2D(0.f, Top - ClipTop));
+		SheetSlot->SetSize(FVector2D(Right - Left, SheetHeight));
 	}
 
 	// The figure's droid projects the list too: a faint cone onto the frame's corners, and a brighter ray to the item in focus.
@@ -460,7 +575,17 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 		}
 		const int64 Focused = HoveredShelfId != 0 ? HoveredShelfId : CardObjectId;
 		FVector FocusedCentre;
-		if (Focused != 0 && Shelf->GetItemCenter(Focused, FocusedCentre))
+		FVector LineStart, LineEnd;
+		if (bScanning)
+		{
+			// The droid draws the scan line: bright rays to both its ends.
+			if (Deproject(FVector2D(ScanLineLeft, ScanLineY), LineStart) && Deproject(FVector2D(ScanLineRight, ScanLineY), LineEnd))
+			{
+				RayTargets.Append({ LineStart, LineEnd });
+				RayBrightness.Append({ ScanRayBrightness, ScanRayBrightness });
+			}
+		}
+		else if (bShowBag && Focused != 0 && Shelf->GetItemCenter(Focused, FocusedCentre))
 		{
 			RayTargets.Add(FocusedCentre);
 			RayBrightness.Add(BagItemRayBrightness);
@@ -475,9 +600,11 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 	{
 		USWGHoloLabelWidget* Label = Pair.Value;
 		FVector Centre;
-		FVector2D Screen;
-		if (!Label || !Visible.Contains(Pair.Key) || !Shelf->GetItemCenter(Pair.Key, Centre)
-			|| !UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(PlayerController, Centre, Screen, /*bPlayerViewportRelative=*/true))
+		FVector2D Screen = FVector2D::ZeroVector;
+		const bool bPlaced = Label && bShowBag && Visible.Contains(Pair.Key) && Shelf->GetItemCenter(Pair.Key, Centre)
+			&& UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(PlayerController, Centre, Screen, /*bPlayerViewportRelative=*/true);
+		// Above the scan line the name is wiped (or not yet drawn); the shelf hides the model itself (SetItemMask).
+		if (!bPlaced || Screen.Y < ScanLineY)
 		{
 			if (Label)
 			{
@@ -496,22 +623,26 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 		Label->SetVisibility(ESlateVisibility::Visible);
 	}
 
-	// The heading over the list, and how many more lie above and below it.
-	auto Place = [](UWidget* Positioned, UTextBlock* Text, const FVector2D& Position, const FVector2D& Alignment, const FText& Content)
+	// The heading over the list, and how many more lie above and below it; wiped with the page as the line passes their middles.
+	const float LineY = ScanLineY;
+	auto Place = [LineY](UWidget* Positioned, UTextBlock* Text, const FVector2D& Position, const FVector2D& Alignment, const FText& Content)
 	{
 		Text->SetText(Content);
-		Positioned->SetVisibility(Content.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+		const float Middle = Position.Y + (0.5f - Alignment.Y) * Positioned->GetDesiredSize().Y;
+		Positioned->SetVisibility(Content.IsEmpty() || Middle < LineY ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
 		if (UCanvasPanelSlot* PositionedSlot = Cast<UCanvasPanelSlot>(Positioned->Slot))
 		{
 			PositionedSlot->SetAlignment(Alignment);
 			PositionedSlot->SetPosition(Position);
 		}
 	};
-	constexpr float HeadingGap = 6.f;
-	Place(BagCaptionPanel, BagCaption, FVector2D(Left, Top - HeadingGap), FVector2D(0.f, 1.f),
-		FText::Format(NSLOCTEXT("SWGEmu", "HoloBagCaption", "In your inventory  ({0})"), FText::AsNumber(Contents.Num())));
-	const int32 Before = Shelf->CountHiddenBefore();
-	const int32 After = Shelf->CountHiddenAfter();
+	// Over the sheet, whose sheet it is.
+	const USWGTangibleComponent* Tangible = bShowBag ? nullptr : GetOwningPlayerPawn() ? GetOwningPlayerPawn()->FindComponentByClass<USWGTangibleComponent>() : nullptr;
+	Place(BagCaptionPanel, BagCaption, FVector2D(Left, Top - HeadingGap), FVector2D(0.f, 1.f), bShowBag
+		? FText::Format(NSLOCTEXT("SWGEmu", "HoloBagCaption", "In your inventory  ({0})"), FText::AsNumber(Contents.Num()))
+		: Tangible ? FText::FromString(Tangible->GetDisplayName()) : FText::GetEmpty());
+	const int32 Before = bShowBag ? Shelf->CountHiddenBefore() : 0;
+	const int32 After = bShowBag ? Shelf->CountHiddenAfter() : 0;
 	Place(BagMoreBefore, BagMoreBefore, FVector2D(Right, Top - HeadingGap), FVector2D(1.f, 1.f),
 		Before > 0 ? FText::Format(NSLOCTEXT("SWGEmu", "HoloBagBefore", "▲ {0} more"), FText::AsNumber(Before)) : FText::GetEmpty());
 	Place(BagMoreAfter, BagMoreAfter, FVector2D(Right, ListBottom + HeadingGap), FVector2D(1.f, 0.f),
@@ -544,6 +675,7 @@ void USWGHoloInventoryWidget::SelectNextInBag(int32 Direction)
 	{
 		return;
 	}
+	ShowPane(ESWGHoloInventoryPane::Inventory);
 	const TArray<int64>& Bag = Shelf->GetItems();
 	const int32 Current = Bag.IndexOfByKey(PinnedObjectId);
 	const int32 Next = Current == INDEX_NONE ? (Direction >= 0 ? 0 : Bag.Num() - 1) : FMath::Clamp(Current + (Direction >= 0 ? 1 : -1), 0, Bag.Num() - 1);
@@ -580,6 +712,7 @@ void USWGHoloInventoryWidget::NativeTick(const FGeometry& MyGeometry, float InDe
 	{
 		RefreshItems();
 	}
+	UpdateScan();
 	LayoutBag(MyGeometry);
 	LayoutMarkers(MyGeometry);
 	UpdateCard();
@@ -602,6 +735,11 @@ void USWGHoloInventoryWidget::RefreshItems()
 			}
 			Shelf->SetItems(BagIds);
 		}
+	}
+	RefreshFooter();
+	if (Pane == ESWGHoloInventoryPane::Character)
+	{
+		CharacterSheet->Refresh();
 	}
 	// Meshes land after the containment that names them; pick up any that have arrived.
 	for (FItemMarker& Marker : Markers)
@@ -655,6 +793,12 @@ void USWGHoloInventoryWidget::RebuildMarkers()
 			Marker.bSidePlaced = true;
 		}
 		USWGHoloLabelWidget* Label = USWGHoloLabelWidget::Create(GetOwningPlayer());
+		if (!Label)
+		{
+			// No label class set; Create has said so. A marker is nothing without its name.
+			Markers.Pop();
+			continue;
+		}
 		Label->SetItem(Entry.ObjectId, FText::FromString(Entry.Label()));
 		Label->SetLit(Entry.ObjectId == HoveredObjectId);
 		Label->OnHovered.BindUObject(this, &USWGHoloInventoryWidget::HandleLabelHovered);
@@ -848,6 +992,25 @@ int32 USWGHoloInventoryWidget::NativePaint(const FPaintArgs& Args, const FGeomet
 				Corner.Key + FVector2D(Corner.Value.X * Arm, 0.f), Corner.Key, Corner.Key + FVector2D(0.f, Corner.Value.Y * Arm) };
 			FSlateDrawElement::MakeLines(OutDrawElements, MaxLayer + 2, AllottedGeometry.ToPaintGeometry(), Bracket, ESlateDrawEffect::None, SWGHoloStyle::BrightLine, true, 2.f);
 		}
+	}
+	// The scan line: a wide soft glow, a bright core, and fading echoes trailing behind it.
+	if (ScanPhase != EScanPhase::None && ScanLineY > -FLT_MAX)
+	{
+		const float Trail = ScanPhase == EScanPhase::Wipe ? -1.f : 1.f;
+		auto Line = [&](float OffsetY, const FLinearColor& Color, float Thickness)
+		{
+			const TArray<FVector2D> Points = { FVector2D(ScanLineLeft, ScanLineY + OffsetY), FVector2D(ScanLineRight, ScanLineY + OffsetY) };
+			FSlateDrawElement::MakeLines(OutDrawElements, MaxLayer + 2, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None, Color, true, Thickness);
+		};
+		constexpr int32 EchoCount = 6;
+		constexpr float EchoSpacing = 4.f;
+		for (int32 Echo = EchoCount; Echo >= 1; --Echo)
+		{
+			const float Fade = 1.f - float(Echo) / (EchoCount + 1);
+			Line(Trail * Echo * EchoSpacing, SWGHoloStyle::Line * FLinearColor(1.f, 1.f, 1.f, 0.35f * Fade), 1.f);
+		}
+		Line(0.f, SWGHoloStyle::Line * FLinearColor(1.f, 1.f, 1.f, 0.35f), 8.f);
+		Line(0.f, SWGHoloStyle::BrightLine, 2.f);
 	}
 	return MaxLayer + 2;
 }
@@ -1129,7 +1292,11 @@ FReply USWGHoloInventoryWidget::NativeOnMouseMove(const FGeometry& InGeometry, c
 
 FReply USWGHoloInventoryWidget::NativeOnMouseWheel(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
-	ScrollBag(InMouseEvent.GetWheelDelta() > 0.f ? -1 : 1);
+	// The sheet's own scroll box takes the wheel over it; elsewhere it's the bag's.
+	if (Pane == ESWGHoloInventoryPane::Inventory)
+	{
+		ScrollBag(InMouseEvent.GetWheelDelta() > 0.f ? -1 : 1);
+	}
 	return FReply::Handled();
 }
 
@@ -1160,6 +1327,22 @@ FReply USWGHoloInventoryWidget::NativeOnKeyDown(const FGeometry& InGeometry, con
 	if (Key == EKeys::Gamepad_FaceButton_Top)
 	{
 		SwitchToWindow();
+		return FReply::Handled();
+	}
+	if (Key == NextPageKey || Key == EKeys::Tab || Key == EKeys::Gamepad_RightTrigger)
+	{
+		TurnPage(1);
+		return FReply::Handled();
+	}
+	if (Key == PreviousPageKey || Key == EKeys::Gamepad_LeftTrigger)
+	{
+		TurnPage(-1);
+		return FReply::Handled();
+	}
+	if (Key == CharacterKey)
+	{
+		const ESWGHoloInventoryPane Heading = ScanPhase == EScanPhase::None ? Pane : PendingPane;
+		ShowPane(Heading == ESWGHoloInventoryPane::Character ? ESWGHoloInventoryPane::Inventory : ESWGHoloInventoryPane::Character);
 		return FReply::Handled();
 	}
 	if (Key == EKeys::Gamepad_DPad_Down || Key == EKeys::Gamepad_DPad_Up)
@@ -1221,3 +1404,5 @@ FReply USWGHoloInventoryWidget::NativeOnAnalogValueChanged(const FGeometry& InGe
 
 void USWGHoloInventoryWidget::HandleWindowClicked() { SwitchToWindow(); }
 void USWGHoloInventoryWidget::HandleCloseClicked() { Close(); }
+void USWGHoloInventoryWidget::HandlePagePreviousClicked() { TurnPage(-1); }
+void USWGHoloInventoryWidget::HandlePageNextClicked() { TurnPage(1); }

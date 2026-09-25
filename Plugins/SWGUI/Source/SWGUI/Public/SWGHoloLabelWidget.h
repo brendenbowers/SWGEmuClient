@@ -15,17 +15,17 @@ DECLARE_DELEGATE_ThreeParams(FSWGOnHoloLabelPressed, int64 /*ObjectId*/, FKey /*
  * translucent panel with a glowing edge. Reports hover and presses with its
  * item, so the owner can show details or open the item's radial menu.
  *
- * WBP_HoloLabel lays it out, binding Panel and Label; without one it builds
- * its own. Either way it restyles the panel for hover unless bApplyHoloStyle
- * is off, when OnBrightChanged is the Blueprint's cue to do it itself.
+ * WBP_HoloLabel lays it out, binding Panel and Label. It restyles the panel
+ * for hover unless bApplyHoloStyle is off, when OnBrightChanged is the
+ * Blueprint's cue to do it itself.
  */
-UCLASS(Blueprintable)
+UCLASS(Abstract, Blueprintable)
 class SWGUI_API USWGHoloLabelWidget : public UUserWidget
 {
 	GENERATED_BODY()
 
 public:
-	/** A label of the class set in Project Settings > SWG UI (HoloLabelClass), or this one. */
+	/** A label of the class set in Project Settings > SWG UI (HoloLabelClass); null, with a warning, while that's unset. */
 	static USWGHoloLabelWidget* Create(APlayerController* Owner);
 
 	void SetItem(int64 InObjectId, const FText& Text);
@@ -55,10 +55,10 @@ protected:
 	virtual void NativeOnMouseLeave(const FPointerEvent& InMouseEvent) override;
 	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UBorder> Panel;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> Label;
 
 private:

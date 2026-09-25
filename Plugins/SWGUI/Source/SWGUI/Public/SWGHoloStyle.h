@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Fonts/SlateFontInfo.h"
 #include "Styling/SlateBrush.h"
+#include "Styling/SlateTypes.h"
 
 /** The look of screen-space UI that belongs to a hologram: cyan text and translucent panels with a glowing edge. */
 namespace SWGHoloStyle
@@ -22,4 +23,14 @@ namespace SWGHoloStyle
 
 	/** A thin cyan edge round a nearly clear fill, for framing things drawn in the world behind it. */
 	SWGUI_API FSlateBrush FrameBrush();
+
+	/** Retail's meter: a pill of FillColor over a dim teal track (ui_pda_inventory's capacity bar). */
+	SWGUI_API FProgressBarStyle BarStyle(const FLinearColor& FillColor);
+
+	/** A small holo button, lit while hovered. */
+	SWGUI_API FButtonStyle ChipStyle();
+
+	/** Retail's capacity bar fill (PalColor "exp"). */
+	inline const FLinearColor CapacityFill = FLinearColor::FromSRGBColor(FColor(0x6C, 0xFD, 0x02));
+	inline const FLinearColor FullFill = FLinearColor(1.f, 0.25f, 0.15f);
 }

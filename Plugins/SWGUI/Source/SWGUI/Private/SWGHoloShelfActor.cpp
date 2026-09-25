@@ -275,7 +275,8 @@ void ASWGHoloShelfActor::Layout(float DeltaSeconds)
 		const bool bHovered = Item.ObjectId == HoveredId;
 		Item.Glow = FMath::FInterpTo(Item.Glow, bHovered ? 1.f : 0.f, DeltaSeconds, 12.f);
 		Item.Spin = FMath::Fmod(Item.Spin + DeltaSeconds * SpinDegreesPerSecond * (bHovered ? HoverSpinFactor : 1.f), 360.f);
-		const bool bShown = Visibility > 0.01f;
+		const bool bShown = bShelfShown && Visibility > 0.01f
+			&& !(ItemMask && ItemMask(GetActorTransform().TransformPosition(CellLocation(Index))));
 		Item.Pivot->SetVisibility(bShown, /*bPropagateToChildren=*/true);
 		if (!bShown)
 		{

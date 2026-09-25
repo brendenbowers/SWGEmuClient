@@ -10,12 +10,22 @@
 class ASWGHoloFigureActor;
 class UButton;
 class UCanvasPanel;
+class UProgressBar;
 class UTextBlock;
+class USWGHoloCharacterSheetWidget;
 class USWGHoloDetailCardWidget;
 class USWGHoloLabelWidget;
 
 DECLARE_MULTICAST_DELEGATE(FSWGOnHoloInventoryClosed);
 DECLARE_MULTICAST_DELEGATE(FSWGOnHoloInventorySwitchToWindow);
+
+/** What the pane beside the figure shows. */
+UENUM(BlueprintType)
+enum class ESWGHoloInventoryPane : uint8
+{
+	Inventory,
+	Character,
+};
 
 /**
  * The holographic inventory: projects a hologram of the player in front of
@@ -30,10 +40,10 @@ DECLARE_MULTICAST_DELEGATE(FSWGOnHoloInventorySwitchToWindow);
  * wheel, and answer hover and clicks the same way. Dragging turns the figure. Closing puts the camera and
  * controls back.
  *
- * Builds its own hint bar when used from C++; a Blueprint subclass may lay
- * out its own, binding the optional widgets below.
+ * WBP_HoloInventory lays out the overlay, binding every piece below by name;
+ * this positions them over the scene each frame and fills them.
  */
-UCLASS(Blueprintable)
+UCLASS(Abstract, Blueprintable)
 class SWGUI_API USWGHoloInventoryWidget : public UUserWidget
 {
 	GENERATED_BODY()
@@ -57,6 +67,24 @@ public:
 	/** Scrolls the bag's list by whole rows. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HoloInventory")
 	void ScrollBag(int32 Rows);
+
+	/** Turns the page beside the figure to the bag or the character sheet: the droid scans the old page away and the new one in. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HoloInventory")
+	void ShowPane(ESWGHoloInventoryPane Pane);
+
+	/** The next (Direction > 0) or previous page, wrapping. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|HoloInventory")
+	void TurnPage(int32 Direction);
+
+	ESWGHoloInventoryPane GetPane() const { return Pane; }
+
+	/** Seconds for each of the scan's two passes: down wiping the old page, back up drawing the new. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloInventory")
+	float ScanSeconds = 0.3f;
+
+	/** Brightness of the droid's rays to the scan line's ends. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloInventory")
+	float ScanRayBrightness = 0.6f;
 
 	FSWGOnHoloInventoryClosed OnClosed;
 	FSWGOnHoloInventorySwitchToWindow OnSwitchToWindow;
@@ -112,6 +140,17 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloInventory")
 	FKey ToggleKey = EKeys::I;
 
+	/** Turn the page forward and back; Tab turns forward too, and the gamepad's triggers back and forward. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloInventory")
+	FKey NextPageKey = EKeys::E;
+
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloInventory")
+	FKey PreviousPageKey = EKeys::Q;
+
+	/** Opens the character sheet, as retail's C key does; again goes back to the bag. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloInventory")
+	FKey CharacterKey = EKeys::C;
+
 	/** Gives a Blueprint's bound hint text, headings and panels the holo fonts, colours and brushes; off leaves them as designed. */
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloInventory")
 	bool bApplyHoloStyle = true;
@@ -165,13 +204,13 @@ protected:
 	virtual int32 NativePaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UTextBlock> HintText;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UButton> WindowButton;
 
-	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
 	TObjectPtr<UButton> CloseButton;
 
 private:
@@ -266,35 +305,116 @@ private:
 	 */
 
 	/** A faint frame round the list, heading included; the droid's rays land on its corners. Sized to the list. */
-	UPROPERTY(meta = (BindWidgetOptional))
+	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UWidget> BagFrame;
 
 	/** The frame on screen from the last layout; invalid while the bag is empty. */
 	FBox2D BagFrameRect = FBox2D(ForceInit);
 
 	/** The bag's heading text, and what holds it (itself, or a panel round it) in the canvas. */
-	UPROPERTY(meta = (BindWidgetOptional))
+	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UTextBlock> BagCaption;
 
-	UPROPERTY(meta = (BindWidgetOptional))
+	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UWidget> BagCaptionPanel;
 
 	/** Heads the worn items' names, over the figure, as BagCaption heads the bag. */
-	UPROPERTY(meta = (BindWidgetOptional))
+	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UTextBlock> EquippedCaption;
 
-	UPROPERTY(meta = (BindWidgetOptional))
+	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UWidget> EquippedCaptionPanel;
 
 	/** "▲ n more" above the list and "▼ n more" below it. */
-	UPROPERTY(meta = (BindWidgetOptional))
+	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UTextBlock> BagMoreBefore;
 
-	UPROPERTY(meta = (BindWidgetOptional))
+	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UTextBlock> BagMoreAfter;
 
-	/** Builds whichever overlay pieces the Blueprint didn't supply. */
-	void BuildMissingOverlay();
+	/** Under the page: "‹ ● ○ ›", which page this is and arrows to turn it. */
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UWidget> PageIndicator;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UTextBlock> PageDots;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UButton> PagePrevious;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UButton> PageNext;
+
+	/**
+	 * Along the bottom of the frame, as ui_pda_inventory's capacity and money
+	 * blocks: the bag's used / limit over a meter, then cash and bank. Sized
+	 * to the frame's width.
+	 */
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UWidget> BagFooter;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UTextBlock> CapacityText;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UProgressBar> CapacityBar;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UTextBlock> CashText;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UTextBlock> BankText;
+
+	/** The character page (WBP_HoloCharacterSheet), inside PageClip; takes the list's place while it's up. */
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<USWGHoloCharacterSheetWidget> CharacterSheet;
+
+	/** The footer's labels, given retail's strings (ui.stf). */
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UTextBlock> CapacityLabel;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UTextBlock> CashLabel;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UTextBlock> BankLabel;
+
+	/** Clips the character sheet (its child) to below the scan line; a canvas panel clipping to its bounds. */
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UCanvasPanel> PageClip;
+
+	/** The holo fonts, colours and brushes, and retail's strings, over what the Blueprint set. */
+	void ApplyHoloStyle();
+	void RefreshFooter();
+
+	UFUNCTION() void HandlePagePreviousClicked();
+	UFUNCTION() void HandlePageNextClicked();
+
+	ESWGHoloInventoryPane Pane = ESWGHoloInventoryPane::Inventory;
+
+	/** The page being turned to, once the scan has wiped the current one. */
+	ESWGHoloInventoryPane PendingPane = ESWGHoloInventoryPane::Inventory;
+
+	/** Makes Pane current: drops the bag's focus when it goes, fills the sheet when it comes. */
+	void ApplyPane();
+
+	enum class EScanPhase : uint8 { None, Wipe, Draw };
+	EScanPhase ScanPhase = EScanPhase::None;
+	/** When the current pass began, on ScanClock; the line is worked out from it so the shelf's tick and this widget's agree. */
+	double ScanPhaseStart = 0.0;
+	/** The world's real time: one value for the whole frame, however far apart in it the shelf and this widget tick. */
+	double ScanClock() const;
+	void UpdateScan();
+	float ScanProgress() const;
+	/** Where the line is now, from the page's extent at the last layout. */
+	float CurrentScanLine() const;
+	float ScanPageTop = 0.f;
+	float ScanPageBottom = 0.f;
+
+	/** The scan line from the last layout, local units; page content above it isn't shown. Far above the page when no scan runs. */
+	float ScanLineY = -FLT_MAX;
+	float ScanLineLeft = 0.f;
+	float ScanLineRight = 0.f;
 
 	int64 HoveredShelfId = 0;
 

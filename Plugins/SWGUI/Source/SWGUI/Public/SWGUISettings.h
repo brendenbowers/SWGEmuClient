@@ -80,7 +80,7 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Hologram")
 	TSoftClassPtr<class USWGHoloMapWidget> HoloMapClass;
 
-	/** Holographic inventory overlay (WBP_HoloInventory); unset uses USWGHoloInventoryWidget's own layout. */
+	/** Holographic inventory overlay (WBP_HoloInventory); unset, the holo inventory can't open. */
 	UPROPERTY(Config, EditAnywhere, Category = "Hologram")
 	TSoftClassPtr<class USWGHoloInventoryWidget> HoloInventoryClass;
 

@@ -292,6 +292,21 @@ namespace
 			}
 		}));
 
+	FAutoConsoleCommand CmdHoloInventoryPane(
+		TEXT("swg.HoloInventory.Pane"),
+		TEXT("Turns an open holo inventory's pane to the bag ('swg.HoloInventory.Pane inventory') or the character sheet ('swg.HoloInventory.Pane character')."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const bool bCharacter = !Args.IsEmpty() && Args[0].StartsWith(TEXT("char"), ESearchCase::IgnoreCase);
+			for (TObjectIterator<USWGHoloInventoryWidget> It; It; ++It)
+			{
+				if (It->GetCachedWidget().IsValid())
+				{
+					It->ShowPane(bCharacter ? ESWGHoloInventoryPane::Character : ESWGHoloInventoryPane::Inventory);
+				}
+			}
+		}));
+
 	FAutoConsoleCommand CmdToggleDatapad(
 		TEXT("swg.Datapad"),
 		TEXT("Opens or closes the datapad, as the datapad key does."),
