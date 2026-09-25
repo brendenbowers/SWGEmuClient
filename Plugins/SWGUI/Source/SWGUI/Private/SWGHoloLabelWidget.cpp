@@ -1,8 +1,16 @@
 #include "SWGHoloLabelWidget.h"
 #include "SWGHoloStyle.h"
+#include "SWGUISettings.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
 #include "Components/TextBlock.h"
+#include "GameFramework/PlayerController.h"
+
+USWGHoloLabelWidget* USWGHoloLabelWidget::Create(APlayerController* Owner)
+{
+	TSubclassOf<USWGHoloLabelWidget> Class = USWGUISettings::Get().HoloLabelClass.LoadSynchronous();
+	return CreateWidget<USWGHoloLabelWidget>(Owner, Class ? Class.Get() : StaticClass());
+}
 
 void USWGHoloLabelWidget::NativeOnInitialized()
 {
@@ -15,6 +23,11 @@ void USWGHoloLabelWidget::NativeOnInitialized()
 		Label->SetFont(SWGHoloStyle::Font(12));
 		Panel->SetContent(Label);
 		WidgetTree->RootWidget = Panel;
+	}
+	// The holo font is a system face, not an asset, so a Blueprint can't pick it.
+	if (bApplyHoloStyle && Label)
+	{
+		Label->SetFont(SWGHoloStyle::Font(12));
 	}
 	SetVisibility(ESlateVisibility::Visible);
 	ApplyStyle();
@@ -50,14 +63,18 @@ void USWGHoloLabelWidget::SetLit(bool bInLit)
 void USWGHoloLabelWidget::ApplyStyle()
 {
 	const bool bBright = bHovered || bLit;
-	if (Panel)
+	if (bApplyHoloStyle)
 	{
-		Panel->SetBrush(SWGHoloStyle::PanelBrush(bBright));
+		if (Panel)
+		{
+			Panel->SetBrush(SWGHoloStyle::PanelBrush(bBright));
+		}
+		if (Label)
+		{
+			Label->SetColorAndOpacity(FSlateColor(bBright ? SWGHoloStyle::BrightText : SWGHoloStyle::Text));
+		}
 	}
-	if (Label)
-	{
-		Label->SetColorAndOpacity(FSlateColor(bBright ? SWGHoloStyle::BrightText : SWGHoloStyle::Text));
-	}
+	OnBrightChanged(bBright);
 }
 
 void USWGHoloLabelWidget::NativeOnMouseEnter(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)

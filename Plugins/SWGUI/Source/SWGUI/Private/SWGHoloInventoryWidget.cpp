@@ -78,50 +78,104 @@ void USWGHoloInventoryWidget::NativeOnInitialized()
 		CloseButton = MakeHintButton(WidgetTree, Bar, NSLOCTEXT("SWGEmu", "HoloInventoryClose", "Close"));
 	}
 	LabelLayer = Cast<UCanvasPanel>(WidgetTree->RootWidget);
-	if (LabelLayer && !ShelfCaption)
-	{
-		// First, so it draws under the names and headings.
-		BagFrame = WidgetTree->ConstructWidget<UBorder>();
-		BagFrame->SetBrush(SWGHoloStyle::FrameBrush());
-		BagFrame->SetVisibility(ESlateVisibility::Collapsed);
-		LabelLayer->AddChildToCanvas(BagFrame);
-		auto MakeText = [this](int32 Size, const FLinearColor& Color)
-		{
-			UTextBlock* Text = WidgetTree->ConstructWidget<UTextBlock>();
-			Text->SetFont(SWGHoloStyle::Font(Size));
-			Text->SetColorAndOpacity(FSlateColor(Color));
-			Text->SetShadowOffset(FVector2D(1.f, 1.f));
-			return Text;
-		};
-		auto AddToLayer = [this](UWidget* Widget)
-		{
-			Widget->SetVisibility(ESlateVisibility::Collapsed);
-			if (UCanvasPanelSlot* WidgetSlot = LabelLayer->AddChildToCanvas(Widget))
-			{
-				WidgetSlot->SetAutoSize(true);
-			}
-		};
-		// Headings on a panel of their own, so they read over the ground and tell the two groups apart.
-		auto MakeCaption = [this, &MakeText, &AddToLayer](TObjectPtr<UBorder>& OutPanel)
-		{
-			OutPanel = WidgetTree->ConstructWidget<UBorder>();
-			OutPanel->SetBrush(SWGHoloStyle::PanelBrush(false));
-			OutPanel->SetPadding(FMargin(10.f, 3.f));
-			UTextBlock* Text = MakeText(13, SWGHoloStyle::BrightText);
-			OutPanel->SetContent(Text);
-			AddToLayer(OutPanel);
-			return Text;
-		};
-		ShelfCaption = MakeCaption(ShelfCaptionPanel);
-		EquippedCaption = MakeCaption(EquippedCaptionPanel);
-		ShelfMoreBefore = MakeText(13, SWGHoloStyle::BrightText);
-		ShelfMoreAfter = MakeText(13, SWGHoloStyle::BrightText);
-		AddToLayer(ShelfMoreBefore);
-		AddToLayer(ShelfMoreAfter);
-	}
+	BuildMissingOverlay();
 	// The whole screen is the hologram's control surface.
 	SetVisibility(ESlateVisibility::Visible);
 	SetIsFocusable(true);
+}
+
+void USWGHoloInventoryWidget::BuildMissingOverlay()
+{
+	if (!LabelLayer)
+	{
+		return;
+	}
+	auto MakeText = [this](int32 Size, const FLinearColor& Color)
+	{
+		UTextBlock* Text = WidgetTree->ConstructWidget<UTextBlock>();
+		Text->SetFont(SWGHoloStyle::Font(Size));
+		Text->SetColorAndOpacity(FSlateColor(Color));
+		Text->SetShadowOffset(FVector2D(1.f, 1.f));
+		return Text;
+	};
+	auto AddToLayer = [this](UWidget* Widget, int32 ZOrder)
+	{
+		if (UCanvasPanelSlot* WidgetSlot = LabelLayer->AddChildToCanvas(Widget))
+		{
+			WidgetSlot->SetAutoSize(true);
+			WidgetSlot->SetZOrder(ZOrder);
+		}
+	};
+	if (!BagFrame)
+	{
+		UBorder* Frame = WidgetTree->ConstructWidget<UBorder>();
+		Frame->SetBrush(SWGHoloStyle::FrameBrush());
+		BagFrame = Frame;
+		AddToLayer(Frame, /*ZOrder=*/-1);
+		// Sized each frame to the list rather than to its content.
+		Cast<UCanvasPanelSlot>(Frame->Slot)->SetAutoSize(false);
+	}
+	// Headings on a panel of their own, so they read over the ground and tell the two groups apart.
+	auto MakeCaption = [this, &MakeText, &AddToLayer](TObjectPtr<UTextBlock>& OutText, TObjectPtr<UWidget>& OutHolder)
+	{
+		if (OutText)
+		{
+			// The Blueprint's own; it holds itself unless a panel round it was bound too.
+			if (!OutHolder)
+			{
+				OutHolder = OutText;
+			}
+			return;
+		}
+		UBorder* Panel = WidgetTree->ConstructWidget<UBorder>();
+		Panel->SetBrush(SWGHoloStyle::PanelBrush(false));
+		Panel->SetPadding(FMargin(10.f, 3.f));
+		OutText = MakeText(13, SWGHoloStyle::BrightText);
+		Panel->SetContent(OutText);
+		OutHolder = Panel;
+		AddToLayer(Panel, 0);
+	};
+	MakeCaption(BagCaption, BagCaptionPanel);
+	MakeCaption(EquippedCaption, EquippedCaptionPanel);
+	for (TObjectPtr<UTextBlock>* More : { &BagMoreBefore, &BagMoreAfter })
+	{
+		if (!*More)
+		{
+			*More = MakeText(13, SWGHoloStyle::BrightText);
+			AddToLayer(*More, 0);
+		}
+	}
+	for (UWidget* Piece : { BagFrame.Get(), BagCaptionPanel.Get(), EquippedCaptionPanel.Get(), (UWidget*)BagMoreBefore.Get(), (UWidget*)BagMoreAfter.Get() })
+	{
+		Piece->SetVisibility(ESlateVisibility::Collapsed);
+	}
+	if (!bApplyHoloStyle)
+	{
+		return;
+	}
+	// The holo font is a system face, not an asset, so a Blueprint can't pick it.
+	for (UTextBlock* Text : { BagCaption.Get(), EquippedCaption.Get(), BagMoreBefore.Get(), BagMoreAfter.Get() })
+	{
+		Text->SetFont(SWGHoloStyle::Font(13));
+		Text->SetColorAndOpacity(FSlateColor(SWGHoloStyle::BrightText));
+	}
+	for (UWidget* Holder : { BagCaptionPanel.Get(), EquippedCaptionPanel.Get() })
+	{
+		if (UBorder* Panel = Cast<UBorder>(Holder))
+		{
+			Panel->SetBrush(SWGHoloStyle::PanelBrush(false));
+		}
+	}
+	if (UBorder* Frame = Cast<UBorder>(BagFrame))
+	{
+		Frame->SetBrush(SWGHoloStyle::FrameBrush());
+	}
+	if (HintText)
+	{
+		HintText->SetFont(SWGRetailStyle::Font(13));
+		HintText->SetColorAndOpacity(FSlateColor(HintColor));
+		HintText->SetShadowOffset(FVector2D(1.f, 1.f));
+	}
 }
 
 void USWGHoloInventoryWidget::NativeConstruct()
@@ -305,7 +359,7 @@ void USWGHoloInventoryWidget::RebuildBagLabels()
 		TObjectPtr<USWGHoloLabelWidget>& Label = BagLabels.FindOrAdd(Entry.ObjectId);
 		if (!Label)
 		{
-			Label = CreateWidget<USWGHoloLabelWidget>(GetOwningPlayer(), USWGHoloLabelWidget::StaticClass());
+			Label = USWGHoloLabelWidget::Create(GetOwningPlayer());
 			Label->OnHovered.BindUObject(this, &USWGHoloInventoryWidget::HandleLabelHovered);
 			Label->OnPressed.BindUObject(this, &USWGHoloInventoryWidget::HandleLabelPressed);
 			if (UCanvasPanelSlot* LabelSlot = LabelLayer->AddChildToCanvas(Label))
@@ -322,7 +376,7 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 {
 	APlayerController* PlayerController = GetOwningPlayer();
 	const FVector2D Size = MyGeometry.GetLocalSize();
-	if (!Shelf || !PlayerController || !ShelfCaption || Size.X <= 0.f)
+	if (!Shelf || !PlayerController || !BagCaption || Size.X <= 0.f)
 	{
 		return;
 	}
@@ -370,7 +424,7 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 	// A frame round the list and its heading, with room below for the "more" count.
 	constexpr float FramePad = 8.f;
 	constexpr float MoreLineHeight = 22.f;
-	const float HeadingHeight = FMath::Max(ShelfCaptionPanel ? ShelfCaptionPanel->GetDesiredSize().Y : 0.f, 22.f);
+	const float HeadingHeight = FMath::Max(BagCaptionPanel ? BagCaptionPanel->GetDesiredSize().Y : 0.f, 22.f);
 	const float ListBottom = Top + Rows * BagRowHeight;
 	BagFrameRect = Contents.IsEmpty() ? FBox2D(ForceInit)
 		: FBox2D(FVector2D(Left - FramePad, Top - HeadingHeight - FramePad * 2.f), FVector2D(Right + FramePad, ListBottom + MoreLineHeight + FramePad));
@@ -379,6 +433,7 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 		BagFrame->SetVisibility(BagFrameRect.bIsValid ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 		if (UCanvasPanelSlot* FrameSlot = Cast<UCanvasPanelSlot>(BagFrame->Slot); FrameSlot && BagFrameRect.bIsValid)
 		{
+			FrameSlot->SetAutoSize(false);
 			FrameSlot->SetPosition(BagFrameRect.Min);
 			FrameSlot->SetSize(BagFrameRect.GetSize());
 		}
@@ -453,13 +508,13 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 		}
 	};
 	constexpr float HeadingGap = 6.f;
-	Place(ShelfCaptionPanel, ShelfCaption, FVector2D(Left, Top - HeadingGap), FVector2D(0.f, 1.f),
+	Place(BagCaptionPanel, BagCaption, FVector2D(Left, Top - HeadingGap), FVector2D(0.f, 1.f),
 		FText::Format(NSLOCTEXT("SWGEmu", "HoloBagCaption", "In your inventory  ({0})"), FText::AsNumber(Contents.Num())));
 	const int32 Before = Shelf->CountHiddenBefore();
 	const int32 After = Shelf->CountHiddenAfter();
-	Place(ShelfMoreBefore, ShelfMoreBefore, FVector2D(Right, Top - HeadingGap), FVector2D(1.f, 1.f),
+	Place(BagMoreBefore, BagMoreBefore, FVector2D(Right, Top - HeadingGap), FVector2D(1.f, 1.f),
 		Before > 0 ? FText::Format(NSLOCTEXT("SWGEmu", "HoloBagBefore", "▲ {0} more"), FText::AsNumber(Before)) : FText::GetEmpty());
-	Place(ShelfMoreAfter, ShelfMoreAfter, FVector2D(Right, ListBottom + HeadingGap), FVector2D(1.f, 0.f),
+	Place(BagMoreAfter, BagMoreAfter, FVector2D(Right, ListBottom + HeadingGap), FVector2D(1.f, 0.f),
 		After > 0 ? FText::Format(NSLOCTEXT("SWGEmu", "HoloBagAfter", "▼ {0} more"), FText::AsNumber(After)) : FText::GetEmpty());
 }
 
@@ -599,7 +654,7 @@ void USWGHoloInventoryWidget::RebuildMarkers()
 			Marker.bLeft = *bLeft;
 			Marker.bSidePlaced = true;
 		}
-		USWGHoloLabelWidget* Label = CreateWidget<USWGHoloLabelWidget>(GetOwningPlayer(), USWGHoloLabelWidget::StaticClass());
+		USWGHoloLabelWidget* Label = USWGHoloLabelWidget::Create(GetOwningPlayer());
 		Label->SetItem(Entry.ObjectId, FText::FromString(Entry.Label()));
 		Label->SetLit(Entry.ObjectId == HoveredObjectId);
 		Label->OnHovered.BindUObject(this, &USWGHoloInventoryWidget::HandleLabelHovered);
@@ -866,7 +921,7 @@ void USWGHoloInventoryWidget::ShowCard(int64 ObjectId)
 	}
 	if (!Card && LabelLayer)
 	{
-		Card = CreateWidget<USWGHoloDetailCardWidget>(GetOwningPlayer(), USWGHoloDetailCardWidget::StaticClass());
+		Card = USWGHoloDetailCardWidget::Create(GetOwningPlayer());
 		if (UCanvasPanelSlot* CardSlot = LabelLayer->AddChildToCanvas(Card))
 		{
 			CardSlot->SetAutoSize(true);

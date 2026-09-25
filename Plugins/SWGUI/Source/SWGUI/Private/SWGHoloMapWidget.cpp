@@ -82,6 +82,13 @@ void USWGHoloMapWidget::NativeOnInitialized()
 		WindowButton = MakeHintButton(WidgetTree, Bar, NSLOCTEXT("SWGEmu", "HoloWindow", "Window Map"));
 		CloseButton = MakeHintButton(WidgetTree, Bar, NSLOCTEXT("SWGEmu", "HoloClose", "Close"));
 	}
+	// A Blueprint's hint text too: the font is a system face, not an asset it could pick.
+	if (bApplyHoloStyle && HintText)
+	{
+		HintText->SetFont(SWGRetailStyle::Font(13));
+		HintText->SetColorAndOpacity(FSlateColor(HintColor));
+		HintText->SetShadowOffset(FVector2D(1.f, 1.f));
+	}
 	// The whole screen is the hologram's control surface.
 	SetVisibility(ESlateVisibility::Visible);
 	SetIsFocusable(true);

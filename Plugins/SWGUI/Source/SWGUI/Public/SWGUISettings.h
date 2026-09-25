@@ -76,9 +76,25 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGPlanetMapWindowWidget> PlanetMapClass;
 
-	/** Holographic planet map overlay; unset uses USWGHoloMapWidget's own controls. */
-	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	/** Holographic planet map overlay (WBP_HoloMap); unset uses USWGHoloMapWidget's own controls. */
+	UPROPERTY(Config, EditAnywhere, Category = "Hologram")
 	TSoftClassPtr<class USWGHoloMapWidget> HoloMapClass;
+
+	/** Holographic inventory overlay (WBP_HoloInventory); unset uses USWGHoloInventoryWidget's own layout. */
+	UPROPERTY(Config, EditAnywhere, Category = "Hologram")
+	TSoftClassPtr<class USWGHoloInventoryWidget> HoloInventoryClass;
+
+	/** One item's name beside the holo figure or in the bag list (WBP_HoloLabel). */
+	UPROPERTY(Config, EditAnywhere, Category = "Hologram")
+	TSoftClassPtr<class USWGHoloLabelWidget> HoloLabelClass;
+
+	/** An item's floating examine details in the holo inventory (WBP_HoloDetailCard). */
+	UPROPERTY(Config, EditAnywhere, Category = "Hologram")
+	TSoftClassPtr<class USWGHoloDetailCardWidget> HoloDetailCardClass;
+
+	/** One attribute line or group heading on a holo detail card (WBP_HoloAttributeLine). */
+	UPROPERTY(Config, EditAnywhere, Category = "Hologram")
+	TSoftClassPtr<class USWGHoloAttributeLineWidget> HoloAttributeLineClass;
 
 	/** Datapad window (schematics, mission items, deeds), toggled by the player's DatapadKey. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")

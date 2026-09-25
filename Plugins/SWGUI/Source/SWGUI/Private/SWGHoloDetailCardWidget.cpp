@@ -1,13 +1,14 @@
 #include "SWGHoloDetailCardWidget.h"
+#include "SWGHoloAttributeLineWidget.h"
 #include "SWGHoloStyle.h"
+#include "SWGUISettings.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
-#include "Components/HorizontalBox.h"
-#include "Components/HorizontalBoxSlot.h"
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
+#include "GameFramework/PlayerController.h"
 
 namespace
 {
@@ -20,47 +21,78 @@ namespace
 	}
 }
 
+USWGHoloDetailCardWidget* USWGHoloDetailCardWidget::Create(APlayerController* Owner)
+{
+	TSubclassOf<USWGHoloDetailCardWidget> Class = USWGUISettings::Get().HoloDetailCardClass.LoadSynchronous();
+	return CreateWidget<USWGHoloDetailCardWidget>(Owner, Class ? Class.Get() : StaticClass());
+}
+
 void USWGHoloDetailCardWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
-	if (WidgetTree->RootWidget)
+	if (!WidgetTree->RootWidget)
 	{
-		return;
-	}
-	USizeBox* Width = WidgetTree->ConstructWidget<USizeBox>();
-	Width->SetMaxDesiredWidth(CardWidth);
-	Panel = WidgetTree->ConstructWidget<UBorder>();
-	Panel->SetBrush(SWGHoloStyle::PanelBrush(true));
-	Panel->SetPadding(FMargin(10.f, 8.f));
-	Width->SetContent(Panel);
+		USizeBox* Width = WidgetTree->ConstructWidget<USizeBox>();
+		Width->SetMaxDesiredWidth(CardWidth);
+		Panel = WidgetTree->ConstructWidget<UBorder>();
+		Panel->SetPadding(FMargin(10.f, 8.f));
+		Width->SetContent(Panel);
 
-	UVerticalBox* Column = WidgetTree->ConstructWidget<UVerticalBox>();
-	Panel->SetContent(Column);
-	NameText = MakeText(WidgetTree, 14, SWGHoloStyle::BrightText);
-	NameText->SetAutoWrapText(true);
-	Column->AddChildToVerticalBox(NameText);
-	StatusText = MakeText(WidgetTree, 10, SWGHoloStyle::Text);
-	StatusText->SetVisibility(ESlateVisibility::Collapsed);
-	Column->AddChildToVerticalBox(StatusText);
-	DescriptionText = MakeText(WidgetTree, 11, SWGHoloStyle::DimText, false);
-	DescriptionText->SetAutoWrapText(true);
-	if (UVerticalBoxSlot* DescriptionSlot = Column->AddChildToVerticalBox(DescriptionText))
-	{
-		DescriptionSlot->SetPadding(FMargin(0.f, 4.f, 0.f, 0.f));
+		UVerticalBox* Column = WidgetTree->ConstructWidget<UVerticalBox>();
+		Panel->SetContent(Column);
+		NameText = MakeText(WidgetTree, 14, SWGHoloStyle::BrightText);
+		NameText->SetAutoWrapText(true);
+		Column->AddChildToVerticalBox(NameText);
+		StatusText = MakeText(WidgetTree, 10, SWGHoloStyle::Text);
+		Column->AddChildToVerticalBox(StatusText);
+		DescriptionText = MakeText(WidgetTree, 11, SWGHoloStyle::DimText, false);
+		DescriptionText->SetAutoWrapText(true);
+		if (UVerticalBoxSlot* DescriptionSlot = Column->AddChildToVerticalBox(DescriptionText))
+		{
+			DescriptionSlot->SetPadding(FMargin(0.f, 4.f, 0.f, 0.f));
+		}
+		UVerticalBox* Attributes = WidgetTree->ConstructWidget<UVerticalBox>();
+		AttributeBox = Attributes;
+		if (UVerticalBoxSlot* AttributeSlot = Column->AddChildToVerticalBox(Attributes))
+		{
+			AttributeSlot->SetPadding(FMargin(0.f, 6.f, 0.f, 0.f));
+		}
+		FooterText = MakeText(WidgetTree, 10, SWGHoloStyle::DimText, false);
+		if (UVerticalBoxSlot* FooterSlot = Column->AddChildToVerticalBox(FooterText))
+		{
+			FooterSlot->SetPadding(FMargin(0.f, 6.f, 0.f, 0.f));
+		}
+		WidgetTree->RootWidget = Width;
 	}
-	AttributeBox = WidgetTree->ConstructWidget<UVerticalBox>();
-	if (UVerticalBoxSlot* AttributeSlot = Column->AddChildToVerticalBox(AttributeBox))
+	if (bApplyHoloStyle)
 	{
-		AttributeSlot->SetPadding(FMargin(0.f, 6.f, 0.f, 0.f));
+		if (Panel)
+		{
+			Panel->SetBrush(SWGHoloStyle::PanelBrush(true));
+		}
+		// The holo font is a system face, not an asset, so a Blueprint can't pick it.
+		auto Style = [](UTextBlock* Text, int32 Size, bool bBold, const FLinearColor& Color)
+		{
+			if (Text)
+			{
+				Text->SetFont(SWGHoloStyle::Font(Size, bBold));
+				Text->SetColorAndOpacity(FSlateColor(Color));
+			}
+		};
+		Style(NameText, 14, true, SWGHoloStyle::BrightText);
+		Style(StatusText, 10, true, SWGHoloStyle::Text);
+		Style(DescriptionText, 11, false, SWGHoloStyle::DimText);
+		Style(FooterText, 10, false, SWGHoloStyle::DimText);
 	}
-	FooterText = MakeText(WidgetTree, 10, SWGHoloStyle::DimText, false);
-	FooterText->SetText(NSLOCTEXT("SWGEmu", "HoloCardPinned", "Pinned  •  click the name again to release"));
-	FooterText->SetVisibility(ESlateVisibility::Collapsed);
-	if (UVerticalBoxSlot* FooterSlot = Column->AddChildToVerticalBox(FooterText))
+	if (StatusText)
 	{
-		FooterSlot->SetPadding(FMargin(0.f, 6.f, 0.f, 0.f));
+		StatusText->SetVisibility(ESlateVisibility::Collapsed);
 	}
-	WidgetTree->RootWidget = Width;
+	if (FooterText)
+	{
+		FooterText->SetText(NSLOCTEXT("SWGEmu", "HoloCardPinned", "Pinned  •  click the name again to release"));
+		FooterText->SetVisibility(ESlateVisibility::Collapsed);
+	}
 	// Details only; the pointer passes through to the names and the hologram.
 	SetVisibility(ESlateVisibility::HitTestInvisible);
 }
@@ -68,52 +100,52 @@ void USWGHoloDetailCardWidget::NativeOnInitialized()
 void USWGHoloDetailCardWidget::SetInfo(const FSWGExamineInfo& Info)
 {
 	ObjectId = Info.ObjectId;
-	NameText->SetText(FText::FromString(Info.Name));
-	DescriptionText->SetText(FText::FromString(Info.Description));
-	DescriptionText->SetVisibility(Info.Description.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	if (NameText)
+	{
+		NameText->SetText(FText::FromString(Info.Name));
+	}
+	if (DescriptionText)
+	{
+		DescriptionText->SetText(FText::FromString(Info.Description));
+		DescriptionText->SetVisibility(Info.Description.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	}
+	if (!AttributeBox)
+	{
+		return;
+	}
 	AttributeBox->ClearChildren();
 	FString Category;
 	for (const FSWGExamineAttribute& Attribute : Info.Attributes)
 	{
-		// A header wherever the group changes, as retail's examine window lays them out.
+		// A heading wherever the group changes, as retail's examine window lays them out.
 		if (!Attribute.Category.IsEmpty() && Attribute.Category != Category)
 		{
-			UTextBlock* Header = MakeText(WidgetTree, 11, SWGHoloStyle::Text);
-			Header->SetText(FText::FromString(Attribute.Category));
-			if (UVerticalBoxSlot* HeaderSlot = AttributeBox->AddChildToVerticalBox(Header))
-			{
-				HeaderSlot->SetPadding(FMargin(0.f, 4.f, 0.f, 1.f));
-			}
+			USWGHoloAttributeLineWidget* Heading = USWGHoloAttributeLineWidget::Create(GetOwningPlayer());
+			Heading->SetHeading(FText::FromString(Attribute.Category));
+			AttributeBox->AddChild(Heading);
 		}
 		Category = Attribute.Category;
-		UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-		UTextBlock* Label = MakeText(WidgetTree, 11, SWGHoloStyle::DimText, false);
-		Label->SetText(FText::FromString(Attribute.Label));
-		UTextBlock* Value = MakeText(WidgetTree, 11, SWGHoloStyle::BrightText, false);
-		Value->SetText(FText::FromString(Attribute.Value));
-		Value->SetJustification(ETextJustify::Right);
-		if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(Label))
-		{
-			LabelSlot->SetPadding(FMargin(Attribute.Category.IsEmpty() ? 0.f : 8.f, 0.f, 12.f, 0.f));
-		}
-		if (UHorizontalBoxSlot* ValueSlot = Row->AddChildToHorizontalBox(Value))
-		{
-			ValueSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-			ValueSlot->SetHorizontalAlignment(HAlign_Right);
-		}
-		AttributeBox->AddChildToVerticalBox(Row);
+		USWGHoloAttributeLineWidget* Line = USWGHoloAttributeLineWidget::Create(GetOwningPlayer());
+		Line->SetAttribute(FText::FromString(Attribute.Label), FText::FromString(Attribute.Value), !Attribute.Category.IsEmpty());
+		AttributeBox->AddChild(Line);
 	}
 }
 
 void USWGHoloDetailCardWidget::SetStatus(const FText& Status)
 {
-	StatusText->SetText(Status);
-	StatusText->SetVisibility(Status.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	if (StatusText)
+	{
+		StatusText->SetText(Status);
+		StatusText->SetVisibility(Status.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	}
 }
 
 void USWGHoloDetailCardWidget::SetPinned(bool bPinned)
 {
-	FooterText->SetVisibility(bPinned ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	if (FooterText)
+	{
+		FooterText->SetVisibility(bPinned ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
 }
 
 void USWGHoloDetailCardWidget::PlayOpen()

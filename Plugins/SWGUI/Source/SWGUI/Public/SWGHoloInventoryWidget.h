@@ -112,6 +112,10 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloInventory")
 	FKey ToggleKey = EKeys::I;
 
+	/** Gives a Blueprint's bound hint text, headings and panels the holo fonts, colours and brushes; off leaves them as designed. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloInventory")
+	bool bApplyHoloStyle = true;
+
 	/** Containment changes arrive as separate messages with no "done"; poll instead of chasing each. */
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloInventory")
 	float RefreshInterval = 0.5f;
@@ -255,31 +259,42 @@ private:
 	TMap<int64, FBox2D> BagCells;
 	int32 LastBagRows = 0;
 
-	/** A faint frame round the list, heading included; the droid's rays land on its corners. */
-	UPROPERTY()
-	TObjectPtr<class UBorder> BagFrame;
+	/*
+	 * The pieces laid over the scene each frame. A Blueprint may supply any of
+	 * them by name, as direct children of its root canvas (they are positioned
+	 * through their canvas slots); whatever it leaves out is built here.
+	 */
+
+	/** A faint frame round the list, heading included; the droid's rays land on its corners. Sized to the list. */
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UWidget> BagFrame;
 
 	/** The frame on screen from the last layout; invalid while the bag is empty. */
 	FBox2D BagFrameRect = FBox2D(ForceInit);
 
-	UPROPERTY()
-	TObjectPtr<UTextBlock> ShelfCaption;
+	/** The bag's heading text, and what holds it (itself, or a panel round it) in the canvas. */
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> BagCaption;
 
-	UPROPERTY()
-	TObjectPtr<class UBorder> ShelfCaptionPanel;
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UWidget> BagCaptionPanel;
 
-	/** Heads the worn items' names, as ShelfCaption heads the bag. */
-	UPROPERTY()
+	/** Heads the worn items' names, over the figure, as BagCaption heads the bag. */
+	UPROPERTY(meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> EquippedCaption;
 
-	UPROPERTY()
-	TObjectPtr<class UBorder> EquippedCaptionPanel;
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UWidget> EquippedCaptionPanel;
 
-	UPROPERTY()
-	TObjectPtr<UTextBlock> ShelfMoreBefore;
+	/** "▲ n more" above the list and "▼ n more" below it. */
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> BagMoreBefore;
 
-	UPROPERTY()
-	TObjectPtr<UTextBlock> ShelfMoreAfter;
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> BagMoreAfter;
+
+	/** Builds whichever overlay pieces the Blueprint didn't supply. */
+	void BuildMissingOverlay();
 
 	int64 HoveredShelfId = 0;
 

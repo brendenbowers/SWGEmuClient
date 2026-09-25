@@ -481,7 +481,8 @@ void USWGUISubsystem::OpenHoloInventory()
 	{
 		HoloMap->Close();
 	}
-	HoloInventory = CreateWidget<USWGHoloInventoryWidget>(PlayerController, USWGHoloInventoryWidget::StaticClass());
+	TSubclassOf<USWGHoloInventoryWidget> HoloInventoryClass = USWGUISettings::Get().HoloInventoryClass.LoadSynchronous();
+	HoloInventory = CreateWidget<USWGHoloInventoryWidget>(PlayerController, HoloInventoryClass ? HoloInventoryClass.Get() : USWGHoloInventoryWidget::StaticClass());
 	HoloInventory->OnClosed.AddUObject(this, &USWGUISubsystem::HandleHoloInventoryClosed);
 	HoloInventory->OnSwitchToWindow.AddWeakLambda(this, [this]() { SetInventoryMode(ESWGInventoryMode::Window); });
 	// Under the layout (100) and windows, over the world, as the holo map.

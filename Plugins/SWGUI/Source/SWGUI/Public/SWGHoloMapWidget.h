@@ -70,6 +70,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SWGEmu|HoloMap")
 	bool bCreateWaypointOnDoubleClick = true;
 
+	/** Gives a Blueprint's bound hint text the holo font and colour; off leaves it as designed. */
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|HoloMap")
+	bool bApplyHoloStyle = true;
+
 protected:
 	virtual void NativeOnInitialized() override;
 	virtual void NativeConstruct() override;
