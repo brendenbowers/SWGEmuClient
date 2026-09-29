@@ -29,6 +29,7 @@
 #include "Components/SWGStomachComponent.h"
 #include "Subsystems/SWGTargetSubsystem.h"
 #include "Subsystems/SWGRadialMenuSubsystem.h"
+#include "Subsystems/SWGCommandSubsystem.h"
 #include "Materials/MaterialInterface.h"
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "EngineUtils.h"
@@ -645,8 +646,48 @@ void ASWGPlayer::Move(const FInputActionValue& Value)
 		return;
 	}
 
+	if (!MovementVector.IsNearlyZero() && MovedPawn == this)
+	{
+		RequestStandForMovement();
+	}
+
 	MovedPawn->AddMovementInput(ForwardDirection, MovementVector.Y);
 	MovedPawn->AddMovementInput(RightDirection, MovementVector.X);
+}
+
+void ASWGPlayer::RequestStandForMovement()
+{
+	const USWGMovementComponent* Movement = GetSWGMovementComponent();
+	if (!Movement)
+	{
+		return;
+	}
+
+	// Prone crawls, and incap/dead can't stand, so only the stationary postures
+	// Core3's StandCommand accepts.
+	switch (Movement->GetPosture())
+	{
+	case ESWGPosture::Crouched:
+	case ESWGPosture::Sitting:
+	case ESWGPosture::LyingDown:
+	case ESWGPosture::KnockedDown:
+		break;
+	default:
+		return;
+	}
+
+	const double Now = GetWorld()->GetTimeSeconds();
+	if (Now - LastStandRequestTime < StandRequestInterval)
+	{
+		return;
+	}
+	LastStandRequestTime = Now;
+
+	UGameInstance* GameInstance = GetGameInstance();
+	if (USWGCommandSubsystem* Commands = GameInstance ? GameInstance->GetSubsystem<USWGCommandSubsystem>() : nullptr)
+	{
+		Commands->SendCommand(TEXT("stand"));
+	}
 }
 
 void ASWGPlayer::Tick(float DeltaTime)

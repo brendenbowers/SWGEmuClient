@@ -2,6 +2,9 @@
 #include "SWGPlanetMapWidget.h"
 #include "SWGRetailStyle.h"
 #include "SWGMapMarkers.h"
+#include "SWGSurveyStyle.h"
+#include "SWGSurveyWidget.h"
+#include "Subsystems/SWGSurveySubsystem.h"
 #include "SWGUISubsystem.h"
 #include "Engine/LocalPlayer.h"
 #include "Common/SWGWorldScale.h"
@@ -53,6 +56,13 @@ void USWGPlanetMapWindowWidget::NativeConstruct()
 	{
 		LocationsChangedHandle = MapLocations->OnLocationsChanged.AddUObject(this, &USWGPlanetMapWindowWidget::HandleLocationsChanged);
 	}
+	Survey = GameInstance ? GameInstance->GetSubsystem<USWGSurveySubsystem>() : nullptr;
+	if (Survey)
+	{
+		Survey->OnSurveyResultReceived.AddUniqueDynamic(this, &USWGPlanetMapWindowWidget::RefreshSurveyScan);
+		Survey->OnSurveyStateChanged.AddUniqueDynamic(this, &USWGPlanetMapWindowWidget::RefreshSurveyScan);
+	}
+	MapView->SetLayerMarkerClass(SWGSurveyStyle::MarkerLayer, USWGSurveyMarkerWidget::StaticClass());
 
 	MapView->OnMarkerClicked.AddUniqueDynamic(this, &USWGPlanetMapWindowWidget::HandleMarkerClicked);
 	MapView->OnGroundDoubleClicked.AddUniqueDynamic(this, &USWGPlanetMapWindowWidget::HandleGroundDoubleClicked);
@@ -82,6 +92,7 @@ void USWGPlanetMapWindowWidget::NativeConstruct()
 
 	RefreshPlanet();
 	RefreshWaypointMarkers();
+	RefreshSurveyScan();
 	SetControllerMode(bControllerMode);
 }
 
@@ -94,6 +105,11 @@ void USWGPlanetMapWindowWidget::NativeDestruct()
 	if (MapLocations)
 	{
 		MapLocations->OnLocationsChanged.Remove(LocationsChangedHandle);
+	}
+	if (Survey)
+	{
+		Survey->OnSurveyResultReceived.RemoveAll(this);
+		Survey->OnSurveyStateChanged.RemoveAll(this);
 	}
 	Super::NativeDestruct();
 }
@@ -179,6 +195,20 @@ void USWGPlanetMapWindowWidget::RefreshWaypointMarkers()
 		WaypointPositions.Add(Marker.Id, Marker.Position);
 	}
 	MapView->SetMarkers(PlanetWaypointLayer, Markers);
+}
+
+void USWGPlanetMapWindowWidget::RefreshSurveyScan()
+{
+	if (!Survey || !Survey->ShouldShowScan())
+	{
+		MapView->ClearLayer(SWGSurveyStyle::MarkerLayer);
+		MapView->ClearGroundOverlay();
+		return;
+	}
+	const FSWGSurveyResult& Result = Survey->GetLastResult();
+	// At planet-map zoom every percentage piles up; the field shows the spread, the label the find.
+	MapView->SetMarkers(SWGSurveyStyle::MarkerLayer, SWGSurveyStyle::MakeMarkers(Result, false));
+	MapView->SetGroundOverlay(SWGSurveyStyle::MakeOverlay(Result));
 }
 
 void USWGPlanetMapWindowWidget::HandleLocationsChanged(const FString& InPlanet)

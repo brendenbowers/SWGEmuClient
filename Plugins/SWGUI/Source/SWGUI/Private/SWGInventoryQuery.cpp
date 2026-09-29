@@ -6,21 +6,19 @@
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Objects/Tangible/SWGItem.h"
 #include "Network/Objects/Zone/Object/SWGContainmentType.h"
+#include "Network/Objects/Zone/Object/SWGGameObjectType.h"
 #include "Engine/GameInstance.h"
 #include "Subsystems/SWGTreSubsystem.h"
 
 namespace
 {
-	/** Core3's SceneObjectType::CRAFTINGTOOL; a tool's prototype doesn't count against the bag. */
-	constexpr int32 CraftingToolObjectType = 0x8001;
-
 	FString TemplatePathOf(USWGObjectGraphSubsystem& ObjectGraph, USWGTreSubsystem& Tre, int64 ObjectId)
 	{
 		const ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(ObjectGraph.FindActor(ObjectId));
 		return NetObject ? Tre.ResolveTemplatePath(NetObject->GetObjectCrc()) : FString();
 	}
 
-	int32 CountRecursive(USWGObjectGraphSubsystem& ObjectGraph, USWGTreSubsystem& Tre, int64 ContainerId)
+	int32 CountRecursive(USWGObjectGraphSubsystem& ObjectGraph, int64 ContainerId)
 	{
 		int32 Count = 0;
 		for (const int64 ObjectId : ObjectGraph.FindContainedObjectIds(ContainerId))
@@ -31,11 +29,9 @@ namespace
 			{
 				continue;
 			}
-			int32 ObjectType = 0;
-			const FString TemplatePath = TemplatePathOf(ObjectGraph, Tre, ObjectId);
-			if (TemplatePath.IsEmpty() || !Tre.FindTemplateIntParam(TemplatePath, TEXT("gameObjectType"), ObjectType) || ObjectType != CraftingToolObjectType)
+			if (USWGTangibleComponent::GetGameObjectType(ObjectGraph.FindActor(ObjectId)) != SWGGameObjectType::CraftingTool)
 			{
-				Count += CountRecursive(ObjectGraph, Tre, ObjectId);
+				Count += CountRecursive(ObjectGraph, ObjectId);
 			}
 		}
 		return Count;
@@ -149,6 +145,6 @@ bool SWGInventoryQuery::GetBagCapacity(UGameInstance* GameInstance, int32& OutUs
 	{
 		return false;
 	}
-	OutUsed = CountRecursive(*ObjectGraph, *Tre, BagId);
+	OutUsed = CountRecursive(*ObjectGraph, BagId);
 	return true;
 }

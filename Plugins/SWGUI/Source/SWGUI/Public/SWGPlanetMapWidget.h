@@ -4,6 +4,7 @@
 #include "Blueprint/UserWidget.h"
 #include "Map/SWGPlanetMapScene.h"
 #include "SWGMapMarkerWidget.h"
+#include "SWGMapGroundOverlayWidget.h"
 #include "SWGPlanetMapWidget.generated.h"
 
 class UCanvasPanel;
@@ -56,13 +57,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Map")
 	void SetLayerMarkerClass(FName Layer, TSubclassOf<USWGMapMarkerWidget> MarkerClass);
 
-	/** Animates the camera onto Point, closing to Distance metres if it is further out (0 keeps the zoom). */
+	/** Animates the camera onto Point, closing to Distance metres if it is further out (0 keeps the zoom); bExactDistance may pull back too. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Map")
-	void FlyTo(FVector2D Point, float Distance = 0.f);
+	void FlyTo(FVector2D Point, float Distance = 0.f, bool bExactDistance = false);
 
 	/** FlyTo without the flight: the view is simply there. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Map")
-	void JumpTo(FVector2D Point, float Distance = 0.f);
+	void JumpTo(FVector2D Point, float Distance = 0.f, bool bExactDistance = false);
 
 	/** Animated; Factor < 1 zooms in. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Map")
@@ -91,6 +92,16 @@ public:
 	/** Raw point to this widget's local space; false when off the view or behind the camera. */
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|Map")
 	bool ProjectToLocal(FVector2D RawPosition, FVector2D& OutLocalPosition) const;
+
+	/** ProjectToLocal that also answers for points off the edge of the view; false only behind the camera. */
+	bool ProjectToLocalUnclamped(FVector2D RawPosition, FVector2D& OutLocalPosition) const;
+
+	/** Lays a colour field on the ground, under every marker layer. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Map")
+	void SetGroundOverlay(const FSWGMapGroundOverlay& Overlay);
+
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Map")
+	void ClearGroundOverlay();
 
 	UPROPERTY(BlueprintAssignable, Category = "SWGEmu|Map")
 	FSWGOnMapMarkerClicked OnMarkerClicked;
@@ -174,6 +185,10 @@ private:
 
 	UPROPERTY()
 	TMap<FName, TSubclassOf<USWGMapMarkerWidget>> LayerMarkerClasses;
+
+	/** Created on the first SetGroundOverlay, first child of MarkerCanvas so markers draw over it. */
+	UPROPERTY()
+	TObjectPtr<USWGMapGroundOverlayWidget> GroundOverlay;
 
 	TArray<FMarkerLayer> Layers;
 	TSharedPtr<FSWGPlanetMapScene> MapScene;

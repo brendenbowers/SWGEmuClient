@@ -30,6 +30,23 @@ enum class ESWGInventoryMode : uint8
 	Hologram
 };
 
+/** Which form the survey tool opens in. */
+UENUM(BlueprintType)
+enum class ESWGSurveyMode : uint8
+{
+	/** USWGSurveyWidget: retail's survey window with a 3D map. */
+	Window,
+	/** USWGHoloSurveyWidget: a projected resource list, and the concentrations laid on the ground. */
+	Hologram
+};
+
+UENUM(BlueprintType)
+enum class ESWGCraftingMode : uint8
+{
+	Window,
+	Hologram
+};
+
 /**
  * Owns the UI side of the client flow: creates the layout for the local
  * player and pushes/clears layer widgets as USWGClientFlowSubsystem changes
@@ -111,7 +128,57 @@ public:
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
 	bool IsDatapadOpen() const;
 
+	/** Switches the survey form; an open survey is swapped for the other form in place. */
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void SetSurveyMode(ESWGSurveyMode Mode);
+
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
+	ESWGSurveyMode GetSurveyMode() const { return SurveyMode; }
+
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void CloseSurvey();
+
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
+	bool IsCraftingOpen() const { return CraftingWindow != nullptr || HoloCrafting != nullptr; }
+
+	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
+	void SetCraftingMode(ESWGCraftingMode Mode);
+
+	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
+	ESWGCraftingMode GetCraftingMode() const { return CraftingMode; }
+
 private:
+	UFUNCTION()
+	void HandleSurveyWindowRequested();
+
+	void OpenSurvey();
+
+	UFUNCTION()
+	void HandleCraftingSessionStarted();
+
+	void OpenCrafting();
+
+	UPROPERTY()
+	TObjectPtr<class USWGCraftingWidget> CraftingWindow;
+	UPROPERTY()
+	TObjectPtr<class USWGHoloCraftingWidget> HoloCrafting;
+	// Defaults to Hologram while holo Assembly is under active development —
+	// avoids needing `swg.CraftingMode holo` before every test. Revisit once
+	// Experiment/Customize/Summary get holo coverage too (or just make the
+	// window the retail-faithful default again then).
+	ESWGCraftingMode CraftingMode = ESWGCraftingMode::Hologram;
+
+	/** Tells the survey subsystem whether any survey form is up, so maps know to draw the scan. */
+	void RefreshSurveyToolActive();
+
+	UPROPERTY()
+	TObjectPtr<class USWGSurveyWidget> SurveyWindow;
+
+	UPROPERTY()
+	TObjectPtr<class USWGHoloSurveyWidget> HoloSurvey;
+
+	ESWGSurveyMode SurveyMode = ESWGSurveyMode::Hologram;
+
 	bool IsGamepadActive() const;
 	void HandleInventoryDockClosed();
 	void HandleInputMethodChanged(ECommonInputType InputType);

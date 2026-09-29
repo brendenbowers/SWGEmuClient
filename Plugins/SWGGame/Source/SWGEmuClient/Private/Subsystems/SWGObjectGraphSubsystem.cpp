@@ -114,6 +114,7 @@ TSubclassOf<AActor> USWGObjectGraphSubsystem::ResolveActorClassForCrc(uint32 Crc
 	return nullptr;
 }
 
+
 void USWGObjectGraphSubsystem::SetCurrentZoneLevel(ULevelStreaming* Streaming)
 {
 	CurrentZoneStreamingLevel = Streaming;
@@ -377,6 +378,10 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 		NetObject->SetObjectId(Msg.ObjectId);
 		NetObject->SetObjectCrc(Msg.ObjectCrc);
 	}
+	if (USWGTangibleComponent* Tangible = NewActor->FindComponentByClass<USWGTangibleComponent>(); Tangible && TreSubsystem)
+	{
+		TreSubsystem->FindTemplateIntParam(TreSubsystem->ResolveTemplatePath(Msg.ObjectCrc), TEXT("gameObjectType"), Tangible->GameObjectType);
+	}
 
 	// Whether that position was world or cell-relative isn't known until the
 	// containment arrives — see ApplyContainment.
@@ -571,6 +576,24 @@ void USWGObjectGraphSubsystem::HandleUpdateContainment(const FUpdateContainmentM
 	if (Actor && !Cast<ASWGCell>(Actor))
 	{
 		ApplyContainment(Actor, Msg.ObjectId, Msg.ContainerId);
+	}
+
+	// A physical room trigger can miss the local pawn during a streamed cell
+	// handoff. The server's cell transfer still tells us which room to light.
+	if (Msg.ObjectId == LocalPlayerObjectId && PreviousContainerId != Msg.ContainerId)
+	{
+		ASWGCell* PreviousCell = Cast<ASWGCell>(FindActor(PreviousContainerId));
+		ASWGCell* EnteredCell = Cast<ASWGCell>(FindActor(Msg.ContainerId));
+		ASWGBuilding* PreviousBuilding = PreviousCell ? PreviousCell->OwningBuilding.Get() : nullptr;
+		ASWGBuilding* EnteredBuilding = EnteredCell ? EnteredCell->OwningBuilding.Get() : nullptr;
+		if (PreviousBuilding && PreviousBuilding != EnteredBuilding)
+		{
+			PreviousBuilding->SetLitRoom(nullptr);
+		}
+		if (EnteredBuilding && EnteredCell->bCollisionReady)
+		{
+			EnteredBuilding->SetLitRoom(EnteredCell);
+		}
 	}
 
 	// Core3 links before it sends baselines, so an item's first containment
@@ -1059,6 +1082,13 @@ void USWGObjectGraphSubsystem::RegisterStaticObject(int64 ObjectId, AActor* Acto
 	if (ISWGNetworkObjectInterface* NetObject = Cast<ISWGNetworkObjectInterface>(Actor))
 	{
 		NetObject->SetObjectId(ObjectId);
+	}
+	if (USWGTangibleComponent* Tangible = Actor->FindComponentByClass<USWGTangibleComponent>(); Tangible && TreSubsystem)
+	{
+		if (const ASWGObject* Object = Cast<ASWGObject>(Actor))
+		{
+			TreSubsystem->FindTemplateIntParam(Object->StaticTemplatePath, TEXT("gameObjectType"), Tangible->GameObjectType);
+		}
 	}
 
 	ActorRegistry.Add(ObjectId, Actor);

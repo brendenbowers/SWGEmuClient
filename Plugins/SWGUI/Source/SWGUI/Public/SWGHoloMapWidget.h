@@ -114,6 +114,8 @@ private:
 	FString GetPlanetName() const;
 
 	UFUNCTION() void RefreshWaypoints();
+	/** The survey tool's last scan on the hologram's ground, while the tool is up. */
+	UFUNCTION() void RefreshSurveyScan();
 	UFUNCTION() void HandleCenterClicked();
 	UFUNCTION() void HandleWindowClicked();
 	UFUNCTION() void HandleCloseClicked();
@@ -131,6 +133,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<USWGWaypointSubsystem> Waypoints;
+
+	UPROPERTY()
+	TObjectPtr<class USWGSurveySubsystem> Survey;
 
 	UPROPERTY()
 	TArray<TObjectPtr<UObject>> ButtonTextTints;

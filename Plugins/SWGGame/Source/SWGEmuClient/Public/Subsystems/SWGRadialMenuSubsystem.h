@@ -100,6 +100,20 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "SWGEmu|Radial")
 	FSWGOnMissionTerminalUsed OnMissionTerminalUsed;
 
+	/** An ObjectMenuSelect went to the server: (object id, radial id). Lets features learn which object a reply is about. */
+	TMulticastDelegate<void(int64, int32)> OnServerOptionSelected;
+
+	/**
+	 * The radial id captioned Name in datatables/player/radial_menu.iff
+	 * (Core3's RadialOptions enum names, e.g. "SERVER_ITEM_OPTIONS" for the
+	 * crafting tool hopper's "Retrieve Output"), or INDEX_NONE if the table
+	 * hasn't got a row for it. Row index == radial id is Core3's own
+	 * convention (RadialOptions.h). Public so features outside this
+	 * subsystem (crafting's RetrieveOutput) can send an ObjectMenuSelect for
+	 * a server-drawn option without hand-counting its id.
+	 */
+	int32 ResolveRadialId(const FString& Name) const;
+
 private:
 	void HandleMessageReceived(TSharedPtr<FSWGNetMessage> Message);
 
@@ -114,8 +128,6 @@ private:
 	/** Every client-drawn option, built once (lambdas capture this — mirrors GetRadialTable's lazy-init). */
 	const TArray<FSWGClientRadialRule>& GetClientRadialRules() const;
 
-	int32 ResolveRadialId(const FString& Name) const;
-
 	/** Shared by the Equip/Unequip rules and the Use rule's equip-toggle fallback. */
 	bool ToggleEquip(int64 ObjectId) const;
 
@@ -124,6 +136,9 @@ private:
 
 	/** Whether ObjectId's template is one of the object/tangible/terminal/shared_terminal_mission*.iff variants. */
 	bool IsMissionTerminal(int64 ObjectId) const;
+
+	/** Whether ObjectId's template is a crafting tool or station (object/tangible/crafting/station/*.iff). */
+	bool IsCraftingToolOrStation(int64 ObjectId) const;
 
 	FText ResolveLabel(const FSWGRadialMenuEntry& Entry) const;
 

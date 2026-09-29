@@ -146,4 +146,6 @@ class USWGTravelPlanetClickForwarder : public UObject
 public:
 	TFunction<void()> Action;
 	UFUNCTION() void HandleClicked() { if (Action) { Action(); } }
+	TFunction<void()> HoverAction;
+	UFUNCTION() void HandleHovered() { if (HoverAction) { HoverAction(); } }
 };

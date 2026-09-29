@@ -153,6 +153,9 @@ public:
 	/** The zone being streamed ("tatooine"), empty before the first BeginLoadTerrain. */
 	FString GetActivePlanetName() const { return FPaths::GetBaseFilename(ActiveTerrainVirtualPath); }
 
+	/** Current 0..1 planet day position, including the swg.TimeOfDay test override. */
+	float GetDayFraction() const;
+
 	/** Immutable planet data, the published edit layers and the .ws snapshot: safe to read from any thread. Null until parsed. */
 	TSharedPtr<const FSWGTerrainData, ESPMode::ThreadSafe> GetPlanetData() const { return PlanetData; }
 	TSharedPtr<const TArray<FSWGTerrainLayer>, ESPMode::ThreadSafe> GetPublishedEditLayers() const { return PublishedEditLayers; }
@@ -421,9 +424,6 @@ private:
 
 	/** Re-syncs the day clock to the server's galactic time (seconds). */
 	void SetGalacticTime(int64 Seconds);
-
-	/** 0..1 through the planet's day cycle right now — see GetDayFraction's comment for the swg.TimeOfDay override. */
-	float GetDayFraction() const;
 
 	/** USWGTreSubsystem::CreateIffReader + FSWGTerrainReader::ReadTerrain — synchronous, cheap. */
 	bool ParseTerrain(const FString& TerrainVirtualPath, FSWGTerrainData& OutTerrainData);

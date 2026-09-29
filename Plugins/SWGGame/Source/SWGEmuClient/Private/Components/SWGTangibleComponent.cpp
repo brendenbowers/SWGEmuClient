@@ -18,6 +18,12 @@ USWGTangibleComponent::USWGTangibleComponent()
 	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
 }
 
+int32 USWGTangibleComponent::GetGameObjectType(const AActor* Actor)
+{
+	const USWGTangibleComponent* Tangible = Actor ? Actor->FindComponentByClass<USWGTangibleComponent>() : nullptr;
+	return Tangible ? Tangible->GameObjectType : 0;
+}
+
 void USWGTangibleComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);

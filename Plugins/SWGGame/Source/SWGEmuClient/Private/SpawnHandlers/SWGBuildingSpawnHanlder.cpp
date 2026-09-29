@@ -350,6 +350,7 @@ namespace
 		{
 			FVector Origin;
 			FVector Normal;
+			float SillZ;
 			/** Outward-facing side planes through each outline edge, plus the margin. */
 			TArray<FPlane, TInlineAllocator<8>> SidePlanes;
 		};
@@ -366,12 +367,14 @@ namespace
 			FPortalPrism Prism;
 			Prism.Origin = FVector::ZeroVector;
 			Prism.Normal = FVector::ZeroVector;
+			Prism.SillZ = TNumericLimits<float>::Max();
 			const int32 Count = Portal.OpeningVertices.Num();
 			for (int32 VertexIndex = 0; VertexIndex < Count; ++VertexIndex)
 			{
 				const FVector& EdgeStart = Portal.OpeningVertices[VertexIndex];
 				const FVector& EdgeEnd = Portal.OpeningVertices[(VertexIndex + 1) % Count];
 				Prism.Origin += EdgeStart;
+				Prism.SillZ = FMath::Min(Prism.SillZ, static_cast<float>(EdgeStart.Z));
 				Prism.Normal += FVector(
 					(EdgeStart.Y - EdgeEnd.Y) * (EdgeStart.Z + EdgeEnd.Z),
 					(EdgeStart.Z - EdgeEnd.Z) * (EdgeStart.X + EdgeEnd.X),
@@ -439,7 +442,12 @@ namespace
 
 			for (const FPortalPrism& Prism : Prisms)
 			{
-				if (FMath::Abs(FVector::DotProduct(TriangleNormal, Prism.Normal)) < PortalCutParallelDot)
+				// Some exterior CMSH shells include a nearly horizontal sill sheet
+				// across the ramp. The .flr supplies the walkable surface there.
+				const bool bSillSheet = CellData.CellIndex == 0 && FMath::Abs(TriangleNormal.Z) > 0.7f
+					&& FMath::Min3(CornerA.Z, CornerB.Z, CornerC.Z) < Prism.SillZ + 30.0f
+					&& FMath::Max3(CornerA.Z, CornerB.Z, CornerC.Z) > Prism.SillZ - PortalCutSillDrop;
+				if (!bSillSheet && FMath::Abs(FVector::DotProduct(TriangleNormal, Prism.Normal)) < PortalCutParallelDot)
 				{
 					continue;
 				}
@@ -521,7 +529,7 @@ namespace
 			{
 				// Salted per cut rule: the saved SM_Collision_* asset is the cache,
 				// so a change to how doorways are cut must not reuse the old shell.
-				const uint32 WallHash = HashCombine(HashCombine(GetTypeHash(CellData.MeshPath), GetTypeHash(CellData.CellIndex)), GetTypeHash(FString(TEXT("portalcut-4"))));
+				const uint32 WallHash = HashCombine(HashCombine(GetTypeHash(CellData.MeshPath), GetTypeHash(CellData.CellIndex)), GetTypeHash(FString(TEXT("portalcut-5"))));
 				UStaticMeshComponent* Walls = MeshGeneratorSubsystem->AddCollisionMeshComponent(*Actor, *Actor->GetRootComponent(), WallHash,
 					FString::Printf(TEXT("%s [cell %d walls]"), *CellData.MeshPath, CellData.CellIndex), WallVertices, WallIndices);
 				UE_LOG(LogTemp, Log, TEXT("CreateCollisionForCell: cell %d '%s' walls — %d tri(s), %d clipped around %d portal(s)%s"),
@@ -559,7 +567,7 @@ namespace
 		const int32 Barriers = FSWGFloorReader::AppendBarrierMesh(FloorData, FloorBarrierHeight, BarrierVertices, BarrierIndices);
 		if (Barriers > 0)
 		{
-			const uint32 BarrierHash = HashCombine(GetTypeHash(CellData.CollisionFloorPath), GetTypeHash(FString(TEXT("barriers-2"))));
+			const uint32 BarrierHash = HashCombine(GetTypeHash(CellData.CollisionFloorPath), GetTypeHash(FString(TEXT("barriers-3"))));
 			MeshGeneratorSubsystem->AddCollisionMeshComponent(*Actor, *Actor->GetRootComponent(), BarrierHash,
 				CellData.CollisionFloorPath + TEXT(" [barriers]"), BarrierVertices, BarrierIndices);
 		}
@@ -954,6 +962,7 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 			BuildRoomLights(CellActor, CellData);
 			CreateCollisionForCell(TreSubsystem, MeshGeneratorSubsystem, CellActor, CellData);
 			CellActor->bCollisionReady = true;
+			BuildingActor->RegisterCellTrigger(CellActor, CellData.CanSeeParent);
 
 			// Only place/reveal occupants once there is a floor for them to stand
 			// on. OwningBuilding becomes valid before the async room mesh does, so
@@ -962,10 +971,13 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 			{
 				if (USWGObjectGraphSubsystem* ObjectGraph = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>())
 				{
+					if (ObjectGraph->IsLocalPlayerContainedIn(CellActor->GetObjectId()))
+					{
+						BuildingActor->SetLitRoom(CellActor);
+					}
 					ObjectGraph->NotifyCellFinished(CellActor->GetObjectId());
 				}
 			}
-			BuildingActor->RegisterCellTrigger(CellActor, CellData.CanSeeParent);
 		}));
 
 	SpawnCellDoors(BuildingActor, CellData.CellName, CellData.Portals, MeshGeneratorSubsystem);
@@ -1038,7 +1050,8 @@ void FSWGCellSpawnHandler::SpawnCellDoors(ASWGBuilding* BuildingActor, const FSt
 		const FSWGDoorStyleRow StyleCopy = *StyleRow;
 		TWeakObjectPtr<ASWGDoor> DoorActorWeakPtr = DoorActor;
 		TWeakObjectPtr<ASWGBuilding> OwningBuilding = BuildingActor;
-		MeshGeneratorSubsystem->RequestMesh(DoorActor, DoorMeshPath).Next(OnGameThread([DoorActorWeakPtr, StyleCopy, OwningBuilding](const FSWGMeshGenerationResult& Result)
+		const FTransform DoorHardpoint = PortalRef.DoorHardpoint;
+		MeshGeneratorSubsystem->RequestMesh(DoorActor, DoorMeshPath).Next(OnGameThread([DoorActorWeakPtr, StyleCopy, OwningBuilding, DoorHardpoint](const FSWGMeshGenerationResult& Result)
 			{
 				if (!DoorActorWeakPtr.IsValid() || !OwningBuilding.IsValid())
 				{
@@ -1053,6 +1066,7 @@ void FSWGCellSpawnHandler::SpawnCellDoors(ASWGBuilding* BuildingActor, const FSt
 				}
 
 				DoorActorWeakPtr->AttachToActor(OwningBuilding.Get(), FAttachmentTransformRules::KeepWorldTransform);
+				DoorActorWeakPtr->SetActorRelativeTransform(DoorHardpoint);
 				DoorActorWeakPtr->InitializeDoorStyle(&StyleCopy);
 			}));
 	}

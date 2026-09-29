@@ -367,7 +367,9 @@ void USWGWaypointSubsystem::UpdateMarkers(const TArray<FSWGWaypointEntry>& Activ
 		}
 		else if (!Marker->GetActorLocation().Equals(WorldLocation, 1.f))
 		{
+			// A moved waypoint (a re-survey reuses its one) wants its trail redrawn now.
 			Marker->SetActorLocation(WorldLocation);
+			NextBreadcrumbRefreshTime.Remove(Entry.WaypointObjectId);
 		}
 
 		Marker->SetColor(GetWaypointColor(Entry.Color));

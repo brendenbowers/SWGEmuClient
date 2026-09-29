@@ -86,6 +86,8 @@ private:
 	void HandleLocationsChanged(const FString& Planet);
 
 	UFUNCTION() void RefreshWaypointMarkers();
+	/** The survey tool's last scan, laid on the ground, while the tool is up. */
+	UFUNCTION() void RefreshSurveyScan();
 	UFUNCTION() void HandleMarkerClicked(FName Layer, FName MarkerId);
 	UFUNCTION() void HandleGroundDoubleClicked(FVector2D RawPosition);
 	UFUNCTION() void HandleMapPressed();
@@ -103,6 +105,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<USWGTreSubsystem> Tre;
+
+	UPROPERTY()
+	TObjectPtr<class USWGSurveySubsystem> Survey;
 
 	UPROPERTY()
 	TArray<TObjectPtr<UObject>> ButtonTextTints;

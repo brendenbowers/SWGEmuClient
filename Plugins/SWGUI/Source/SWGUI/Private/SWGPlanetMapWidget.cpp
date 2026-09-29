@@ -50,6 +50,8 @@ void USWGPlanetMapWidget::NativeOnInitialized()
 	}
 	// The map itself takes the clicks for pan/orbit; only markers sit above it.
 	SetVisibility(ESlateVisibility::Visible);
+	// A ground overlay projects past the view's edges; keep it inside.
+	SetClipping(EWidgetClipping::ClipToBounds);
 }
 
 void USWGPlanetMapWidget::NativeConstruct()
@@ -247,6 +249,47 @@ bool USWGPlanetMapWidget::ProjectToLocal(FVector2D RawPosition, FVector2D& OutLo
 	return OutLocalPosition.X >= 0.f && OutLocalPosition.Y >= 0.f && OutLocalPosition.X <= LocalSize.X && OutLocalPosition.Y <= LocalSize.Y;
 }
 
+bool USWGPlanetMapWidget::ProjectToLocalUnclamped(FVector2D RawPosition, FVector2D& OutLocalPosition) const
+{
+	const FVector2D LocalSize = GetCachedGeometry().GetLocalSize();
+	FVector2D Pixel;
+	if (!MapScene || LocalSize.X < 1.f || LocalSize.Y < 1.f
+		|| !MapScene->Project(FVector(RawPosition.X, RawPosition.Y, MapScene->GetGroundHeight(RawPosition)), Pixel))
+	{
+		return false;
+	}
+	const FIntPoint Viewport = MapScene->GetViewportSize();
+	OutLocalPosition = Pixel * LocalSize / FVector2D(Viewport.X, Viewport.Y);
+	return true;
+}
+
+void USWGPlanetMapWidget::SetGroundOverlay(const FSWGMapGroundOverlay& Overlay)
+{
+	if (!MarkerCanvas)
+	{
+		return;
+	}
+	if (!GroundOverlay)
+	{
+		GroundOverlay = CreateWidget<USWGMapGroundOverlayWidget>(this, USWGMapGroundOverlayWidget::StaticClass());
+		GroundOverlay->SetMap(this);
+		GroundOverlay->SetVisibility(ESlateVisibility::HitTestInvisible);
+		MarkerCanvas->InsertChildAt(0, GroundOverlay);
+		FillParent(GroundOverlay);
+	}
+	GroundOverlay->SetOverlay(Overlay);
+	GroundOverlay->SetVisibility(ESlateVisibility::HitTestInvisible);
+}
+
+void USWGPlanetMapWidget::ClearGroundOverlay()
+{
+	if (GroundOverlay)
+	{
+		GroundOverlay->SetOverlay(FSWGMapGroundOverlay());
+		GroundOverlay->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
 void USWGPlanetMapWidget::UpdateMarkerPositions()
 {
 	for (FMarkerLayer& Layer : Layers)
@@ -282,19 +325,19 @@ void USWGPlanetMapWidget::ClampCamera(FSWGPlanetMapCamera& InOutCamera) const
 	InOutCamera.Tilt = FMath::Clamp(InOutCamera.Tilt, -MaxTilt, MaxTilt);
 }
 
-void USWGPlanetMapWidget::FlyTo(FVector2D Point, float Distance)
+void USWGPlanetMapWidget::FlyTo(FVector2D Point, float Distance, bool bExactDistance)
 {
 	GoalCamera.Target = Point;
 	if (Distance > 0.f)
 	{
-		GoalCamera.Distance = FMath::Min(GoalCamera.Distance, Distance);
+		GoalCamera.Distance = bExactDistance ? Distance : FMath::Min(GoalCamera.Distance, Distance);
 	}
 	ClampCamera(GoalCamera);
 }
 
-void USWGPlanetMapWidget::JumpTo(FVector2D Point, float Distance)
+void USWGPlanetMapWidget::JumpTo(FVector2D Point, float Distance, bool bExactDistance)
 {
-	FlyTo(Point, Distance);
+	FlyTo(Point, Distance, bExactDistance);
 	Camera = GoalCamera;
 }
 

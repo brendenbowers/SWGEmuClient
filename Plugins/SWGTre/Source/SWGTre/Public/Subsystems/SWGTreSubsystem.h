@@ -115,6 +115,9 @@ public:
 	 */
 	bool FindTemplateStringId(const FString& TemplatePath, const TCHAR* Key, FString& OutTable, FString& OutText);
 
+	/** SDSC's craftedSharedTemplate: the actual item model a draft schematic will produce. */
+	bool FindDraftCraftedSharedTemplate(const FString& DraftTemplatePath, FString& OutTemplatePath) const;
+
 	/**
 	 * Reads an integer field from a shared template, walking the DERV chain
 	 * until a layer sets it — how the collision flags reach every object from

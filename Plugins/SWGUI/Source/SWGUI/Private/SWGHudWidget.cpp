@@ -264,6 +264,34 @@ namespace
 				const bool bHolo = Args[0].Equals(TEXT("on"), ESearchCase::IgnoreCase) || Args[0].StartsWith(TEXT("holo"), ESearchCase::IgnoreCase) || Args[0] == TEXT("1");
 				UI->SetPlanetMapMode(bHolo ? ESWGPlanetMapMode::Hologram : ESWGPlanetMapMode::Window);
 				UI->SetInventoryMode(bHolo ? ESWGInventoryMode::Hologram : ESWGInventoryMode::Window);
+				UI->SetSurveyMode(bHolo ? ESWGSurveyMode::Hologram : ESWGSurveyMode::Window);
+				UI->SetCraftingMode(bHolo ? ESWGCraftingMode::Hologram : ESWGCraftingMode::Window);
+			}
+		}));
+
+	FAutoConsoleCommand CmdCraftingMode(
+		TEXT("swg.CraftingMode"),
+		TEXT("Chooses the crafting form: 'swg.CraftingMode window' or 'swg.CraftingMode holo'. An open session swaps in place."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			USWGHudWidget* Hud = USWGHudWidget::GetActiveHud();
+			USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr;
+			if (UI && !Args.IsEmpty())
+			{
+				UI->SetCraftingMode(Args[0].StartsWith(TEXT("holo"), ESearchCase::IgnoreCase) ? ESWGCraftingMode::Hologram : ESWGCraftingMode::Window);
+			}
+		}));
+
+	FAutoConsoleCommand CmdSurveyMode(
+		TEXT("swg.SurveyMode"),
+		TEXT("Chooses the survey tool's form: 'swg.SurveyMode window' or 'swg.SurveyMode holo'. An open survey swaps in place."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			USWGHudWidget* Hud = USWGHudWidget::GetActiveHud();
+			USWGUISubsystem* UI = Hud ? ULocalPlayer::GetSubsystem<USWGUISubsystem>(Hud->GetOwningLocalPlayer()) : nullptr;
+			if (UI && !Args.IsEmpty())
+			{
+				UI->SetSurveyMode(Args[0].StartsWith(TEXT("holo"), ESearchCase::IgnoreCase) ? ESWGSurveyMode::Hologram : ESWGSurveyMode::Window);
 			}
 		}));
 

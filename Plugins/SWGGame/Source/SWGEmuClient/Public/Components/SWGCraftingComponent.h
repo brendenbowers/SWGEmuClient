@@ -6,6 +6,8 @@
 #include "Network/Objects/Zone/Player/PlayerObjectDelta.h"
 #include "SWGCraftingComponent.generated.h"
 
+DECLARE_MULTICAST_DELEGATE(FSWGOnCraftingComponentChanged);
+
 /**
  * PLAY base9 — known schematics and crafting-session state. Everything but the
  * schematic list arrives only as a delta; the baseline sends zeroes for it.
@@ -17,6 +19,9 @@ class SWGEMUCLIENT_API USWGCraftingComponent : public UActorComponent
 
 public:
 	USWGCraftingComponent();
+
+	/** Fired after every ApplyBase9/ApplyDelta9 — USWGCraftingSubsystem is the one consumer today. */
+	FSWGOnCraftingComponentChanged OnChanged;
 
 	TSWGBaselineList<FDraftSchematic> Schematics;
 

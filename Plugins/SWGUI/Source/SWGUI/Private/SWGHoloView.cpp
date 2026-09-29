@@ -64,6 +64,16 @@ void FSWGHoloView::Begin(UUserWidget& Owner, const FVector& CameraLocation, cons
 	}
 }
 
+void FSWGHoloView::Retarget(const FVector& CameraLocation, const FVector& LookAt, float FieldOfView)
+{
+	if (!bActive || !Camera.IsValid())
+	{
+		return;
+	}
+	Camera->SetActorLocationAndRotation(CameraLocation, (LookAt - CameraLocation).Rotation());
+	Camera->GetCameraComponent()->SetFieldOfView(FieldOfView);
+}
+
 void FSWGHoloView::End(UUserWidget& Owner)
 {
 	if (!bActive)

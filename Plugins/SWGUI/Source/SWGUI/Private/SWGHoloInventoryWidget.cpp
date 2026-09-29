@@ -474,9 +474,11 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 	// the view as rendered, at about the figure's depth so it reads as the same projection.
 	const float ViewportScale = UWidgetLayoutLibrary::GetViewportScale(this);
 	const FVector ViewOrigin = PlayerController->PlayerCameraManager ? PlayerController->PlayerCameraManager->GetCameraLocation() : FVector::ZeroVector;
+	const FVector ViewForward = PlayerController->PlayerCameraManager ? PlayerController->PlayerCameraManager->GetCameraRotation().Vector() : PlayerController->GetControlRotation().Vector();
 	const FVector FigureMiddle = Figure ? Figure->GetActorLocation() + FVector(0.f, 0.f, Figure->GetFigureHeight() * 0.5f) : ViewOrigin;
 	const float Depth = FMath::Max(50.f, FVector::Distance(ViewOrigin, FigureMiddle) * BagDepth);
-	auto Deproject = [PlayerController, ViewportScale, Depth](const FVector2D& Local, FVector& OutWorld)
+	const FVector PlanePoint = ViewOrigin + ViewForward * Depth;
+	auto Deproject = [PlayerController, ViewportScale, ViewForward, PlanePoint](const FVector2D& Local, FVector& OutWorld)
 	{
 		FVector Origin;
 		FVector Direction;
@@ -484,7 +486,12 @@ void USWGHoloInventoryWidget::LayoutBag(const FGeometry& MyGeometry)
 		{
 			return false;
 		}
-		OutWorld = Origin + Direction * Depth;
+		const float Facing = FVector::DotProduct(Direction, ViewForward);
+		if (Facing <= UE_KINDA_SMALL_NUMBER)
+		{
+			return false;
+		}
+		OutWorld = Origin + Direction * (FVector::DotProduct(PlanePoint - Origin, ViewForward) / Facing);
 		return true;
 	};
 	const FVector2D FirstModel(Left + ModelSize * 0.5f, Top + BagRowHeight * 0.5f);

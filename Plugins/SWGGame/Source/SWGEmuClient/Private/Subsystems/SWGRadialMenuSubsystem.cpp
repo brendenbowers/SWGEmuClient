@@ -10,8 +10,10 @@
 #include "Network/Messages/SWGMessageOp.h"
 #include "Network/Messages/Zone/ObjControllerMessageIn.h"
 #include "Network/Messages/Zone/Object/ObjectMenuResponseIn.h"
+#include "Network/Objects/Zone/Object/SWGGameObjectType.h"
 #include "Network/Messages/Zone/ObjectMenuSelectMessage.h"
 #include "Components/SWGTerminalComponent.h"
+#include "Components/SWGTangibleComponent.h"
 #include "Objects/Creature/SWGCreature.h"
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Objects/SWGObject.h"
@@ -197,6 +199,12 @@ bool USWGRadialMenuSubsystem::IsMissionTerminal(int64 ObjectId) const
 	return bIsMission;
 }
 
+bool USWGRadialMenuSubsystem::IsCraftingToolOrStation(int64 ObjectId) const
+{
+	const int32 Type = USWGTangibleComponent::GetGameObjectType(ObjectGraph ? ObjectGraph->FindActor(ObjectId) : nullptr);
+	return Type == SWGGameObjectType::CraftingStation || Type == SWGGameObjectType::CraftingTool;
+}
+
 void USWGRadialMenuSubsystem::SelectOption(int64 ObjectId, int32 RadialId)
 {
 	const FSWGRadialMenu* Menu = ReceivedMenus.Find(ObjectId);
@@ -231,6 +239,7 @@ void USWGRadialMenuSubsystem::SelectOption(int64 ObjectId, int32 RadialId)
 			Select.RadialId = static_cast<uint8>(RadialId);
 			Network->SendMessage(Select.Serialize());
 			UE_LOG(LogSWGRadial, Log, TEXT("selected server option %d on %lld"), RadialId, ObjectId);
+			OnServerOptionSelected.Broadcast(ObjectId, RadialId);
 		}
 		return;
 	}
@@ -420,6 +429,17 @@ const TArray<USWGRadialMenuSubsystem::FSWGClientRadialRule>& USWGRadialMenuSubsy
 			if (IsMissionTerminal(ObjectId))
 			{
 				OnMissionTerminalUsed.Broadcast(ObjectId);
+				return true;
+			}
+			// Crafting tools/stations: retail's "Use" starts a session, same
+			// client-side-only dispatch as equip/mission-terminal above —
+			// RequestCraftingSessionCommand.h documents itself as a plain
+			// command with the tool/station as target, no ObjectMenuSelect
+			// involved (CraftingToolImplementation::handleObjectMenuSelect
+			// only overrides the hopper's "Retrieve Output", not "Use").
+			if (IsCraftingToolOrStation(ObjectId) && Commands)
+			{
+				Commands->SendCommand(TEXT("requestCraftingSession"), ObjectId);
 				return true;
 			}
 			return ToggleEquip(ObjectId);

@@ -54,6 +54,9 @@ public:
 	/** Called by FSWGCellSpawnHandler::FinishCell once Cell->TriggerVolume exists. */
 	void RegisterCellTrigger(ASWGCell* Cell, bool bCanSeeParent);
 
+	/** Select the lit room, including when the player spawns directly inside it. */
+	void SetLitRoom(ASWGCell* Cell);
+
 	/**
 	 * True while the local player overlaps a cell trigger, stands within the
 	 * exterior footprint, or is reported by the server as being in one of the
@@ -139,8 +142,6 @@ private:
 
 	void SetExteriorShellHidden(bool bShouldHide);
 
-	/** Only the room the player stands in has its POB lights on (ASWGCell::RoomLights); null = none. */
-	void SetLitRoom(ASWGCell* Cell);
 	TWeakObjectPtr<ASWGCell> LitRoom;
 
 	/** Counted, not a bool, so straddling two triggers in a doorway doesn't reveal the shell early. */

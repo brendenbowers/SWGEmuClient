@@ -2,38 +2,26 @@
 #include "Objects/Tangible/SWGItem.h"
 #include "Objects/SWGObject.h"
 #include "Objects/SWGNetworkObjectInterface.h"
+#include "Components/SWGTangibleComponent.h"
 #include "Subsystems/SWGTreSubsystem.h"
+#include "Network/Objects/Zone/Object/SWGGameObjectType.h"
 #include "Engine/GameInstance.h"
 
 REGISTER_SWG_ACTOR_SPAWN_HANDLER(FSWGTerminalSpawnHandler, ASWGItem)
 
-namespace
-{
-	// server/zone/objects/scene/SceneObjectType.h — retail's own object-type
-	// enum, baked into every SharedObjectTemplate as its gameObjectType field.
-	// The whole terminal family lives in 0x4000-0x40xx; only the ones anything
-	// here acts on get their own case.
-	constexpr int32 GOT_TerminalFamilyMask = 0xFF00;
-	constexpr int32 GOT_TerminalFamily     = 0x4000;
-	constexpr int32 GOT_Bank               = 0x4001;
-	constexpr int32 GOT_Bazaar             = 0x4002;
-	constexpr int32 GOT_MissionTerminal    = 0x4006;
-	constexpr int32 GOT_TravelTerminal     = 0x4012;
-}
-
 bool FSWGTerminalSpawnHandler::ClassifyGameObjectType(int32 GameObjectType, ESWGTerminalType& OutType)
 {
-	if ((GameObjectType & GOT_TerminalFamilyMask) != GOT_TerminalFamily)
+	if ((GameObjectType & SWGGameObjectType::TerminalFamilyMask) != SWGGameObjectType::TerminalFamily)
 	{
 		return false;
 	}
 
 	switch (GameObjectType)
 	{
-		case GOT_MissionTerminal: OutType = ESWGTerminalType::Mission; break;
-		case GOT_TravelTerminal:  OutType = ESWGTerminalType::Travel;  break;
-		case GOT_Bazaar:          OutType = ESWGTerminalType::Bazaar;  break;
-		case GOT_Bank:            OutType = ESWGTerminalType::Bank;    break;
+		case SWGGameObjectType::MissionTerminal: OutType = ESWGTerminalType::Mission; break;
+		case SWGGameObjectType::TravelTerminal:  OutType = ESWGTerminalType::Travel;  break;
+		case SWGGameObjectType::BazaarTerminal:  OutType = ESWGTerminalType::Bazaar;  break;
+		case SWGGameObjectType::BankTerminal:    OutType = ESWGTerminalType::Bank;    break;
 		default:                  OutType = ESWGTerminalType::Other;   break;
 	}
 	return true;
@@ -49,11 +37,11 @@ bool FSWGTerminalSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 		TemplatePath = TreSubsystem->ResolveTemplatePath(SpawnInfo.TemplateCrc);
 	}
 
-	int32 GameObjectType = 0;
-	if (!TreSubsystem || TemplatePath.IsEmpty() || !TreSubsystem->FindTemplateIntParam(TemplatePath, TEXT("gameObjectType"), GameObjectType))
+	if (TemplatePath.IsEmpty())
 	{
 		return false;
 	}
+	const int32 GameObjectType = USWGTangibleComponent::GetGameObjectType(&Actor);
 
 	ESWGTerminalType Type = ESWGTerminalType::Other;
 	// shared_terminal_travel.iff uses the client's ambiguous 0x400C type,

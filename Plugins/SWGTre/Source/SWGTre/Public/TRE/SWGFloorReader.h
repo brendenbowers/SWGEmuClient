@@ -61,7 +61,7 @@ enum class ESWGFloorEdgeType : uint8
 	Uncrossable = 0,
 	/** Shared with a neighbouring triangle, or a portal into the next cell. */
 	Crossable = 1,
-	/** Core3's "blocking" edges — kept distinct; treated as a wall too. */
+	/** Core3's "blocking" edges — kept distinct from uncrossable wall edges. */
 	Blocking = 2,
 };
 

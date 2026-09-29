@@ -38,10 +38,6 @@ namespace
 		});
 	}
 
-	TSWGListChanges<FString> ReadAsciiVectorChanges(FSWGPacket& Packet)
-	{
-		return ReadDeltaVectorChanges<FString>(Packet, [](FSWGPacket& P) { return P.ReadAsciiString(); });
-	}
 }
 
 namespace SWGPlayerDeltaParser
@@ -83,7 +79,16 @@ namespace SWGPlayerDeltaParser
 			switch (Index)
 			{
 				case 0x00: Out.ExperienceList = ReadItemMapChanges<FExperience>(P); return true;
-				case 0x01: Out.WaypointList = ReadItemMapChanges<FWaypoint>(P); return true;
+				// FWaypoint leaves the map key to its caller, as the baseline reads it.
+				case 0x01:
+					Out.WaypointList = ReadDeltaVectorMapChanges<FWaypoint>(P, [](FSWGPacket& Q)
+					{
+						FWaypoint Waypoint;
+						Waypoint.MapKey = Q.ReadUInt64();
+						Waypoint.Deserialize(Q);
+						return Waypoint;
+					});
+					return true;
 				case 0x02: Out.ForcePower = P.ReadInt32(); return true;
 				case 0x03: Out.ForcePowerMax = P.ReadInt32(); return true;
 				// Quest bit arrays are DeltaBitArray, itself a DeltaVector<byte>.
@@ -105,14 +110,14 @@ namespace SWGPlayerDeltaParser
 		{
 			switch (Index)
 			{
-				case 0x00: Out.AbilityList = ReadAsciiVectorChanges(P); return true;
+				case 0x00: Out.AbilityList = ReadAsciiStringDeltaVectorChanges(P); return true;
 				case 0x01: Out.ExperimentationFlag = P.ReadInt32(); return true;
 				case 0x02: Out.CraftingState = P.ReadInt32(); return true;
 				case 0x03: Out.ClosestCraftingStation = P.ReadInt64(); return true;
 				case 0x04: Out.Schematics = ReadItemVectorChanges<FDraftSchematic>(P); return true;
 				case 0x05: Out.ExperimentationPoints = P.ReadInt32(); return true;
-				case 0x07: Out.FriendsList = ReadAsciiVectorChanges(P); return true;
-				case 0x08: Out.IgnoreList = ReadAsciiVectorChanges(P); return true;
+				case 0x07: Out.FriendsList = ReadAsciiStringDeltaVectorChanges(P); return true;
+				case 0x08: Out.IgnoreList = ReadAsciiStringDeltaVectorChanges(P); return true;
 				case 0x09: Out.LanguageId = P.ReadInt32(); return true;
 				case 0x0A: Out.FoodFilling = P.ReadInt32(); return true;
 				case 0x0B: Out.FoodFillingMax = P.ReadInt32(); return true;

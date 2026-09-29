@@ -96,7 +96,23 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Hologram")
 	TSoftClassPtr<class USWGHoloAttributeLineWidget> HoloAttributeLineClass;
 
+	/** Survey tool window (WBP_Survey), opened when a survey tool is used. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGSurveyWidget> SurveyClass;
+
+	/** Holographic survey overlay; unset uses USWGHoloSurveyWidget's own controls. */
+	UPROPERTY(Config, EditAnywhere, Category = "Hologram")
+	TSoftClassPtr<class USWGHoloSurveyWidget> HoloSurveyClass;
+
 	/** Datapad window (schematics, mission items, deeds), toggled by the player's DatapadKey. */
 	UPROPERTY(Config, EditAnywhere, Category = "Windows")
 	TSoftClassPtr<class USWGDatapadWidget> DatapadClass;
+
+	/** Crafting tool window (WBP_Crafting), opened when a crafting session starts. */
+	UPROPERTY(Config, EditAnywhere, Category = "Windows")
+	TSoftClassPtr<class USWGCraftingWidget> CraftingClass;
+
+	/** Holographic crafting overlay; unset uses its C++ controls. */
+	UPROPERTY(Config, EditAnywhere, Category = "Hologram")
+	TSoftClassPtr<class USWGHoloCraftingWidget> HoloCraftingClass;
 };

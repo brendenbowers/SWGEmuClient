@@ -3521,11 +3521,24 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 		// correction on top of the old root's world transform (the actor's
 		// already-correct network spawn placement), since nothing else
 		// carries that placement once the old root is gone.
-		const FTransform BaseTransform = Actor.GetRootComponent() ? Actor.GetRootComponent()->GetComponentTransform() : Actor.GetActorTransform();
+		USceneComponent* OldRoot = Actor.GetRootComponent();
+		USceneComponent* AttachParent = OldRoot ? OldRoot->GetAttachParent() : nullptr;
+		const FName AttachSocket = OldRoot ? OldRoot->GetAttachSocketName() : NAME_None;
+		const FTransform BaseTransform = OldRoot ? OldRoot->GetComponentTransform() : Actor.GetActorTransform();
 		const FTransform YawCorrectionTransform(FRotator(0.0f, YawCorrectionDegrees, 0.0f));
 		MeshComponent->SetRelativeTransform(YawCorrectionTransform * BaseTransform);
 		Actor.SetRootComponent(MeshComponent);
 		MeshComponent->RegisterComponent();
+		if (AttachParent)
+		{
+			MeshComponent->AttachToComponent(AttachParent, FAttachmentTransformRules::KeepWorldTransform, AttachSocket);
+		}
+		// Door triggers and building collision can already be children of the
+		// default root when the asynchronous render mesh replaces it.
+		if (OldRoot && OldRoot != MeshComponent)
+		{
+			OldRoot->AttachToComponent(MeshComponent, FAttachmentTransformRules::KeepWorldTransform);
+		}
 	}
 
 	OnMeshReady.Broadcast(&Actor, MeshComponent);
@@ -3740,7 +3753,7 @@ void USWGMeshGeneratorSubsystem::BuildAppearanceCollision(AActor& Actor, USceneC
 		TArray<int32> BarrierIndices;
 		if (FSWGFloorReader::AppendBarrierMesh(*Floor, BarrierHeight, BarrierVertices, BarrierIndices) > 0)
 		{
-			const uint32 BarrierHash = HashCombine(GetTypeHash(Collision.FloorPath), GetTypeHash(FString(TEXT("barriers-2"))));
+			const uint32 BarrierHash = HashCombine(GetTypeHash(Collision.FloorPath), GetTypeHash(FString(TEXT("barriers-3"))));
 			AddCollisionMeshComponent(Actor, Parent, BarrierHash, Collision.FloorPath + TEXT(" [barriers]"), BarrierVertices, BarrierIndices);
 		}
 	}

@@ -73,6 +73,10 @@ enum class ESWGMessageOp : uint32
 	GetMapLocations = 0x1A7AB839u,
 	GetMapLocationsResponse = 0x9F80464Cu,
 
+	// ── Surveying ───────────────────────────────────────────────
+	ResourceListForSurvey = 0x8A64B1D5u, // Server: resources the used survey tool can find on this planet
+	SurveyMessage = 0x877F79ACu,         // Server: a survey's density grid
+
 	// Add more as needed during implementation
 	Null = 0x0u,
 	Multi = 0x2u

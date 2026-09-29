@@ -9,6 +9,7 @@ void USWGCraftingComponent::ApplyBase9(const FPlayerObjectBaseline& Baseline)
 {
 	Schematics = Baseline.Schematics;
 	bHasBase9 = true;
+	OnChanged.Broadcast();
 }
 
 void USWGCraftingComponent::ApplyDelta9(const FPlayerObjectDelta& Delta)
@@ -19,4 +20,6 @@ void USWGCraftingComponent::ApplyDelta9(const FPlayerObjectDelta& Delta)
 	if (Delta.ExperimentationPoints.IsSet())  { ExperimentationPoints = *Delta.ExperimentationPoints; }
 
 	ApplyIndexedListChanges(Delta.Schematics, Schematics);
+
+	OnChanged.Broadcast();
 }

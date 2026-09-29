@@ -40,8 +40,10 @@ void ASWGHoloShelfActor::SetGridFrame(const FVector& TopLeft, const FVector& Col
 	const FVector Across = ColumnStep.GetSafeNormal();
 	const FVector Down = RowStep.GetSafeNormal();
 	SetActorLocationAndRotation(TopLeft, FRotationMatrix::MakeFromYZ(Across, -Down).Rotator());
-	ColumnSpacing = ColumnStep.Size();
-	RowSpacing = RowStep.Size();
+	// Keep the exact projected steps. Replacing them with orthogonal spacing
+	// made each successive row drift sideways in the camera view.
+	ColumnStepLocal = GetActorTransform().InverseTransformVector(ColumnStep);
+	RowStepLocal = GetActorTransform().InverseTransformVector(RowStep);
 	if (!FMath::IsNearlyEqual(ItemSize, InItemSize, ItemSize * 0.01f))
 	{
 		ItemSize = InItemSize;
@@ -216,7 +218,7 @@ FVector ASWGHoloShelfActor::CellLocation(int32 Index) const
 {
 	const int32 Column = Index % Columns;
 	const float Row = Index / Columns - CurrentScrollRow;
-	return FVector(0.f, Column * ColumnSpacing, -Row * RowSpacing);
+	return Column * ColumnStepLocal + Row * RowStepLocal;
 }
 
 float ASWGHoloShelfActor::RowVisibility(int32 Index) const

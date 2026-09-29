@@ -20,6 +20,15 @@ public:
 	void Begin(UUserWidget& Owner, const FVector& CameraLocation, const FVector& LookAt, float FieldOfView, float BlendSeconds, float HudOpacity);
 	void End(UUserWidget& Owner);
 
+	/**
+	 * Moves the already-active camera to a new transform in place — Begin()
+	 * no-ops while bActive (it's meant to be called once per hologram), so a
+	 * widget that changes what it's showing mid-session (e.g. crafting's
+	 * Draft carousel handing off to its Assembly slot ring) needs this
+	 * instead of a second Begin(). A hard cut, not a blend; call sparingly.
+	 */
+	void Retarget(const FVector& CameraLocation, const FVector& LookAt, float FieldOfView);
+
 	ACameraActor* GetCamera() const { return Camera.Get(); }
 
 private:

@@ -19,6 +19,20 @@ enum class ESWGObjControllerOp : uint32
 	CombatSpam         = 0x134u, // One line of the combat log
 	ObjectMenuRequest  = 0x146u, // Client: what can I do with this object? (radial menu)
 	ObjectMenuResponse = 0x147u, // The radial menu items the server offers for it
+
+	// ── Crafting ────────────────────────────────────────────────
+	CraftingSchematicList      = 0x102u, // Server: schematics the tool/station offers (session start)
+	CraftingIngredientSlots    = 0x103u, // Server: this MSCO's slots, sent after synchronizedUiListen
+	CraftingExperiment         = 0x106u, // Client: spend experimentation points on some rows
+	CraftingAddIngredient      = 0x107u, // Client: put an item/resource in a slot
+	CraftingRemoveIngredient   = 0x108u, // Client: take an item/resource out of a slot
+	CraftingSlotReply          = 0x10Cu, // Server: generic slot/status reply (subType picks the meaning)
+	CraftingExperimentResult   = 0x113u, // Server: the outcome of an experiment
+	CraftingCustomize          = 0x15Au, // Client: name, appearance template and colour choices
+	CraftingAssemblyResult     = 0x1BEu, // Server: the outcome of an assemble
+	CraftingDraftSlots         = 0x1BFu, // Server: a schematic's required slots (browsing, no session)
+	CraftingCloseWindow        = 0x1C2u, // Server: close the crafting window
+	CraftingResourceWeights    = 0x207u, // Server: a schematic's per-attribute resource weights (browsing)
 };
 
 /**

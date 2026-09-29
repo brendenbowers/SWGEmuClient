@@ -112,8 +112,8 @@ private:
 
 	int32 Columns = 2;
 	int32 VisibleRows = 6;
-	float ColumnSpacing = 20.f;
-	float RowSpacing = 10.f;
+	FVector ColumnStepLocal = FVector(0.f, 20.f, 0.f);
+	FVector RowStepLocal = FVector(0.f, 0.f, -10.f);
 	float ItemSize = 6.f;
 
 	/** The top showing row wanted, and where the slide has got to. */

@@ -1,6 +1,7 @@
 #include "Subsystems/SWGTreSubsystem.h"
 #include "TRE/SWGIffTags.h"
 #include "TRE/SWGIffReader.h"
+#include "TRE/SWGIFFChunkReader.h"
 #include "TRE/SWGDDSTextureLoader.h"
 #include "TRE/SWGObjectTemplateReader.h"
 #include "HAL/FileManager.h"
@@ -360,6 +361,32 @@ bool USWGTreSubsystem::FindTemplateStringId(const FString& TemplatePath, const T
 	return false;
 }
 
+bool USWGTreSubsystem::FindDraftCraftedSharedTemplate(const FString& DraftTemplatePath, FString& OutTemplatePath) const
+{
+	const FSWGIffReader Reader = CreateIffReader(DraftTemplatePath);
+	FSWGIffChunk Draft, Data;
+	if (!Reader.FindForm(SWG_IFF_TAG('S','D','S','C'), Draft)) { return false; }
+	for (const FSWGIffChunk& Child : Reader.ReadChildren(Draft))
+	{
+		if (Child.IsForm() && Child.FormType != SWG_IFF_TAG('D','E','R','V')) { Data = Child; break; }
+	}
+	if (!Data.IsForm()) { return false; }
+	for (const FSWGIffChunk& Child : Reader.FindAllChildChunks(Data, SWG_IFF_TAG('X','X','X','X')))
+	{
+		FSWGIFFChunkReader Chunk(Child, Reader);
+		FString Key;
+		uint8 HasValue = 0;
+		if (Chunk.ReadTerminiatedString(Key) && Key == TEXT("craftedSharedTemplate")
+			&& Chunk.ReadValueLE(HasValue) && HasValue != 0
+			&& Chunk.ReadTerminiatedString(OutTemplatePath))
+		{
+			return OutTemplatePath.StartsWith(TEXT("object/")) && OutTemplatePath.EndsWith(TEXT(".iff"));
+		}
+	}
+	return false;
+}
+
+// todo: cache the resolved value in a map keyed by (TemplatePath, Key) so repeated lookups don't have to re-read the IFF chain.
 bool USWGTreSubsystem::FindTemplateIntParam(const FString& TemplatePath, const TCHAR* Key, int32& OutValue)
 {
 	FString CurrentPath = TemplatePath;

@@ -149,6 +149,13 @@ protected:
 
 	void Move(const FInputActionValue& Value);
 
+	// Movement input while kneeling, sitting, lying down or knocked down sends
+	// /stand, as retail did; resent at most every StandRequestInterval seconds.
+	void RequestStandForMovement();
+
+	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Movement")
+	float StandRequestInterval = 0.5f;
+
 	// Mouse-look, bound directly to the legacy raw MouseX/MouseY axis keys
 	// rather than through an Enhanced Input action — see the .cpp's
 	// SetupPlayerInputComponent comment for why.
@@ -297,6 +304,7 @@ private:
 	float TimeSinceLastTransformSend = 0.0f;
 	int32 TransformMovementCounter = 0;
 	bool bWasMovingLastSend = false;
+	double LastStandRequestTime = -1.0e9;
 
 	/** The cell id last reported to the server (0 = world), so a change of room logs once rather than every send. */
 	int64 LastReportedParentId = 0;

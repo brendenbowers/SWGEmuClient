@@ -2,6 +2,8 @@
 #include "SWGHoloMapActor.h"
 #include "SWGMapMarkers.h"
 #include "SWGRetailStyle.h"
+#include "SWGSurveyStyle.h"
+#include "Subsystems/SWGSurveySubsystem.h"
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/SlateBlueprintLibrary.h"
 #include "Camera/CameraActor.h"
@@ -27,17 +29,17 @@ namespace
 	const FName PlayerLayer(TEXT("Player"));
 	const FName WaypointLayer(TEXT("Waypoints"));
 	const FName HoloLocationLayer(TEXT("Locations"));
-	constexpr float TurnDegreesPerPixel = 0.3f;
+	constexpr float HoloMapTurnDegreesPerPixel = 0.3f;
 	constexpr float WheelZoomFactor = 0.8f;
 	/** Fraction of the radius one D-pad pan step moves. */
 	constexpr float GamepadPanStep = 0.15f;
-	constexpr float AnalogDeadZone = 0.2f;
+	constexpr float HoloMapAnalogDeadZone = 0.2f;
 	/** Radii per second at full stick. */
 	constexpr float AnalogPanSpeed = 0.9f;
-	constexpr float AnalogTurnSpeed = 90.f;
+	constexpr float HoloMapAnalogTurnSpeed = 90.f;
 	/** Log-radius per second at full trigger. */
 	constexpr float AnalogZoomSpeed = 1.2f;
-	const FLinearColor HintColor = FLinearColor::FromSRGBColor(FColor(0x96, 0xF4, 0xFC));
+	const FLinearColor HoloMapHintColor = FLinearColor::FromSRGBColor(FColor(0x96, 0xF4, 0xFC));
 
 	UButton* MakeHintButton(UWidgetTree* Tree, UHorizontalBox* Row, const FText& Label)
 	{
@@ -71,7 +73,7 @@ void USWGHoloMapWidget::NativeOnInitialized()
 		}
 		HintText = WidgetTree->ConstructWidget<UTextBlock>();
 		HintText->SetFont(SWGRetailStyle::Font(13));
-		HintText->SetColorAndOpacity(FSlateColor(HintColor));
+		HintText->SetColorAndOpacity(FSlateColor(HoloMapHintColor));
 		HintText->SetShadowOffset(FVector2D(1.f, 1.f));
 		if (UHorizontalBoxSlot* HintSlot = Bar->AddChildToHorizontalBox(HintText))
 		{
@@ -86,7 +88,7 @@ void USWGHoloMapWidget::NativeOnInitialized()
 	if (bApplyHoloStyle && HintText)
 	{
 		HintText->SetFont(SWGRetailStyle::Font(13));
-		HintText->SetColorAndOpacity(FSlateColor(HintColor));
+		HintText->SetColorAndOpacity(FSlateColor(HoloMapHintColor));
 		HintText->SetShadowOffset(FVector2D(1.f, 1.f));
 	}
 	// The whole screen is the hologram's control surface.
@@ -128,8 +130,15 @@ void USWGHoloMapWidget::NativeConstruct()
 			? NSLOCTEXT("SWGEmu", "HoloHint", "Drag to pan  •  Right-drag to turn  •  Wheel to zoom  •  Double-click for a waypoint")
 			: NSLOCTEXT("SWGEmu", "HoloHintNoWaypoint", "Drag to pan  •  Right-drag to turn  •  Wheel to zoom"));
 	}
+	Survey = GameInstance ? GameInstance->GetSubsystem<USWGSurveySubsystem>() : nullptr;
+	if (Survey)
+	{
+		Survey->OnSurveyResultReceived.AddUniqueDynamic(this, &USWGHoloMapWidget::RefreshSurveyScan);
+		Survey->OnSurveyStateChanged.AddUniqueDynamic(this, &USWGHoloMapWidget::RefreshSurveyScan);
+	}
 	Project();
 	RefreshWaypoints();
+	RefreshSurveyScan();
 	// Keyboard and gamepad both come here, so pad buttons don't also fire the action bar.
 	SetFocus();
 	if (APlayerController* PlayerController = GetOwningPlayer())
@@ -147,6 +156,11 @@ void USWGHoloMapWidget::NativeDestruct()
 	if (MapLocations)
 	{
 		MapLocations->OnLocationsChanged.Remove(LocationsChangedHandle);
+	}
+	if (Survey)
+	{
+		Survey->OnSurveyResultReceived.RemoveAll(this);
+		Survey->OnSurveyStateChanged.RemoveAll(this);
 	}
 	RestoreView();
 	Super::NativeDestruct();
@@ -232,6 +246,18 @@ void USWGHoloMapWidget::RefreshWaypoints()
 	{
 		Hologram->SetMarkers(WaypointLayer, SWGMapMarkers::MakeWaypointMarkers(Waypoints, GetPlanetName()));
 	}
+}
+
+void USWGHoloMapWidget::RefreshSurveyScan()
+{
+	if (!Hologram)
+	{
+		return;
+	}
+	const bool bShow = Survey && Survey->ShouldShowScan();
+	Hologram->SetSurveyField(bShow ? Survey->GetLastResult() : FSWGSurveyResult());
+	// Only the find is labelled; two dozen percentages would bury the map.
+	Hologram->SetMarkers(SWGSurveyStyle::MarkerLayer, bShow ? SWGSurveyStyle::MakeMarkers(Survey->GetLastResult(), false) : TArray<FSWGMapMarker>());
 }
 
 void USWGHoloMapWidget::HandleLocationsChanged(const FString& Planet)
@@ -348,7 +374,7 @@ FReply USWGHoloMapWidget::NativeOnMouseMove(const FGeometry& InGeometry, const F
 	const FVector2D Delta = InMouseEvent.GetCursorDelta();
 	if (bTurning)
 	{
-		Hologram->SetViewYaw(Hologram->GetViewYaw() + Delta.X * TurnDegreesPerPixel);
+		Hologram->SetViewYaw(Hologram->GetViewYaw() + Delta.X * HoloMapTurnDegreesPerPixel);
 	}
 	else if (bPanning)
 	{
@@ -458,7 +484,7 @@ FReply USWGHoloMapWidget::NativeOnAnalogValueChanged(const FGeometry& InGeometry
 
 void USWGHoloMapWidget::ApplyAnalog(float DeltaSeconds)
 {
-	auto DeadZone = [](float Value) { return FMath::Abs(Value) < AnalogDeadZone ? 0.f : Value; };
+	auto DeadZone = [](float Value) { return FMath::Abs(Value) < HoloMapAnalogDeadZone ? 0.f : Value; };
 	const FVector2D Pan(DeadZone(LeftStick.X), DeadZone(LeftStick.Y));
 	const float Turn = DeadZone(RightStick.X);
 	const float Zoom = DeadZone(RightTrigger) - DeadZone(LeftTrigger);
@@ -474,7 +500,7 @@ void USWGHoloMapWidget::ApplyAnalog(float DeltaSeconds)
 	}
 	if (Turn != 0.f)
 	{
-		Hologram->SetViewYaw(Hologram->GetViewYaw() + Turn * AnalogTurnSpeed * DeltaSeconds);
+		Hologram->SetViewYaw(Hologram->GetViewYaw() + Turn * HoloMapAnalogTurnSpeed * DeltaSeconds);
 	}
 	if (Zoom != 0.f)
 	{

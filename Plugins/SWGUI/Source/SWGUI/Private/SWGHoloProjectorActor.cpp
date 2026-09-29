@@ -79,6 +79,18 @@ UMaterialInstanceDynamic* ASWGHoloProjectorActor::MakeHoloMaterial(const FLinear
 	return Material;
 }
 
+UMaterialInterface* ASWGHoloProjectorActor::GetHoloTextMaterial()
+{
+	static TWeakObjectPtr<UMaterialInterface> Cached;
+	static bool bTried = false;
+	if (!Cached.IsValid() && !bTried)
+	{
+		bTried = true;
+		Cached = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGHoloText.M_SWGHoloText"));
+	}
+	return Cached.Get();
+}
+
 void ASWGHoloProjectorActor::BeginPlay()
 {
 	Super::BeginPlay();
@@ -159,9 +171,43 @@ void ASWGHoloProjectorActor::SetExtraRays(const TArray<FVector>& WorldTargets, c
 		Line->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Line->SetCastShadow(false);
 		Line->SetMaterial(0, MakeHoloMaterial(HoloColor, 0.f));
+		if (ExtraRayRadius > 0.f)
+		{
+			if (UMaterialInstanceDynamic* Material = Cast<UMaterialInstanceDynamic>(Line->GetMaterial(0)))
+			{
+				Material->SetScalarParameterValue(TEXT("Radius"), ExtraRayRadius);
+			}
+		}
 		Line->SetupAttachment(GetRootComponent());
 		Line->RegisterComponent();
 		ExtraLines.Add(Line);
+	}
+}
+
+void ASWGHoloProjectorActor::SetProjectionSurfaceVisible(bool bVisible)
+{
+	bProjectionSurfaceVisible = bVisible;
+	BaseComponent->SetVisibility(bVisible);
+	GlowLight->SetVisibility(bVisible);
+	for (UStaticMeshComponent* Line : ProjectionLines)
+	{
+		Line->SetVisibility(bVisible);
+	}
+	for (UStaticMeshComponent* Line : SweepLines)
+	{
+		Line->SetVisibility(bVisible);
+	}
+}
+
+void ASWGHoloProjectorActor::SetExtraRayRadius(float Radius)
+{
+	ExtraRayRadius = Radius;
+	for (UStaticMeshComponent* Line : ExtraLines)
+	{
+		if (UMaterialInstanceDynamic* Material = Cast<UMaterialInstanceDynamic>(Line->GetMaterial(0)))
+		{
+			Material->SetScalarParameterValue(TEXT("Radius"), Radius);
+		}
 	}
 }
 
@@ -275,7 +321,7 @@ void ASWGHoloProjectorActor::UpdateDroid()
 	{
 		UStaticMeshComponent* Line = SweepLines[Index];
 		PlaceRay(Line, Origin, GetSweepTarget(Index, Phase));
-		Line->SetVisibility(SweepFade > 0.01f);
+		Line->SetVisibility(bProjectionSurfaceVisible && SweepFade > 0.01f);
 		if (UMaterialInstanceDynamic* Material = Cast<UMaterialInstanceDynamic>(Line->GetMaterial(0)))
 		{
 			Material->SetScalarParameterValue(TEXT("Intensity"), HoloIntensity * 0.16f * SweepFade);

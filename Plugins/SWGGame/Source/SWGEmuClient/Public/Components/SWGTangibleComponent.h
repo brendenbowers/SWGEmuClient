@@ -29,6 +29,9 @@ public:
 	FSWGStringId   ObjectName;
 	FString        CustomName;
 	int32          Volume = 0;
+	int32          GameObjectType = 0; // Resolved from the shared template at spawn; absent from baselines.
+	/** Returns the actor's cached template type, or 0 when it has no tangible component. */
+	static int32 GetGameObjectType(const AActor* Actor);
 
 	// Raw wire payload for the "customization" baseline field (skin/hair/eye
 	// color indices, etc.) — read via ReadAsciiBytes, not ReadAsciiString,

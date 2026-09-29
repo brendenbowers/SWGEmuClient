@@ -34,6 +34,10 @@ public:
 	 */
 	void SetExtraRays(const TArray<FVector>& WorldTargets, const TArray<float>& Brightness);
 
+	/** Hides the disc and its own rays while the droid projects onto the world. */
+	void SetProjectionSurfaceVisible(bool bVisible);
+	void SetExtraRayRadius(float Radius);
+
 	/** Where the projecting droid is, world space. */
 	FVector GetDroidLocation() const;
 
@@ -90,6 +94,13 @@ protected:
 
 	UMaterialInstanceDynamic* MakeHoloMaterial(const FLinearColor& Color, float Intensity);
 
+	/**
+	 * Unlit text (M_SWGHoloText) for UTextRenderComponent labels: the engine's
+	 * default text material is lit, so labels went dark with the scene. Null if
+	 * the asset is missing, leaving the engine default.
+	 */
+	static UMaterialInterface* GetHoloTextMaterial();
+
 	/** Shows the sweep rays for a moment; call whenever the image changes. */
 	void NoteProjectionChange();
 
@@ -104,6 +115,8 @@ protected:
 	int32 SweepRayCount = 2;
 	/** Ray thickness, world units. */
 	float RayWidth = 0.7f;
+	bool bProjectionSurfaceVisible = true;
+	float ExtraRayRadius = 0.f;
 
 	UPROPERTY()
 	TObjectPtr<UStaticMeshComponent> BaseComponent;

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "SWGHoloProjectorActor.h"
 #include "SWGMapMarkerWidget.h"
+#include "Subsystems/SWGSurveySubsystem.h"
 #include "SWGHoloMapActor.generated.h"
 
 class UDynamicMeshComponent;
@@ -43,6 +44,9 @@ public:
 
 	/** Replaces one layer of beams. Markers use FSWGMapMarker as the 2D map does; Style "Player" draws a heading arrow. */
 	void SetMarkers(FName Layer, const TArray<FSWGMapMarker>& Markers);
+
+	/** Drapes a survey's concentrations over the terrain in colour bands; an invalid result clears it. */
+	void SetSurveyField(const FSWGSurveyResult& Result);
 
 	/** Where a world-space ray meets the hologram's ground plane, in raw metres. */
 	bool RayToRaw(const FVector& Origin, const FVector& Direction, FVector2D& OutRaw, bool bRequireOnDisc = true) const;
@@ -112,6 +116,8 @@ private:
 	void RemoveDynamicStructure(const TWeakObjectPtr<AActor>& Structure);
 	void UpdateContentTransform();
 	void UpdateMarkers();
+	/** Lays SurveyField on the current bake; the content transform carries it through pan and zoom. */
+	void RebuildSurveyField();
 
 	/** Raw offset from the baked centre to content-local units. */
 	FVector RawToContent(const FVector& RawOffset) const;
@@ -140,6 +146,12 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UStaticMesh> ArrowMesh;
+
+	/** One mesh per colour band of SurveyField. */
+	UPROPERTY()
+	TArray<TObjectPtr<UDynamicMeshComponent>> SurveyBands;
+
+	FSWGSurveyResult SurveyField;
 
 	TMap<FName, TArray<FMarkerVisual>> MarkerLayers;
 	/** Keeps the marker components alive; FMarkerVisual isn't reflected. */

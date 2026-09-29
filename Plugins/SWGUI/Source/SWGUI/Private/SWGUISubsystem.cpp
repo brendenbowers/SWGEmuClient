@@ -16,6 +16,12 @@
 #include "SWGPlanetMapWindowWidget.h"
 #include "SWGHoloMapWidget.h"
 #include "SWGHoloInventoryWidget.h"
+#include "SWGSurveyWidget.h"
+#include "SWGHoloSurveyWidget.h"
+#include "SWGCraftingWidget.h"
+#include "SWGHoloCraftingWidget.h"
+#include "Subsystems/SWGSurveySubsystem.h"
+#include "Subsystems/SWGCraftingSubsystem.h"
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
@@ -54,6 +60,14 @@ void USWGUISubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	if (USWGTravelSubsystem* Travel = GameInstance->GetSubsystem<USWGTravelSubsystem>())
 	{
 		Travel->OnTravelWindowRequested.AddDynamic(this, &USWGUISubsystem::HandleTravelWindowRequested);
+	}
+	if (USWGSurveySubsystem* Survey = GameInstance->GetSubsystem<USWGSurveySubsystem>())
+	{
+		Survey->OnSurveyWindowRequested.AddDynamic(this, &USWGUISubsystem::HandleSurveyWindowRequested);
+	}
+	if (USWGCraftingSubsystem* Crafting = GameInstance->GetSubsystem<USWGCraftingSubsystem>())
+	{
+		Crafting->OnSessionStarted.AddDynamic(this, &USWGUISubsystem::HandleCraftingSessionStarted);
 	}
 	if (UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetLocalPlayer()))
 	{
@@ -94,6 +108,14 @@ void USWGUISubsystem::Deinitialize()
 		if (USWGTravelSubsystem* Travel = GameInstance->GetSubsystem<USWGTravelSubsystem>())
 		{
 			Travel->OnTravelWindowRequested.RemoveAll(this);
+		}
+		if (USWGSurveySubsystem* Survey = GameInstance->GetSubsystem<USWGSurveySubsystem>())
+		{
+			Survey->OnSurveyWindowRequested.RemoveAll(this);
+		}
+		if (USWGCraftingSubsystem* Crafting = GameInstance->GetSubsystem<USWGCraftingSubsystem>())
+		{
+			Crafting->OnSessionStarted.RemoveAll(this);
 		}
 	}
 
@@ -403,6 +425,15 @@ void USWGUISubsystem::HandleWindowClosed(USWGWindowWidget* Window)
 	{
 		PlanetMapWindow = nullptr;
 	}
+	if (Window == SurveyWindow)
+	{
+		SurveyWindow = nullptr;
+		RefreshSurveyToolActive();
+	}
+	if (Window == CraftingWindow)
+	{
+		CraftingWindow = nullptr;
+	}
 	for (auto It = ExamineWindows.CreateIterator(); It; ++It)
 	{
 		if (It->Value == Window)
@@ -471,6 +502,7 @@ void USWGUISubsystem::CloseInventory()
 
 void USWGUISubsystem::OpenHoloInventory()
 {
+	if (HoloCrafting) { SetCraftingMode(ESWGCraftingMode::Window); }
 	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
 	if (!PlayerController || HoloInventory)
 	{
@@ -480,6 +512,10 @@ void USWGUISubsystem::OpenHoloInventory()
 	if (HoloMap)
 	{
 		HoloMap->Close();
+	}
+	if (HoloSurvey)
+	{
+		HoloSurvey->Close();
 	}
 	TSubclassOf<USWGHoloInventoryWidget> HoloInventoryClass = USWGUISettings::Get().HoloInventoryClass.LoadSynchronous();
 	if (!HoloInventoryClass)
@@ -746,6 +782,11 @@ void USWGUISubsystem::SetPlanetMapMode(ESWGPlanetMapMode Mode)
 void USWGUISubsystem::HandleHoloMapClosed()
 {
 	HoloMap = nullptr;
+	if (HoloSurvey)
+	{
+		HoloSurvey->SetSuspended(false);
+	}
+	if (HoloCrafting) { HoloCrafting->SetSuspended(false); }
 }
 
 void USWGUISubsystem::OpenPlanetMap()
@@ -762,6 +803,12 @@ void USWGUISubsystem::OpenPlanetMap()
 		{
 			HoloInventory->Close();
 		}
+		// A scan in progress steps aside for the map and comes back when it closes; the map draws the scan meanwhile.
+		if (HoloSurvey)
+		{
+			HoloSurvey->SetSuspended(true);
+		}
+		if (HoloCrafting) { HoloCrafting->SetSuspended(true); }
 		HoloMap = CreateWidget<USWGHoloMapWidget>(PlayerController, HoloMapClass ? HoloMapClass.Get() : USWGHoloMapWidget::StaticClass());
 		HoloMap->OnClosed.AddUObject(this, &USWGUISubsystem::HandleHoloMapClosed);
 		HoloMap->OnSwitchToWindow.AddWeakLambda(this, [this]() { SetPlanetMapMode(ESWGPlanetMapMode::Window); });
@@ -779,6 +826,165 @@ void USWGUISubsystem::OpenPlanetMap()
 	PlanetMapWindow->SetControllerMode(IsGamepadActive());
 	ShowWindow(PlanetMapWindow);
 	PlanetMapWindow->CenterOnScreen();
+}
+
+// ── Survey ───────────────────────────────────────────────────────────────────
+
+void USWGUISubsystem::HandleSurveyWindowRequested()
+{
+	// Using the tool again with the survey up just refreshes it in place.
+	if (SurveyWindow)
+	{
+		HandleWindowPressed(SurveyWindow);
+		return;
+	}
+	if (!HoloSurvey)
+	{
+		OpenSurvey();
+	}
+	else
+	{
+		HoloSurvey->ShowPicker();
+	}
+}
+
+void USWGUISubsystem::OpenSurvey()
+{
+	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
+	if (!PlayerController)
+	{
+		return;
+	}
+	if (SurveyMode == ESWGSurveyMode::Hologram)
+	{
+		if (HoloCrafting) { SetCraftingMode(ESWGCraftingMode::Window); }
+		// Every hologram takes over the camera; only one at a time.
+		if (HoloMap)
+		{
+			HoloMap->Close();
+		}
+		if (HoloInventory)
+		{
+			HoloInventory->Close();
+		}
+		TSubclassOf<USWGHoloSurveyWidget> HoloSurveyClass = USWGUISettings::Get().HoloSurveyClass.LoadSynchronous();
+		HoloSurvey = CreateWidget<USWGHoloSurveyWidget>(PlayerController, HoloSurveyClass ? HoloSurveyClass.Get() : USWGHoloSurveyWidget::StaticClass());
+		HoloSurvey->OnClosed.AddWeakLambda(this, [this]() { HoloSurvey = nullptr; RefreshSurveyToolActive(); });
+		HoloSurvey->OnSwitchToWindow.AddWeakLambda(this, [this]() { SetSurveyMode(ESWGSurveyMode::Window); });
+		// Under the layout (100) and windows, over the world, as the other holograms.
+		HoloSurvey->AddToPlayerScreen(90);
+		RefreshSurveyToolActive();
+		return;
+	}
+	TSubclassOf<USWGSurveyWidget> SurveyClass = USWGUISettings::Get().SurveyClass.LoadSynchronous();
+	if (!SurveyClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: no SurveyClass set in Project Settings > SWG UI"));
+		return;
+	}
+	SurveyWindow = CreateWidget<USWGSurveyWidget>(PlayerController, SurveyClass);
+	ShowWindow(SurveyWindow);
+	SurveyWindow->CenterOnScreen();
+	RefreshSurveyToolActive();
+}
+
+void USWGUISubsystem::RefreshSurveyToolActive()
+{
+	UGameInstance* GameInstance = GetLocalPlayer() ? GetLocalPlayer()->GetGameInstance() : nullptr;
+	if (USWGSurveySubsystem* Survey = GameInstance ? GameInstance->GetSubsystem<USWGSurveySubsystem>() : nullptr)
+	{
+		Survey->SetToolActive(SurveyWindow != nullptr || HoloSurvey != nullptr);
+	}
+}
+
+void USWGUISubsystem::SetSurveyMode(ESWGSurveyMode Mode)
+{
+	SurveyMode = Mode;
+	const bool bWasOpen = SurveyWindow || HoloSurvey;
+	if (SurveyWindow && Mode != ESWGSurveyMode::Window)
+	{
+		SurveyWindow->Close();
+	}
+	if (HoloSurvey && Mode != ESWGSurveyMode::Hologram)
+	{
+		HoloSurvey->Close();
+	}
+	if (bWasOpen && !SurveyWindow && !HoloSurvey)
+	{
+		OpenSurvey();
+	}
+}
+
+void USWGUISubsystem::CloseSurvey()
+{
+	if (SurveyWindow)
+	{
+		SurveyWindow->Close();
+	}
+	if (HoloSurvey)
+	{
+		HoloSurvey->Close();
+	}
+}
+
+// ── Crafting ─────────────────────────────────────────────────────────────────
+
+void USWGUISubsystem::HandleCraftingSessionStarted()
+{
+	// A new "Use" on the tool with the window already up just refreshes it in place
+	// (USWGCraftingWidget::HandleSessionStarted rebuilds the schematic list itself).
+	if (CraftingWindow)
+	{
+		HandleWindowPressed(CraftingWindow);
+		return;
+	}
+	if (HoloCrafting) { return; }
+	OpenCrafting();
+}
+
+void USWGUISubsystem::SetCraftingMode(ESWGCraftingMode Mode)
+{
+	UGameInstance* GameInstance = GetLocalPlayer() ? GetLocalPlayer()->GetGameInstance() : nullptr;
+	USWGCraftingSubsystem* Crafting = GameInstance ? GameInstance->GetSubsystem<USWGCraftingSubsystem>() : nullptr;
+	if (Mode == ESWGCraftingMode::Hologram && Crafting && Crafting->IsSessionOpen()
+		&& Crafting->GetState() != ESWGCraftingSessionState::ChoosingSchematic
+		&& Crafting->GetState() != ESWGCraftingSessionState::Assembling)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Holo crafting currently supports Draft and Assembly only; keeping the Experiment/Finish window."));
+		return;
+	}
+	CraftingMode = Mode;
+	const bool bWasOpen = CraftingWindow || HoloCrafting;
+	if (CraftingWindow && Mode != ESWGCraftingMode::Window) { CraftingWindow->Close(); }
+	if (HoloCrafting && Mode != ESWGCraftingMode::Hologram) { HoloCrafting->Dismiss(); }
+	if (bWasOpen && !CraftingWindow && !HoloCrafting) { OpenCrafting(); }
+}
+
+void USWGUISubsystem::OpenCrafting()
+{
+	APlayerController* PlayerController = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
+	if (!PlayerController) { return; }
+	if (CraftingMode == ESWGCraftingMode::Hologram)
+	{
+		if (HoloMap) { HoloMap->Close(); }
+		if (HoloInventory) { HoloInventory->Close(); }
+		if (HoloSurvey) { HoloSurvey->Close(); }
+		TSubclassOf<USWGHoloCraftingWidget> HoloClass = USWGUISettings::Get().HoloCraftingClass.LoadSynchronous();
+		HoloCrafting = CreateWidget<USWGHoloCraftingWidget>(PlayerController, HoloClass ? HoloClass.Get() : USWGHoloCraftingWidget::StaticClass());
+		HoloCrafting->OnClosed.AddWeakLambda(this, [this]() { HoloCrafting = nullptr; });
+		HoloCrafting->OnSwitchToWindow.AddWeakLambda(this, [this]() { SetCraftingMode(ESWGCraftingMode::Window); });
+		HoloCrafting->AddToPlayerScreen(90);
+		return;
+	}
+	TSubclassOf<USWGCraftingWidget> CraftingClass = USWGUISettings::Get().CraftingClass.LoadSynchronous();
+	if (!CraftingClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGUISubsystem: no CraftingClass set in Project Settings > SWG UI"));
+		return;
+	}
+	CraftingWindow = CreateWidget<USWGCraftingWidget>(PlayerController, CraftingClass);
+	ShowWindow(CraftingWindow);
+	CraftingWindow->CenterOnScreen();
 }
 
 void USWGUISubsystem::CloseWaypointList()

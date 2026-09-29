@@ -3,11 +3,10 @@
 #include "HAL/IConsoleManager.h"
 
 // Live multiplier on every room light, applied whenever a room's lights come
-// on — step out and back in to see a new value. Default 1.5: the lights are
-// built at 1 lux per unit of POB colour (BuildRoomLights), and retail read
-// somewhat darker than that sum suggests.
+// on — step out and back in to see a new value. POB room lights need a much
+// lower intensity in UE's lighting model; keep this multiplier for tuning.
 static TAutoConsoleVariable<float> CVarRoomLightScale(
-	TEXT("swg.RoomLightScale"), 1.5f,
+	TEXT("swg.RoomLightScale"), 0.001f,
 	TEXT("Multiplier on interior (POB cell) light intensity. Re-enter the room to apply."));
 
 void ASWGCell::SetRoomLightsEnabled(bool bEnabled)

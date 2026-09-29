@@ -122,7 +122,7 @@ int32 FSWGFloorReader::AppendBarrierMesh(const FSWGFloorData& Floor, float Heigh
 
 		for (int32 EdgeIndex = 0; EdgeIndex < 3; ++EdgeIndex)
 		{
-			if (EdgeTypes[EdgeIndex] == (uint8)ESWGFloorEdgeType::Crossable)
+			if (EdgeTypes[EdgeIndex] != (uint8)ESWGFloorEdgeType::Uncrossable)
 			{
 				continue;
 			}

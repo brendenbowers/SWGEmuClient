@@ -36,6 +36,8 @@ FString GetMessageOpName(uint32 Opcode)
 		case ESWGMessageOp::AttributeListMessage: return TEXT("AttributeListMessage");
 		case ESWGMessageOp::GetMapLocations: return TEXT("GetMapLocations");
 		case ESWGMessageOp::GetMapLocationsResponse: return TEXT("GetMapLocationsResponse");
+		case ESWGMessageOp::ResourceListForSurvey: return TEXT("ResourceListForSurvey");
+		case ESWGMessageOp::SurveyMessage: return TEXT("SurveyMessage");
 		default:
 			return FString::Printf(TEXT("Unknown (0x%08X)"), Opcode);
 	}

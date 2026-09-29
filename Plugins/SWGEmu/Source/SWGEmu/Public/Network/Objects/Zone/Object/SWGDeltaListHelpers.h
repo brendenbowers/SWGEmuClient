@@ -244,6 +244,11 @@ inline TSWGListChanges<float> ReadFloatDeltaVectorChanges(FSWGPacket& Packet)
 	return ReadDeltaVectorChanges<float>(Packet, [](FSWGPacket& P) { return P.ReadFloat(); });
 }
 
+inline TSWGListChanges<FString> ReadAsciiStringDeltaVectorChanges(FSWGPacket& Packet)
+{
+	return ReadDeltaVectorChanges<FString>(Packet, [](FSWGPacket& P) { return P.ReadAsciiString(); });
+}
+
 inline TSWGListChanges<FString> ReadAsciiStringDeltaSetChanges(FSWGPacket& Packet)
 {
 	return ReadDeltaSetChanges<FString>(Packet, [](FSWGPacket& P) { return P.ReadAsciiString(); });
@@ -304,6 +309,16 @@ void ApplyIndexedListChanges(const TSWGListChanges<T>& Changes, TSWGBaselineList
 	}
 
 	List.UpdateCounter = Changes.UpdateCounter;
+}
+
+/** Applies indexed changes to callers that store only the items. */
+template<typename T>
+void ApplyIndexedListChanges(const TSWGListChanges<T>& Changes, TArray<T>& Items)
+{
+	TSWGBaselineList<T> List;
+	List.Items = MoveTemp(Items);
+	ApplyIndexedListChanges(Changes, List);
+	Items = MoveTemp(List.Items);
 }
 
 /**
