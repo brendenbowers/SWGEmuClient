@@ -27,22 +27,6 @@ namespace
 		TEXT("swg.ItemIcons.Dump"), false,
 		TEXT("Write every captured item icon to Saved/ItemIcons/<template crc>.png."));
 
-	// Not the WithWorld variant: under PIE that hands over the editor world,
-	// which has no icon subsystem.
-	FAutoConsoleCommand CmdClearItemIcons(
-		TEXT("swg.ItemIcons.Clear"),
-		TEXT("Forget every cached item icon so the next inventory refresh captures them again."),
-		FConsoleCommandDelegate::CreateLambda([]()
-		{
-			for (const FWorldContext& Context : GEngine->GetWorldContexts())
-			{
-				if (USWGItemIconSubsystem* Icons = Context.World() ? Context.World()->GetSubsystem<USWGItemIconSubsystem>() : nullptr)
-				{
-					Icons->ClearCache();
-				}
-			}
-		}));
-
 	/** The fitted ACES curve the engine's filmic tonemapper approximates. */
 	float Tonemap(float Value)
 	{

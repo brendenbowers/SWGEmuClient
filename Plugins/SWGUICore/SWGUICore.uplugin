@@ -1,0 +1,36 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SWG Emu UI Core",
+	"Description": "The presentation every client needs regardless of window or holo style: the layout shell and front end flow, the in-world HUD, the radial menu and SUI boxes. Registers with the UI router as the Core presenter. Independent of SWGUIWindow and SWGUIHolo.",
+	"Category": "User Interface",
+	"CreatedBy": "Brenden Bowers",
+	"CreatedByURL": "https://github.com/brendenbowers/",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SWGUICore",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
+		}
+	],
+	"Plugins": [
+		{ "Name": "SWGUICommon", "Enabled": true },
+		{ "Name": "SWGGame", "Enabled": true },
+		{ "Name": "SWGEmu", "Enabled": true },
+		{ "Name": "CommonUI", "Enabled": true },
+		{ "Name": "ModelWidget", "Enabled": true }
+	]
+}

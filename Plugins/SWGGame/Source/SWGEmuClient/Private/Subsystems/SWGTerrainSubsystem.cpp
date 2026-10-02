@@ -363,23 +363,6 @@ namespace
 	}
 }
 
-// Dev: rebuilds the active planet's sky and lights so lighting code changes show without re-zoning.
-static FAutoConsoleCommand SWGRelightPlanetCmd(
-	TEXT("swg.RelightPlanet"),
-	TEXT("Rebuilds the current planet's sun, ambient, fog and sky from its colour ramp."),
-	FConsoleCommandDelegate::CreateLambda([]()
-		{
-			for (TObjectIterator<USWGTerrainSubsystem> It; It; ++It)
-			{
-				if (IsValid(*It) && It->GetGameInstance())
-				{
-					It->RelightPlanet();
-					return;
-				}
-			}
-			UE_LOG(LogTemp, Warning, TEXT("swg.RelightPlanet: no live terrain subsystem"));
-		}));
-
 void USWGTerrainSubsystem::RelightPlanet()
 {
 	if (ActiveTerrainVirtualPath.IsEmpty() || !bTerrainDataCached)

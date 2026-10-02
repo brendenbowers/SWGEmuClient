@@ -109,23 +109,6 @@ void USWGTerrainFloraSubsystem::DumpStats() const
 	}
 }
 
-static FAutoConsoleCommand GSWGFloraStatsCommand(
-	TEXT("swg.FloraStats"),
-	TEXT("Logs the terrain flora streamer's per-tier cell/instance counts and the flora sample at the player."),
-	FConsoleCommandDelegate::CreateLambda([]()
-		{
-			// Same lookup as swg.Command: the editor console's world isn't the PIE one.
-			for (TObjectIterator<USWGTerrainFloraSubsystem> It; It; ++It)
-			{
-				if (IsValid(*It) && It->GetGameInstance())
-				{
-					It->DumpStats();
-					return;
-				}
-			}
-			UE_LOG(LogTemp, Warning, TEXT("swg.FloraStats: no live flora subsystem — not in a session yet"));
-		}));
-
 void USWGTerrainFloraSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);

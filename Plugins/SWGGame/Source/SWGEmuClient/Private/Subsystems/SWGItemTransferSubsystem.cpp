@@ -8,56 +8,6 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogSWGItemTransfer, Log, All);
 
-namespace
-{
-	UGameInstance* FindGameInstance(UWorld* World)
-	{
-		// The editor console hands over the editor world; the player lives in the play world.
-		if (GEngine && (!World || !World->IsGameWorld()))
-		{
-			for (const FWorldContext& Context : GEngine->GetWorldContexts())
-			{
-				if (Context.World() && Context.World()->IsGameWorld())
-				{
-					World = Context.World();
-					break;
-				}
-			}
-		}
-		return World ? World->GetGameInstance() : nullptr;
-	}
-}
-
-static FAutoConsoleCommandWithWorldAndArgs GSWGEquipCommand(
-	TEXT("swg.Equip"),
-	TEXT("Equip the item with the given object id."),
-	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
-	{
-		UGameInstance* GameInstance = FindGameInstance(World);
-		USWGItemTransferSubsystem* Transfer = GameInstance ? GameInstance->GetSubsystem<USWGItemTransferSubsystem>() : nullptr;
-		if (!Transfer || Args.Num() < 1)
-		{
-			UE_LOG(LogSWGItemTransfer, Warning, TEXT("usage: swg.Equip <objectId>"));
-			return;
-		}
-		Transfer->EquipItem(FCString::Atoi64(*Args[0]));
-	}));
-
-static FAutoConsoleCommandWithWorldAndArgs GSWGUnequipCommand(
-	TEXT("swg.Unequip"),
-	TEXT("Unequip the item with the given object id into the inventory."),
-	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
-	{
-		UGameInstance* GameInstance = FindGameInstance(World);
-		USWGItemTransferSubsystem* Transfer = GameInstance ? GameInstance->GetSubsystem<USWGItemTransferSubsystem>() : nullptr;
-		if (!Transfer || Args.Num() < 1)
-		{
-			UE_LOG(LogSWGItemTransfer, Warning, TEXT("usage: swg.Unequip <objectId>"));
-			return;
-		}
-		Transfer->UnequipItem(FCString::Atoi64(*Args[0]));
-	}));
-
 void USWGItemTransferSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);

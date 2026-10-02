@@ -1,0 +1,35 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SWG Emu UI Common",
+	"Description": "Presentation-independent UI for the Star Wars Galaxies EMU client: the UI router and presenter registry, the feature and presentation types, shared helpers and the placement view registry. Draws nothing itself. SWGUICore, SWGUIWindow and SWGUIHolo build on it and never reference each other.",
+	"Category": "User Interface",
+	"CreatedBy": "Brenden Bowers",
+	"CreatedByURL": "https://github.com/brendenbowers/",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SWGUICommon",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
+		}
+	],
+	"Plugins": [
+		{ "Name": "SWGGame", "Enabled": true },
+		{ "Name": "SWGEmu", "Enabled": true },
+		{ "Name": "CommonUI", "Enabled": true },
+		{ "Name": "ModelWidget", "Enabled": true }
+	]
+}

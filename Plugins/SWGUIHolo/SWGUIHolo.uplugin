@@ -1,0 +1,37 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SWG Emu UI Holo",
+	"Description": "The hologram presentation: holo inventory, map, survey and crafting plus the holo placement views. Independent of SWGUIWindow.",
+	"Category": "User Interface",
+	"CreatedBy": "Brenden Bowers",
+	"CreatedByURL": "https://github.com/brendenbowers/",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SWGUIHolo",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
+		}
+	],
+	"Plugins": [
+		{ "Name": "SWGUICommon", "Enabled": true },
+		{ "Name": "SWGUICore", "Enabled": true },
+		{ "Name": "SWGGame", "Enabled": true },
+		{ "Name": "SWGEmu", "Enabled": true },
+		{ "Name": "CommonUI", "Enabled": true },
+		{ "Name": "ModelWidget", "Enabled": true }
+	]
+}

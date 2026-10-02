@@ -1,0 +1,32 @@
+using UnrealBuildTool;
+
+public class SWGUIWindow : ModuleRules
+{
+	public SWGUIWindow(ReadOnlyTargetRules Target) : base(Target)
+	{
+		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+
+		PublicDependencyModuleNames.AddRange(new string[] {
+			"Core",
+			"CoreUObject",
+			"Engine",
+			"InputCore",
+			"UMG",
+			"Slate",
+			"SlateCore",
+			"CommonUI",
+			"CommonInput",
+			"GameplayTags",
+			"DeveloperSettings",
+			"SWGEmu",
+			"SWGTre",
+			"SWGEmuClient",
+			"ModelWidget",
+			"GeometryCore",
+			"GeometryFramework",
+			"AnimationCore",
+			"SWGUICommon",
+			"SWGUICore",
+		});
+	}
+}

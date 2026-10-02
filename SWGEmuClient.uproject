@@ -43,7 +43,19 @@
 			"Enabled": true
 		},
 		{
-			"Name": "SWGUI",
+			"Name": "SWGUICommon",
+			"Enabled": true
+		},
+		{
+			"Name": "SWGUICore",
+			"Enabled": true
+		},
+		{
+			"Name": "SWGUIWindow",
+			"Enabled": true
+		},
+		{
+			"Name": "SWGUIHolo",
 			"Enabled": true
 		},
 		{

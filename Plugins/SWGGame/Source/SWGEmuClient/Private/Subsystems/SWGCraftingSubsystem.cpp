@@ -694,8 +694,3 @@ void USWGCraftingSubsystem::InjectAssemblySlots(const TArray<FSWGCraftingSlot>& 
 	OnSlotsChanged.Broadcast();
 	OnStageChanged.Broadcast();
 }
-			Group.Title = TEXT("exp_flavor"); Group.CurrentPercent = 0.15f; Group.MaxPercent = 0.8f;
-		}
-		Crafting->InjectSlotsAndExperiment(Slots, Groups, 40, 22);
-		UE_LOG(LogSWGCrafting, Log, TEXT("swg.Craft.Fake slots: injected %d slots, %d experiment groups, state=%d"), Crafting->GetSlots().Num(), Crafting->GetExperimentGroups().Num(), static_cast<int32>(Crafting->GetState()));
-	}));
