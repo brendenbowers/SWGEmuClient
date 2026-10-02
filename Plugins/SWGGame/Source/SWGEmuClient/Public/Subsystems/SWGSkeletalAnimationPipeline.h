@@ -80,6 +80,8 @@ struct FSWGPlayingAnimation
 
 	/** The pending one-shot is a combat action, not a posture transition — a newer combat action may cut it short. */
 	bool bCombatActionPending = false;
+	bool bHoldingDatapad = false;
+	TWeakObjectPtr<UBlendSpace> DatapadResumeBlendSpace;
 
 	/**
 	 * Current terrain-alignment tilt, in the actor's local space, interpolated
@@ -219,6 +221,7 @@ public:
 	 * mid-transition — interrupting one would strand it on a held pose.
 	 */
 	bool PlayCombatAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName);
+	bool SetDatapadPose(AActor& Actor, bool bHold);
 
 	/**
 	 * The clip PlayCombatAction would use, without playing it — every hop of

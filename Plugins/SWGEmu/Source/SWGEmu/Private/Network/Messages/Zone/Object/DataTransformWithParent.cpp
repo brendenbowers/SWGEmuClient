@@ -6,7 +6,7 @@ FDataTransformWithParent::FDataTransformWithParent(uint64 ObjectId)
 
 FSWGPacket FDataTransformWithParent::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x10);
+	FSWGPacket Pkt = SerializeBase();
 	Pkt.WriteUInt32(TimeStamp);
 	Pkt.WriteUInt32(MoveCount);
 

@@ -324,6 +324,8 @@ public:
 
 	/** The DERV-chain walk behind the two above: first FormType form in the chain whose data form carries the XXXX string Key. */
 	bool ResolveTemplateStringParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, FString& OutValue);
+	bool ResolveTemplateFloatParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, float& OutValue);
+	bool ResolveTemplateBoolParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, bool& OutValue);
 
 	/**
 	 * A .pob cell's MeshPath (FSWGPobCell::MeshPath) is sometimes a final
@@ -413,6 +415,7 @@ public:
 	 * no generated animation yet or the action doesn't resolve.
 	 */
 	bool PlayCombatAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName);
+	bool SetDatapadPose(AActor& Actor, bool bHold);
 
 	/** The clip PlayCombatAction would use, plus a description of every resolution hop. Diagnostics for swg.DumpCombatAnim. */
 	FString ResolveCombatActionClip(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace = nullptr);

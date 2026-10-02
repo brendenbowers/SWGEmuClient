@@ -38,6 +38,7 @@ FString GetMessageOpName(uint32 Opcode)
 		case ESWGMessageOp::GetMapLocationsResponse: return TEXT("GetMapLocationsResponse");
 		case ESWGMessageOp::ResourceListForSurvey: return TEXT("ResourceListForSurvey");
 		case ESWGMessageOp::SurveyMessage: return TEXT("SurveyMessage");
+		case ESWGMessageOp::EnterStructurePlacementMode: return TEXT("EnterStructurePlacementMode");
 		default:
 			return FString::Printf(TEXT("Unknown (0x%08X)"), Opcode);
 	}

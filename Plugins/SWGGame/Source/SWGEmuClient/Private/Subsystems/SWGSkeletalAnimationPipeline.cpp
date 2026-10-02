@@ -294,7 +294,7 @@ void FSWGSkeletalAnimationPipeline::UpdatePostureDrivenAnimations()
 		USkeletalMeshComponent* MeshComponent = Playing.MeshComponent.Get();
 		ACharacter* Character = MeshComponent ? Cast<ACharacter>(MeshComponent->GetOwner()) : nullptr;
 		USkeleton* TargetSkeleton = Playing.TargetSkeleton.Get();
-		if (!Character || !TargetSkeleton || Playing.bSwapInFlight)
+		if (!Character || !TargetSkeleton || Playing.bSwapInFlight || Playing.bHoldingDatapad)
 		{
 			continue;
 		}
@@ -530,6 +530,7 @@ bool FSWGSkeletalAnimationPipeline::PlayCombatAction(AActor& Actor, const FStrin
 		UE_LOG(LogTemp, Log, TEXT("FSWGSkeletalAnimationPipeline: %s can't play '%s' — no generated animation is running on it yet"), *Actor.GetName(), *ActionName);
 		return false;
 	}
+	if (Playing->bHoldingDatapad) { return false; }
 
 	// A posture change is already sequencing a clip and a loop behind it.
 	// Cutting in would leave that loop pending against the wrong clip length.
@@ -619,6 +620,51 @@ bool FSWGSkeletalAnimationPipeline::PlayCombatAction(AActor& Actor, const FStrin
 					: 0.0f;
 			});
 
+	return true;
+}
+
+bool FSWGSkeletalAnimationPipeline::SetDatapadPose(AActor& Actor, bool bHold)
+{
+	USkeletalMeshComponent* Mesh = Actor.FindComponentByClass<USkeletalMeshComponent>();
+	FSWGPlayingAnimation* Playing = PlayingAnimations.FindByPredicate(
+		[Mesh](const FSWGPlayingAnimation& Candidate) { return Candidate.MeshComponent.Get() == Mesh; });
+	if (!Playing || !Mesh) { return false; }
+	if (!bHold)
+	{
+		if (!Playing->bHoldingDatapad) { return false; }
+		Playing->bHoldingDatapad = false;
+		if (UBlendSpace* Loop = Playing->DatapadResumeBlendSpace.Get())
+		{
+			BeginLoopPlayback(*Mesh, *Loop, Playing->ClipSet);
+		}
+		Playing->DatapadResumeBlendSpace.Reset();
+		Playing->Posture = ESWGPosture::Invalid;
+		return true;
+	}
+	if (Playing->bHoldingDatapad || Playing->PendingBlendSpace.IsValid() || Playing->bSwapInFlight) { return false; }
+	UAnimSingleNodeInstance* Instance = Cast<UAnimSingleNodeInstance>(Mesh->GetAnimInstance());
+	UBlendSpace* Loop = Instance ? Cast<UBlendSpace>(Instance->GetAnimationAsset()) : nullptr;
+	if (!Loop) { return false; }
+	Playing->bHoldingDatapad = true;
+	Playing->DatapadResumeBlendSpace = Loop;
+	const TWeakObjectPtr<USkeletalMeshComponent> WeakMesh = Mesh;
+	RequestLocomotionAnimSequence(Playing->SkeletonPath, Playing->MeshVirtualPaths,
+		TEXT("appearance/animation/all_b_int_use_datapad.ans"), Playing->Skeleton, Playing->TargetSkeleton.Get())
+		.Next([this, WeakMesh](UAnimSequence* Sequence)
+		{
+			USkeletalMeshComponent* Component = WeakMesh.Get();
+			FSWGPlayingAnimation* Record = PlayingAnimations.FindByPredicate(
+				[&WeakMesh](const FSWGPlayingAnimation& Candidate) { return Candidate.MeshComponent == WeakMesh; });
+			if (!Record || !Record->bHoldingDatapad || !Component) { return; }
+			if (!Sequence) { SetDatapadPose(*Component->GetOwner(), false); return; }
+			Component->PlayAnimation(Sequence, false);
+			if (UAnimSingleNodeInstance* Pose = Cast<UAnimSingleNodeInstance>(Component->GetAnimInstance()))
+			{
+				Pose->SetPosition(Sequence->GetPlayLength() * 0.5f, false);
+				Pose->SetPlaying(false);
+				Record->AnimInstance = Pose;
+			}
+		});
 	return true;
 }
 

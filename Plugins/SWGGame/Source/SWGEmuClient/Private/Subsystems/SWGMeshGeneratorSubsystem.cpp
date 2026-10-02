@@ -189,6 +189,36 @@ namespace
 		return false;
 	}
 
+	bool FindXxxxFloatValue(const FSWGIffReader& Reader, const FSWGIffChunk& DataForm, const TCHAR* Key, float& OutValue)
+	{
+		for (const FSWGIffChunk& Child : Reader.ReadChildren(DataForm))
+		{
+			if (Child.Tag != SWG_IFF_TAG('X','X','X','X')) { continue; }
+			FSWGIFFChunkReader ChunkReader(Child, Reader);
+			FString ChunkKey;
+			if (!ChunkReader.ReadTerminiatedString(ChunkKey) || !ChunkKey.Equals(Key)) { continue; }
+			if (ChunkReader.ReadValueLE<uint8>() != 1 || ChunkReader.ReadValueLE<uint8>() != 0x20) { return false; }
+			OutValue = ChunkReader.ReadValueLE<float>();
+			return FMath::IsFinite(OutValue);
+		}
+		return false;
+	}
+
+	bool FindXxxxBoolValue(const FSWGIffReader& Reader, const FSWGIffChunk& DataForm, const TCHAR* Key, bool& OutValue)
+	{
+		for (const FSWGIffChunk& Child : Reader.ReadChildren(DataForm))
+		{
+			if (Child.Tag != SWG_IFF_TAG('X','X','X','X')) { continue; }
+			FSWGIFFChunkReader ChunkReader(Child, Reader);
+			FString ChunkKey;
+			if (!ChunkReader.ReadTerminiatedString(ChunkKey) || !ChunkKey.Equals(Key)) { continue; }
+			if (ChunkReader.ReadValueLE<uint8>() != 1) { return false; }
+			OutValue = ChunkReader.ReadValueLE<uint8>() != 0;
+			return true;
+		}
+		return false;
+	}
+
 	bool FindAppearanceFilename(const FSWGIffReader& Reader, const FSWGIffChunk& DataForm, FString& OutAppearancePath)
 	{
 		return FindXxxxStringValue(Reader, DataForm, TEXT("appearanceFilename"), OutAppearancePath);
@@ -548,6 +578,11 @@ void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection
 bool USWGMeshGeneratorSubsystem::PlayCombatAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName)
 {
 	return SkeletalAnimationPipeline && SkeletalAnimationPipeline->PlayCombatAction(Actor, ActionName, WeaponStateName);
+}
+
+bool USWGMeshGeneratorSubsystem::SetDatapadPose(AActor& Actor, bool bHold)
+{
+	return SkeletalAnimationPipeline && SkeletalAnimationPipeline->SetDatapadPose(Actor, bHold);
 }
 
 FString USWGMeshGeneratorSubsystem::ResolveCombatActionClip(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace)
@@ -1668,6 +1703,38 @@ bool USWGMeshGeneratorSubsystem::ResolveTemplateStringParam(const FString& Templ
 	return false;
 }
 
+bool USWGMeshGeneratorSubsystem::ResolveTemplateFloatParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, float& OutValue)
+{
+	FSWGIffReader Reader = TreSubsystem->CreateIffReader(TemplatePath);
+	FSWGIffChunk Form, DataForm;
+	if (!Reader.IsValid() || !Reader.FindForm(FormType, Form) || !FindVersionedDataForm(Reader, Form, DataForm)) { return false; }
+	for (int32 Depth = 0; Depth < 8; ++Depth)
+	{
+		if (FindXxxxFloatValue(Reader, DataForm, Key, OutValue)) { return true; }
+		FString ParentPath;
+		if (!FindDervParentPath(Reader, Form, ParentPath)) { break; }
+		Reader = TreSubsystem->CreateIffReader(ParentPath);
+		if (!Reader.IsValid() || !Reader.FindForm(FormType, Form) || !FindVersionedDataForm(Reader, Form, DataForm)) { break; }
+	}
+	return false;
+}
+
+bool USWGMeshGeneratorSubsystem::ResolveTemplateBoolParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, bool& OutValue)
+{
+	FSWGIffReader Reader = TreSubsystem->CreateIffReader(TemplatePath);
+	FSWGIffChunk Form, DataForm;
+	if (!Reader.IsValid() || !Reader.FindForm(FormType, Form) || !FindVersionedDataForm(Reader, Form, DataForm)) { return false; }
+	for (int32 Depth = 0; Depth < 8; ++Depth)
+	{
+		if (FindXxxxBoolValue(Reader, DataForm, Key, OutValue)) { return true; }
+		FString ParentPath;
+		if (!FindDervParentPath(Reader, Form, ParentPath)) { break; }
+		Reader = TreSubsystem->CreateIffReader(ParentPath);
+		if (!Reader.IsValid() || !Reader.FindForm(FormType, Form) || !FindVersionedDataForm(Reader, Form, DataForm)) { break; }
+	}
+	return false;
+}
+
 bool USWGMeshGeneratorSubsystem::ResolvePortalLayoutPath(const FString& TemplatePath, FString& OutPobPath)
 {
 	return ResolveTemplateStringParam(TemplatePath, SWG_IFF_TAG('S','H','O','T'), TEXT("portalLayoutFilename"), OutPobPath);
@@ -1932,6 +1999,7 @@ bool USWGMeshGeneratorSubsystem::ReadStaticMeshFile(const FString& MeshPath, FSW
 	{
 		return false;
 	}
+
 	if (!MeshPath.EndsWith(TEXT(".cmp")))
 	{
 		return FSWGMeshReader::ReadStaticMesh(Reader, OutData);

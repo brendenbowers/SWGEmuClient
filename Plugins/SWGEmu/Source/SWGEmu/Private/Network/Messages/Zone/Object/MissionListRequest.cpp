@@ -9,7 +9,7 @@ FMissionListRequest::FMissionListRequest(uint64 PlayerId, uint64 InTerminalObjec
 
 FSWGPacket FMissionListRequest::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x10);
+	FSWGPacket Pkt = SerializeBase();
 
 	Pkt.WriteUInt32(0); // "size" — parsed and ignored by the server
 	Pkt.WriteByte(Flags);

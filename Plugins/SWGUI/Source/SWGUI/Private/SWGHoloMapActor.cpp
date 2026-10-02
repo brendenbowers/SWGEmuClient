@@ -1,7 +1,10 @@
 #include "SWGHoloMapActor.h"
+#include "SWGHoloMapAppearanceComponent.h"
+#include "SWGHoloMapHologramAppearance.h"
 #include "Async/Async.h"
 #include "Async/ParallelFor.h"
 #include "Common/SWGWorldScale.h"
+#include "Components/ActorComponent.h"
 #include "Components/DynamicMeshComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -10,8 +13,6 @@
 #include "Components/TextRenderComponent.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
-#include "DynamicMesh/MeshNormals.h"
-#include "SWGSurveyStyle.h"
 #include "Engine/GameInstance.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -31,7 +32,6 @@ namespace
 {
 	constexpr int32 GridSize = 121;
 	/** The bake covers this much more than the radius, so panning and zooming out show ground before the rebake lands. */
-	constexpr float BakeExtentScale = 1.5f;
 	/** Rebake once the view drifts this far (fraction of the radius) or zooms past this ratio. */
 	constexpr float RebakeDrift = 0.35f;
 	constexpr float RebakeZoomRatio = 1.25f;
@@ -91,6 +91,8 @@ namespace
 		FDynamicMesh3& Mesh = *Bake.Mesh;
 		Mesh.EnableAttributes();
 		FDynamicMeshNormalOverlay* Normals = Mesh.Attributes()->PrimaryNormals();
+		Mesh.Attributes()->SetNumUVLayers(1);
+		FDynamicMeshUVOverlay* UVs = Mesh.Attributes()->PrimaryUV();
 		auto HeightAt = [&Bake](int32 Column, int32 Row)
 		{
 			return Bake.Heights[FMath::Clamp(Row, 0, GridSize - 1) * GridSize + FMath::Clamp(Column, 0, GridSize - 1)];
@@ -108,6 +110,8 @@ namespace
 				const float SlopeEast = (HeightAt(Column + 1, Row) - HeightAt(Column - 1, Row)) * Exaggeration / (2.f * Spacing);
 				const float SlopeNorth = (HeightAt(Column, Row + 1) - HeightAt(Column, Row - 1)) * Exaggeration / (2.f * Spacing);
 				Normals->AppendElement(FVector3f(RawAxes(FVector(-SlopeEast, -SlopeNorth, 1.f)).GetSafeNormal()));
+				// Planar map for the top-down colour capture: east to the right, north up.
+				UVs->AppendElement(FVector2f(Column / (GridSize - 1.f), 1.f - Row / (GridSize - 1.f)));
 			}
 		}
 		const float KeepRadius = Extent;
@@ -132,6 +136,7 @@ namespace
 					if (TriangleId >= 0)
 					{
 						Normals->SetTriangle(TriangleId, Triangle);
+						UVs->SetTriangle(TriangleId, Triangle);
 					}
 				}
 			}
@@ -159,10 +164,75 @@ ASWGHoloMapActor::ASWGHoloMapActor()
 void ASWGHoloMapActor::BeginPlay()
 {
 	Super::BeginPlay();
-	ContentMaterial = MakeHoloMaterial(HoloColor, HoloIntensity);
-	TerrainComponent->SetMaterial(0, ContentMaterial);
 	ContentRoot->SetRelativeLocation(FVector(0.f, 0.f, ContentLift));
 	LastViewChangeTime = FPlatformTime::Seconds();
+	SetAppearance(USWGHoloMapHologramAppearance::StaticClass());
+}
+
+void ASWGHoloMapActor::SetAppearance(TSubclassOf<USWGHoloMapAppearanceComponent> AppearanceClass)
+{
+	if (!AppearanceClass) { return; }
+	if (USWGHoloMapAppearanceComponent* Current = GetAppearance())
+	{
+		if (Current->GetClass() == AppearanceClass) { return; }
+		RemoveLayer(Current->GetClass());
+	}
+	USWGHoloMapAppearanceComponent* Appearance = Cast<USWGHoloMapAppearanceComponent>(AddLayer(AppearanceClass));
+	if (!Appearance) { return; }
+	Appearance->ApplyTerrain();
+	Appearance->UpdateContourSpacing();
+	if (bHasBake) { bBakeWanted = true; LastViewChangeTime = FPlatformTime::Seconds() - RebakeSettleSeconds; }
+}
+
+UActorComponent* ASWGHoloMapActor::FindLayer(TSubclassOf<UActorComponent> LayerClass) const
+{
+	if (!LayerClass) { return nullptr; }
+	for (int32 Index = MapLayers.Num() - 1; Index >= 0; --Index)
+	{
+		if (IsValid(MapLayers[Index]) && MapLayers[Index]->IsA(LayerClass)) { return MapLayers[Index]; }
+	}
+	return nullptr;
+}
+
+UActorComponent* ASWGHoloMapActor::AddLayer(TSubclassOf<UActorComponent> LayerClass)
+{
+	if (!LayerClass || LayerClass->HasAnyClassFlags(CLASS_Abstract)) { return nullptr; }
+	if (UActorComponent* Existing = FindLayer(LayerClass)) { return Existing; }
+	UActorComponent* Layer = NewObject<UActorComponent>(this, LayerClass.Get());
+	MapLayers.Add(Layer);
+	Layer->RegisterComponent();
+	return Layer;
+}
+
+void ASWGHoloMapActor::RemoveLayer(TSubclassOf<UActorComponent> LayerClass)
+{
+	if (!LayerClass) { return; }
+	for (int32 Index = MapLayers.Num() - 1; Index >= 0; --Index)
+	{
+		UActorComponent* Layer = MapLayers[Index];
+		if (Layer && Layer->IsA(LayerClass))
+		{
+			MapLayers.RemoveAt(Index);
+			Layer->DestroyComponent();
+		}
+	}
+}
+
+USWGHoloMapAppearanceComponent* ASWGHoloMapActor::GetAppearance() const
+{
+	return Cast<USWGHoloMapAppearanceComponent>(FindLayer(USWGHoloMapAppearanceComponent::StaticClass()));
+}
+
+float ASWGHoloMapActor::EffectiveBuildingScale() const
+{
+	const USWGHoloMapAppearanceComponent* Appearance = GetAppearance();
+	return Appearance ? Appearance->BuildingScale(BuildingScale) : BuildingScale;
+}
+
+float ASWGHoloMapActor::EffectiveHeightExaggeration() const
+{
+	const USWGHoloMapAppearanceComponent* Appearance = GetAppearance();
+	return Appearance ? Appearance->HeightExaggeration(HeightExaggeration) : HeightExaggeration;
 }
 
 void ASWGHoloMapActor::SetViewCenter(const FVector2D& RawCenter)
@@ -183,7 +253,7 @@ void ASWGHoloMapActor::SetViewCenter(const FVector2D& RawCenter)
 
 void ASWGHoloMapActor::SetViewRadius(float RawRadius)
 {
-	const float NewRadius = FMath::Clamp(RawRadius, MinRadius, MaxRadius);
+	const float NewRadius = FMath::Clamp(RawRadius, MinViewRadius, MaxRadius);
 	if (FMath::IsNearlyEqual(NewRadius, ViewRadius))
 	{
 		return;
@@ -207,10 +277,17 @@ void ASWGHoloMapActor::SetViewYaw(float Degrees)
 	UpdateContentTransform();
 }
 
+void ASWGHoloMapActor::SetViewTilt(float Degrees, const FVector2D& TowardViewer)
+{
+	ViewTilt = Degrees;
+	ViewTiltTowardViewer = TowardViewer.GetSafeNormal();
+	UpdateContentTransform();
+}
+
 FVector ASWGHoloMapActor::RawToContent(const FVector& RawOffset) const
 {
 	FVector Local = RawAxes(FVector(RawOffset.X, RawOffset.Y, 0.f)) * BakedUnitsPerMetre();
-	Local.Z = (RawOffset.Z - BakedBaseHeight) * BakedUnitsPerMetre() * HeightExaggeration;
+	Local.Z = (RawOffset.Z - BakedBaseHeight) * BakedUnitsPerMetre() * EffectiveHeightExaggeration();
 	return Local;
 }
 
@@ -236,15 +313,13 @@ void ASWGHoloMapActor::UpdateContentTransform()
 	// Content is laid out around BakedCenter at BakedRadius; scale it to the live
 	// radius, turn it, and slide it so ViewCenter lands on the disc's centre.
 	const float Scale = BakedRadius / ViewRadius;
-	const FRotator Yaw(0.f, ViewYaw, 0.f);
-	const FVector ViewInContent = RawToContent(FVector(ViewCenter - BakedCenter, BakedBaseHeight));
-	const FVector Offset = Yaw.RotateVector(-FVector(ViewInContent.X, ViewInContent.Y, 0.f) * Scale);
-	ContentRoot->SetRelativeTransform(FTransform(Yaw, Offset + FVector(0.f, 0.f, ContentLift), FVector(Scale)));
-	if (ContentMaterial)
-	{
-		// Contours stay the same number of metres apart whatever the zoom.
-		ContentMaterial->SetScalarParameterValue(TEXT("ContourSpacing"), ContourMetres * BakedUnitsPerMetre() * HeightExaggeration * Scale);
-	}
+	const FVector TiltAxis = FVector::CrossProduct(FVector::UpVector, FVector(ViewTiltTowardViewer, 0.f));
+	const FQuat Rotation = FQuat(TiltAxis, FMath::DegreesToRadians(ViewTilt)) * FQuat(FVector::UpVector, FMath::DegreesToRadians(ViewYaw));
+	const FVector ViewInContent = RawToContent(FVector(ViewCenter - BakedCenter, BakedHeightAt(ViewCenter)));
+	const FVector Centre(0.f, 0.f, ContentLift + ViewInContent.Z * Scale);
+	const FVector Offset = Centre - Rotation.RotateVector(ViewInContent * Scale);
+	ContentRoot->SetRelativeTransform(FTransform(Rotation, Offset, FVector(Scale)));
+	if (USWGHoloMapAppearanceComponent* Appearance = GetAppearance()) { Appearance->UpdateContourSpacing(); }
 }
 
 void ASWGHoloMapActor::Tick(float DeltaSeconds)
@@ -285,7 +360,7 @@ void ASWGHoloMapActor::RequestBake()
 	const float Radius = ViewRadius;
 	const float UnitsPerMetre = DiscDiameter * 0.5f / Radius;
 	TWeakObjectPtr<ASWGHoloMapActor> WeakThis(this);
-	Async(EAsyncExecution::ThreadPool, [WeakThis, Generation, Center, Radius, UnitsPerMetre, Exaggeration = HeightExaggeration,
+	Async(EAsyncExecution::ThreadPool, [WeakThis, Generation, Center, Radius, UnitsPerMetre, Exaggeration = EffectiveHeightExaggeration(),
 		Planet = Terrain->GetPlanetData(), Edits = Terrain->GetPublishedEditLayers()]()
 	{
 		TSharedPtr<FTerrainBake> Bake = MakeShared<FTerrainBake>(BakeTerrainPatch(Planet, Edits, Center, Radius * BakeExtentScale, UnitsPerMetre, Exaggeration));
@@ -314,96 +389,15 @@ void ASWGHoloMapActor::ApplyBake(FTerrainBake&& Bake, const FVector2D& Center, f
 	BakedHeights = MoveTemp(Bake.Heights);
 	bHasBake = true;
 	TerrainComponent->SetMesh(MoveTemp(*Bake.Mesh));
-	TerrainComponent->SetMaterial(0, ContentMaterial);
 	UpdateContentTransform();
+	if (USWGHoloMapAppearanceComponent* Appearance = GetAppearance()) { Appearance->ApplyTerrain(); }
 	if (bMovedFar)
 	{
 		RequestBuildings();
 	}
 	RefreshDynamicStructures(/*bRebuild=*/true);
-	RebuildSurveyField();
+	OnBakeUpdated.Broadcast();
 	UpdateMarkers();
-}
-
-void ASWGHoloMapActor::SetSurveyField(const FSWGSurveyResult& Result)
-{
-	SurveyField = Result;
-	RebuildSurveyField();
-}
-
-void ASWGHoloMapActor::RebuildSurveyField()
-{
-	using namespace UE::Geometry;
-	for (UDynamicMeshComponent* Band : SurveyBands)
-	{
-		Band->DestroyComponent();
-	}
-	SurveyBands.Reset();
-	if (!bHasBake || SurveyField.GridSize < 2 || SurveyField.Range <= 0.f)
-	{
-		return;
-	}
-	// The same banding as the survey's own ground hologram, at map scale.
-	constexpr int32 Resolution = 25;
-	constexpr int32 Bands = 6;
-	/** Content units the field floats over the terrain, so it never sinks into it. */
-	constexpr float FieldLift = 0.4f;
-	const float Step = SurveyField.Range / (Resolution - 1);
-	const FVector2D SouthWest(SurveyField.Samples[0].Position.X, SurveyField.Samples[0].Position.Y - SurveyField.Range);
-	TArray<FDynamicMesh3> BandData;
-	BandData.SetNum(Bands);
-	TArray<float> VertexDensity;
-	VertexDensity.SetNumUninitialized(Resolution * Resolution);
-	for (FDynamicMesh3& Mesh : BandData)
-	{
-		Mesh.EnableAttributes();
-	}
-	for (int32 Row = 0; Row < Resolution; ++Row)
-	{
-		for (int32 Column = 0; Column < Resolution; ++Column)
-		{
-			const FVector2D Raw(SouthWest.X + Column * Step, SouthWest.Y + Row * Step);
-			VertexDensity[Row * Resolution + Column] = SurveyField.SampleDensity(FVector2D(
-				FMath::Min(Raw.X, SouthWest.X + SurveyField.Range - 0.01f), FMath::Min(Raw.Y, SouthWest.Y + SurveyField.Range - 0.01f)));
-			const FVector Local = RawToContent(FVector(Raw - BakedCenter, BakedHeightAt(Raw))) + FVector(0.f, 0.f, FieldLift);
-			for (FDynamicMesh3& Mesh : BandData)
-			{
-				Mesh.AppendVertex(FVector3d(Local));
-			}
-		}
-	}
-	for (int32 Row = 0; Row + 1 < Resolution; ++Row)
-	{
-		for (int32 Column = 0; Column + 1 < Resolution; ++Column)
-		{
-			const int32 SouthWestIndex = Row * Resolution + Column;
-			const int32 SouthEastIndex = SouthWestIndex + 1;
-			const int32 NorthWestIndex = SouthWestIndex + Resolution;
-			const int32 NorthEastIndex = NorthWestIndex + 1;
-			const float Mean = 0.25f * (VertexDensity[SouthWestIndex] + VertexDensity[SouthEastIndex] + VertexDensity[NorthWestIndex] + VertexDensity[NorthEastIndex]);
-			FDynamicMesh3& Mesh = BandData[FMath::Clamp(FMath::FloorToInt(Mean * Bands), 0, Bands - 1)];
-			// Rows step north like the terrain bake, so the same winding faces up.
-			Mesh.AppendTriangle(FIndex3i(SouthWestIndex, SouthEastIndex, NorthWestIndex));
-			Mesh.AppendTriangle(FIndex3i(SouthEastIndex, NorthEastIndex, NorthWestIndex));
-		}
-	}
-	for (int32 Band = 0; Band < Bands; ++Band)
-	{
-		if (BandData[Band].TriangleCount() == 0)
-		{
-			continue;
-		}
-		FMeshNormals::InitializeOverlayToPerVertexNormals(BandData[Band].Attributes()->PrimaryNormals(), false);
-		const float BandDensity = (Band + 0.5f) / Bands;
-		UDynamicMeshComponent* Component = NewObject<UDynamicMeshComponent>(this);
-		Component->SetupAttachment(ContentRoot);
-		Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Component->SetCastShadow(false);
-		Component->SetMesh(MoveTemp(BandData[Band]));
-		Component->SetMaterial(0, MakeHoloMaterial(SWGSurveyStyle::DensityColor(BandDensity), HoloIntensity * FMath::Lerp(0.3f, 2.5f, BandDensity)));
-		Component->RegisterComponent();
-		SurveyBands.Add(Component);
-	}
 }
 
 void ASWGHoloMapActor::RefreshDynamicStructures(bool bRebuild)
@@ -459,7 +453,7 @@ void ASWGHoloMapActor::AddDynamicStructure(AActor& Structure)
 	TArray<TWeakObjectPtr<UStaticMeshComponent>>& Copies = DynamicStructures.Add(&Structure);
 	TArray<UStaticMeshComponent*> Sources;
 	Structure.GetComponents(Sources);
-	const float MeshScale = BakedUnitsPerMetre() / SWGWorldScale * BuildingScale;
+	const float MeshScale = BakedUnitsPerMetre() / SWGWorldScale * EffectiveBuildingScale();
 	for (const UStaticMeshComponent* Source : Sources)
 	{
 		UStaticMesh* Mesh = Source->GetStaticMesh();
@@ -471,17 +465,13 @@ void ASWGHoloMapActor::AddDynamicStructure(AActor& Structure)
 		const FTransform World = Source->GetComponentTransform();
 		const FVector Raw = SWGToRawSpace(World.GetLocation());
 		const FVector Local = RawToContent(FVector(Raw.X - BakedCenter.X, Raw.Y - BakedCenter.Y, Raw.Z));
-		const FVector Scale = World.GetScale3D() * FVector(MeshScale, MeshScale, MeshScale * HeightExaggeration);
+		const FVector Scale = World.GetScale3D() * FVector(MeshScale, MeshScale, MeshScale * EffectiveHeightExaggeration());
 
 		UStaticMeshComponent* Copy = NewObject<UStaticMeshComponent>(this);
 		Copy->SetStaticMesh(Mesh);
 		Copy->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Copy->SetCastShadow(false);
-		Copy->SetForcedLodModel(Mesh->GetNumLODs());
-		for (int32 MaterialIndex = 0; MaterialIndex < Mesh->GetStaticMaterials().Num(); ++MaterialIndex)
-		{
-			Copy->SetMaterial(MaterialIndex, ContentMaterial);
-		}
+		if (USWGHoloMapAppearanceComponent* Appearance = GetAppearance()) { Appearance->StyleBuilding(Copy, Mesh, Source); }
 		Copy->SetupAttachment(ContentRoot);
 		Copy->SetRelativeTransform(FTransform(World.GetRotation(), Local, Scale));
 		Copy->RegisterComponent();
@@ -547,14 +537,14 @@ void ASWGHoloMapActor::RequestBuildings()
 
 	// One request per template; cities reuse a handful of building types.
 	TMap<FString, TArray<FTransform>> TransformsByTemplate;
-	const float MeshScale = BakedUnitsPerMetre() / SWGWorldScale * BuildingScale;
+	const float MeshScale = BakedUnitsPerMetre() / SWGWorldScale * EffectiveBuildingScale();
 	for (int32 CandidateIndex = 0; CandidateIndex < FMath::Min(Candidates.Num(), MaxBuildings); ++CandidateIndex)
 	{
 		const FSWGWorldSnapshotNode& Node = Snapshot->Nodes[Candidates[CandidateIndex].Value];
 		const FVector Local = RawToContent(FVector(Node.Position.X - BakedCenter.X, Node.Position.Y - BakedCenter.Y, Node.Position.Z));
 		// Same rotation the streamed snapshot uses; heights exaggerated like the terrain under them.
 		TransformsByTemplate.FindOrAdd(Snapshot->ObjectTemplateNames[(int32)Node.NameID])
-			.Add(FTransform(Node.Direction, Local, FVector(MeshScale, MeshScale, MeshScale * HeightExaggeration)));
+			.Add(FTransform(Node.Direction, Local, FVector(MeshScale, MeshScale, MeshScale * EffectiveHeightExaggeration())));
 	}
 
 	TWeakObjectPtr<ASWGHoloMapActor> WeakThis(this);
@@ -574,12 +564,7 @@ void ASWGHoloMapActor::RequestBuildings()
 					Building->SetStaticMesh(Mesh);
 					Building->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 					Building->SetCastShadow(false);
-					// 1-based; the last level is the low-poly silhouette.
-					Building->SetForcedLodModel(Mesh->GetNumLODs());
-					for (int32 MaterialIndex = 0; MaterialIndex < Mesh->GetStaticMaterials().Num(); ++MaterialIndex)
-					{
-						Building->SetMaterial(MaterialIndex, Actor->ContentMaterial);
-					}
+					if (USWGHoloMapAppearanceComponent* Appearance = Actor->GetAppearance()) { Appearance->StyleBuilding(Building, Mesh); }
 					Building->SetupAttachment(Actor->ContentRoot);
 					Building->SetRelativeTransform(Transform);
 					Building->RegisterComponent();
@@ -789,13 +774,15 @@ void ASWGHoloMapActor::UpdateMarkers()
 
 bool ASWGHoloMapActor::RayToRaw(const FVector& Origin, const FVector& Direction, FVector2D& OutRaw, bool bRequireOnDisc) const
 {
-	if (!bHasBake || FMath::IsNearlyZero(Direction.Z))
+	const FTransform ContentToWorld = ContentRoot->GetComponentTransform();
+	const FVector Normal = ContentToWorld.GetUnitAxis(EAxis::Z);
+	const float Denominator = FVector::DotProduct(Direction, Normal);
+	if (!bHasBake || FMath::IsNearlyZero(Denominator))
 	{
 		return false;
 	}
-	const FTransform ContentToWorld = ContentRoot->GetComponentTransform();
-	const float PlaneZ = ContentToWorld.TransformPosition(RawToContent(FVector(ViewCenter - BakedCenter, BakedHeightAt(ViewCenter)))).Z;
-	const float Distance = (PlaneZ - Origin.Z) / Direction.Z;
+	const FVector PlanePoint = ContentToWorld.TransformPosition(RawToContent(FVector(ViewCenter - BakedCenter, BakedHeightAt(ViewCenter))));
+	const float Distance = FVector::DotProduct(PlanePoint - Origin, Normal) / Denominator;
 	if (Distance <= 0.f)
 	{
 		return false;
@@ -814,3 +801,4 @@ FVector ASWGHoloMapActor::GetFocusLocation() const
 	}
 	return ContentRoot->GetComponentTransform().TransformPosition(RawToContent(FVector(ViewCenter - BakedCenter, BakedHeightAt(ViewCenter))));
 }
+

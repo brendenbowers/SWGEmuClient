@@ -19,5 +19,5 @@ protected:
 
 	FObjectControllerMessage(uint32 MessageType, uint64 ObjectId, uint32 MessagePriority = 1);
 	
-	FSWGPacket SerializeBase(uint16 OpcodeCount) const;
+	FSWGPacket SerializeBase() const;
 };

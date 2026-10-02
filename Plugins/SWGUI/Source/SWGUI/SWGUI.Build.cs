@@ -24,6 +24,7 @@ public class SWGUI : ModuleRules
 			"ModelWidget",
 			"GeometryCore",
 			"GeometryFramework",
+			"AnimationCore",
 		});
 	}
 }

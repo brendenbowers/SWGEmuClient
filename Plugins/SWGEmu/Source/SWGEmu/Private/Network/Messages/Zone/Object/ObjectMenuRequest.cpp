@@ -8,7 +8,7 @@ FObjectMenuRequest::FObjectMenuRequest(uint64 PlayerId, uint64 InTargetId, uint8
 
 FSWGPacket FObjectMenuRequest::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x05);
+	FSWGPacket Pkt = SerializeBase();
 
 	Pkt.WriteUInt32(0); // "size" — parsed and ignored by the server
 	Pkt.WriteUInt64(TargetId);

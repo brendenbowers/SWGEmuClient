@@ -210,10 +210,8 @@ struct SWGEMU_API FSWGCraftingCloseWindowIn
 // ── Client → server ──────────────────────────────────────────────────────
 // All Serialize() below wrap the payload in the same ObjController envelope
 // ObjectMenuRequest/CommandQueueEnqueue/TargetUpdate use: priority 0x0B,
-// ObjectId = the local player's own object id, SerializeBase(0x10) (the
-// count Core3 does not validate on receipt — every existing outgoing
-// ObjController message in this codebase uses the same constant regardless
-// of its real payload size).
+// ObjectId = the local player's own object id, SerializeBase() writes
+// Core3's 0x05 operand count.
 
 /** One row's spend in a CraftingExperiment message. */
 USTRUCT(BlueprintType)

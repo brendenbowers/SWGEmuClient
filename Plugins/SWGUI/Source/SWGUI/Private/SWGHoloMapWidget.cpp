@@ -1,5 +1,6 @@
 #include "SWGHoloMapWidget.h"
 #include "SWGHoloMapActor.h"
+#include "SWGHoloMapSurveyLayer.h"
 #include "SWGMapMarkers.h"
 #include "SWGRetailStyle.h"
 #include "SWGSurveyStyle.h"
@@ -255,7 +256,11 @@ void USWGHoloMapWidget::RefreshSurveyScan()
 		return;
 	}
 	const bool bShow = Survey && Survey->ShouldShowScan();
-	Hologram->SetSurveyField(bShow ? Survey->GetLastResult() : FSWGSurveyResult());
+	if (bShow)
+	{
+		if (USWGHoloMapSurveyLayer* Layer = Hologram->AddLayer<USWGHoloMapSurveyLayer>()) { Layer->SetSurveyField(Survey->GetLastResult()); }
+	}
+	else { Hologram->RemoveLayer<USWGHoloMapSurveyLayer>(); }
 	// Only the find is labelled; two dozen percentages would bury the map.
 	Hologram->SetMarkers(SWGSurveyStyle::MarkerLayer, bShow ? SWGSurveyStyle::MakeMarkers(Survey->GetLastResult(), false) : TArray<FSWGMapMarker>());
 }

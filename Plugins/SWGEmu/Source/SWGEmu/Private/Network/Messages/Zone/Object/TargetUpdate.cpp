@@ -7,7 +7,7 @@ FTargetUpdate::FTargetUpdate(uint64 ObjectId, uint64 TargetId)
 
 FSWGPacket FTargetUpdate::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x10);
+	FSWGPacket Pkt = SerializeBase();
 
 	Pkt.WriteUInt32(0); // "size" — parsed and ignored by the server
 	Pkt.WriteUInt64(TargetId);

@@ -20,8 +20,10 @@
 #include "SWGHoloSurveyWidget.h"
 #include "SWGCraftingWidget.h"
 #include "SWGHoloCraftingWidget.h"
+#include "SWGStructurePlacementWidget.h"
 #include "Subsystems/SWGSurveySubsystem.h"
 #include "Subsystems/SWGCraftingSubsystem.h"
+#include "Subsystems/SWGStructurePlacementSubsystem.h"
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
@@ -68,6 +70,10 @@ void USWGUISubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	if (USWGCraftingSubsystem* Crafting = GameInstance->GetSubsystem<USWGCraftingSubsystem>())
 	{
 		Crafting->OnSessionStarted.AddDynamic(this, &USWGUISubsystem::HandleCraftingSessionStarted);
+	}
+	if (USWGStructurePlacementSubsystem* Placement = GameInstance->GetSubsystem<USWGStructurePlacementSubsystem>())
+	{
+		Placement->OnPlacementStarted.AddDynamic(this, &USWGUISubsystem::HandlePlacementStarted);
 	}
 	if (UCommonInputSubsystem* CommonInput = UCommonInputSubsystem::Get(GetLocalPlayer()))
 	{
@@ -117,9 +123,24 @@ void USWGUISubsystem::Deinitialize()
 		{
 			Crafting->OnSessionStarted.RemoveAll(this);
 		}
+		if (USWGStructurePlacementSubsystem* Placement = GameInstance->GetSubsystem<USWGStructurePlacementSubsystem>())
+		{
+			Placement->OnPlacementStarted.RemoveAll(this);
+		}
 	}
 
 	Super::Deinitialize();
+}
+
+void USWGUISubsystem::HandlePlacementStarted()
+{
+	APlayerController* PC = GetLocalPlayer() ? GetLocalPlayer()->GetPlayerController(nullptr) : nullptr;
+	if (!PC) { return; }
+	// Placement takes over the camera and the screen, and the deed was most likely used from the inventory.
+	CloseInventory();
+	if (PlacementWidget) { PlacementWidget->Close(); }
+	PlacementWidget = CreateWidget<USWGStructurePlacementWidget>(PC);
+	if (PlacementWidget) { PlacementWidget->AddToPlayerScreen(250); }
 }
 
 void USWGUISubsystem::HandleRadialMenuReceived(const FSWGRadialMenu& Menu)

@@ -75,7 +75,7 @@ namespace
 	 * GetIconCandidates) — duplicated rather than shared, matching this
 	 * codebase's per-file anonymous-namespace helper convention.
 	 */
-	bool IsResourceClassOrDescendant(const UDataTable* Table, FString Current, const FString& RequiredType)
+	bool IsHoloResourceClassOrDescendant(const UDataTable* Table, FString Current, const FString& RequiredType)
 	{
 		for (int32 Depth = 0; !Current.IsEmpty() && Depth < 16; ++Depth)
 		{
@@ -151,7 +151,7 @@ namespace
 		{
 			return Tre && TemplateDerivesFrom(Tre, Tre->ResolveTemplatePath(Item->SWGObjectCRC), SlotEntry.ResourceType);
 		}
-		return !Item->ResourceType.IsEmpty() && IsResourceClassOrDescendant(ResourceClasses, Item->ResourceType, SlotEntry.ResourceType);
+		return !Item->ResourceType.IsEmpty() && IsHoloResourceClassOrDescendant(ResourceClasses, Item->ResourceType, SlotEntry.ResourceType);
 	}
 
 	/** Hover details for one card row: what the slot accepts and what the bag has for it. */

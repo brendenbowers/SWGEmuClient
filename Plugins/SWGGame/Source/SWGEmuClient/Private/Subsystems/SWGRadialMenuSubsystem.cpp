@@ -431,6 +431,15 @@ const TArray<USWGRadialMenuSubsystem::FSWGClientRadialRule>& USWGRadialMenuSubsy
 				OnMissionTerminalUsed.Broadcast(ObjectId);
 				return true;
 			}
+			if (ObjectGraph && Tre && Commands)
+			{
+				const uint32 Crc = ObjectGraph->FindObjectCrc(ObjectId);
+				if (Crc && Tre->ResolveTemplatePath(Crc).StartsWith(TEXT("object/tangible/deed/")))
+				{
+					Commands->SendCommand(TEXT("placestructuremode"), ObjectId);
+					return true;
+				}
+			}
 			// Crafting tools/stations: retail's "Use" starts a session, same
 			// client-side-only dispatch as equip/mission-terminal above —
 			// RequestCraftingSessionCommand.h documents itself as a plain

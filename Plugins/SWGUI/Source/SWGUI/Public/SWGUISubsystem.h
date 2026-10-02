@@ -158,6 +158,12 @@ private:
 
 	void OpenCrafting();
 
+	UFUNCTION()
+	void HandlePlacementStarted();
+
+	UPROPERTY()
+	TObjectPtr<class USWGStructurePlacementWidget> PlacementWidget;
+
 	UPROPERTY()
 	TObjectPtr<class USWGCraftingWidget> CraftingWindow;
 	UPROPERTY()

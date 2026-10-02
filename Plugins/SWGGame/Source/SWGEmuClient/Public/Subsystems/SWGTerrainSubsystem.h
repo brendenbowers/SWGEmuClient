@@ -23,6 +23,7 @@ class UTexture2D;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 class UDynamicMeshComponent;
+class UPrimitiveComponent;
 
 namespace UE::Geometry { class FDynamicMesh3; }
 
@@ -161,6 +162,9 @@ public:
 	TSharedPtr<const TArray<FSWGTerrainLayer>, ESPMode::ThreadSafe> GetPublishedEditLayers() const { return PublishedEditLayers; }
 	TSharedPtr<const FSWGWorldSnapshotData, ESPMode::ThreadSafe> GetSnapshotData() const { return SnapshotData; }
 
+	/** Every streamed terrain tile that currently has a mesh; for captures that should show only the ground. */
+	void GetTileComponents(TArray<UPrimitiveComponent*>& OutComponents) const;
+
 	/** Broadcast once BeginLoadTerrain's spawn-area tiles have a spawned, collidable mesh. */
 	DECLARE_MULTICAST_DELEGATE(FOnTerrainReady);
 	FOnTerrainReady OnTerrainReady;
@@ -180,6 +184,9 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Terrain")
 	float GetHeightAt(float X, float Y) const;
+
+	/** Highest authored water surface at a raw world point. False where there is no water table. */
+	bool GetWaterHeightAt(float X, float Y, float& OutHeight) const;
 
 	/**
 	 * Stamps a runtime-placed object's terrain modification into the live

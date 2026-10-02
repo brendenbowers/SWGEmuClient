@@ -11,11 +11,11 @@ FObjectControllerMessage::FObjectControllerMessage(uint32 MessageType, uint64 Ob
 {
 }
 
-FSWGPacket FObjectControllerMessage::SerializeBase(uint16 OpcodeCount) const
+FSWGPacket FObjectControllerMessage::SerializeBase() const
 {
 	FSWGPacket Pkt;
 
-	OpcodeCount++;
+	uint16 OpcodeCount = 0x05;
 	uint32 Opcode = static_cast<uint32>(ESWGMessageOp::ObjControllerMessage);
 
 	Pkt << OpcodeCount;

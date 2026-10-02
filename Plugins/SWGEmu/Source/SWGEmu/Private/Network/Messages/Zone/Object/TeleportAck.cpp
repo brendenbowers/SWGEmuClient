@@ -6,7 +6,7 @@ FTeleportAck::FTeleportAck(uint64 ObjectId)
 
 FSWGPacket FTeleportAck::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x10);
+	FSWGPacket Pkt = SerializeBase();
 
 	uint32 Move = MoveCount;
 	Pkt << Move;

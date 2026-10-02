@@ -123,7 +123,7 @@ FSWGCraftingExperimentMessage::FSWGCraftingExperimentMessage(uint64 PlayerId, ui
 
 FSWGPacket FSWGCraftingExperimentMessage::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x10);
+	FSWGPacket Pkt = SerializeBase();
 	Pkt.WriteUInt32(0); // "size" — parsed and ignored by the server
 	Pkt.WriteByte(Counter);
 	Pkt.WriteInt32(Rows.Num());
@@ -144,7 +144,7 @@ FSWGCraftingAddIngredientMessage::FSWGCraftingAddIngredientMessage(uint64 Player
 
 FSWGPacket FSWGCraftingAddIngredientMessage::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x10);
+	FSWGPacket Pkt = SerializeBase();
 	Pkt.WriteUInt32(0); // "size" — parsed and ignored by the server
 	Pkt.WriteUInt64(IngredientObjectId);
 	Pkt.WriteInt32(Slot);
@@ -162,7 +162,7 @@ FSWGCraftingRemoveIngredientMessage::FSWGCraftingRemoveIngredientMessage(uint64 
 
 FSWGPacket FSWGCraftingRemoveIngredientMessage::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x10);
+	FSWGPacket Pkt = SerializeBase();
 	Pkt.WriteUInt32(0); // "size" — parsed and ignored by the server
 	Pkt.WriteInt32(Slot);
 	Pkt.WriteUInt64(IngredientObjectId);
@@ -181,7 +181,7 @@ FSWGCraftingCustomizeMessage::FSWGCraftingCustomizeMessage(uint64 PlayerId, cons
 
 FSWGPacket FSWGCraftingCustomizeMessage::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x10);
+	FSWGPacket Pkt = SerializeBase();
 	Pkt.WriteUInt32(0); // "size" — parsed and ignored by the server
 	Pkt.WriteUnicodeString(Name);
 	Pkt.WriteByte(TemplateChoice);

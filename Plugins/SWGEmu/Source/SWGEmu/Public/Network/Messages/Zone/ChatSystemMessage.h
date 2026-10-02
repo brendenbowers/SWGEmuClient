@@ -12,18 +12,16 @@
  * Wire layout (Core3 ChatSystemMessage):
  *   displayType(byte) message(unicode) paramsSize(int32)
  *
- * Two shapes share it. sendSystemMessage(String) puts the whole text —
- * usually a "@file:key" stringfile reference — in Message and leaves
- * paramsSize 0. The StringIdChatParameter form instead leaves Message empty
- * and follows paramsSize with a parameter blob, which is not decoded here;
- * such a message arrives with both fields empty rather than misparsed.
+ * Two shapes share it. sendSystemMessage(String) puts the whole text in
+ * Message; StringIdChatParameter leaves it empty and follows paramsSize with
+ * a file/key pair that we expose as an "@file:key" reference.
  */
 struct SWGEMU_API FChatSystemMessage : public FSWGNetMessage
 {
 	/** 0 shows in chat and on screen, 2 chat only. */
 	uint8 DisplayType = 0;
 
-	/** The text, or a "@file:key" reference to it. Empty for the parameterised shape. */
+	/** The text, or a "@file:key" reference to it. */
 	FString Message;
 
 	FChatSystemMessage(uint32 OPCode, FSWGMessage& Reader) : FSWGNetMessage(OPCode, Reader) { Deserialize(Reader); }

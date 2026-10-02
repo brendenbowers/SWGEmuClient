@@ -2454,6 +2454,36 @@ namespace
 	}
 }
 
+bool USWGTerrainSubsystem::GetWaterHeightAt(float X, float Y, float& OutHeight) const
+{
+	if (!PlanetData.IsValid()) { return false; }
+	const FSWGTerrainHeader& Header = PlanetData->Header;
+	bool bFound = Header.bUseGlobalWaterTable;
+	OutHeight = bFound ? Header.GlobalWaterTableHeight : -TNumericLimits<float>::Max();
+	TArray<const FSWGTerrainBoundary*> Boundaries;
+	for (const FSWGTerrainLayer& Layer : PlanetData->TopLevelLayers) { CollectWaterBoundaries(Layer, Boundaries); }
+	for (const FSWGTerrainBoundary* Boundary : Boundaries)
+	{
+		bool bInside = false;
+		if (Boundary->Type == ESWGTerrainBoundaryType::Rectangle)
+		{
+			bInside = X >= FMath::Min(Boundary->X0, Boundary->X1) && X <= FMath::Max(Boundary->X0, Boundary->X1)
+				&& Y >= FMath::Min(Boundary->Y0, Boundary->Y1) && Y <= FMath::Max(Boundary->Y0, Boundary->Y1);
+		}
+		else
+		{
+			const TArray<FVector2D>& V = Boundary->Vertices;
+			for (int32 I = 0, J = V.Num() - 1; I < V.Num(); J = I++)
+			{
+				if ((V[I].Y > Y) != (V[J].Y > Y)
+					&& X < (V[J].X - V[I].X) * (Y - V[I].Y) / (V[J].Y - V[I].Y) + V[I].X) { bInside = !bInside; }
+			}
+		}
+		if (bInside) { OutHeight = FMath::Max(OutHeight, Boundary->LocalWaterTableHeight); bFound = true; }
+	}
+	return bFound;
+}
+
 void USWGTerrainSubsystem::SpawnWaterBodies()
 {
 	check(IsInGameThread());
@@ -3607,4 +3637,15 @@ void USWGTerrainSubsystem::ApplyTerrainTileBuild(const FIntPoint& Coord, FSWGTer
 	}
 	Tile.Component->UpdateCollision(false);
 	Tile.Component->bUseAsyncCooking = bWasAsyncCooking;
+}
+
+void USWGTerrainSubsystem::GetTileComponents(TArray<UPrimitiveComponent*>& OutComponents) const
+{
+	for (const TPair<FIntPoint, FSWGTerrainTile>& Tile : Tiles)
+	{
+		if (Tile.Value.Component)
+		{
+			OutComponents.Add(Tile.Value.Component);
+		}
+	}
 }

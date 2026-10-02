@@ -3,19 +3,20 @@
 #include "CoreMinimal.h"
 #include "SWGHoloProjectorActor.h"
 #include "SWGMapMarkerWidget.h"
-#include "Subsystems/SWGSurveySubsystem.h"
 #include "SWGHoloMapActor.generated.h"
 
 class UDynamicMeshComponent;
 class UTextRenderComponent;
+class UActorComponent;
+class USWGHoloMapAppearanceComponent;
 
 namespace UE::Geometry { class FDynamicMesh3; }
 
 /**
  * A hologram of the ground around a point, projected in the world: a round
- * patch of real terrain (planet data plus building pads), the lowest LOD of
- * the snapshot buildings on it and marker beams, all in M_SWGHologram. The
- * droid's rays land on the disc's rim and follow the content round as it turns.
+ * patch of real terrain (planet data plus building pads), snapshot buildings,
+ * and marker beams. One appearance component styles the terrain and buildings.
+ * The droid's rays land on the disc's rim and follow the content round as it turns.
  *
  * Pan, turn and zoom apply at once by moving and scaling the content under
  * the fixed disc (the material fades anything past its rim); the patch is
@@ -37,22 +38,34 @@ public:
 	/** Metres from centre to rim. */
 	void SetViewRadius(float RawRadius);
 	float GetViewRadius() const { return ViewRadius; }
+	/** Lets a placement map zoom closer without changing the regular holo map's limit. */
+	void SetMinViewRadius(float RawRadius) { MinViewRadius = FMath::Clamp(RawRadius, 1.f, MaxRadius); }
 
 	/** Turns the content about the disc's centre, degrees. */
 	void SetViewYaw(float Degrees);
 	float GetViewYaw() const { return ViewYaw; }
+	/** Tilts the projected content toward the viewer while the projector and camera stay put. */
+	void SetViewTilt(float Degrees, const FVector2D& TowardViewer);
 
 	/** Replaces one layer of beams. Markers use FSWGMapMarker as the 2D map does; Style "Player" draws a heading arrow. */
 	void SetMarkers(FName Layer, const TArray<FSWGMapMarker>& Markers);
-
-	/** Drapes a survey's concentrations over the terrain in colour bands; an invalid result clears it. */
-	void SetSurveyField(const FSWGSurveyResult& Result);
 
 	/** Where a world-space ray meets the hologram's ground plane, in raw metres. */
 	bool RayToRaw(const FVector& Origin, const FVector& Direction, FVector2D& OutRaw, bool bRequireOnDisc = true) const;
 
 	/** World position of the disc's centre at terrain level, for the camera to look at. */
 	FVector GetFocusLocation() const;
+
+	/** Optional layers redraw their geometry when the terrain patch is rebaked. */
+	FSimpleMulticastDelegate OnBakeUpdated;
+	UActorComponent* AddLayer(TSubclassOf<UActorComponent> LayerClass);
+	UActorComponent* FindLayer(TSubclassOf<UActorComponent> LayerClass) const;
+	void RemoveLayer(TSubclassOf<UActorComponent> LayerClass);
+	template<class T> T* AddLayer() { return Cast<T>(AddLayer(T::StaticClass())); }
+	template<class T> T* FindLayer() const { return Cast<T>(FindLayer(T::StaticClass())); }
+	template<class T> void RemoveLayer() { RemoveLayer(T::StaticClass()); }
+	/** Replaces the active appearance while leaving other map layers in place. */
+	void SetAppearance(TSubclassOf<USWGHoloMapAppearanceComponent> AppearanceClass);
 
 	/** Seconds between looks for server-sent structures (player houses, installations) arriving or leaving. */
 	UPROPERTY(EditAnywhere, Category = "SWGEmu|HoloMap")
@@ -90,6 +103,11 @@ public:
 	};
 
 private:
+	friend class USWGHoloMapPlacementLayer;
+	friend class USWGHoloMapSurveyLayer;
+	friend class USWGHoloMapHologramAppearance;
+	friend class USWGHoloMapRealisticAppearance;
+	static constexpr float BakeExtentScale = 1.5f;
 	struct FMarkerVisual
 	{
 		FSWGMapMarker Marker;
@@ -116,13 +134,14 @@ private:
 	void RemoveDynamicStructure(const TWeakObjectPtr<AActor>& Structure);
 	void UpdateContentTransform();
 	void UpdateMarkers();
-	/** Lays SurveyField on the current bake; the content transform carries it through pan and zoom. */
-	void RebuildSurveyField();
 
 	/** Raw offset from the baked centre to content-local units. */
 	FVector RawToContent(const FVector& RawOffset) const;
 	float BakedHeightAt(const FVector2D& Raw) const;
 	float BakedUnitsPerMetre() const { return DiscDiameter * 0.5f / BakedRadius; }
+	float EffectiveBuildingScale() const;
+	float EffectiveHeightExaggeration() const;
+	USWGHoloMapAppearanceComponent* GetAppearance() const;
 
 	UPROPERTY()
 	TObjectPtr<USceneComponent> ContentRoot;
@@ -133,9 +152,9 @@ private:
 	/** Keeps the rays on the same patch of ground while the content turns; eases back once it stops. */
 	float ProjectionYawOffset = 0.f;
 
-	/** Shared by terrain and buildings. */
+	/** Added in order; the actor owns and removes every optional layer. */
 	UPROPERTY()
-	TObjectPtr<UMaterialInstanceDynamic> ContentMaterial;
+	TArray<TObjectPtr<UActorComponent>> MapLayers;
 
 	UPROPERTY()
 	TArray<TObjectPtr<UStaticMeshComponent>> BuildingComponents;
@@ -147,12 +166,6 @@ private:
 	UPROPERTY()
 	TObjectPtr<UStaticMesh> ArrowMesh;
 
-	/** One mesh per colour band of SurveyField. */
-	UPROPERTY()
-	TArray<TObjectPtr<UDynamicMeshComponent>> SurveyBands;
-
-	FSWGSurveyResult SurveyField;
-
 	TMap<FName, TArray<FMarkerVisual>> MarkerLayers;
 	/** Keeps the marker components alive; FMarkerVisual isn't reflected. */
 	UPROPERTY()
@@ -160,7 +173,10 @@ private:
 
 	FVector2D ViewCenter = FVector2D::ZeroVector;
 	float ViewRadius = 2500.f;
+	float MinViewRadius = MinRadius;
 	float ViewYaw = 0.f;
+	float ViewTilt = 0.f;
+	FVector2D ViewTiltTowardViewer = FVector2D(1.f, 0.f);
 
 	/** What the content was built for; the content transform bridges to the live view. */
 	FVector2D BakedCenter = FVector2D::ZeroVector;

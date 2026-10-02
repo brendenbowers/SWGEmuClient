@@ -9,7 +9,7 @@ FDataTransform::FDataTransform(uint64 ObjectId)
 
 FSWGPacket FDataTransform::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x10);
+	FSWGPacket Pkt = SerializeBase();
 	Pkt.WriteUInt32(TimeStamp);
 	Pkt.WriteUInt32(MoveCount);
 	//uint32 TS = TimeStamp;

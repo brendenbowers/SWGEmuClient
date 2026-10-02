@@ -10,7 +10,7 @@ FCommandQueueEnqueue::FCommandQueueEnqueue(uint64 ObjectId, uint32 ActionCRC, ui
 
 FSWGPacket FCommandQueueEnqueue::Serialize() const
 {
-	FSWGPacket Pkt = SerializeBase(0x10);
+	FSWGPacket Pkt = SerializeBase();
 
 	Pkt.WriteUInt32(0); // "size" — parsed and ignored by the server
 	Pkt.WriteUInt32(ActionCount);
