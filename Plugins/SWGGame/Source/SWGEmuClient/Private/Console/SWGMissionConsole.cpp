@@ -1,10 +1,10 @@
 #include "Subsystems/SWGMissionSubsystem.h"
+#include "SWGLogCategories.h"
 #include "HAL/IConsoleManager.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGMission, Log, All);
 
 // swg.DumpMissions — logs the local player's mission_bag contents as USWGMissionSubsystem currently sees them.
 static FAutoConsoleCommandWithWorldAndArgs GSWGDumpMissionsCommand(

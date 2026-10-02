@@ -1,4 +1,5 @@
 #include "Subsystems/SWGItemTransferSubsystem.h"
+#include "SWGLogCategories.h"
 #include "Subsystems/SWGCommandSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
@@ -6,7 +7,7 @@
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Network/Objects/Zone/Object/SWGContainmentType.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGItemTransfer, Log, All);
+DEFINE_LOG_CATEGORY(LogSWGItemTransfer);
 
 void USWGItemTransferSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {

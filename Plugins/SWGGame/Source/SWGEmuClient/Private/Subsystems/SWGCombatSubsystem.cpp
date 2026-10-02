@@ -1,4 +1,5 @@
 #include "Subsystems/SWGCombatSubsystem.h"
+#include "SWGLogCategories.h"
 
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
@@ -24,7 +25,7 @@
 
 #include "UObject/UObjectIterator.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGCombat, Log, All);
+DEFINE_LOG_CATEGORY(LogSWGCombat);
 
 static int32 GSWGLogObjController = 0;
 static FAutoConsoleVariableRef CVarSWGLogObjController(

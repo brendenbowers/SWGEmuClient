@@ -1,4 +1,5 @@
 #include "Subsystems/SWGStructurePlacementSubsystem.h"
+#include "SWGLogCategories.h"
 #include "Subsystems/SWGCommandSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Network/Messages/Zone/ObjectMenuSelectMessage.h"
@@ -8,7 +9,6 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGRadial, Log, All);
 
 namespace
 {

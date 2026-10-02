@@ -1,4 +1,5 @@
 #include "Subsystems/SWGRadialMenuSubsystem.h"
+#include "SWGLogCategories.h"
 #include "Subsystems/SWGTargetSubsystem.h"
 #include "HAL/IConsoleManager.h"
 #include "Engine/Engine.h"
@@ -6,7 +7,6 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGRadial, Log, All);
 
 // swg.RadialMenu [objectId] — opens the radial menu for the current target
 // (or the given object) at screen centre; a right-click without the mouse.

@@ -1,4 +1,5 @@
 #include "Subsystems/SWGWaypointSubsystem.h"
+#include "SWGLogCategories.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Subsystems/SWGTerrainSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
@@ -64,7 +65,7 @@ namespace
 	}
 }
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGWaypoint, Log, All);
+DEFINE_LOG_CATEGORY(LogSWGWaypoint);
 
 void USWGWaypointSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {

@@ -37,7 +37,7 @@ namespace
 	constexpr float TurnDegreesPerPixel = 0.4f;
 	constexpr float AnalogDeadZone = 0.2f;
 	constexpr float AnalogTurnSpeed = 120.f;
-	const FLinearColor HintColor = FLinearColor::FromSRGBColor(FColor(0x96, 0xF4, 0xFC));
+	const FLinearColor InventoryHintColor = FLinearColor::FromSRGBColor(FColor(0x96, 0xF4, 0xFC));
 	const FLinearColor LineUnderlay(0.f, 0.02f, 0.05f, 0.55f);
 	/** How long a hovered item's details linger after the pointer leaves its name, so moving onto the card doesn't drop it. */
 	constexpr double CardLingerSeconds = 0.25;
@@ -102,7 +102,7 @@ void USWGHoloInventoryWidget::ApplyHoloStyle()
 	{
 		Style(Text, SWGHoloStyle::Font(12), SWGHoloStyle::DimText);
 	}
-	Style(HintText, SWGRetailStyle::Font(13), HintColor);
+	Style(HintText, SWGRetailStyle::Font(13), InventoryHintColor);
 	for (UWidget* Holder : { BagCaptionPanel.Get(), EquippedCaptionPanel.Get() })
 	{
 		if (UBorder* Panel = Cast<UBorder>(Holder))

@@ -1,4 +1,5 @@
 #include "Subsystems/SWGWaypointSubsystem.h"
+#include "SWGLogCategories.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Components/SWGJournalComponent.h"
 #include "HAL/IConsoleManager.h"
@@ -6,7 +7,6 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGWaypoint, Log, All);
 
 // swg.DumpWaypoints — logs the local player's datapad waypoint list as USWGWaypointSubsystem currently sees it,
 // and why it might be empty (no PLAY object found yet, or PLAY base8 hasn't arrived).

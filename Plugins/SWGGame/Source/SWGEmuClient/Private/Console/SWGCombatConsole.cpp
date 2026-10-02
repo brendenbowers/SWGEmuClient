@@ -1,10 +1,10 @@
 #include "Subsystems/SWGCombatSubsystem.h"
+#include "SWGLogCategories.h"
 #include "Common/SWGPostureTypes.h"
 #include "Network/Messages/Zone/Object/CombatActionIn.h"
 #include "HAL/IConsoleManager.h"
 #include "UObject/UObjectIterator.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGCombat, Log, All);
 
 #if !UE_BUILD_SHIPPING
 

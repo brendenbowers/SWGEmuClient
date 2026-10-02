@@ -1,4 +1,5 @@
 #include "Subsystems/SWGItemTransferSubsystem.h"
+#include "SWGLogCategories.h"
 #include "Subsystems/SWGItemIconSubsystem.h"
 #include "Subsystems/SWGIntangibleObjectSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
@@ -9,7 +10,6 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGItemTransfer, Log, All);
 DEFINE_LOG_CATEGORY_STATIC(LogSWGDatapadDump, Log, All);
 
 namespace

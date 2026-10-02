@@ -1,4 +1,5 @@
 #include "Subsystems/SWGCraftingSubsystem.h"
+#include "SWGLogCategories.h"
 #include "Subsystems/SWGCommandSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
@@ -17,7 +18,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGCrafting, Log, All);
+DEFINE_LOG_CATEGORY(LogSWGCrafting);
 
 namespace
 {

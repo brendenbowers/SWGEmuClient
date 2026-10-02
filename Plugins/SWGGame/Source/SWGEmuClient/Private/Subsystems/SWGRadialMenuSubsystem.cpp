@@ -1,4 +1,5 @@
 #include "Subsystems/SWGRadialMenuSubsystem.h"
+#include "SWGLogCategories.h"
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGItemTransferSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
@@ -22,7 +23,7 @@
 #include "TRE/SWGDataTableReader.h"
 #include "TRE/SWGIffReader.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGRadial, Log, All);
+DEFINE_LOG_CATEGORY(LogSWGRadial);
 
 namespace
 {

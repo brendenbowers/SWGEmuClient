@@ -1,4 +1,5 @@
 #include "Subsystems/SWGMissionSubsystem.h"
+#include "SWGLogCategories.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Subsystems/SWGTreSubsystem.h"
@@ -38,7 +39,7 @@ namespace
 	}
 }
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGMission, Log, All);
+DEFINE_LOG_CATEGORY(LogSWGMission);
 
 void USWGMissionSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {

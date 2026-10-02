@@ -27,7 +27,7 @@ namespace
 	constexpr float ProjectorHeight = 95.f;
 	const FVector CameraOffset(-250.f, 100.f, 168.f);
 	constexpr float PanRadiiPerSecond = 0.6f;
-	constexpr float WheelZoomFactor = 0.85f;
+	constexpr float PlacementWheelZoomFactor = 0.85f;
 	constexpr float PlacementRangeMetres = 100.f;
 	constexpr float MapFieldOfView = 70.f;
 
@@ -378,7 +378,7 @@ bool USWGPlacementMapMode::HandleMouseWheel(float Delta)
 	if (State == ESWGPlacementMapState::FineTune) { return false; }
 	if (Hologram)
 	{
-		MapRadius = FMath::Clamp(MapRadius * (Delta > 0.f ? WheelZoomFactor : 1.f / WheelZoomFactor), MinRadius, MaxRadius);
+		MapRadius = FMath::Clamp(MapRadius * (Delta > 0.f ? PlacementWheelZoomFactor : 1.f / PlacementWheelZoomFactor), MinRadius, MaxRadius);
 		Hologram->SetViewRadius(MapRadius);
 		FVector2D PlayerRaw;
 		if (GetPlayerRaw(PlayerRaw))

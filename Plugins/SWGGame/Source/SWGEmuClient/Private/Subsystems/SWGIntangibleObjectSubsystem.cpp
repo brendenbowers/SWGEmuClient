@@ -11,7 +11,6 @@
 #include "Engine/World.h"
 #include "Engine/Engine.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogSWGDatapadDump, Log, All);
 
 void USWGIntangibleObjectSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {

@@ -1,11 +1,11 @@
 #include "Subsystems/SWGCraftingSubsystem.h"
+#include "SWGLogCategories.h"
 #include "HAL/IConsoleManager.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
 // Developer commands for driving a crafting session without the UI (swg.Craft.*).
-DEFINE_LOG_CATEGORY_STATIC(LogSWGCrafting, Log, All);
 
 
 namespace
