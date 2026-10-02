@@ -87,10 +87,6 @@
 			"Enabled": true
 		},
 		{
-			"Name": "SWGAutoLogin",
-			"Enabled": true
-		},
-		{
 			"Name": "GeometryScripting",
 			"Enabled": true
 		}
