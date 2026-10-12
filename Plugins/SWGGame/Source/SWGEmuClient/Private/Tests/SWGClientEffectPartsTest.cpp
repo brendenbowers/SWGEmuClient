@@ -10,7 +10,7 @@
 
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForClientEffectPartsTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -40,7 +40,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGClientEffectPartsTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForClientEffectPartsTest(*this);
 	if (!Tre)
 	{
 		return false;

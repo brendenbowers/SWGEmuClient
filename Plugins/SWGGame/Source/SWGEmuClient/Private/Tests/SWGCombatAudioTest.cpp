@@ -17,7 +17,7 @@
 /** Reads the real game files: combat_manager sound variables, weapon.iff rows, weapon cdfs and game_music_manager. */
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForCombatAudioTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -39,7 +39,7 @@ namespace
 		return Tre;
 	}
 
-	bool SoundExists(const USWGTreSubsystem& Tre, const FString& Sound)
+	bool CombatAudioSoundExists(const USWGTreSubsystem& Tre, const FString& Sound)
 	{
 		return Tre.FileExists(SWGAudio::NormalizeSoundPath(Sound));
 	}
@@ -55,7 +55,7 @@ namespace
 		OutSoundCount = Parsed.SoundPaths.Num();
 		for (const FString& Sound : Parsed.SoundPaths)
 		{
-			if (!SoundExists(Tre, Sound))
+			if (!CombatAudioSoundExists(Tre, Sound))
 			{
 				return false;
 			}
@@ -71,7 +71,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGCombatSoundVariablesTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCombatAudioTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -115,7 +115,7 @@ bool FSWGCombatSoundVariablesTest::RunTest(const FString& Parameters)
 					if (!Sound.IsEmpty())
 					{
 						bHasSound = true;
-						Missing += SoundExists(*Tre, Sound) ? 0 : 1;
+						Missing += CombatAudioSoundExists(*Tre, Sound) ? 0 : 1;
 						if (Animation.GetVariable(TEXT("BDNS")).EndsWith(TEXT("wep_flamethrower_on.snd")))
 						{
 							Flamethrower = &Animation;
@@ -145,7 +145,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGWeaponSoundsTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCombatAudioTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -217,7 +217,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGGameMusicTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCombatAudioTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -245,7 +245,7 @@ bool FSWGGameMusicTest::RunTest(const FString& Parameters)
 		for (int32 RoleIndex = 0; RoleIndex < Entries->Num() && RoleIndex < 3; ++RoleIndex)
 		{
 			TestTrue(*FString::Printf(TEXT("%s is the role %d entry"), *(*Entries)[RoleIndex], RoleIndex), (*Entries)[RoleIndex].Contains(RoleNames[RoleIndex]));
-			TestTrue(*FString::Printf(TEXT("%s exists"), *(*Entries)[RoleIndex]), SoundExists(*Tre, (*Entries)[RoleIndex]));
+			TestTrue(*FString::Printf(TEXT("%s exists"), *(*Entries)[RoleIndex]), CombatAudioSoundExists(*Tre, (*Entries)[RoleIndex]));
 		}
 	}
 	TestTrue(TEXT("player enter is a loop"), FSWGGameMusicData::ForRole(Music.CombatEnter, ESWGCombatMusicRole::Player).EndsWith(TEXT("_lp.snd")));

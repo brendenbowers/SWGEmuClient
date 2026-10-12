@@ -15,7 +15,7 @@
 
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForAppearanceTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -57,7 +57,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSWGAppearanceFallbackTest, "SWGEmu.Appearance.
 
 bool FSWGAppearanceFallbackTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForAppearanceTest(*this);
 	if (!Tre) return false;
 	ON_SCOPE_EXIT { Tre->RemoveFromRoot(); };
 	USWGMeshGeneratorSubsystem* Generator = NewObject<USWGMeshGeneratorSubsystem>(Tre->GetOuter());
@@ -131,7 +131,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGAppearanceTablesTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForAppearanceTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -316,7 +316,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGTextureRendererRetailTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForAppearanceTest(*this);
 	if (!Tre)
 	{
 		return false;

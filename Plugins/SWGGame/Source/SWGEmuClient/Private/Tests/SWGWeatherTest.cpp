@@ -11,7 +11,7 @@
 
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForWeatherTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -55,7 +55,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGWeatherTablesTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForWeatherTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -125,7 +125,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGWeatherRowSelectionTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForWeatherTest(*this);
 	if (!Tre)
 	{
 		return false;

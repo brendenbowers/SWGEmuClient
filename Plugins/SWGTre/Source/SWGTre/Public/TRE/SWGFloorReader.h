@@ -48,7 +48,8 @@ struct FSWGFloorData
  * the same layout as a cell's embedded CMSH collision mesh. TRIS is
  * int32 count + that many packed FSWGFloorTriangle records 
  *
- * Only FORM 0006 is decoded and supported. A second, older layout (FORM
+ * FORM 0006 uses counted VERT/TRIS chunks. FORM 0005 uses the same vertex and
+ * 60-byte triangle records without counts (Core3 FloorMesh::parseVersion0005). A second, older layout (FORM
  * 0003, 92-byte TRIS records — seen on non-player-house content, e.g.
  * appearance/collision/mun_corl_hospital_s01_r7_collision_floor0.flr) also
  * exists in the corpus but hasn't been decoded — ReadFloor returns false

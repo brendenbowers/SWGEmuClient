@@ -21,7 +21,7 @@
 /** Reads the real game files: EGRP/AENV decode, environment and interior tables, and sound object templates. */
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForAmbienceTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -98,7 +98,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGTerrainEnvironmentTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForAmbienceTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -218,7 +218,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGAmbienceTablesTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForAmbienceTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -383,7 +383,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGSoundObjectTemplatesTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForAmbienceTest(*this);
 	if (!Tre)
 	{
 		return false;

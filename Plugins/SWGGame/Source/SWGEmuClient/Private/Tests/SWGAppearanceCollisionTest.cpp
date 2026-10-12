@@ -30,6 +30,12 @@ bool FSWGAppearanceCollisionTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
+	FSWGFloorData StarportFloor;
+	if (!TestTrue(TEXT("starport interior FORM 0005 floor parses"), FSWGFloorReader::ReadFloor(
+		Tre->CreateIffReader(TEXT("appearance/collision/mun_all_landing_pad_s01_r1_collision_floor.flr")), StarportFloor))) return false;
+	TestEqual(TEXT("starport floor vertices"), StarportFloor.Vertices.Num(), 12);
+	TestEqual(TEXT("starport floor triangles"), StarportFloor.Triangles.Num(), 10);
+
 	// Only uncrossable edges become physical walls. Core3 keeps blocking
 	// edges separate; walling those off fences parts of ramps and door sills.
 	FSWGFloorData EdgeFloor;

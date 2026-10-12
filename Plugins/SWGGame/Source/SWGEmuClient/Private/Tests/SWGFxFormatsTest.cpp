@@ -18,7 +18,7 @@
 /** Parses every retail .prt/.swh/.lsb/.spr/BEAM/.ltn, animated and scrolling shader, .eft and the .cdf chunks the effects work needs. */
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForFxFormatsTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -607,7 +607,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGFxFormatsTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForFxFormatsTest(*this);
 	if (!Tre)
 	{
 		return false;

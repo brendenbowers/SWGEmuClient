@@ -116,7 +116,7 @@ public:
 	/** Night and wind strength (0..1); flags re-pick their clip when the wind crosses a tier. */
 	void SetEnvironment(bool bNight, float InWindStrength);
 	void SetLightsAllowed(bool bAllowed);
-	/** Moves a lit light's colour and range along its flicker. */
+	/** Varies colour and emitted power; the optional retail falloff also varies range. */
 	void TickFlicker(float TimeSeconds);
 
 	bool IsFlagsActive() const { return bFlagsActive; }
@@ -129,6 +129,7 @@ public:
 	int32 CountLiveParticles() const;
 
 private:
+	friend class FSWGNaturalLightTest;
 	void Shutdown();
 	void ReconcileFlags();
 	void ReconcileParticles();

@@ -15,12 +15,9 @@ bool FSWGFloorReader::ReadFloor(const FSWGIffReader& Reader, FSWGFloorData& OutF
 	}
 
 	TArray<FSWGIffChunk> FlorChildren = Reader.ReadChildren(FlorForm);
-	if (FlorChildren.Num() == 0 || !FlorChildren[0].IsForm() || FlorChildren[0].FormType != SWG_IFF_TAG('0', '0', '0', '6'))
-	{
-		// Only FORM 0006 is decoded — see this reader's own comment on the
-		// undecoded FORM 0003 layout seen on non-player-house content.
-		return false;
-	}
+	if (FlorChildren.Num() != 1 || !FlorChildren[0].IsForm()) return false;
+	const bool bCounted = FlorChildren[0].FormType == SWG_IFF_TAG('0', '0', '0', '6');
+	if (!bCounted && FlorChildren[0].FormType != SWG_IFF_TAG('0', '0', '0', '5')) return false;
 	const FSWGIffChunk& InnerForm = FlorChildren[0];
 
 	FSWGIffChunk VertChunk, TrisChunk;
@@ -32,22 +29,26 @@ bool FSWGFloorReader::ReadFloor(const FSWGIffReader& Reader, FSWGFloorData& OutF
 
 	{
 		FSWGIFFChunkReader VertReader(VertChunk, Reader);
-		int32 VertexCount = 0;
-		if (!VertReader.ReadValueLE(VertexCount))
+		int32 VertexCount = VertChunk.DataSize / 12;
+		if ((bCounted && !VertReader.ReadValueLE(VertexCount)) || (!bCounted && VertChunk.DataSize % 12 != 0)
+			|| VertexCount < 0 || VertexCount > (VertChunk.DataSize - (bCounted ? 4 : 0)) / 12)
 		{
 			return false;
 		}
 		OutFloor.Vertices.Reserve(VertexCount);
 		for (int32 i = 0; i < VertexCount; ++i)
 		{
-			OutFloor.Vertices.Add(VertReader.ReadVectorLE<FVector, float>(SWGWorldScale));
+			const FVector Vertex = VertReader.ReadVectorLE<FVector, float>(SWGWorldScale);
+			if (Vertex.ContainsNaN()) return false;
+			OutFloor.Vertices.Add(Vertex);
 		}
 	}
 
 	{
 		FSWGIFFChunkReader TrisReader(TrisChunk, Reader);
-		int32 TriCount = 0;
-		if (!TrisReader.ReadValueLE(TriCount))
+		int32 TriCount = TrisChunk.DataSize / 60;
+		if ((bCounted && !TrisReader.ReadValueLE(TriCount)) || (!bCounted && TrisChunk.DataSize % 60 != 0)
+			|| TriCount < 0 || TriCount > (TrisChunk.DataSize - (bCounted ? 4 : 0)) / 60)
 		{
 			return false;
 		}
@@ -77,7 +78,9 @@ bool FSWGFloorReader::ReadFloor(const FSWGIffReader& Reader, FSWGFloorData& OutF
 				&& TrisReader.ReadValueLE(Tri.PortalId1)
 				&& TrisReader.ReadValueLE(Tri.PortalId2)
 				&& TrisReader.ReadValueLE(Tri.PortalId3);
-			if (!bReadOk)
+			if (!bReadOk || !OutFloor.Vertices.IsValidIndex(Tri.CornerIndex1)
+				|| !OutFloor.Vertices.IsValidIndex(Tri.CornerIndex2) || !OutFloor.Vertices.IsValidIndex(Tri.CornerIndex3)
+				|| Tri.Normal.ContainsNaN())
 			{
 				return false;
 			}

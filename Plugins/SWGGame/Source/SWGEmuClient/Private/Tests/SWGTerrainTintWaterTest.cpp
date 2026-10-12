@@ -12,7 +12,7 @@
 // archive-backed reader check at the end.
 namespace
 {
-	FSWGTerrainLayer& AddLayer(FSWGTerrainData& Data)
+	FSWGTerrainLayer& AddTintWaterLayer(FSWGTerrainData& Data)
 	{
 		FSWGTerrainLayer& Layer = Data.TopLevelLayers.AddDefaulted_GetRef();
 		Layer.bEnabled = true;
@@ -107,7 +107,7 @@ bool FSWGTerrainTintTest::RunTest(const FString& Parameters)
 	// Evaluator: constant colour inside a rectangle only.
 	{
 		FSWGTerrainData Data;
-		FSWGTerrainLayer& Layer = AddLayer(Data);
+		FSWGTerrainLayer& Layer = AddTintWaterLayer(Data);
 		FSWGTerrainBoundary& Boundary = Layer.Boundaries.AddDefaulted_GetRef();
 		Boundary.bEnabled = true;
 		Boundary.Type = ESWGTerrainBoundaryType::Rectangle;
@@ -129,7 +129,7 @@ bool FSWGTerrainTintTest::RunTest(const FString& Parameters)
 	{
 		FSWGTerrainData Data;
 		Data.ColorRamps.Add(TEXT("terrain/test.tga"), MakeRamp({ FColor(0, 0, 0), FColor(100, 0, 0), FColor(200, 0, 0), FColor(250, 0, 0) }));
-		FSWGTerrainLayer& Layer = AddLayer(Data);
+		FSWGTerrainLayer& Layer = AddTintWaterLayer(Data);
 		FSWGTerrainAffector& Height = AddAffector(Layer, ESWGTerrainAffectorType::HeightConstant);
 		Height.OperationType = 0;
 		Height.Height = 15.0f;
@@ -169,7 +169,7 @@ bool FSWGTerrainTintTest::RunTest(const FString& Parameters)
 		Data.MapGroup.Fractals.Add(7, Fractal);
 		Data.ColorRamps.Add(TEXT("terrain/fractal.tga"), MakeRamp({ FColor(0, 0, 0), FColor(50, 50, 50), FColor(100, 100, 100), FColor(150, 150, 150), FColor(200, 200, 200), FColor(250, 250, 250) }));
 
-		FSWGTerrainLayer& Layer = AddLayer(Data);
+		FSWGTerrainLayer& Layer = AddTintWaterLayer(Data);
 		FSWGTerrainAffector& Ramp = AddAffector(Layer, ESWGTerrainAffectorType::ColorRampFractal);
 		Ramp.FractalId = 7;
 		Ramp.ColorRampPath = TEXT("terrain/fractal.tga");
@@ -242,7 +242,7 @@ bool FSWGWaterRulesTest::RunTest(const FString& Parameters)
 		float Height = 0.0f;
 		TestFalse(TEXT("no table, no water"), FSWGTerrainEvaluator::GetWaterHeight(Data, 0.0f, 0.0f, Height));
 
-		FSWGTerrainLayer& Layer = AddLayer(Data);
+		FSWGTerrainLayer& Layer = AddTintWaterLayer(Data);
 		AddRectangleWater(Layer, 0.0f, 0.0f, 100.0f, 100.0f, 12.0f);
 		TestTrue(TEXT("local boundary alone"), FSWGTerrainEvaluator::GetWaterHeight(Data, 50.0f, 50.0f, Height) && Height == 12.0f);
 		TestFalse(TEXT("outside the boundary"), FSWGTerrainEvaluator::GetWaterHeight(Data, 150.0f, 50.0f, Height));
@@ -261,7 +261,7 @@ bool FSWGWaterRulesTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("disabled boundaries are ignored"), FSWGTerrainEvaluator::GetWaterHeight(Data, 10.0f, 10.0f, Height) && Height == -5.0f);
 
 		// Polygon: a triangle.
-		FSWGTerrainLayer& PolygonLayer = AddLayer(Data);
+		FSWGTerrainLayer& PolygonLayer = AddTintWaterLayer(Data);
 		FSWGTerrainBoundary& Polygon = PolygonLayer.Boundaries.AddDefaulted_GetRef();
 		Polygon.bEnabled = true;
 		Polygon.Type = ESWGTerrainBoundaryType::Polygon;

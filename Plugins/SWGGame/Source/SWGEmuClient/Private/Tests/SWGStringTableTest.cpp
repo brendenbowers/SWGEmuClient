@@ -18,7 +18,7 @@ namespace
 		void Ascii(const FString& Text) { U32(Text.Len()); for (TCHAR Char : Text) { Bytes.Add((uint8)Char); } }
 	};
 
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForStringTableTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -84,7 +84,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGStringTableRealDataTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForStringTableTest(*this);
 	if (!Tre)
 	{
 		return false;

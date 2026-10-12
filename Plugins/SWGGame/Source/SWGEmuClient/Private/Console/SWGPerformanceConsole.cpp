@@ -11,7 +11,7 @@
 namespace
 {
 	// From the editor's console the world is the editor's; use the running game's instead.
-	UGameInstance* FindRunningGameInstance(UWorld* World)
+	UGameInstance* FindPerformanceGameInstance(UWorld* World)
 	{
 		if (World && World->GetGameInstance())
 		{
@@ -36,7 +36,7 @@ static FAutoConsoleCommandWithWorldAndArgs GAudioPerformCommand(
 	TEXT("swg.Audio.Perform <song> <instrument|instrumentId> [flourish 1-8] | <row index> [flourish] | stop (outro) | off - plays entertainer music on the player without a server."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 	{
-		UGameInstance* GameInstance = FindRunningGameInstance(World);
+		UGameInstance* GameInstance = FindPerformanceGameInstance(World);
 		USWGPerformanceAudioSubsystem* Performance = GameInstance ? GameInstance->GetSubsystem<USWGPerformanceAudioSubsystem>() : nullptr;
 		const USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
 		AActor* Player = ObjectGraph ? ObjectGraph->FindActor(ObjectGraph->GetLocalPlayerObjectId()) : nullptr;

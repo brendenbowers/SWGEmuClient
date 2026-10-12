@@ -33,6 +33,8 @@
 #include "Misc/PackageName.h"
 #include "Engine/Texture2D.h"
 
+namespace SWGSkyMaterials
+{
 namespace
 {
 	UMaterial* CreateSkyMaterialAsset(const FString& Name)
@@ -255,9 +257,10 @@ namespace
 	}
 }
 
-void SWGSkyMaterials::BuildAll()
+void BuildAll()
 {
 	BuildSkySpriteAlpha();
 	BuildCloudLayer();
 	BuildStarField();
+}
 }

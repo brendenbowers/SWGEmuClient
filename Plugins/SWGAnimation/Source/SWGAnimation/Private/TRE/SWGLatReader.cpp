@@ -24,7 +24,7 @@ namespace
 	constexpr FSWGIffTag TagYpos = SWG_IFF_TAG('Y', 'P', 'O', 'S');
 	constexpr FSWGIffTag TagNone = SWG_IFF_TAG('N', 'O', 'N', 'E');
 	constexpr FSWGIffTag TagAgat = SWG_IFF_TAG('A', 'G', 'A', 'T');
-	constexpr FSWGIffTag TagActn = SWG_IFF_TAG('A', 'C', 'T', 'N');
+	constexpr FSWGIffTag TagLatActn = SWG_IFF_TAG('A', 'C', 'T', 'N');
 	constexpr uint8 ForwardDirectionCode = 4;
 
 	/** Reads one FORM PXAT's clip: its FORM 0000 holds INFO (the .ans path) and PUNF (the blend parameter name, stored twice). */
@@ -105,7 +105,7 @@ namespace
 		}
 
 		FSWGIffChunk ActionChunk;
-		if (!Reader.FindChildChunk(VersionForms[0], TagActn, ActionChunk))
+		if (!Reader.FindChildChunk(VersionForms[0], TagLatActn, ActionChunk))
 		{
 			return;
 		}

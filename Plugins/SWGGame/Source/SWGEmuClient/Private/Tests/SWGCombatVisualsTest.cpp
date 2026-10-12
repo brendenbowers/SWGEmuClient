@@ -22,7 +22,7 @@
 /** Combat visuals against the real game files: weapon hardpoints, projectile and saber resolution, plus the flight / ribbon / blade maths. */
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForCombatVisualsTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -126,7 +126,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGWeaponHardpointsTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCombatVisualsTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -199,7 +199,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGWeaponProjectileTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCombatVisualsTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -249,7 +249,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGLightsaberResolutionTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCombatVisualsTest(*this);
 	if (!Tre)
 	{
 		return false;

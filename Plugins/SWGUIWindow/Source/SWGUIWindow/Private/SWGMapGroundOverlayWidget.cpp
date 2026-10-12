@@ -89,10 +89,10 @@ int32 USWGMapGroundOverlayWidget::NativePaint(const FPaintArgs& Args, const FGeo
 		for (int32 Row = Overlay.Rows - 2; Row >= 0; --Row) { AddVertex(Row, 0); }
 		if (Edge.Num() > 1)
 		{
-			FLinearColor Outline = Overlay.OutlineColor;
-			Outline.A *= Opacity;
+			FLinearColor OverlayOutline = Overlay.OutlineColor;
+			OverlayOutline.A *= Opacity;
 			FSlateDrawElement::MakeLines(OutDrawElements, Layer + 2, AllottedGeometry.ToPaintGeometry(), Edge,
-				ESlateDrawEffect::None, Outline, true, 1.5f);
+				ESlateDrawEffect::None, OverlayOutline, true, 1.5f);
 		}
 	}
 	return Layer + 2;
