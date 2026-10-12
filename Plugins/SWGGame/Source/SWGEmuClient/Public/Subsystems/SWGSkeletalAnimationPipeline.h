@@ -10,6 +10,7 @@
 #include "Import/SWGAnimationImporter.h"
 #include "Common/SWGLocomotionResolver.h"
 #include "Common/SWGPostureTypes.h"
+#include "Common/SWGSatLoopSource.h"
 #include "Containers/Queue.h"
 #include "Async/Future.h"
 #include <atomic>
@@ -21,7 +22,18 @@ class UAnimSequence;
 class UBlendSpace;
 class UMeshComponent;
 class USkeletalMeshComponent;
-class UAnimSingleNodeInstance;
+class USWGCharacterAnimInstance;
+
+/** How a playing loop's blend space is steered; see FSWGSkeletalAnimationPipeline::DetermineLoopKind. */
+enum class ESWGLoopKind : uint8
+{
+	/** X = horizontal speed. The idle/walk/run ramp every loop used to be. */
+	Speed,
+	/** X = speed, Y = yaw rate in -1..1: creature loops with YWAT turn-in-place clips. */
+	Yaw,
+	/** X = speed, Y = movement heading in degrees: ranged combat stances with DRAT strafe ramps. */
+	Direction,
+};
 
 /**
  * One species' animation data: the .lat that maps logical animation names to
@@ -35,9 +47,9 @@ struct FSWGLocomotionSource
 };
 
 /**
- * One actor's live animation playback — a real UBlendSpace played on
- * Character->GetMesh() via UAnimSingleNodeInstance, driven every tick by the
- * actor's current horizontal speed. See FSWGSkeletalAnimationPipeline::
+ * One actor's live animation playback — a real UBlendSpace looping on the
+ * "loop" track of Character->GetMesh()'s USWGCharacterAnimInstance, driven
+ * every tick by the actor's speed and heading. See FSWGSkeletalAnimationPipeline::
  * TryApplyGeneratedAnimatedMesh.
  *
  * The rest of the fields are what Tick needs to swap the blend space when the
@@ -48,7 +60,7 @@ struct FSWGLocomotionSource
 struct FSWGPlayingAnimation
 {
 	TWeakObjectPtr<USkeletalMeshComponent> MeshComponent;
-	TWeakObjectPtr<UAnimSingleNodeInstance> AnimInstance;
+	TWeakObjectPtr<USWGCharacterAnimInstance> AnimInstance;
 	TWeakObjectPtr<USkeleton> TargetSkeleton;
 
 	FString SkeletonPath;
@@ -69,19 +81,23 @@ struct FSWGPlayingAnimation
 	/** Set while a replacement blend space is being built, so Tick doesn't queue a second one for the same change. */
 	bool bSwapInFlight = false;
 
-	/**
-	 * Destination loop waiting behind a posture-change transition clip, and
-	 * the world time that clip finishes at. While this is set the component is
-	 * playing a one-shot transition; Tick starts the blend space once the
-	 * clip has run its length. Null blend space means nothing is pending.
-	 */
-	TWeakObjectPtr<UBlendSpace> PendingBlendSpace;
-	float PendingBlendSpaceStartTime = 0.0f;
+	/** The blend space currently on the loop track and how Tick steers it. */
+	TWeakObjectPtr<UBlendSpace> LoopSpace;
+	ESWGLoopKind LoopKind = ESWGLoopKind::Speed;
 
-	/** The pending one-shot is a combat action, not a posture transition — a newer combat action may cut it short. */
-	bool bCombatActionPending = false;
+	/** World time a posture-change transition clip finishes at; actions wait for it rather than cut it short. */
+	float TransitionEndTime = 0.0f;
+
 	bool bHoldingDatapad = false;
-	TWeakObjectPtr<UBlendSpace> DatapadResumeBlendSpace;
+
+	/** Steering state: smoothed yaw rate (degrees/s), last actor yaw, and the last movement heading used while stationary. */
+	float SmoothedYawRate = 0.0f;
+	float PreviousActorYaw = 0.0f;
+	bool bHasPreviousActorYaw = false;
+	float HeadingDegrees = 0.0f;
+
+	/** World time the next AGAT ambient action is due; 0 re-arms it. */
+	float NextIdleActionTime = 0.0f;
 
 	/**
 	 * Current terrain-alignment tilt, in the actor's local space, interpolated
@@ -221,7 +237,37 @@ public:
 	 * mid-transition — interrupting one would strand it on a held pose.
 	 */
 	bool PlayCombatAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName);
+
+	/**
+	 * Plays any .ash action (combat swing, emote, hit reaction) on its retail
+	 * layer: an MVAC's moving variant while the actor is moving, additive
+	 * (useAddTrack) clips on the add track, masked clips on the bone mask the
+	 * LAT gives them, everything else full body over the loop. OutTrace, when
+	 * given, receives what it resolved to or why it did not play.
+	 */
+	bool PlayAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace = nullptr);
+
 	bool SetDatapadPose(AActor& Actor, bool bHold);
+
+	/** The layered anim instance driving Actor's mesh, or null when it has no generated animation. */
+	USWGCharacterAnimInstance* FindAnimInstance(const AActor& Actor) const;
+
+	/** Debug description of Actor's loop (kind, blend space, clip set) for swg.Anim.Dump. */
+	FString DescribePlayback(const AActor& Actor) const;
+
+	/**
+	 * Props, not creatures: resolves a .sat (flag, banner, decoration) to its skeleton, mesh parts and the clips of the
+	 * root state's loop in its .ash. False when the .sat, skeleton or .lat can't be read; a .lat without that loop
+	 * still succeeds with no clips. Cached per .sat.
+	 */
+	bool ResolveSatLoopSource(const FString& SatPath, FSWGSatLoopSource& OutSource);
+
+	/**
+	 * Gives Component the generated skeletal mesh of Source and loops ClipPath on it (bind pose when ClipPath is
+	 * empty). Works on any USkeletalMeshComponent, no ACharacter or tick registration; the creature path is untouched.
+	 * TextureIndexOverrides are a cdf's CSSI values. OnDone(true) fires on the game thread once the pose is playing.
+	 */
+	void PlayLoopOnComponent(USkeletalMeshComponent& Component, const FSWGSatLoopSource& Source, const FString& ClipPath, const TMap<FString, int32>& TextureIndexOverrides, TFunction<void(bool)> OnDone);
 
 	/**
 	 * The clip PlayCombatAction would use, without playing it — every hop of
@@ -273,11 +319,27 @@ private:
 	/** Re-resolves each playing animation's loop against its actor's current posture/states and swaps the blend space where it changed. Called from Tick. */
 	void UpdatePostureDrivenAnimations();
 
-	/** Starts the destination loop of any record whose posture-change transition clip has finished playing. Called from Tick. */
-	void UpdatePendingTransitions();
-
-	/** Starts a looping blend space on MeshComponent and records it against that component's playing-animation entry. */
+	/** Puts BlendSpace on the loop track of MeshComponent's layered anim instance (creating it on first use) and records it against that component's playing-animation entry. */
 	void BeginLoopPlayback(USkeletalMeshComponent& MeshComponent, UBlendSpace& BlendSpace, const FSWGLocomotionClipSet& ClipSet);
+
+	/** Feeds speed, steering, look-at, aim, rider lean and ambient actions into each playing record's anim instance. Called from Tick. */
+	void UpdateLayerInputs(float DeltaTime);
+
+	/** The steering of the blend space a clip set resolves to. */
+	static ESWGLoopKind DetermineLoopKind(const FSWGLocomotionClipSet& ClipSet);
+
+	/** Mask asset path -> its joint names, read once (empty array remembers a failure). */
+	const TArray<FName>& GetMaskBones(const FString& MaskPath);
+
+	/**
+	 * Requests every clip path (empty ones skipped), calling OnReady once on
+	 * the game thread with sequences in the same order — null entries for
+	 * clips that failed to decode.
+	 */
+	void RequestSequences(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton, USkeleton* TargetSkeleton, const TArray<FString>& ClipPaths, TFunction<void(const TArray<UAnimSequence*>&)> OnReady);
+
+	/** Builds (or loads) a 2D blend space from explicit samples — the turn-in-place and strafe variants. Axis 0 is speed, axis 1 per ESWGLoopKind. */
+	UBlendSpace* GetOrBuildSteeredBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const TArray<FString>& SamplePaths, const TArray<UAnimSequence*>& Sequences, const TArray<FVector2D>& Positions, float MaxSpeed, float MinSteer, float MaxSteer, const FString& Salt, USkeleton* TargetSkeleton);
 
 	/**
 	 * Tilts each playing animation's mesh to follow the ground it's standing
@@ -366,7 +428,7 @@ private:
 	 * alters what a given source file should produce: every generated asset is
 	 * renamed and rebuilt.
 	 */
-	static constexpr uint32 GeneratedAssetVersion = 5;
+	static constexpr uint32 GeneratedAssetVersion = 7;
 
 	/** How far below the capsule's feet the ground trace reaches — enough to keep contact over small steps and terrain tessellation without finding the floor below a bridge. */
 	static constexpr float TerrainAlignmentTraceDepth = 100.0f;
@@ -390,6 +452,12 @@ private:
 
 	/** LAT path -> that species' parsed .lat + .ash, see GetOrLoadLocomotionSource. */
 	TMap<FString, TSharedPtr<FSWGLocomotionSource>> LocomotionSources;
+
+	/** .sat path -> its resolved prop animation source; null remembers a failure. See ResolveSatLoopSource. */
+	TMap<FString, TSharedPtr<const FSWGSatLoopSource>> SatLoopSources;
+
+	/** Mask asset path -> joint names, see GetMaskBones. */
+	TMap<FString, TArray<FName>> MaskBoneCache;
 
 	/** Clip path -> the speed it was authored to travel at, in UE units/sec. See GetAuthoredClipSpeed. */
 	TMap<FString, float> AuthoredClipSpeeds;

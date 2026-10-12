@@ -37,6 +37,9 @@ public:
 	 */
 	FString StaticTemplatePath;
 
+	/** The appearance mesh's HPTS hardpoints (name -> transform relative to the root mesh component), set when the mesh lands. */
+	TMap<FName, FTransform> MeshHardpoints;
+
 	virtual int64 GetObjectId() const override { return SWGObjectId; }
 	virtual void SetObjectId(int64 NewObjectId) override { SWGObjectId = NewObjectId; }
 

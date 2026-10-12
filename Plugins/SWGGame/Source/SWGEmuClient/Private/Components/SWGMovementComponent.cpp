@@ -3,6 +3,10 @@
 // CharacterMovementComponent.h only forward-declares ACharacter.
 #include "GameFramework/Character.h"
 #include "Network/SWGPacket.h"
+#include "Common/SWGWorldScale.h"
+#include "Subsystems/SWGTerrainSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 
 namespace
 {
@@ -57,6 +61,8 @@ void USWGMovementComponent::ApplyDelta4(const FCreatureObjectDelta& Delta)
 
 void USWGMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
+	UpdateWaterState(DeltaTime);
+
 	if (NetworkTargetLocation.IsSet() && CharacterOwner && DeltaTime > KINDA_SMALL_NUMBER)
 	{
 		TickNetworkSmoothing(DeltaTime);
@@ -66,20 +72,65 @@ void USWGMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 }
 
+void USWGMovementComponent::UpdateWaterState(float DeltaTime)
+{
+	WaterRefreshTimer -= DeltaTime;
+	if (WaterRefreshTimer > 0.0f || !CharacterOwner)
+	{
+		return;
+	}
+	WaterRefreshTimer = WaterRefreshInterval;
+
+	const UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	const USWGTerrainSubsystem* Terrain = GameInstance ? GameInstance->GetSubsystem<USWGTerrainSubsystem>() : nullptr;
+	if (!Terrain || !Terrain->IsTerrainLoaded())
+	{
+		bSwimmingByWater = false;
+		return;
+	}
+
+	const FVector Raw = SWGToRawSpace(CharacterOwner->GetActorLocation());
+	bSwimmingByWater = Terrain->GetWaterInfoAt(static_cast<float>(Raw.X), static_cast<float>(Raw.Y), static_cast<float>(Raw.Z), SwimHeight).bSwimming;
+}
+
+void USWGMovementComponent::SetNetworkTarget(const FVector& Location, float Yaw)
+{
+	if (Location.ContainsNaN() || !FMath::IsFinite(Yaw)) return;
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	const float Interval = Now - LastNetworkUpdateTime;
+	NetworkVelocity = FVector::ZeroVector;
+	if (bHasNetworkPosition && Interval >= 0.01f && Interval <= 2.f * NetworkPredictionSeconds)
+	{
+		NetworkVelocity = (Location - LastNetworkPosition) / Interval;
+		NetworkVelocity.Z = 0.0;
+		const float SpeedLimit = GetPostureRunSpeed();
+		// No baseline speed yet: keep interpolation, rather than predicting an unbounded jump.
+		NetworkVelocity = SpeedLimit > KINDA_SMALL_NUMBER ? NetworkVelocity.GetClampedToMaxSize(SpeedLimit) : FVector::ZeroVector;
+	}
+	LastNetworkPosition = Location;
+	bHasNetworkPosition = true;
+	LastNetworkUpdateTime = Now;
+	NetworkTargetAge = 0.f;
+	NetworkTargetLocation = Location;
+	NetworkTargetYaw = Yaw;
+}
+
 void USWGMovementComponent::TickNetworkSmoothing(float DeltaTime)
 {
+	NetworkTargetAge += DeltaTime;
 	const FVector Current = CharacterOwner->GetActorLocation();
-	const FVector Target = *NetworkTargetLocation;
+	const FVector Target = *NetworkTargetLocation + NetworkVelocity * FMath::Min(NetworkTargetAge, NetworkPredictionSeconds);
 	const FVector ToTarget = Target - Current;
 	const float HorizontalDistance = ToTarget.Size2D();
 
 	// Close enough: settle on the target and stop, so a creature that has
 	// finished moving idles rather than creeping the last fraction of a unit.
-	if (HorizontalDistance <= NetworkArrivalTolerance)
+	if (HorizontalDistance <= NetworkArrivalTolerance && (NetworkVelocity.IsNearlyZero() || NetworkTargetAge >= NetworkPredictionSeconds))
 	{
 		CharacterOwner->SetActorLocation(Target);
 		Velocity = FVector::ZeroVector;
-		ClearNetworkTarget();
+		NetworkTargetLocation.Reset();
+		NetworkTargetYaw.Reset();
 		return;
 	}
 

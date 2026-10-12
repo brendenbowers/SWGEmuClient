@@ -56,12 +56,7 @@ public:
 	float WaterModPercent = 0.f;
 	bool  bHasBase4 = false;
 
-	// World time (GetWorld()->GetTimeSeconds()) of the last server position
-	// update this creature received — see USWGObjectGraphSubsystem::
-	// HandleUpdateTransform, which derives Velocity from the position delta
-	// since this timestamp (network-driven actors bypass this movement
-	// component's own physics simulation entirely, going straight through
-	// SetActorLocation, so Velocity is never otherwise touched for them).
+	// Last server sample time, used to estimate bounded horizontal velocity.
 	// -1 means no network update has arrived yet.
 	float LastNetworkUpdateTime = -1.0f;
 
@@ -75,16 +70,16 @@ public:
 	TOptional<FVector> NetworkTargetLocation;
 	TOptional<float> NetworkTargetYaw;
 
-	void SetNetworkTarget(const FVector& Location, float Yaw)
-	{
-		NetworkTargetLocation = Location;
-		NetworkTargetYaw = Yaw;
-	}
+	void SetNetworkTarget(const FVector& Location, float Yaw);
 
 	void ClearNetworkTarget()
 	{
 		NetworkTargetLocation.Reset();
 		NetworkTargetYaw.Reset();
+		bHasNetworkPosition = false;
+		NetworkVelocity = FVector::ZeroVector;
+		NetworkTargetAge = 0.f;
+		LastNetworkUpdateTime = -1.f;
 	}
 
 	// Split in three: CREO base4 interleaves these with USWGEncumbranceComponent/
@@ -101,6 +96,17 @@ public:
 	 * against the new posture/states.
 	 */
 	void ApplyPostureAndStates(ESWGPosture NewPosture, int64 NewStateBitmask);
+
+	/**
+	 * Retail's client-side swim flag (CreatureController, SWGEmu.exe 0x63a150): the ground under the creature is more
+	 * than SwimHeight below the water surface. Refreshed a few times a second from the terrain's water table. Core3
+	 * sets the SWIMMING state with a slightly different rule and the animation resolver reads that state, so this is
+	 * the client's own view - track A can OR ESWGState::Swimming into the state it resolves when this is set and
+	 * the creature is not riding (retail swaps the animation state path to "swimming" / "incapacitated_water" on it).
+	 */
+	bool bSwimmingByWater = false;
+	/** Creature template swimHeight times scale, metres; the default suits an average human until the template is read. */
+	float SwimHeight = 1.0f;
 
 	ESWGPosture GetPosture() const { return Posture; }
 	int64 GetStateBitmask() const { return StateBitmask; }
@@ -125,7 +131,17 @@ public:
 	float GetTemplateRunTurnRate() const { return TemplateRunTurnRate; }
 
 private:
+	friend class FSWGMovementPredictionTest;
+	FVector LastNetworkPosition = FVector::ZeroVector;
+	FVector NetworkVelocity = FVector::ZeroVector;
+	bool bHasNetworkPosition = false;
+	float NetworkTargetAge = 0.f;
 	void RecomputeMovementLimits();
+
+	/** Re-derives bSwimmingByWater from the terrain water table, at most every WaterRefreshInterval. */
+	void UpdateWaterState(float DeltaTime);
+	float WaterRefreshTimer = 0.0f;
+	static constexpr float WaterRefreshInterval = 0.25f;
 
 	// shared_base_player.iff's turnRate, which every player template inherits —
 	// the rate until the actual template's arrives.
@@ -137,6 +153,8 @@ private:
 
 	/** Roughly one server update interval — the gap is spread over this long, so the actor arrives as the next update lands. */
 	static constexpr float NetworkSmoothingTime = 0.3f;
+	/** Predict for one update interval, then stop at that bounded destination. */
+	static constexpr float NetworkPredictionSeconds = 0.3f;
 	/** Headroom over the creature's run speed, to make up a gap after a network hitch. */
 	static constexpr float NetworkCatchUpSpeedTolerance = 1.5f;
 	/** Within this horizontal distance the actor snaps to the target and stops, so it idles instead of creeping. */

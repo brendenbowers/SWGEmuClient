@@ -9,6 +9,8 @@
 #include "GameFramework/Character.h"
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Subsystems/SWGTreSubsystem.h"
+#include "Subsystems/SWGMeshGeneratorSubsystem.h"
+#include "Engine/GameInstance.h"
 
 USWGTangibleComponent::USWGTangibleComponent()
 {
@@ -135,6 +137,14 @@ void USWGTangibleComponent::ApplyDelta3(const FTangibleObjectDelta& Delta)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("USWGTangibleComponent: %s failed to decode customization data (%d byte(s))"),
 				*GetOwner()->GetName(), CustomizationBytes.Num());
+		}
+		else if (UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr)
+		{
+			// A changed customization must re-skin the mesh that is already built.
+			if (USWGMeshGeneratorSubsystem* MeshGenerator = GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>())
+			{
+				MeshGenerator->RefreshCharacterAppearance(*GetOwner());
+			}
 		}
 	}
 

@@ -37,6 +37,8 @@
 #include "Objects/Player/SWGPlayer.h"
 #include "Objects/World/SWGBuilding.h"
 #include "Objects/World/SWGCell.h"
+#include "Objects/World/SWGParticleEmitterActor.h"
+#include "Objects/World/SWGSoundEmitter.h"
 #include "Objects/World/SWGInstallation.h"
 #include "Objects/World/SWGStaticProp.h"
 #include "SpawnHandlers/SWGBuildingSpawnHanlder.h"
@@ -44,6 +46,7 @@
 #include "Subsystems/SWGDeltaHandlerRegistry.h"
 #include "Network/Messages/SWGFourCC.h"
 
+#include "Components/SWGCreatureSoundComponent.h"
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
 #include "Components/SWGDefenderComponent.h"
@@ -409,7 +412,22 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 	// with nothing ever finishing it. Always calling TryHandle means the next
 	// class added to FSWGActorSpawnHandlerRegistry can't be missed the same way.
 	FSWGActorSpawnArguments SpawnInfo{Msg.ObjectCrc, ActorClass };
-	if (!FSWGActorSpawnHandlerRegistry::Get().TryHandle(*NewActor, SpawnInfo))
+	if (ASWGSoundEmitter* Emitter = Cast<ASWGSoundEmitter>(NewActor))
+	{
+		// No mesh: the template's ASND loops are all there is.
+		if (TreSubsystem)
+		{
+			Emitter->InitFromTemplate(TreSubsystem->ResolveTemplatePath(Msg.ObjectCrc));
+		}
+	}
+	else if (ASWGParticleEmitterActor* ParticleObject = Cast<ASWGParticleEmitterActor>(NewActor))
+	{
+		if (TreSubsystem)
+		{
+			ParticleObject->InitFromTemplate(TreSubsystem->ResolveTemplatePath(Msg.ObjectCrc));
+		}
+	}
+	else if (!FSWGActorSpawnHandlerRegistry::Get().TryHandle(*NewActor, SpawnInfo))
 	{
 		if (ActorClass->IsChildOf(ASWGCreature::StaticClass()) || ActorClass->IsChildOf(ASWGPlayer::StaticClass()) || ActorClass->IsChildOf(ASWGItem::StaticClass())
 			|| ActorClass->IsChildOf(ASWGBuilding::StaticClass()) || ActorClass->IsChildOf(ASWGInstallation::StaticClass()) || ActorClass->IsChildOf(ASWGStaticProp::StaticClass()))
@@ -575,6 +593,10 @@ void USWGObjectGraphSubsystem::HandleUpdateContainment(const FUpdateContainmentM
 	// the matching exemption in HandleSceneEndBaselines.
 	if (Actor && !Cast<ASWGCell>(Actor))
 	{
+		if (PreviousContainerId != Msg.ContainerId)
+		{
+			if (USWGMovementComponent* Movement = Actor->FindComponentByClass<USWGMovementComponent>()) Movement->ClearNetworkTarget();
+		}
 		ApplyContainment(Actor, Msg.ObjectId, Msg.ContainerId);
 	}
 
@@ -630,6 +652,10 @@ void USWGObjectGraphSubsystem::HandleUpdateTransform(const FUpdateTransformMessa
 	// This message is world space, so the transform no longer needs composing into a cell.
 	if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor))
 	{
+		if (Creature->PlacedInCell.IsValid())
+		{
+			if (USWGMovementComponent* Movement = Cast<USWGMovementComponent>(Creature->GetCharacterMovement())) Movement->ClearNetworkTarget();
+		}
 		Creature->bAwaitingCellPlacement = false;
 		Creature->PlacedInCell = nullptr;
 	}
@@ -667,6 +693,7 @@ void USWGObjectGraphSubsystem::HandleUpdateTransformWithParent(const FUpdateTran
 		// when NotifyCellFinished fires, exactly like a spawn inside a cell.
 		if (Creature)
 		{
+			if (USWGMovementComponent* Movement = Cast<USWGMovementComponent>(Creature->GetCharacterMovement())) Movement->ClearNetworkTarget();
 			Creature->bAwaitingCellPlacement = true;
 		}
 		Actor->SetActorLocation(GroundedLocationFor(Actor, RelativeLocation));
@@ -682,6 +709,10 @@ void USWGObjectGraphSubsystem::HandleUpdateTransformWithParent(const FUpdateTran
 
 	if (Creature)
 	{
+		if (Creature->PlacedInCell.Get() != Cell)
+		{
+			if (USWGMovementComponent* Movement = Cast<USWGMovementComponent>(Creature->GetCharacterMovement())) Movement->ClearNetworkTarget();
+		}
 		Creature->bAwaitingCellPlacement = false;
 		Creature->PlacedInCell = Cell;
 	}
@@ -920,6 +951,7 @@ void USWGObjectGraphSubsystem::ApplyRiderContainment(ASWGCreature* Rider, ASWGCr
 		Rider->SetActorEnableCollision(true);
 		if (USWGMovementComponent* RiderMovement = Rider->GetSWGMovementComponent())
 		{
+			RiderMovement->ClearNetworkTarget();
 			RiderMovement->SetMovementMode(MOVE_Walking);
 		}
 		// Hand the vehicle back to the network: it's parked, and the server's
@@ -929,6 +961,7 @@ void USWGObjectGraphSubsystem::ApplyRiderContainment(ASWGCreature* Rider, ASWGCr
 			if (USWGMovementComponent* MountMovement = PreviousMount->GetSWGMovementComponent())
 			{
 				MountMovement->bRunPhysicsWithNoController = false;
+				MountMovement->ClearNetworkTarget();
 				MountMovement->StopMovementImmediately();
 			}
 		}
@@ -958,6 +991,7 @@ void USWGObjectGraphSubsystem::ApplyRiderContainment(ASWGCreature* Rider, ASWGCr
 	// movement is switched off before attaching rather than left to contest it.
 	if (USWGMovementComponent* RiderMovement = Rider->GetSWGMovementComponent())
 	{
+		RiderMovement->ClearNetworkTarget();
 		RiderMovement->SetMovementMode(MOVE_None);
 	}
 	Rider->SetActorEnableCollision(false);
@@ -1045,9 +1079,14 @@ void USWGObjectGraphSubsystem::ApplyClientDataFile(AActor* Actor, uint32 Templat
 	}
 
 	FSWGClientDataFile ClientData;
-	if (!MeshGenerator->ResolveClientDataFile(TemplateCrc, ClientData))
+	if (!MeshGenerator->ReadClientDataFile(TemplateCrc, ClientData))
 	{
 		return;
+	}
+
+	if (Creature->CreatureSoundComponent)
+	{
+		Creature->CreatureSoundComponent->SetClientData(ClientData);
 	}
 
 	if (Creature->TangibleComponent && !ClientData.Customization.IsEmpty())

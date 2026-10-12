@@ -39,6 +39,14 @@
 			"Enabled": true
 		},
 		{
+			"Name": "SWGAudio",
+			"Enabled": true
+		},
+		{
+			"Name": "SWGEffects",
+			"Enabled": true
+		},
+		{
 			"Name": "SWGGame",
 			"Enabled": true
 		},
@@ -88,6 +96,10 @@
 		},
 		{
 			"Name": "GeometryScripting",
+			"Enabled": true
+		},
+		{
+			"Name": "SWGDevToolset",
 			"Enabled": true
 		}
 	]

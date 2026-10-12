@@ -12,11 +12,16 @@
 #include "TRE/SWGFloorReader.h"
 #include "TRE/SWGShaderReader.h"
 #include "TRE/SWGDataTableReader.h"
+#include "TRE/SWGSlotRuleReader.h"
+#include "TRE/SWGWearableAppearanceMap.h"
+#include "TRE/SWGTextureRenderer.h"
 #include "Customization/SWGCustomizationVariables.h"
+#include "Common/SWGSatLoopSource.h"
 #include "Engine/AssetUserData.h"
 #include "SWGMeshGeneratorSubsystem.generated.h"
 
 class USWGTreSubsystem;
+class AActor;
 class UMeshComponent;
 class UDynamicMesh;
 class UDynamicMeshComponent;
@@ -30,6 +35,7 @@ class USkeleton;
 class UAnimSequence;
 class UBlendSpace;
 class UAnimSingleNodeInstance;
+class USWGCharacterAnimInstance;
 class IMeshUtilities;
 class UDataTable;
 class FSWGSkeletalAnimationPipeline;
@@ -248,6 +254,7 @@ class SWGEMUCLIENT_API USWGMeshGeneratorSubsystem : public UGameInstanceSubsyste
 	// — see that class's own header comment for why this wasn't worth
 	// promoting to a public API instead.
 	friend class FSWGSkeletalAnimationPipeline;
+	friend class FSWGAppearanceFallbackTest;
 	/** Builds its radial billboard mesh and per-shader materials through the private cache-or-build helpers. */
 	friend class USWGTerrainFloraSubsystem;
 
@@ -404,6 +411,10 @@ public:
 	 */
 	bool ResolveClientDataFile(uint32 TemplateCrc, FSWGClientDataFile& OutClientData);
 
+	/** The parse behind ResolveClientDataFile: true whenever the template names a .cdf that parses, whatever it holds (sound hooks included). */
+	bool ReadClientDataFile(uint32 TemplateCrc, FSWGClientDataFile& OutClientData);
+	bool ReadClientDataFile(const FString& TemplatePath, FSWGClientDataFile& OutClientData);
+
 	/** Name-keyed customization (a .cdf's CSSI/WCSI) to the wire-id form every Resolve* step takes. */
 	FSWGCustomizationVariables ToCustomizationVariables(const TMap<FString, int32>& NamedCustomization);
 
@@ -416,6 +427,15 @@ public:
 	 */
 	bool PlayCombatAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName);
 	bool SetDatapadPose(AActor& Actor, bool bHold);
+
+	/** Layered animation (swg.Anim.*): any .ash action on its retail track, the actor's anim instance, and a playback description. See FSWGSkeletalAnimationPipeline. */
+	bool PlayAnimAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace = nullptr);
+	USWGCharacterAnimInstance* FindLayeredAnimInstance(const AActor& Actor) const;
+	FString DescribeAnimPlayback(const AActor& Actor) const;
+
+	/** Prop animation (flags, banners): see FSWGSkeletalAnimationPipeline::ResolveSatLoopSource / PlayLoopOnComponent. */
+	bool ResolveSatLoopSource(const FString& SatPath, FSWGSatLoopSource& OutSource);
+	void PlayLoopOnComponent(USkeletalMeshComponent& Component, const FSWGSatLoopSource& Source, const FString& ClipPath, const TMap<FString, int32>& TextureIndexOverrides, TFunction<void(bool)> OnDone);
 
 	/** The clip PlayCombatAction would use, plus a description of every resolution hop. Diagnostics for swg.DumpCombatAnim. */
 	FString ResolveCombatActionClip(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace = nullptr);
@@ -444,6 +464,7 @@ private:
 
 	/** The appearance-file half of ResolveMeshPathForTemplate (.sat/.apt/.lod onwards). DebugContext only names the caller in log lines. */
 	bool ResolveAppearanceMeshPaths(const FString& AppearancePath, const FString& DebugContext, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, TArray<FSWGLodLevel>* OutLodLevels = nullptr, FString* OutCollisionSourcePath = nullptr);
+	bool TryResolveAppearanceMeshPaths(const FString& AppearancePath, const FString& DebugContext, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, TArray<FSWGLodLevel>* OutLodLevels, FString* OutCollisionSourcePath, int32 Depth = 0);
 
 	/** .lmg (FORM MLOD > FORM 0000 > one NAME per LOD) -> its highest-detail .mgn. */
 	bool ResolveLmgMeshPath(const FString& LmgPath, FString& OutMgnPath);
@@ -491,6 +512,38 @@ public:
 	 * building anything for items equipped there.
 	 */
 	bool IsAnySlotAppearanceRelated(const TArray<FString>& SlotNames);
+
+	/**
+	 * A lightsaber's blade colour: the palette entry its "/private/index_color_blade" customization variable picks
+	 * (SWGEmu.exe 0x7ac280). False when the appearance declares no such variable.
+	 */
+	bool ResolveBladeColor(const FSWGCustomizationVariables& Customization, const FString& AppearancePath, FLinearColor& OutColor);
+
+	/**
+	 * Customization-driven re-skinning of a skeletal character. Register once its mesh request is
+	 * queued: the subsystem waits for the generated mesh, composites the face texture renderers
+	 * (FSWGTextureRenderer) for the actor's customization and reapplies materials and morph weights.
+	 * RefreshCharacterAppearance does the same at once when a TANO customization delta arrives, so a
+	 * changed skin colour or face style re-skins an already-built mesh.
+	 */
+	void RegisterCharacterAppearance(AActor& Actor, const FString& AppearancePath, const TArray<FString>& MeshVirtualPaths);
+	void RefreshCharacterAppearance(AActor& Actor);
+
+	/** Every ACST variable of AppearancePath by bare name with its effective value (the default when unset). */
+	TMap<FString, int32> ResolveCustomizationIntValues(const FSWGCustomizationVariables& Customization, const FString& AppearancePath);
+
+	/** Text lines describing how an actor's customization resolved; for swg.Appearance.Customization. */
+	TArray<FString> DescribeCharacterCustomization(AActor& Actor);
+
+	/** Session tables, loaded on first use; null when the file is missing. */
+	const FSWGSlotRuleManager* GetSlotRuleManager();
+	const FSWGWearableAppearanceMap* GetWearableAppearanceMap();
+
+	/** The saddle covering the retail client wears on a mount (wearable_appearance_map), as .lmg paths; empty without one. */
+	TArray<FString> ResolveMountCoveringMeshes(const FString& MountAppearancePath);
+
+	/** Slot-rule blend variables for an item as bare name -> morph weight, given every slot the wearer has filled. */
+	TMap<FString, float> ResolveSlotRuleMorphs(const TArray<FString>& ItemSlots, const TSet<FString>& OccupiedSlots);
 
 private:
 
@@ -735,7 +788,7 @@ private:
 	 * real one has to come from the object's own state. Empty leaves the
 	 * shader's own texture in place.
 	 */
-	UMaterialInterface* GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr, const FString& ReplaceableTexturePath = FString());
+	UMaterialInterface* GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr, const FString& ReplaceableTexturePath = FString(), UTexture2D* DiffuseOverride = nullptr);
 
 	/** A shader's .eft render states (see FSWGEffectRenderStates), memoized by effect name; defaults (opaque) when the effect is empty or unreadable. */
 	FSWGEffectRenderStates GetOrReadEffectRenderStates(const FString& EffectName);
@@ -776,6 +829,41 @@ private:
 	TObjectPtr<UDataTable> ResourceClassTable;
 
 	IMeshUtilities* MeshUtilities = nullptr;
+
+	/** One registered character awaiting or holding customization-driven materials. */
+	struct FCharacterAppearanceRecord
+	{
+		TWeakObjectPtr<AActor> Actor;
+		FString AppearancePath;
+		TArray<FString> MeshVirtualPaths;
+		uint32 AppliedSignature = 0;
+		bool bApplied = false;
+		double RegisteredSeconds = 0.0;
+	};
+	TArray<FCharacterAppearanceRecord> CharacterRecords;
+	double LastRecordSweepSeconds = 0.0;
+	void TickCharacterRecords();
+
+	/** True once the record is applied, or can never be (actor or mesh gone). */
+	bool ApplyCharacterAppearance(FCharacterAppearanceRecord& Record, bool bForce);
+
+	/** Composite for one renderer and its variable values, cached; null when it cannot be built. */
+	UTexture2D* GetOrBuildTextureRendererOutput(const FString& RendererPath, const TMap<FString, int32>& Values);
+	const FSWGImage* GetOrDecodeImage(const FString& TexturePath);
+	const FSWGPalette* GetOrLoadPalette(const FString& PalettePath);
+	const FSWGTextureRenderer* GetOrReadTextureRenderer(const FString& RendererPath);
+
+	TMap<FString, FSWGImage> DecodedImages;
+	TMap<FString, FSWGPalette> LoadedPalettes;
+	TMap<FString, FSWGTextureRenderer> TextureRenderers;
+
+	UPROPERTY()
+	TMap<FString, TObjectPtr<UTexture2D>> RendererOutputCache;
+
+	bool bSlotRulesLoaded = false;
+	FSWGSlotRuleManager SlotRuleManager;
+	bool bWearableMapLoaded = false;
+	FSWGWearableAppearanceMap WearableAppearanceMap;
 
 	/** Loaded once on first use (see ResolveCustomizationPaletteTints) from
 	 *  customization/customization_id_manager.iff and

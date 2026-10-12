@@ -28,10 +28,13 @@ public class SWGEmuClient : ModuleRules
 			"SWGEmu",
 			"SWGTre",
 			"SWGAnimation",
-			"NavigationSystem"
+			"SWGAudio",
+			"SWGEffects",
+			"NavigationSystem",
+			"AnimGraphRuntime"
         });
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] { "EngineCameras" });
 
 		if (Target.bBuildEditor)
 		{

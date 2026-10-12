@@ -157,6 +157,12 @@ const FSWGCombatManagerData* USWGCombatSubsystem::GetCombatManager()
 
 FString USWGCombatSubsystem::ResolveWeaponStateName(int64 WeaponObjectId) const
 {
+	const FString TemplatePath = ResolveWeaponTemplatePath(WeaponObjectId);
+	return TemplatePath.IsEmpty() ? FString() : SWGLocomotion::WeaponStateNameForTemplate(TemplatePath);
+}
+
+FString USWGCombatSubsystem::ResolveWeaponTemplatePath(int64 WeaponObjectId) const
+{
 	if (WeaponObjectId == 0 || !ObjectGraph || !Tre)
 	{
 		return FString();
@@ -171,8 +177,7 @@ FString USWGCombatSubsystem::ResolveWeaponStateName(int64 WeaponObjectId) const
 		return FString();
 	}
 
-	const FString* TemplatePath = Tre->GetCrcToTemplatePathMap().Find(NetworkObject->GetObjectCrc());
-	return TemplatePath ? SWGLocomotion::WeaponStateNameForTemplate(*TemplatePath) : FString();
+	return Tre->ResolveTemplatePath(NetworkObject->GetObjectCrc());
 }
 
 void USWGCombatSubsystem::PlayCombatAnimations(const FSWGCombatActionAnimation& Animation, int64 AttackerId, int64 DefenderId, int64 WeaponId)
@@ -534,8 +539,14 @@ void USWGCombatSubsystem::HandleCombatAction(const FObjControllerMessageIn& Enve
 		UE_LOG(LogSWGCombat, Warning, TEXT("no combat_manager entry for animation CRC %08X"), Action.AnimationCrc);
 	}
 
+	TArray<FSWGResolvedCombatDefender> Resolved;
+	Resolved.Reserve(Action.Defenders.Num());
+
 	for (const FSWGCombatDefender& Defender : Action.Defenders)
 	{
+		FSWGResolvedCombatDefender& ResolvedDefender = Resolved.AddDefaulted_GetRef();
+		ResolvedDefender.Defender = &Defender;
+
 		if (Entry)
 		{
 			// Each defender resolves its own arm of the entry: the same swing
@@ -544,6 +555,7 @@ void USWGCombatSubsystem::HandleCombatAction(const FObjControllerMessageIn& Enve
 			if (const FSWGCombatActionAnimation* Animation = Entry->Resolve(Defender.Hit, Defender.Posture))
 			{
 				PlayCombatAnimations(*Animation, Action.AttackerId, Defender.ObjectId, Action.WeaponId);
+				ResolvedDefender.Animation = Animation;
 			}
 			else
 			{
@@ -566,6 +578,18 @@ void USWGCombatSubsystem::HandleCombatAction(const FObjControllerMessageIn& Enve
 
 		OnCombatAction.Broadcast(Event);
 	}
+
+	// The server always writes 0 here (Core3 never sets a client effect on CombatAction), so
+	// there is nothing to map; a non-zero value would be another server's and worth a look.
+	for (const FSWGCombatDefender& Defender : Action.Defenders)
+	{
+		if (Defender.ClientEffectId != 0)
+		{
+			UE_LOG(LogSWGCombat, Log, TEXT("CombatAction defender %lld carries ClientEffectId %u (unmapped)"), Defender.ObjectId, Defender.ClientEffectId);
+		}
+	}
+
+	OnCombatActionResolved.Broadcast(Action, Resolved);
 }
 
 void USWGCombatSubsystem::HandleCombatSpam(const FObjControllerMessageIn& Envelope)

@@ -18,6 +18,7 @@ struct FObjControllerMessageIn;
 struct FCombatActionIn;
 struct FCombatSpamIn;
 struct FCommandQueueRemoveIn;
+struct FSWGCombatDefender;
 
 /** Why an auto-attack run ended, for the UI and for logs. */
 UENUM(BlueprintType)
@@ -52,7 +53,7 @@ struct SWGEMUCLIENT_API FSWGCombatEvent
 	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
 	int64 AnimationCrc = 0;
 
-	/** An ESWGCombatHit: 0 miss, 1 hit, 2 block, 3 dodge, 4 counter, 5 ricochet. */
+	/** An ESWGCombatHit: 0 miss, 1 hit, 2 block, 3 dodge, 4 redirect, 5 counter, 6 fumble, 7 ricochet, 8 reflect, 9 reflect to target. */
 	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
 	uint8 Hit = 0;
 
@@ -98,6 +99,16 @@ struct SWGEMUCLIENT_API FSWGCombatSpamEvent
 	UPROPERTY(BlueprintReadOnly, Category = "SWGEmu|Combat")
 	bool bLandedOnUs = false;
 };
+
+/** One defender of a swing with the combat_manager arm it resolved to (null when the entry had none). */
+struct FSWGResolvedCombatDefender
+{
+	const FSWGCombatDefender* Defender = nullptr;
+	const FSWGCombatActionAnimation* Animation = nullptr;
+};
+
+/** A whole swing, after its animations were started: audio and effects hang off this. */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FSWGOnCombatActionResolved, const FCombatActionIn&, const TArray<FSWGResolvedCombatDefender>&);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSWGOnCombatEvent, const FSWGCombatEvent&, Event);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSWGOnCombatSpam, const FSWGCombatSpamEvent&, Event);
@@ -175,8 +186,14 @@ public:
 	 */
 	const FSWGCombatManagerData* GetCombatManager();
 
+	/** Broadcast once per CombatAction, after PlayCombatAnimations ran for every defender. */
+	FSWGOnCombatActionResolved OnCombatActionResolved;
+
 	/** The .ash weapon subtree a creature's currently-wielded weapon selects. Empty for unarmed or unknown. */
 	FString ResolveWeaponStateName(int64 WeaponObjectId) const;
+
+	/** The shared template path of a weapon object, or empty for unarmed or an object we never received. */
+	FString ResolveWeaponTemplatePath(int64 WeaponObjectId) const;
 
 	/**
 	 * Logs every hop of the animation chain for one server animation name,

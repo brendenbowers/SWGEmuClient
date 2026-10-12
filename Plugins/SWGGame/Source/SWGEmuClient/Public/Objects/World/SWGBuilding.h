@@ -54,6 +54,10 @@ public:
 	/** Called by FSWGCellSpawnHandler::FinishCell once Cell->TriggerVolume exists. */
 	void RegisterCellTrigger(ASWGCell* Cell, bool bCanSeeParent);
 
+	/** Fired when the local player's lit room changes; null once they step outside. */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnLocalPlayerRoomChanged, ASWGCell*);
+	static FOnLocalPlayerRoomChanged OnLocalPlayerRoomChanged;
+
 	/** Select the lit room, including when the player spawns directly inside it. */
 	void SetLitRoom(ASWGCell* Cell);
 
