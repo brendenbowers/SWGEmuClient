@@ -11,8 +11,12 @@ enum class ESWGCombatHit : uint8
 	Hit      = 1,
 	Block    = 2,
 	Dodge    = 3,
-	Counter  = 4,
-	Ricochet = 5,
+	Redirect = 4,
+	Counter  = 5,
+	Fumble   = 6,
+	Ricochet = 7,
+	Reflect  = 8,
+	ReflectToTarget = 9,
 };
 
 /** One target of a swing, and how it went for them. */

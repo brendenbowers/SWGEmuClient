@@ -4,6 +4,7 @@
 #include "Network/Messages/Zone/Object/CombatActionIn.h"
 #include "Network/Messages/Zone/Object/CombatSpamIn.h"
 #include "Network/Messages/Zone/Object/CommandQueueRemoveIn.h"
+#include "Network/Messages/Zone/Object/PostureUpdateIn.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -312,6 +313,38 @@ bool FSWGCombatSpamParseTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("colour"), Spam.Color, static_cast<uint8>(11));
 		TestTrue(TEXT("consumed the whole payload"), Packet.IsAtEnd());
 	}
+
+	return true;
+}
+
+// ── PostureUpdate (0x131) ─────────────────────────────────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FSWGPostureUpdateParseTest,
+	"SWGEmu.Messages.PostureUpdate.Parse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::SmokeFilter)
+
+bool FSWGPostureUpdateParseTest::RunTest(const FString& Parameters)
+{
+	// What CreatureObject::updatePostures(true) sends when a creature dies.
+	FByteBuilder B;
+	B.U8(14); // CreaturePosture::DEAD
+	B.U8(1);  // immediate
+
+	FSWGPacket Packet = B.AsPacket();
+	FPostureUpdateIn Update;
+
+	TestTrue(TEXT("parses"), Update.Parse(Packet));
+	TestEqual(TEXT("posture"), Update.Posture, static_cast<uint8>(14));
+	TestEqual(TEXT("immediate"), Update.Immediate, static_cast<uint8>(1));
+	TestTrue(TEXT("consumed the whole payload"), Packet.IsAtEnd());
+
+	// A truncated payload is a parse failure, not a posture of zero.
+	FByteBuilder Short;
+	Short.U8(13);
+	FSWGPacket ShortPacket = Short.AsPacket();
+	FPostureUpdateIn Truncated;
+	TestFalse(TEXT("rejects a one-byte payload"), Truncated.Parse(ShortPacket));
 
 	return true;
 }

@@ -78,6 +78,16 @@ enum class ESWGMessageOp : uint32
 	SurveyMessage = 0x877F79ACu,         // Server: a survey's density grid
 	EnterStructurePlacementMode = 0xE8A54DC1u,
 
+	// ── Client effects and music ────────────────────────────────
+	PlayMusicMessage = 0x04270D8Au,              // Server: play a .snd on the music channel (music_silence.snd stops it)
+	PlayClientEffectObjectMessage = 0x8855434Au, // Server: play a .cef on an object, at a hardpoint
+	PlayClientEffectObjectTransformMessage = 0x4F5E09B6u,
+	PlayClientEffectLoc = 0x02949E74u,           // Server: play a .cef at a planet position
+	PlayClientEventObjectMessage = 0xAF83C3F2u,  // Server: named client event on an object (no Core3 call sites)
+
+	// ── Weather ─────────────────────────────────────────────────
+	ServerWeatherMessage = 0x486356EAu,          // Server: weather index (0-4) and wind vector
+
 	// Add more as needed during implementation
 	Null = 0x0u,
 	Multi = 0x2u
