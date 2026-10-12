@@ -9,7 +9,12 @@ It exists to see how porting an old game client to unreal can be done.
 - Loading the planet, buildings, NPCs, Creatures, Objects and Players in a small area
 - Basic movement with animations
 - Equipped armor and some weapons
-
+- Placing structures
+- Most crafting with experimentation at crafting stations
+- Surveying
+- Map
+- Buying tickets/Traveling to other Towns/Planets
+  
 
 ## Preview
 
