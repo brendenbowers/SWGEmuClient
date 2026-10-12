@@ -10,6 +10,7 @@
 #include "Misc/Paths.h"
 #include "Styling/CoreStyle.h"
 #include "Subsystems/SWGTreSubsystem.h"
+#include "SWGUISound.h"
 
 namespace
 {
@@ -152,6 +153,7 @@ namespace SWGRetailStyle
 		FitRetailHeight(Button);
 		if (!Label)
 		{
+			SWGUISound::BindButton(Button);
 			return nullptr;
 		}
 		Label->SetFont(Font(12));
@@ -163,6 +165,7 @@ namespace SWGRetailStyle
 		Button->OnUnhovered.AddDynamic(Tint, &USWGRetailButtonTextTint::HandleUnhovered);
 		Button->OnPressed.AddDynamic(Tint, &USWGRetailButtonTextTint::HandlePressed);
 		Button->OnReleased.AddDynamic(Tint, &USWGRetailButtonTextTint::HandleReleased);
+		Button->OnClicked.AddDynamic(Tint, &USWGRetailButtonTextTint::HandleClicked);
 		Tint->Refresh();
 		return Tint;
 	}
@@ -190,7 +193,18 @@ void USWGRetailButtonTextTint::Tick(float DeltaTime)
 	}
 }
 
-void USWGRetailButtonTextTint::HandleHovered() { Refresh(); }
+void USWGRetailButtonTextTint::HandleHovered()
+{
+	Refresh();
+	if (Button.IsValid() && Button->GetIsEnabled())
+	{
+		SWGUISound::PlayHover(Button.Get());
+	}
+}
+
 void USWGRetailButtonTextTint::HandleUnhovered() { bPressed = false; Refresh(); }
 void USWGRetailButtonTextTint::HandlePressed() { bPressed = true; Refresh(); }
 void USWGRetailButtonTextTint::HandleReleased() { bPressed = false; Refresh(); }
+
+// Retail plays ReleaseSound when the button is released over itself, which is OnClicked.
+void USWGRetailButtonTextTint::HandleClicked() { SWGUISound::PlayClick(Button.Get()); }

@@ -8,6 +8,7 @@
 #include "CommonInputSubsystem.h"
 #include "Components/TextBlock.h"
 #include "Engine/GameInstance.h"
+#include "SWGUISound.h"
 
 namespace
 {
@@ -129,14 +130,17 @@ void USWGSuiBoxWidget::NativeConstruct()
 	if (OkButton)
 	{
 		OkButton->OnClicked.AddUniqueDynamic(this, &USWGSuiBoxWidget::HandleOk);
+		SWGUISound::BindButton(OkButton);
 	}
 	if (CancelButton)
 	{
 		CancelButton->OnClicked.AddUniqueDynamic(this, &USWGSuiBoxWidget::HandleCancel);
+		SWGUISound::BindButton(CancelButton);
 	}
 	if (OtherButton)
 	{
 		OtherButton->OnClicked.AddUniqueDynamic(this, &USWGSuiBoxWidget::HandleOther);
+		SWGUISound::BindButton(OtherButton);
 	}
 
 	if (bPageSet)
@@ -237,6 +241,7 @@ void USWGSuiBoxWidget::BuildList()
 		Style.NormalPadding = FMargin(8.f, 3.f);
 		Style.PressedPadding = FMargin(8.f, 3.f);
 		Button->SetStyle(Style);
+		SWGUISound::BindButton(Button);
 
 		if (UButtonSlot* ContentSlot = Cast<UButtonSlot>(Button->AddChild(Text)))
 		{

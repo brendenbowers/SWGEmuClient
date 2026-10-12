@@ -1,4 +1,5 @@
 #include "SWGUISubsystem.h"
+#include "SWGUISound.h"
 #include "HAL/IConsoleManager.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -161,6 +162,29 @@ namespace
 			for (const TPair<const TCHAR*, ESWGUIFeature>& Feature : DualFeatures)
 			{
 				UI->SetPresentation(Feature.Value, Presentation);
+			}
+		}));
+
+	FAutoConsoleCommand CmdUITest(
+		TEXT("swg.Audio.UITest"),
+		TEXT("Plays a UI sound: 'swg.Audio.UITest' = hover then click, '<name>' = a datatables/player/sounds.iff name (radial_create, backpack_open...). Logs the resolved names."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			USWGUISubsystem* UI = GetUI();
+			if (!UI)
+			{
+				return;
+			}
+			const FSWGUISoundNames& Names = SWGUISound::GetNames(UI);
+			UE_LOG(LogTemp, Log, TEXT("UI sounds: hover=%s click=%s keyclick=%s, %d named"), *Names.Hover, *Names.Click, *Names.Keyclick, Names.Named.Num());
+			if (Args.IsEmpty())
+			{
+				SWGUISound::PlayHover(UI);
+				SWGUISound::PlayClick(UI);
+			}
+			else
+			{
+				SWGUISound::PlayNamed(UI, Args[0]);
 			}
 		}));
 }

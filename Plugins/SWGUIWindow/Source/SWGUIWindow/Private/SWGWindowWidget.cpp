@@ -1,4 +1,5 @@
 #include "SWGWindowWidget.h"
+#include "SWGUISound.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/Border.h"
 #include "Components/Button.h"
@@ -15,6 +16,7 @@ void USWGWindowWidget::NativeConstruct()
 	SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 
 	CloseButton->OnClicked.AddUniqueDynamic(this, &USWGWindowWidget::HandleCloseClicked);
+	SWGUISound::BindButton(CloseButton);
 	TitleText->SetText(Title);
 	// The Blueprint's frame carries the window's starting size.
 	WindowSize = FVector2D(Frame->GetWidthOverride(), Frame->GetHeightOverride());

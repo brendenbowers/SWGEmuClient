@@ -1,6 +1,7 @@
 #include "SWGCraftingWidget.h"
 #include "SWGInventoryQuery.h"
 #include "SWGRetailStyle.h"
+#include "SWGUISound.h"
 #include "SWGTravelWidget.h"
 #include "ModelWidget.h"
 #include "Blueprint/WidgetTree.h"
@@ -368,6 +369,7 @@ void USWGCraftingWidget::RebuildTabs()
 	{
 		UButton* Button = WidgetTree->ConstructWidget<UButton>();
 		Button->SetStyle(MakeTabStyle(TabValue == SelectedTab));
+		SWGUISound::BindButton(Button);
 		UTextBlock* ButtonLabel = WidgetTree->ConstructWidget<UTextBlock>();
 		ButtonLabel->SetText(Label);
 		ButtonLabel->SetFont(SWGRetailStyle::Font(12, false));
@@ -440,6 +442,7 @@ void USWGCraftingWidget::RebuildSchematicList()
 				SeenCategories.Add(CategoryKey);
 				UButton* Category = WidgetTree->ConstructWidget<UButton>();
 				Category->SetStyle(MakeTabStyle(false));
+				SWGUISound::BindButton(Category);
 				UTextBlock* CategoryLabel = WidgetTree->ConstructWidget<UTextBlock>();
 				FString Name = Parts[Depth];
 				Name.ReplaceInline(TEXT("_"), TEXT(" "));
@@ -468,6 +471,7 @@ void USWGCraftingWidget::RebuildSchematicList()
 		if (bHidden) { continue; }
 		UButton* Row = WidgetTree->ConstructWidget<UButton>();
 		Row->SetStyle(MakeTabStyle(Index == HighlightedIndex));
+		SWGUISound::BindButton(Row);
 		UTextBlock* Label = WidgetTree->ConstructWidget<UTextBlock>();
 		FString DisplayName = Option.Name;
 		DisplayName.RemoveFromStart(TEXT("shared "));
@@ -762,6 +766,7 @@ void USWGCraftingWidget::RebuildCustomizePage()
 	{
 		UButton* Button = WidgetTree->ConstructWidget<UButton>();
 		Button->SetStyle(MakeTabStyle(Index == SelectedTemplateChoice));
+		SWGUISound::BindButton(Button);
 		UTextBlock* Label = WidgetTree->ConstructWidget<UTextBlock>();
 		FString Name = Templates[Index];
 		Name = FPaths::GetBaseFilename(Name).IsEmpty() ? Name : FPaths::GetBaseFilename(Name);

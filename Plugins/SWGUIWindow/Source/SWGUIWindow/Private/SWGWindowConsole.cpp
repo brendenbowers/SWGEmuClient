@@ -1,4 +1,6 @@
 #include "SWGInventoryQuery.h"
+#include "SWGWindowUISubsystem.h"
+#include "Engine/LocalPlayer.h"
 #include "Objects/Tangible/SWGItem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "TRE/SWGResourceClassRow.h"
@@ -63,5 +65,24 @@ static FAutoConsoleCommand GCraftDumpInventoryCommand(
 			const ASWGItem* Item = ObjectGraph ? Cast<ASWGItem>(ObjectGraph->FindActor(Entry.ObjectId)) : nullptr;
 			UE_LOG(LogTemp, Log, TEXT("  id=%lld name=%s qty=%d resourceType=%s"), Entry.ObjectId, *Entry.Name, Entry.Quantity,
 				Item ? *Item->ResourceType : TEXT("(no actor)"));
+		}
+	}));
+
+static FAutoConsoleCommand GAudioOptionsCommand(
+	TEXT("swg.Audio.Options"),
+	TEXT("Opens (or closes) the sound options window."),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			if ((Context.WorldType == EWorldType::PIE || Context.WorldType == EWorldType::Game) && Context.World())
+			{
+				const ULocalPlayer* LocalPlayer = Context.World()->GetFirstLocalPlayerFromController();
+				if (USWGWindowUISubsystem* Windows = LocalPlayer ? LocalPlayer->GetSubsystem<USWGWindowUISubsystem>() : nullptr)
+				{
+					Windows->ToggleAudioOptions();
+				}
+				return;
+			}
 		}
 	}));

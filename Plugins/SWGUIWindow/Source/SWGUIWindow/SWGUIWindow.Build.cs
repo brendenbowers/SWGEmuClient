@@ -28,5 +28,8 @@ public class SWGUIWindow : ModuleRules
 			"SWGUICommon",
 			"SWGUICore",
 		});
+
+		// Audio options window only.
+		PrivateDependencyModuleNames.Add("SWGAudio");
 	}
 }

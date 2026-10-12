@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "UCharacterSelectWidget.h"
+#include "SWGUISound.h"
 #include "UCharacterListEntryData.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Kismet/GameplayStatics.h"
@@ -14,10 +15,12 @@ void UCharacterSelectWidget::NativeConstruct()
 	if (BackButton)
 	{
 		BackButton->OnClicked.AddDynamic(this, &UCharacterSelectWidget::OnBackClicked);
+		SWGUISound::BindButton(BackButton);
 	}
 	if (NextButton)
 	{
 		NextButton->OnClicked.AddDynamic(this, &UCharacterSelectWidget::OnNextClicked);
+		SWGUISound::BindButton(NextButton);
 	}
 	if (CharacterListView)
 	{

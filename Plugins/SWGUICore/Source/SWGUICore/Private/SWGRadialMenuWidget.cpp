@@ -10,6 +10,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Objects/Player/SWGPlayer.h"
+#include "SWGUISound.h"
 
 void USWGRadialMenuWidget::NativeConstruct()
 {
@@ -39,6 +40,8 @@ void USWGRadialMenuWidget::Open(const FSWGRadialMenu& Menu)
 		PanelSlot->SetAutoSize(true);
 	}
 
+	// sounds.iff radial_create; the row buttons use retail's radialmenu button style sounds (rollover/deselect).
+	SWGUISound::PlayNamed(this, TEXT("radial_create"));
 	ShowLevel(0);
 
 	// A gamepad has no cursor to hover with, so start it on the first row.
@@ -187,6 +190,7 @@ void USWGRadialMenuWidget::AddRow(const FText& Label, TFunction<void()> OnClicke
 	Style.NormalPadding = RowPadding;
 	Style.PressedPadding = RowPadding;
 	Button->SetStyle(Style);
+	SWGUISound::BindButton(Button);
 
 	if (UButtonSlot* ContentSlot = Cast<UButtonSlot>(Button->AddChild(Text)))
 	{
