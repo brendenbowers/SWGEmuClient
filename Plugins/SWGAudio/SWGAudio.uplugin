@@ -1,0 +1,35 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SWG Emu Audio",
+	"Description": "Decodes Star Wars Galaxies .wav/.mp3 samples and plays .snd templates and clienteffect sounds from TRE data.",
+	"Category": "Audio",
+	"CreatedBy": "Brenden Bowers",
+	"CreatedByURL": "https://github.com/brendenbowers/",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SWGAudio",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "SWGTre",
+			"Enabled": true
+		}
+	]
+}
