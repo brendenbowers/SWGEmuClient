@@ -19,11 +19,21 @@ enum class ESWGTerrainAffectorType : uint8
 	Road,
 	ShaderConstant,
 	ShaderReplace,
+	/** AENV: paints an environment family id (EGRP) over the area. */
+	Environment,
 	/** AFSC / AFSN / AFDN / AFDF — see FSWGTerrainAffector's flora fields. */
 	FloraCollidable,
 	FloraNonCollidable,
 	RadialNear,
 	RadialFar,
+	/** ACCN: blends a constant colour into the ground tint map. */
+	ColorConstant,
+	/** ACRH: ground tint from a colour ramp indexed by the running height. */
+	ColorRampHeight,
+	/** ACRF: ground tint from a colour ramp indexed by a fractal. */
+	ColorRampFractal,
+	/** AEXC: marks the pixel in the exclusion map. */
+	Exclude,
 };
 
 /**
@@ -141,20 +151,25 @@ struct FSWGTerrainAffector
 	float RoadWidth = 0.0f;
 
 	/**
-	 * ShaderConstant/ShaderReplace (ASCN/ASRP) — ported from Core3's own wire
-	 * format (AffectorShaderConstant/AffectorShaderReplace), but Core3 itself
-	 * never implements process() for either (shader painting is purely a
-	 * client rendering concern the server has no use for), so there's no
-	 * reference algorithm to port for *how* these affect the shader-weight
-	 * map — FSWGTerrainEvaluator::ApplyShaderAffector models it as a
-	 * standard alpha-over paint using the same TransformValue this framework
-	 * already produces from boundaries/filters/feathering.
+	 * ShaderConstant/ShaderReplace (ASCN/ASRP). Core3 never implements process()
+	 * for either; the retail client (0xb87410 / 0xb878e0) hard-paints a pixel with
+	 * the family when the layer amount reaches a threshold — the family's own
+	 * SFAM weight, or this override when the flag is set. Core3 names the flag/float
+	 * "featheringType/Amount"; the data (flag 0/1, float 0..1) says threshold.
 	 */
 	int32 ShaderFamilyId = 0;         // ShaderConstant: family this layer paints.
 	int32 ShaderOldFamilyId = 0;      // ShaderReplace: family to paint over.
 	int32 ShaderNewFamilyId = 0;      // ShaderReplace: family replacing it.
-	int32 ShaderFeatheringType = 0;
-	float ShaderFeatheringAmount = 0.0f;
+	bool bShaderThresholdOverride = false;
+	float ShaderThresholdOverride = 1.0f;
+
+	/**
+	 * Environment (AENV v0000) DATA: [familyId:int32][flag:int32][weight:float]. The int is 0 or 1 and the
+	 * float 0..1 (tatooine all 1.0; dathomir 0..0.8); meaning unknown, Core3 ignores both.
+	 */
+	int32 EnvironmentFamilyId = 0;
+	int32 EnvironmentUnknown = 0;
+	float EnvironmentWeight = 1.0f;
 
 	/**
 	 * FloraCollidable/FloraNonCollidable/RadialNear/RadialFar (AFSC/AFSN v0004,
@@ -173,6 +188,18 @@ struct FSWGTerrainAffector
 	bool bFloraRemoveAll = false;
 	bool bFloraDensityOverride = false;
 	float FloraDensity = 1.0f;
+
+	/**
+	 * ColorConstant / ColorRampHeight / ColorRampFractal (ACCN 0000 / ACRH 0000 / ACRF 0001; retail 0xb8a470 /
+	 * 0xb8aba0 / 0xb8b280). ColorOperation: see SWGTerrainTint::Blend. ColorConstant carries ColorRgb; the ramps
+	 * carry ColorRampPath ('/' separated .tga in the TRE), ColorRampHeight the band RampMinHeight..RampMaxHeight,
+	 * ColorRampFractal the fractal in FractalId.
+	 */
+	int32 ColorOperation = 0;
+	FColor ColorRgb = FColor::White;
+	float RampMinHeight = 0.0f;
+	float RampMaxHeight = 0.0f;
+	FString ColorRampPath;
 };
 
 /** Fields are a union across the MVP boundary types — only the ones relevant to Type are meaningful. */
@@ -277,6 +304,15 @@ struct FSWGShaderFamily
 	int32 FamilyId = 0;
 	FString Name;
 	TArray<FString> LayerNames;
+
+	/** SFAM fileName: an abstract/terrain_surface/<surface>.iff whose "surfaceType" string names the footstep surface. */
+	FString SurfaceFileName;
+
+	/** SFAM's first float (2 or 4 in shipped data); retail only saves/loads it, meaning unknown. */
+	float UnclassifiedFloat = 2.0f;
+
+	/** SFAM's second float: the layer amount a shader affector must reach to paint this family (1.0 in nearly all data). */
+	float PaintThreshold = 1.0f;
 };
 
 /**
@@ -323,9 +359,8 @@ struct FSWGTerrainHeader
 
 	/**
 	 * One vegetation tier's streaming parameters, as retail's client used them:
-	 * flora is placed per TileSize-metre tile (plus TileBorder of overlap so
-	 * neighbours don't pop at the seam), from a deterministic RNG seeded by
-	 * Seed and the tile coordinate, drawn between Min and MaxDistance.
+	 * flora candidates use TileSize-metre tiles with TileBorder as an edge
+	 * inset. Seed derivation and grid origins still require retail tracing.
 	 */
 	struct FVegetationTier
 	{
@@ -357,6 +392,19 @@ struct FSWGFloraChild
 	bool bShouldScale = false;
 	float MinScale = 1.0f;
 	float MaxScale = 1.0f;
+};
+
+/**
+ * EGRP > version > EFAM > DATA: one ambient environment family ("global", "moseisley"...), the key
+ * into datatables/environment/<planet>.iff. DATA is [familyId:int32][name\0][r,g,b:uint8][weight:float].
+ * Core3 calls the colour var3-5 and the float var6; the colour is the editor swatch, the float is 0..1 (1.0 on tatooine) and unused.
+ */
+struct FSWGEnvironmentFamily
+{
+	int32 FamilyId = 0;
+	FString Name;
+	FColor Color = FColor::White;
+	float Weight = 1.0f;
 };
 
 /**
@@ -410,15 +458,33 @@ struct FSWGRadialFamily
 	const FSWGRadialChild* PickChild(float UnitRoll) const;
 };
 
+/** One decoded colour-ramp image (terrain/*_colorramp_*.tga); retail samples only its first row. */
+struct FSWGTerrainColorRamp
+{
+	/** First row, left to right. */
+	TArray<FColor> Pixels;
+};
+
 struct FSWGTerrainData
 {
 	FSWGTerrainHeader Header;
+
+	/** Decoded colour ramps keyed by FSWGTerrainAffector::ColorRampPath, filled by the loader (the reader has no TRE access). */
+	TMap<FString, FSWGTerrainColorRamp> ColorRamps;
 
 	/** Top-level layers, in file order — either a single root LAYR or LYRS's children. */
 	TArray<FSWGTerrainLayer> TopLevelLayers;
 
 	/** Resolved from the first MGRP (the "map group"); AffectorHeightFractal::FractalId indexes into this. */
 	FSWGMapGroup MapGroup;
+
+	/** From EGRP; AffectorEnvironment's EnvironmentFamilyId indexes into this. */
+	TArray<FSWGEnvironmentFamily> EnvironmentFamilies;
+
+	const FSWGEnvironmentFamily* FindEnvironmentFamily(int32 FamilyId) const
+	{
+		return EnvironmentFamilies.FindByPredicate([FamilyId](const FSWGEnvironmentFamily& Family) { return Family.FamilyId == FamilyId; });
+	}
 
 	/** Resolved from the first SGRP (the "shaders group"); AffectorShaderConstant/Replace's familyId indexes into this. */
 	TArray<FSWGShaderFamily> ShaderFamilies;
@@ -531,6 +597,14 @@ private:
 	static bool ReadAffectorRoad(const FSWGIffReader& Reader, const FSWGIffChunk& AroaForm, FSWGTerrainAffector& OutAffector);
 	static bool ReadAffectorShaderConstant(const FSWGIffReader& Reader, const FSWGIffChunk& AscnForm, FSWGTerrainAffector& OutAffector);
 	static bool ReadAffectorShaderReplace(const FSWGIffReader& Reader, const FSWGIffChunk& AsrpForm, FSWGTerrainAffector& OutAffector);
+	/** ACCN 0000 DATA [op:int32][r,g,b:uint8]. */
+	static bool ReadAffectorColorConstant(const FSWGIffReader& Reader, const FSWGIffChunk& AccnForm, FSWGTerrainAffector& OutAffector);
+	/** ACRH 0000 DATA [op:int32][min:float][max:float][path, NUL]. */
+	static bool ReadAffectorColorRampHeight(const FSWGIffReader& Reader, const FSWGIffChunk& AcrhForm, FSWGTerrainAffector& OutAffector);
+	/** ACRF 0001 DATA > PARM [fractalId:int32][op:int32][path, NUL]. */
+	static bool ReadAffectorColorRampFractal(const FSWGIffReader& Reader, const FSWGIffChunk& AcrfForm, FSWGTerrainAffector& OutAffector);
+	/** AEXC 0000: IHDR only, no fields. */
+	static bool ReadAffectorExclude(const FSWGIffReader& Reader, const FSWGIffChunk& AexcForm, FSWGTerrainAffector& OutAffector);
 
 	/** AFSC/AFSN (v0004) and AFDN/AFDF (v0002) share one DATA layout — see FSWGTerrainAffector's flora fields. */
 	static bool ReadAffectorFlora(const FSWGIffReader& Reader, const FSWGIffChunk& AffectorForm, FSWGIffTag VersionTag, ESWGTerrainAffectorType Type, FSWGTerrainAffector& OutAffector);
@@ -544,6 +618,8 @@ private:
 	static bool ReadMapGroup(const FSWGIffReader& Reader, const FSWGIffChunk& MgrpForm, FSWGMapGroup& OutGroup);
 
 	/** FORM SGRP > version form > SFAM(*) chunks — see swg.DumpShaderFamilies' original diagnostic for the confirmed wire layout this ports. */
+	static bool ReadEnvironmentGroup(const FSWGIffReader& Reader, const FSWGIffChunk& EgrpForm, TArray<FSWGEnvironmentFamily>& OutFamilies);
+	static bool ReadAffectorEnvironment(const FSWGIffReader& Reader, const FSWGIffChunk& AenvForm, FSWGTerrainAffector& OutAffector);
 	static bool ReadShadersGroup(const FSWGIffReader& Reader, const FSWGIffChunk& SgrpForm, TArray<FSWGShaderFamily>& OutFamilies);
 
 	/** FORM FGRP > 0008 > FFAM(*) chunks — Core3's FloraGroup/FloraFamily wire layout, see FSWGFloraFamily for what the fields are. */

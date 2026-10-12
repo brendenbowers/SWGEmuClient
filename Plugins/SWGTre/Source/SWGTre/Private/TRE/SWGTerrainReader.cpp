@@ -448,8 +448,8 @@ bool FSWGTerrainReader::ReadAffectorShaderConstant(const FSWGIffReader& Reader, 
 	const uint8* D = Reader.GetChunkData(DataChunk);
 	OutAffector.Type = ESWGTerrainAffectorType::ShaderConstant;
 	OutAffector.ShaderFamilyId = (int32)ReadUInt32LE(D, 0);
-	OutAffector.ShaderFeatheringType = (int32)ReadUInt32LE(D, 4);
-	OutAffector.ShaderFeatheringAmount = ReadFloatLE(D, 8);
+	OutAffector.bShaderThresholdOverride = ReadUInt32LE(D, 4) != 0;
+	OutAffector.ShaderThresholdOverride = ReadFloatLE(D, 8);
 	return true;
 }
 
@@ -469,9 +469,133 @@ bool FSWGTerrainReader::ReadAffectorShaderReplace(const FSWGIffReader& Reader, c
 	OutAffector.Type = ESWGTerrainAffectorType::ShaderReplace;
 	OutAffector.ShaderOldFamilyId = (int32)ReadUInt32LE(D, 0);
 	OutAffector.ShaderNewFamilyId = (int32)ReadUInt32LE(D, 4);
-	OutAffector.ShaderFeatheringType = (int32)ReadUInt32LE(D, 8);
-	OutAffector.ShaderFeatheringAmount = ReadFloatLE(D, 12);
+	OutAffector.bShaderThresholdOverride = ReadUInt32LE(D, 8) != 0;
+	OutAffector.ShaderThresholdOverride = ReadFloatLE(D, 12);
 	return true;
+}
+
+bool FSWGTerrainReader::ReadAffectorColorConstant(const FSWGIffReader& Reader, const FSWGIffChunk& AccnForm, FSWGTerrainAffector& OutAffector)
+{
+	FSWGIffChunk Version, Ihdr, DataChunk;
+	if (!Reader.FindChildForm(AccnForm, SWG_IFF_TAG('0','0','0','0'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
+
+	FString UnusedName;
+	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
+
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk) || DataChunk.DataSize < 7) return false;
+
+	const uint8* D = Reader.GetChunkData(DataChunk);
+	OutAffector.Type = ESWGTerrainAffectorType::ColorConstant;
+	OutAffector.ColorOperation = (int32)ReadUInt32LE(D, 0);
+	OutAffector.ColorRgb = FColor(D[4], D[5], D[6]);
+	return true;
+}
+
+bool FSWGTerrainReader::ReadAffectorColorRampHeight(const FSWGIffReader& Reader, const FSWGIffChunk& AcrhForm, FSWGTerrainAffector& OutAffector)
+{
+	FSWGIffChunk Version, Ihdr, DataChunk;
+	if (!Reader.FindChildForm(AcrhForm, SWG_IFF_TAG('0','0','0','0'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
+
+	FString UnusedName;
+	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
+
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk) || DataChunk.DataSize < 13) return false;
+
+	const uint8* D = Reader.GetChunkData(DataChunk);
+	OutAffector.Type = ESWGTerrainAffectorType::ColorRampHeight;
+	OutAffector.ColorOperation = (int32)ReadUInt32LE(D, 0);
+	OutAffector.RampMinHeight = ReadFloatLE(D, 4);
+	OutAffector.RampMaxHeight = ReadFloatLE(D, 8);
+	OutAffector.ColorRampPath = ReadNullTerminatedStringAt(Reader, DataChunk, 12).Replace(TEXT("\\"), TEXT("/"));
+	return true;
+}
+
+bool FSWGTerrainReader::ReadAffectorColorRampFractal(const FSWGIffReader& Reader, const FSWGIffChunk& AcrfForm, FSWGTerrainAffector& OutAffector)
+{
+	FSWGIffChunk Version, Ihdr, DataForm, ParmChunk;
+	if (!Reader.FindChildForm(AcrfForm, SWG_IFF_TAG('0','0','0','1'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
+
+	FString UnusedName;
+	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
+
+	// Nested FORM DATA > PARM like AffectorHeightFractal (retail loader 0xb8b5a0).
+	if (!Reader.FindChildForm(Version, SWGIffTags::Data, DataForm)) return false;
+	if (!Reader.FindChildChunk(DataForm, SWG_IFF_TAG('P','A','R','M'), ParmChunk) || ParmChunk.DataSize < 9) return false;
+
+	const uint8* D = Reader.GetChunkData(ParmChunk);
+	OutAffector.Type = ESWGTerrainAffectorType::ColorRampFractal;
+	OutAffector.FractalId = (int32)ReadUInt32LE(D, 0);
+	OutAffector.ColorOperation = (int32)ReadUInt32LE(D, 4);
+	OutAffector.ColorRampPath = ReadNullTerminatedStringAt(Reader, ParmChunk, 8).Replace(TEXT("\\"), TEXT("/"));
+	return true;
+}
+
+bool FSWGTerrainReader::ReadAffectorExclude(const FSWGIffReader& Reader, const FSWGIffChunk& AexcForm, FSWGTerrainAffector& OutAffector)
+{
+	FSWGIffChunk Version, Ihdr;
+	if (!Reader.FindChildForm(AexcForm, SWG_IFF_TAG('0','0','0','0'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
+
+	FString UnusedName;
+	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
+	OutAffector.Type = ESWGTerrainAffectorType::Exclude;
+	return true;
+}
+
+bool FSWGTerrainReader::ReadAffectorEnvironment(const FSWGIffReader& Reader, const FSWGIffChunk& AenvForm, FSWGTerrainAffector& OutAffector)
+{
+	FSWGIffChunk Version, Ihdr, DataChunk;
+	if (!Reader.FindChildForm(AenvForm, SWG_IFF_TAG('0','0','0','0'), Version)) return false;
+	if (!Reader.FindChildForm(Version, SWG_IFF_TAG('I','H','D','R'), Ihdr)) return false;
+
+	FString UnusedName;
+	ReadInformationHeader(Reader, Ihdr, UnusedName, OutAffector.bEnabled);
+
+	if (!Reader.FindChildChunk(Version, SWGIffTags::Data, DataChunk)) return false;
+	if (DataChunk.DataSize < 12) return false;
+
+	const uint8* D = Reader.GetChunkData(DataChunk);
+	OutAffector.Type = ESWGTerrainAffectorType::Environment;
+	OutAffector.EnvironmentFamilyId = (int32)ReadUInt32LE(D, 0);
+	OutAffector.EnvironmentUnknown = (int32)ReadUInt32LE(D, 4);
+	OutAffector.EnvironmentWeight = ReadFloatLE(D, 8);
+	return true;
+}
+
+bool FSWGTerrainReader::ReadEnvironmentGroup(const FSWGIffReader& Reader, const FSWGIffChunk& EgrpForm, TArray<FSWGEnvironmentFamily>& OutFamilies)
+{
+	const TArray<FSWGIffChunk> VersionForms = Reader.FindChildForms(EgrpForm);
+	if (VersionForms.Num() == 0) return false;
+
+	for (const FSWGIffChunk& Child : Reader.ReadChildren(VersionForms[0]))
+	{
+		FSWGIffChunk DataChunk;
+		if (!Child.IsForm() || Child.FormType != SWG_IFF_TAG('E','F','A','M') || !Reader.FindChildChunk(Child, SWGIffTags::Data, DataChunk))
+		{
+			continue;
+		}
+
+		const uint8* D = Reader.GetChunkData(DataChunk);
+		const int32 Size = Reader.GetChunkSize(DataChunk);
+		if (Size < 5) continue;
+
+		FSWGEnvironmentFamily Family;
+		Family.FamilyId = (int32)ReadUInt32LE(D, 0);
+		int32 Offset = 4;
+		const int32 NameStart = Offset;
+		while (Offset < Size && D[Offset] != 0) { ++Offset; }
+		Family.Name = FString::ConstructFromPtrSize((const ANSICHAR*)(D + NameStart), Offset - NameStart);
+		++Offset;
+
+		if (Offset + 7 > Size) continue;
+		Family.Color = FColor(D[Offset], D[Offset + 1], D[Offset + 2]);
+		Family.Weight = ReadFloatLE(D, Offset + 3);
+		OutFamilies.Add(MoveTemp(Family));
+	}
+	return OutFamilies.Num() > 0;
 }
 
 bool FSWGTerrainReader::ReadAffectorFlora(const FSWGIffReader& Reader, const FSWGIffChunk& AffectorForm, FSWGIffTag VersionTag, ESWGTerrainAffectorType Type, FSWGTerrainAffector& OutAffector)
@@ -510,6 +634,11 @@ bool FSWGTerrainReader::ReadAffector(const FSWGIffReader& Reader, const FSWGIffC
 	if (AffectorForm.FormType == SWG_IFF_TAG('A','R','O','A')) return ReadAffectorRoad(Reader, AffectorForm, OutAffector);
 	if (AffectorForm.FormType == SWG_IFF_TAG('A','S','C','N')) return ReadAffectorShaderConstant(Reader, AffectorForm, OutAffector);
 	if (AffectorForm.FormType == SWG_IFF_TAG('A','S','R','P')) return ReadAffectorShaderReplace(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','E','N','V')) return ReadAffectorEnvironment(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','C','C','N')) return ReadAffectorColorConstant(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','C','R','H')) return ReadAffectorColorRampHeight(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','C','R','F')) return ReadAffectorColorRampFractal(Reader, AffectorForm, OutAffector);
+	if (AffectorForm.FormType == SWG_IFF_TAG('A','E','X','C')) return ReadAffectorExclude(Reader, AffectorForm, OutAffector);
 	return false;
 }
 
@@ -667,7 +796,8 @@ bool FSWGTerrainReader::ReadLayer(const FSWGIffReader& Reader, const FSWGIffChun
 			}
 		}
 		else if (Child.IsForm() && (Child.FormType == SWG_IFF_TAG('A','H','C','N') || Child.FormType == SWG_IFF_TAG('A','H','F','R') || Child.FormType == SWG_IFF_TAG('A','H','T','R') || Child.FormType == SWG_IFF_TAG('A','R','O','A') || Child.FormType == SWG_IFF_TAG('A','S','C','N') || Child.FormType == SWG_IFF_TAG('A','S','R','P')
-			|| Child.FormType == SWG_IFF_TAG('A','F','S','C') || Child.FormType == SWG_IFF_TAG('A','F','S','N') || Child.FormType == SWG_IFF_TAG('A','F','D','N') || Child.FormType == SWG_IFF_TAG('A','F','D','F')))
+			|| Child.FormType == SWG_IFF_TAG('A','F','S','C') || Child.FormType == SWG_IFF_TAG('A','F','S','N') || Child.FormType == SWG_IFF_TAG('A','F','D','N') || Child.FormType == SWG_IFF_TAG('A','F','D','F') || Child.FormType == SWG_IFF_TAG('A','E','N','V')
+			|| Child.FormType == SWG_IFF_TAG('A','C','C','N') || Child.FormType == SWG_IFF_TAG('A','C','R','H') || Child.FormType == SWG_IFF_TAG('A','C','R','F') || Child.FormType == SWG_IFF_TAG('A','E','X','C')))
 		{
 			FSWGTerrainAffector Affector;
 			if (ReadAffector(Reader, Child, Affector))
@@ -738,10 +868,13 @@ bool FSWGTerrainReader::ReadShadersGroup(const FSWGIffReader& Reader, const FSWG
 		FSWGShaderFamily Family;
 		Family.FamilyId = FamilyId;
 		Family.Name = ReadNullTerminated(Offset);
-		ReadNullTerminated(Offset); // fileName — gameplay metadata (cover/surfaceType), not a texture reference; see FSWGShaderFamily's comment.
+		Family.SurfaceFileName = ReadNullTerminated(Offset); // gameplay metadata (cover/surfaceType), not a texture reference
 
 		Offset += 3; // color (3 bytes)
-		Offset += 8; // var7 + weight (floats)
+		if (Offset + 8 > Size) continue;
+		Family.UnclassifiedFloat = ReadFloatLE(D, Offset);
+		Family.PaintThreshold = ReadFloatLE(D, Offset + 4);
+		Offset += 8;
 
 		if (Offset + 4 > Size) continue;
 		const int32 NumLayers = (int32)ReadUInt32LE(D, Offset);
@@ -1086,7 +1219,7 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 	if (!Reader.FindChildForm(PtatVersionForm, SWG_IFF_TAG('T','G','E','N'), TgenForm)) return false;
 	if (!Reader.FindChildForm(TgenForm, SWG_IFF_TAG('0','0','0','0'), TgenForm0000)) return false;
 
-	// EGRP (environment group) is skipped structurally. SGRP (shader families),
+	// EGRP (environment families), SGRP (shader families),
 	// FGRP (mesh flora families) and RGRP (radial flora families) are parsed —
 	// see FSWGShaderFamily / FSWGFloraFamily / FSWGRadialFamily.
 	// The first MGRP (map group) IS parsed, since AffectorHeightFractal needs it; a
@@ -1101,11 +1234,18 @@ bool FSWGTerrainReader::ReadTerrain(const FSWGIffReader& Reader, FSWGTerrainData
 			continue;
 
 		if (Child.FormType == SWG_IFF_TAG('E','G','R','P'))
+		{
+			ReadEnvironmentGroup(Reader, Child, OutData.EnvironmentFamilies);
 			continue;
+		}
 
 		if (Child.FormType == SWG_IFF_TAG('S','G','R','P'))
 		{
 			ReadShadersGroup(Reader, Child, OutData.ShaderFamilies);
+			for (const FSWGShaderFamily& Family : OutData.ShaderFamilies)
+			{
+				OutData.MapGroup.ShaderThresholds.Add(Family.FamilyId, Family.PaintThreshold);
+			}
 			continue;
 		}
 

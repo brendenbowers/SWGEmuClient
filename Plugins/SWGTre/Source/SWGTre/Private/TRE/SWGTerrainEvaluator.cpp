@@ -406,8 +406,10 @@ void FSWGTerrainEvaluator::ApplyAffector(const FSWGTerrainAffector& Affector, fl
 		{
 			if (Affector.Height <= 0.0f) return;
 
+			// Retail AffectorHeightTerrace (0xb770b0): the modulus is floored for negative heights.
+			// Core3 adds the step only at exactly 0, so below sea level the two disagree; retail wins.
 			float Var1 = FMath::Fmod(Height, Affector.Height);
-			if (Height == 0.0f) Var1 += Affector.Height;
+			if (Height < 0.0f) Var1 += Affector.Height;
 
 			float Var2 = Height - Var1;
 			const float Var3 = Affector.Height * Affector.FlatRatio + Var2;
@@ -604,10 +606,11 @@ void FSWGTerrainEvaluator::ApplyFloraAffector(const FSWGTerrainAffector& Affecto
 	}
 
 	Flora.Sample.FamilyId = Affector.FloraFamilyId;
-	Flora.Sample.Density = FMath::Clamp(Affector.bFloraDensityOverride ? Affector.FloraDensity : FamilyDensity, 0.0f, 1.0f);
+	// shortcut: acceptance is deferred to placement; overlapping affector token operations still need the retail generation grid.
+	Flora.Sample.Density = FMath::Clamp((Affector.bFloraDensityOverride ? Affector.FloraDensity : FamilyDensity) * TransformValue, 0.0f, 1.0f);
 }
 
-float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup, FFloraWalk* Flora)
+float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup, FFloraWalk* Flora, FGroundWalk* Ground)
 {
 	float TransformValue = 0.0f;
 	bool bHasEnabledBoundary = false;
@@ -676,7 +679,7 @@ float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X,
 				// compositing GetShaderWeights does.
 				if (Affector.Type == ESWGTerrainAffectorType::ShaderConstant || Affector.Type == ESWGTerrainAffectorType::ShaderReplace)
 				{
-					ApplyShaderAffector(Affector, TransformValue * ParentTransform, Flora->ShaderWeights);
+					ApplyShaderAffector(Affector, TransformValue * ParentTransform, MapGroup, Flora->ShaderWeights);
 					continue;
 				}
 				if (Affector.Type == ESWGTerrainAffectorType::Road && !Affector.bRoadIsHeightType)
@@ -685,13 +688,17 @@ float FSWGTerrainEvaluator::ProcessLayer(const FSWGTerrainLayer& Layer, float X,
 					continue;
 				}
 			}
+			if (Ground)
+			{
+				ApplyGroundAffector(Affector, X, Y, Height, TransformValue * ParentTransform, *Ground);
+			}
 			ApplyAffector(Affector, X, Y, TransformValue * ParentTransform, Height, MapGroup);
 		}
 
 		for (const FSWGTerrainLayer& Child : Layer.Children)
 		{
 			if (!Child.bEnabled) continue;
-			ProcessLayer(Child, X, Y, Height, ParentTransform * TransformValue, MapGroup, Flora);
+			ProcessLayer(Child, X, Y, Height, ParentTransform * TransformValue, MapGroup, Flora, Ground);
 		}
 	}
 
@@ -722,6 +729,75 @@ FSWGTerrainFloraSample FSWGTerrainEvaluator::GetFlora(const FSWGTerrainData& Dat
 	return Flora.Sample;
 }
 
+void FSWGTerrainEvaluator::ApplyGroundAffector(const FSWGTerrainAffector& Affector, float X, float Y, float Height, float TransformValue, FGroundWalk& Ground)
+{
+	// Every retail colour affector returns early unless the amount is positive.
+	if (TransformValue <= 0.0f) return;
+
+	switch (Affector.Type)
+	{
+		case ESWGTerrainAffectorType::Exclude:
+			Ground.Sample.bExcluded = true;
+			break;
+		case ESWGTerrainAffectorType::ColorConstant:
+			Ground.Sample.Tint = SWGTerrainTint::Blend(Ground.Sample.Tint, Affector.ColorRgb, Affector.ColorOperation, TransformValue);
+			break;
+		case ESWGTerrainAffectorType::ColorRampHeight:
+		case ESWGTerrainAffectorType::ColorRampFractal:
+		{
+			const FSWGTerrainColorRamp* Ramp = Ground.Data.ColorRamps.Find(Affector.ColorRampPath);
+			if (!Ramp) break;
+
+			float Fraction;
+			if (Affector.Type == ESWGTerrainAffectorType::ColorRampHeight)
+			{
+				// Retail: skipped outside [min, max], otherwise (height - min) / (max - min) along the ramp.
+				if (Height < Affector.RampMinHeight || Height > Affector.RampMaxHeight) break;
+				Fraction = (Height - Affector.RampMinHeight) / (Affector.RampMaxHeight - Affector.RampMinHeight);
+			}
+			else
+			{
+				const FSWGMapFractal* Fractal = Ground.Data.MapGroup.FindFractal(Affector.FractalId);
+				if (!Fractal) break;
+				Fraction = Fractal->GetNoise(X, Y);
+			}
+
+			FColor RampColor;
+			if (SWGTerrainTint::SampleRamp(*Ramp, Fraction, RampColor))
+			{
+				Ground.Sample.Tint = SWGTerrainTint::Blend(Ground.Sample.Tint, RampColor, Affector.ColorOperation, TransformValue);
+			}
+			break;
+		}
+		default:
+			break;
+	}
+}
+
+float FSWGTerrainEvaluator::GetHeightAndGround(const FSWGTerrainData& Data, float X, float Y, FSWGTerrainGroundSample& OutGround, TArrayView<const FSWGTerrainLayer> ExtraLayers)
+{
+	FGroundWalk Ground{ Data, {} };
+	float Height = 0.0f;
+
+	for (const FSWGTerrainLayer& Layer : Data.TopLevelLayers)
+	{
+		if (Layer.bEnabled)
+		{
+			ProcessLayer(Layer, X, Y, Height, 1.0f, Data.MapGroup, nullptr, &Ground);
+		}
+	}
+	for (const FSWGTerrainLayer& Layer : ExtraLayers)
+	{
+		if (Layer.bEnabled)
+		{
+			ProcessLayer(Layer, X, Y, Height, 1.0f, Data.MapGroup, nullptr, &Ground);
+		}
+	}
+
+	OutGround = Ground.Sample;
+	return Height;
+}
+
 float FSWGTerrainEvaluator::GetHeight(const FSWGTerrainData& Data, float X, float Y, TArrayView<const FSWGTerrainLayer> ExtraLayers)
 {
 	float Height = 0.0f;
@@ -744,42 +820,37 @@ float FSWGTerrainEvaluator::GetHeight(const FSWGTerrainData& Data, float X, floa
 	return Height;
 }
 
-void FSWGTerrainEvaluator::ApplyShaderAffector(const FSWGTerrainAffector& Affector, float TransformValue, TMap<int32, float>& OutWeights)
+void FSWGTerrainEvaluator::ApplyShaderAffector(const FSWGTerrainAffector& Affector, float TransformValue, const FSWGMapGroup& MapGroup, TMap<int32, float>& OutWeights)
 {
-	if (TransformValue == 0.0f) return;
+	if (TransformValue <= 0.0f) return;
 
-	// Affectors carry their own secondary feathering (ShaderFeatheringType/
-	// Amount) on top of whatever the layer's boundaries/filters already
-	// produced — same CalculateFeathering curve reused for boundary/filter
-	// edges elsewhere in this evaluator.
-	const float Strength = CalculateFeathering(FMath::Clamp(TransformValue, 0.0f, 1.0f), Affector.ShaderFeatheringType) * Affector.ShaderFeatheringAmount
-		+ TransformValue * (1.0f - Affector.ShaderFeatheringAmount);
+	// Retail ASCN (0xb87410) / ASRP (0xb878e0): the pixel holds one family and is
+	// overwritten outright once the amount reaches the threshold; there is no blend.
+	auto Paint = [&OutWeights](int32 FamilyId)
+	{
+		OutWeights.Reset();
+		OutWeights.Add(FamilyId, 1.0f);
+	};
 
 	switch (Affector.Type)
 	{
 		case ESWGTerrainAffectorType::ShaderConstant:
 		{
-			// Alpha-over paint: existing weights recede proportionally to make
-			// room for this layer's contribution, keeping the total <= 1.0.
-			for (auto& Pair : OutWeights)
+			const float Threshold = Affector.bShaderThresholdOverride ? Affector.ShaderThresholdOverride : MapGroup.FindShaderThreshold(Affector.ShaderFamilyId);
+			if (TransformValue >= Threshold)
 			{
-				Pair.Value *= (1.0f - Strength);
+				Paint(Affector.ShaderFamilyId);
 			}
-			float& Weight = OutWeights.FindOrAdd(Affector.ShaderFamilyId);
-			Weight += Strength;
 			break;
 		}
 		case ESWGTerrainAffectorType::ShaderReplace:
 		{
-			float* OldWeight = OutWeights.Find(Affector.ShaderOldFamilyId);
-			const float Move = OldWeight ? (*OldWeight * Strength) : 0.0f;
-			if (OldWeight)
+			// Only a pixel currently holding the old family is replaced; the threshold comes from the new family.
+			if (DominantShaderFamily(OutWeights) != Affector.ShaderOldFamilyId) break;
+			const float Threshold = Affector.bShaderThresholdOverride ? Affector.ShaderThresholdOverride : MapGroup.FindShaderThreshold(Affector.ShaderNewFamilyId);
+			if (TransformValue >= Threshold)
 			{
-				*OldWeight -= Move;
-			}
-			if (Move > 0.0f)
-			{
-				OutWeights.FindOrAdd(Affector.ShaderNewFamilyId) += Move;
+				Paint(Affector.ShaderNewFamilyId);
 			}
 			break;
 		}
@@ -833,7 +904,7 @@ int32 FSWGTerrainEvaluator::DominantShaderFamily(const TMap<int32, float>& Weigh
 	return Dominant;
 }
 
-float FSWGTerrainEvaluator::ProcessShaderLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup, TMap<int32, float>& OutWeights)
+float FSWGTerrainEvaluator::ProcessShaderLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup, TMap<int32, float>& OutWeights, int32* OutEnvironment)
 {
 	float TransformValue = 0.0f;
 	bool bHasEnabledBoundary = false;
@@ -884,9 +955,17 @@ float FSWGTerrainEvaluator::ProcessShaderLayer(const FSWGTerrainLayer& Layer, fl
 		for (const FSWGTerrainAffector& Affector : Layer.Affectors)
 		{
 			if (!Affector.bEnabled) continue;
+			if (Affector.Type == ESWGTerrainAffectorType::Environment)
+			{
+				if (OutEnvironment)
+				{
+					*OutEnvironment = Affector.EnvironmentFamilyId;
+				}
+				continue;
+			}
 			if (Affector.Type == ESWGTerrainAffectorType::ShaderConstant || Affector.Type == ESWGTerrainAffectorType::ShaderReplace)
 			{
-				ApplyShaderAffector(Affector, TransformValue * ParentTransform, OutWeights);
+				ApplyShaderAffector(Affector, TransformValue * ParentTransform, MapGroup, OutWeights);
 				continue;
 			}
 
@@ -899,7 +978,7 @@ float FSWGTerrainEvaluator::ProcessShaderLayer(const FSWGTerrainLayer& Layer, fl
 		for (const FSWGTerrainLayer& Child : Layer.Children)
 		{
 			if (!Child.bEnabled) continue;
-			ProcessShaderLayer(Child, X, Y, Height, ParentTransform * TransformValue, MapGroup, OutWeights);
+			ProcessShaderLayer(Child, X, Y, Height, ParentTransform * TransformValue, MapGroup, OutWeights, OutEnvironment);
 		}
 	}
 
@@ -928,4 +1007,83 @@ void FSWGTerrainEvaluator::GetShaderWeights(const FSWGTerrainData& Data, float X
 			ProcessShaderLayer(Layer, X, Y, Height, 1.0f, Data.MapGroup, OutWeights);
 		}
 	}
+}
+
+int32 FSWGTerrainEvaluator::GetEnvironmentFamily(const FSWGTerrainData& Data, float X, float Y, TArrayView<const FSWGTerrainLayer> ExtraLayers)
+{
+	// Same height-less walk as GetShaderWeights; the shader paint is discarded.
+	float Height = 0.0f;
+	int32 Environment = 0;
+	TMap<int32, float> UnusedWeights;
+
+	for (const FSWGTerrainLayer& Layer : Data.TopLevelLayers)
+	{
+		if (Layer.bEnabled)
+		{
+			ProcessShaderLayer(Layer, X, Y, Height, 1.0f, Data.MapGroup, UnusedWeights, &Environment);
+		}
+	}
+	for (const FSWGTerrainLayer& Layer : ExtraLayers)
+	{
+		if (Layer.bEnabled)
+		{
+			ProcessShaderLayer(Layer, X, Y, Height, 1.0f, Data.MapGroup, UnusedWeights, &Environment);
+		}
+	}
+	return Environment;
+}
+
+namespace
+{
+	void CollectLocalWater(const FSWGTerrainLayer& Layer, float X, float Y, float& InOutHeight, bool& bInOutFound)
+	{
+		if (!Layer.bEnabled) return;
+		for (const FSWGTerrainBoundary& Boundary : Layer.Boundaries)
+		{
+			if (!Boundary.bEnabled || !Boundary.bLocalWaterTableEnabled) continue;
+
+			bool bInside = false;
+			if (Boundary.Type == ESWGTerrainBoundaryType::Rectangle)
+			{
+				bInside = X >= FMath::Min(Boundary.X0, Boundary.X1) && X <= FMath::Max(Boundary.X0, Boundary.X1)
+					&& Y >= FMath::Min(Boundary.Y0, Boundary.Y1) && Y <= FMath::Max(Boundary.Y0, Boundary.Y1);
+			}
+			else if (Boundary.Type == ESWGTerrainBoundaryType::Polygon)
+			{
+				const TArray<FVector2D>& Vertices = Boundary.Vertices;
+				for (int32 Index = 0, Previous = Vertices.Num() - 1; Index < Vertices.Num(); Previous = Index++)
+				{
+					if ((Vertices[Index].Y > Y) != (Vertices[Previous].Y > Y)
+						&& X < (Vertices[Previous].X - Vertices[Index].X) * (Y - Vertices[Index].Y) / (Vertices[Previous].Y - Vertices[Index].Y) + Vertices[Index].X)
+					{
+						bInside = !bInside;
+					}
+				}
+			}
+			if (bInside)
+			{
+				InOutHeight = bInOutFound ? FMath::Max(InOutHeight, Boundary.LocalWaterTableHeight) : Boundary.LocalWaterTableHeight;
+				bInOutFound = true;
+			}
+		}
+		for (const FSWGTerrainLayer& Child : Layer.Children)
+		{
+			CollectLocalWater(Child, X, Y, InOutHeight, bInOutFound);
+		}
+	}
+}
+
+bool FSWGTerrainEvaluator::GetWaterHeight(const FSWGTerrainData& Data, float X, float Y, float& OutHeight)
+{
+	bool bFound = Data.Header.bUseGlobalWaterTable;
+	float Height = bFound ? Data.Header.GlobalWaterTableHeight : 0.0f;
+	for (const FSWGTerrainLayer& Layer : Data.TopLevelLayers)
+	{
+		CollectLocalWater(Layer, X, Y, Height, bFound);
+	}
+	if (bFound)
+	{
+		OutHeight = Height;
+	}
+	return bFound;
 }

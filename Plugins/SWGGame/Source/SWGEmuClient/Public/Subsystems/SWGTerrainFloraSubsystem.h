@@ -8,6 +8,7 @@
 #include "SWGTerrainFloraSubsystem.generated.h"
 
 class USWGMeshGeneratorSubsystem;
+class USWGWorldParticlesSubsystem;
 class UInstancedStaticMeshComponent;
 class UStaticMesh;
 class UMaterialInterface;
@@ -83,6 +84,9 @@ private:
 		int32 PlacedEditVersion = -1;
 		int32 WantedEditVersion = 0;
 
+		/** World particle emitters this cell registered (flora .prt children), removed with it. */
+		TArray<int32> ParticleEmitterIds;
+
 		bool bPlaceInFlight = false;
 	};
 
@@ -131,6 +135,13 @@ private:
 	void OnCellPlaced(const FCellKey& Key, int32 Generation, int32 EditVersion, TArray<FSWGTerrainFloraInstance>&& Instances);
 
 	void UnloadCell(const FCellKey& Key);
+
+	// ── Particle children ───────────────────────────────────────────────
+
+	/** Thins a placed cell's .prt children (see SWGFloraParticles::Sample) into world particle emitters. */
+	void RegisterCellParticles(ESWGTerrainFloraTier Tier, FCell& Cell, const TArray<FSWGTerrainFloraInstance>& Instances);
+	void ClearCellParticles(FCell& Cell);
+	USWGWorldParticlesSubsystem* GetWorldParticles() const;
 
 	// ── Instancing ──────────────────────────────────────────────────────
 

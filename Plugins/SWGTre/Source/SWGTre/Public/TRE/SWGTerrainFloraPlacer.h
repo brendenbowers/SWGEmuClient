@@ -23,20 +23,17 @@ struct FSWGTerrainFloraInstance
 	int32 ChildIndex = 0;
 };
 
-/**
- * Deterministic vegetation placement, reproducing what the retail client
- * streamed from FSWGTerrainHeader's tiers: each tier's ground is a grid of
- * TileSize-metre tiles, every tile holds at most one plant, jittered up to
- * TileBorder from the tile's centre, gated by the family/affector density at
- * that point and drawn from a generator seeded by the tile coordinate. A cell
- * is SlotsPerCellAxis tiles square — the unit the streaming layer loads and
- * unloads — so a cell's contents never depend on which cells around it are
- * loaded. Pure functions over immutable terrain data; safe on any thread.
- */
+/** Deterministic vegetation on inset tile grids. Per-tile seeds approximate retail streaming. */
 class SWGTRE_API FSWGTerrainFloraPlacer
 {
 public:
 	static constexpr int32 SlotsPerCellAxis = 8;
+
+	/** Fixed grid of retail's collidable (tree) path, independent of the header tile size. */
+	static constexpr float RetailCollidableTileSize = 16.0f;
+
+	/** Metres one slot spans: 16 for the collidable tier, the header tile size otherwise. */
+	static float GetEffectiveTileSize(const FSWGTerrainData& Data, ESWGTerrainFloraTier Tier);
 
 	/** Raw metres one cell spans for a tier — SlotsPerCellAxis times the tier's TileSize. */
 	static float GetCellSize(const FSWGTerrainData& Data, ESWGTerrainFloraTier Tier);
@@ -51,7 +48,7 @@ public:
 	 * (a global thinning knob). IsBlocked rejects a raw XY position — ground
 	 * under a building's room, say — before anything is evaluated there.
 	 * Children whose appearance is a particle effect (.prt) still take their
-	 * slot, keeping the distribution of the remaining children retail's.
+	 * slot, preserving their weight in family selection.
 	 */
 	static void PlaceCell(const FSWGTerrainData& Data, TArrayView<const FSWGTerrainLayer> ExtraLayers, ESWGTerrainFloraTier Tier, const FIntPoint& CellCoord, float DensityScale, TFunctionRef<bool(const FVector2D&)> IsBlocked, TArray<FSWGTerrainFloraInstance>& OutInstances);
 

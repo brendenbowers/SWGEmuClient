@@ -1,7 +1,10 @@
 #include "Subsystems/SWGTerrainFloraSubsystem.h"
 
+#include "Common/SWGFloraParticles.h"
 #include "Common/SWGWorldScale.h"
+#include "Engine/GameInstance.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
+#include "Subsystems/SWGWorldParticlesSubsystem.h"
 #include "TRE/SWGMeshReader.h"
 #include "Async/Async.h"
 #include "HAL/IConsoleManager.h"
@@ -34,16 +37,24 @@ namespace
 		TEXT("swg.FloraDistanceScale"), 1.0f,
 		TEXT("Multiplies each tier's authored streaming distance (FSWGTerrainHeader)."));
 
+	TAutoConsoleVariable<int32> CVarFloraParticles(
+		TEXT("swg.Fx.FloraParticles"), 1,
+		TEXT("Plays the .prt flora children (butterflies, insects, fish, lava) as world particle emitters."));
+
+	TAutoConsoleVariable<float> CVarFloraParticleFraction(
+		TEXT("swg.Fx.FloraFraction"), 1.0f,
+		TEXT("Share (0..1) of a cell's .prt flora placements eligible to become emitters."));
+
+	TAutoConsoleVariable<float> CVarFloraParticleSpacing(
+		TEXT("swg.Fx.FloraMinSpacing"), 30.0f,
+		TEXT("Metres between kept .prt flora emitters, so a butterfly field is a few swarms rather than thousands of effects."));
+
+	TAutoConsoleVariable<int32> CVarFloraParticlesPerCell(
+		TEXT("swg.Fx.FloraEmittersPerCell"), 128,
+		TEXT("Most .prt flora emitters kept for one placement cell."));
+
 	constexpr uint32 RadialBillboardMeshVersion = 1;
 
-	/**
-	 * Multiplied into every placement density. Calibrated by eye against the
-	 * retail client on creature_test (2026-09-18): one candidate per
-	 * authored tile at the layer's density reads ~25% denser than retail.
-	 * Retail's exact per-tile pass/fail comes from its terrain generator's
-	 * random stream and isn't reproducible from position data alone.
-	 */
-	constexpr float RetailDensityCalibration = 0.8f;
 
 	const TCHAR* FloraTierName(ESWGTerrainFloraTier Tier)
 	{
@@ -224,6 +235,10 @@ void USWGTerrainFloraSubsystem::SpawnFloraActor()
 void USWGTerrainFloraSubsystem::ResetAll()
 {
 	++Generation;
+	for (TPair<FCellKey, FCell>& Pair : Cells)
+	{
+		ClearCellParticles(Pair.Value);
+	}
 	Cells.Reset();
 	PlaceQueue.Reset();
 	Appearances.Reset();
@@ -397,7 +412,7 @@ void USWGTerrainFloraSubsystem::StartCellPlacement(const FCellKey& Key)
 
 	const int32 JobGeneration = Generation;
 	const int32 JobEditVersion = Cell->WantedEditVersion;
-	const float DensityScale = FMath::Max(0.0f, CVarFloraDensityScale.GetValueOnGameThread()) * RetailDensityCalibration;
+	const float DensityScale = FMath::Max(0.0f, CVarFloraDensityScale.GetValueOnGameThread());
 
 	Async(EAsyncExecution::ThreadPool, [this, Key, Source, JobGeneration, JobEditVersion, DensityScale]()
 		{
@@ -443,6 +458,8 @@ void USWGTerrainFloraSubsystem::OnCellPlaced(const FCellKey& Key, int32 JobGener
 	Cell->Components.Reset();
 	Cell->PendingGroups.Reset();
 
+	ClearCellParticles(*Cell);
+	RegisterCellParticles(Key.Tier, *Cell, Instances);
 	BuildInstanceGroups(Key.Tier, Instances, Cell->PendingGroups);
 	FlushPendingGroups(Key, *Cell);
 
@@ -461,6 +478,7 @@ void USWGTerrainFloraSubsystem::UnloadCell(const FCellKey& Key)
 		return;
 	}
 	PlaceQueue.Remove(Key);
+	ClearCellParticles(Cell);
 
 	for (UInstancedStaticMeshComponent* Component : Cell.Components)
 	{
@@ -470,6 +488,81 @@ void USWGTerrainFloraSubsystem::UnloadCell(const FCellKey& Key)
 		}
 	}
 	// A placement in flight lands on a missing cell and is dropped there.
+}
+
+// ── Particle children ───────────────────────────────────────────────────
+
+USWGWorldParticlesSubsystem* USWGTerrainFloraSubsystem::GetWorldParticles() const
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	const UWorld* World = GameInstance ? GameInstance->GetWorld() : nullptr;
+	return World ? World->GetSubsystem<USWGWorldParticlesSubsystem>() : nullptr;
+}
+
+void USWGTerrainFloraSubsystem::ClearCellParticles(FCell& Cell)
+{
+	if (USWGWorldParticlesSubsystem* Particles = GetWorldParticles())
+	{
+		for (const int32 EmitterId : Cell.ParticleEmitterIds)
+		{
+			Particles->RemoveEmitter(EmitterId);
+		}
+	}
+	Cell.ParticleEmitterIds.Reset();
+}
+
+void USWGTerrainFloraSubsystem::RegisterCellParticles(ESWGTerrainFloraTier Tier, FCell& Cell, const TArray<FSWGTerrainFloraInstance>& Instances)
+{
+	USWGWorldParticlesSubsystem* Particles = GetWorldParticles();
+	if (!Planet || !Particles || CVarFloraParticles.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+
+	const bool bRadial = SWGIsRadialFloraTier(Tier);
+	TArray<SWGFloraParticles::FPlacement> Candidates;
+	for (const FSWGTerrainFloraInstance& Instance : Instances)
+	{
+		const FString* Name = nullptr;
+		if (bRadial)
+		{
+			const FSWGRadialFamily* Family = Planet->FindRadialFamily(Instance.FamilyId);
+			Name = Family && Family->Children.IsValidIndex(Instance.ChildIndex) ? &Family->Children[Instance.ChildIndex].ShaderName : nullptr;
+		}
+		else
+		{
+			const FSWGFloraFamily* Family = Planet->FindFloraFamily(Instance.FamilyId);
+			Name = Family && Family->Children.IsValidIndex(Instance.ChildIndex) ? &Family->Children[Instance.ChildIndex].AppearanceName : nullptr;
+		}
+		if (!Name || !Name->EndsWith(TEXT(".prt"), ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		SWGFloraParticles::FPlacement& Placement = Candidates.AddDefaulted_GetRef();
+		Placement.PrtPath = Name->Contains(TEXT("/")) ? *Name : TEXT("appearance/") + *Name;
+		Placement.RawPosition = Instance.RawPosition;
+		Placement.YawRadians = Instance.YawRadians;
+	}
+	if (Candidates.IsEmpty())
+	{
+		return;
+	}
+
+	SWGFloraParticles::FSampleSettings Settings;
+	Settings.Fraction = CVarFloraParticleFraction.GetValueOnGameThread();
+	Settings.MinSpacingMeters = CVarFloraParticleSpacing.GetValueOnGameThread();
+	Settings.MaxPerCell = CVarFloraParticlesPerCell.GetValueOnGameThread();
+	for (const int32 CandidateIndex : SWGFloraParticles::Sample(Candidates, Settings))
+	{
+		const SWGFloraParticles::FPlacement& Placement = Candidates[CandidateIndex];
+		const FTransform Transform(FQuat(FVector::UpVector, -Placement.YawRadians), SWGToUnrealSpace(Placement.RawPosition));
+		const int32 EmitterId = Particles->AddEmitter(ESWGWorldEmitterKind::Flora, Placement.PrtPath, Transform);
+		if (EmitterId != 0)
+		{
+			Cell.ParticleEmitterIds.Add(EmitterId);
+		}
+	}
 }
 
 // ── Instancing ──────────────────────────────────────────────────────────
