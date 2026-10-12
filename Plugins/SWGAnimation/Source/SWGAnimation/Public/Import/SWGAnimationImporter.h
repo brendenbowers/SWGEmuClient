@@ -21,12 +21,22 @@ struct FSWGAnimBoneTrackData
 	TArray<FVector> ScaleKeys;
 };
 
+/** One MSGS event occurrence. */
+struct FSWGAnimEventBuildData
+{
+	FName EventName;
+	int32 Frame = 0;
+};
+
 /** Everything FSWGAnimationImporter::BuildAnimSequenceData produces — plain
  *  data only, safe to build on a worker thread and hand over to
  *  FSWGAnimationImporter::FinalizeAnimSequence on the game thread. */
 struct FSWGAnimSequenceBuildData
 {
 	TArray<FSWGAnimBoneTrackData> BoneTracks;
+
+	/** .ans MSGS events, one entry per frame occurrence; FinalizeAnimSequence turns them into USWGAnimEventNotify. */
+	TArray<FSWGAnimEventBuildData> Events;
 	int32 FrameRate = 30;
 	int32 FrameCount = 1;
 };
@@ -42,12 +52,10 @@ class SWGANIMATION_API FSWGAnimationImporter
 public:
 	/**
 	 * Bones the clip doesn't animate (not present in Animation.BoneTracks)
-	 * keep Skeleton's own bind pose rotation for the whole clip. Only the
-	 * root bone gets a translation curve (Animation.RootTranslationDeltas,
-	 * added on top of its bind pose translation) — every other bone's
-	 * position stays constant at its bind pose value, since the source data
-	 * itself only ever supplies one translation curve per clip, not one per
-	 * bone (see FSWGAnimationReader.h). Scale is always constant (1,1,1).
+	 * keep Skeleton's own bind pose rotation for the whole clip. Translation
+	 * deltas are added to each bone's bind position; root translation retains
+	 * vertical bob only because the actor drives horizontal locomotion.
+	 * Scale is always constant (1,1,1).
 	 *
 	 * Sparse per-frame keys (both rotation and root translation) are
 	 * converted to dense per-frame samples via SLERP/LERP interpolation,

@@ -125,6 +125,10 @@ public:
 	 */
 	bool FindTemplateIntParam(const FString& TemplatePath, const TCHAR* Key, int32& OutValue);
 
+	/** FSWGObjectTemplateReader::FindStringFieldInForm / FindIntFieldInForm through the DERV chain (weaponEffect and weaponEffectIndex live in SWOT). */
+	bool FindTemplateFormStringParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, FString& OutValue);
+	bool FindTemplateFormIntParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, int32& OutValue);
+
 	/** FSWGObjectTemplateReader::FindCreatureFloatArrayField through the DERV chain — shared_wookiee_male leaves turnRate to shared_base_player. */
 	bool FindTemplateCreatureFloat(const FString& TemplatePath, const TCHAR* Key, int32 Index, float& OutValue);
 

@@ -208,142 +208,92 @@ TArray<FQuat> FSWGAnimationReader::DecodeStaticRotations(
 	return Result;
 }
 
-TMap<int32, float> FSWGAnimationReader::DecodeChnlChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Chnl)
+TMap<int32, float> FSWGAnimationReader::DecodeChnlChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Chnl, bool bIsCompressed)
 {
 	TMap<int32, float> Result;
-	FSWGIFFChunkReader ChnlReader(Chnl, Reader);
-
-	// [count:uint16], then count repeating 6-byte [frame:uint16][value:float]
-	// records. The chunk size confirms the layout exactly: every CHNL is
-	// count*6 + 2 bytes.
-	//
-	// Misreading the record stride here is quietly catastrophic rather than
-	// merely wrong: garbage values survive into SWGBuildDenseTranslationTrack,
-	// which interpolates toward them, and a root translation of ~1e31 pushes
-	// the mesh's bounds past what FDFMatrix can convert for the GPU scene, so
-	// the primitive is dropped and the character stops rendering entirely.
-	if (!ChnlReader.CanRead(2)) return Result;
-	const uint16 Count = ChnlReader.ReadValueLE<uint16>();
-
-	for (uint16 Sample = 0; Sample < Count && ChnlReader.CanRead(6); ++Sample)
+	FSWGIFFChunkReader Channel(Chnl, Reader);
+	const int32 IndexBytes = bIsCompressed ? 2 : 4;
+	if (!Channel.CanRead(IndexBytes)) return Result;
+	const uint32 Count = bIsCompressed ? Channel.ReadValueLE<uint16>() : Channel.ReadValueLE<uint32>();
+	if (Count > (uint32)(Channel.GetRemaining() / (IndexBytes + 4))) return Result;
+	for (uint32 Index = 0; Index < Count; ++Index)
 	{
-		const int32 FrameIndex = (int32)ChnlReader.ReadValueLE<uint16>();
-		const float Value = ChnlReader.ReadValueLE<float>();
-		Result.Add(FrameIndex, Value);
+		const uint32 Frame = bIsCompressed ? Channel.ReadValueLE<uint16>() : Channel.ReadValueLE<uint32>();
+		const float Value = Channel.ReadValueLE<float>();
+		if (Frame <= MAX_int32 && FMath::IsFinite(Value)) Result.Add((int32)Frame, Value);
 	}
 	return Result;
 }
 
-void FSWGAnimationReader::DecodeLoctChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Loct, TMap<int32, float>& OutX, TMap<int32, float>& OutY)
+void FSWGAnimationReader::DecodeRootTranslation(const FSWGIffReader& Reader, const FSWGIffChunk& InnerForm, FSWGAnimationData& OutAnimation)
 {
-	FSWGIFFChunkReader LoctReader(Loct, Reader);
-
-	// [total-distance:float][count:uint32] header (8 bytes), then frame-0
-	// with no index prefix — [X:float][Y:double] (12 bytes, Y is 8 bytes,
-	// not 4 — see this reader's header comment) — then repeating 14-byte
-	// [frame:uint16][X:float][Y:double] records.
-	if (!LoctReader.CanRead(20)) return;
-	LoctReader.Skip(8); // total-distance + count — unused
-	OutX.Add(0, LoctReader.ReadValueLE<float>());
-	OutY.Add(0, (float)LoctReader.ReadValueLE<double>());
-
-	while (LoctReader.CanRead(14))
+	FSWGIffChunk Loct;
+	if (Reader.FindChildChunk(InnerForm, SWG_IFF_TAG('L','O','C','T'), Loct))
 	{
-		const int32 FrameIndex = (int32)LoctReader.ReadValueLE<uint16>();
-		OutX.Add(FrameIndex, LoctReader.ReadValueLE<float>());
-		OutY.Add(FrameIndex, (float)LoctReader.ReadValueLE<double>());
+		FSWGIFFChunkReader DistanceReader(Loct, Reader);
+		float Distance = 0.f;
+		if (DistanceReader.ReadValueLE(Distance) && FMath::IsFinite(Distance))
+		{
+			OutAnimation.RootTravelDistance = FMath::Abs(Distance) * SWGWorldScale;
+		}
+	}
+	for (const FSWGAnimationBoneTrack& Track : OutAnimation.BoneTracks)
+	{
+		if (!Track.BoneName.Equals(TEXT("root"), ESearchCase::IgnoreCase)) continue;
+		for (const auto& Key : Track.TranslationDeltas)
+		{
+			// The actor drives locomotion; retain vertical bob without sliding at loop seams.
+			OutAnimation.RootTranslationDeltas.Add(Key.Key, FVector(0, 0, Key.Value.Z));
+		}
 	}
 }
 
-void FSWGAnimationReader::DecodeRootTranslation(const FSWGIffReader& Reader, const FSWGIffChunk& InnerForm, FSWGAnimationData& OutAnimation)
+void FSWGAnimationReader::DecodeEvents(const FSWGIffReader& Reader, const FSWGIffChunk& InnerForm, FSWGAnimationData& OutAnimation)
 {
-	FSWGIffChunk AtrnForm;
-	if (!Reader.FindChildForm(InnerForm, SWG_IFF_TAG('A','T','R','N'), AtrnForm)) return;
-
-	const TArray<FSWGIffChunk> ChnlChunks = Reader.FindAllChildChunks(AtrnForm, SWG_IFF_TAG('C','H','N','L'));
-
-	FSWGIffChunk LoctChunk;
-	const bool bHasLoct = Reader.FindChildChunk(InnerForm, SWG_IFF_TAG('L','O','C','T'), LoctChunk);
-
-	// LOCT leads with the clip's total ground travel, which DecodeLoctChunk
-	// skips past — the only record of the authored gait speed, so pull it out
-	// before the per-sample decode.
-	if (bHasLoct)
+	FSWGIffChunk MsgsForm;
+	if (!Reader.FindChildForm(InnerForm, SWG_IFF_TAG('M','S','G','S'), MsgsForm))
 	{
-		FSWGIFFChunkReader DistanceReader(LoctChunk, Reader);
-		float TravelDistance = 0.0f;
-		if (DistanceReader.ReadValueLE(TravelDistance) && FMath::IsFinite(TravelDistance))
+		return;
+	}
+
+	int32 DeclaredCount = 0;
+	FSWGIffChunk InfoChunk;
+	if (Reader.FindChildChunk(MsgsForm, SWGIffTags::Info, InfoChunk))
+	{
+		FSWGIFFChunkReader InfoReader(InfoChunk, Reader);
+		DeclaredCount = InfoReader.ReadValueLE<uint16>();
+	}
+
+	for (const FSWGIffChunk& Mesg : Reader.FindAllChildChunks(MsgsForm, SWG_IFF_TAG('M','E','S','G')))
+	{
+		FSWGIFFChunkReader MesgReader(Mesg, Reader);
+		const int32 FrameCount = MesgReader.ReadValueLE<uint16>();
+
+		FSWGAnimationEvent Event;
+		Event.Name = MesgReader.ReadTerminiatedString();
+		if (Event.Name.IsEmpty() || !MesgReader.CanRead(FrameCount * 2))
 		{
-			OutAnimation.RootTravelDistance = FMath::Abs(TravelDistance) * SWGWorldScale;
+			UE_LOG(LogTemp, Warning, TEXT("FSWGAnimationReader: malformed MESG '%s' (%d frame(s) declared), skipped"), *Event.Name, FrameCount);
+			continue;
 		}
-	}
 
-	TMap<int32, float> HorizontalX, HorizontalY, Vertical;
-	if (bHasLoct)
-	{
-		DecodeLoctChunk(Reader, LoctChunk, HorizontalX, HorizontalY);
-		if (ChnlChunks.Num() > 0)
+		Event.Frames.Reserve(FrameCount);
+		for (int32 FrameIndex = 0; FrameIndex < FrameCount; ++FrameIndex)
 		{
-			Vertical = DecodeChnlChunk(Reader, ChnlChunks[0]);
+			Event.Frames.Add(MesgReader.ReadValueLE<uint16>());
 		}
-	}
-	else if (ChnlChunks.Num() >= 3)
-	{
-		HorizontalX = DecodeChnlChunk(Reader, ChnlChunks[0]);
-		Vertical = DecodeChnlChunk(Reader, ChnlChunks[1]);
-		HorizontalY = DecodeChnlChunk(Reader, ChnlChunks[2]);
-	}
-	else if (ChnlChunks.Num() == 1)
-	{
-		// Only a single channel and no LOCT — best guess is this is the
-		// vertical component alone (matches the walk clip's single-CHNL
-		// case when LOCT is also absent, e.g. a shuffle/idle variant).
-		Vertical = DecodeChnlChunk(Reader, ChnlChunks[0]);
-	}
-	else
-	{
-		return; // no translation data at all — root stays at bind pose
+		OutAnimation.Events.Add(MoveTemp(Event));
 	}
 
-	// Union of every frame index seen across all three channels — a frame
-	// missing from one channel just holds that channel's most recent value
-	// (same "hold" behavior as BuildDenseRotationTrack's sparse interpolation,
-	// but simplified here to nearest-known since these curves are dense/near-
-	// per-frame in every sample seen so far).
-	TSet<int32> AllFrames;
-	for (const auto& Pair : HorizontalX) AllFrames.Add(Pair.Key);
-	for (const auto& Pair : HorizontalY) AllFrames.Add(Pair.Key);
-	for (const auto& Pair : Vertical) AllFrames.Add(Pair.Key);
-
-	auto SampleHold = [](const TMap<int32, float>& Map, int32 Frame) -> float
+	if (OutAnimation.Events.Num() != DeclaredCount)
 	{
-		if (Map.Num() == 0) return 0.0f;
-		if (const float* Exact = Map.Find(Frame)) return *Exact;
-		float Best = 0.0f;
-		int32 BestFrame = -1;
-		for (const auto& Pair : Map)
-		{
-			if (Pair.Key <= Frame && Pair.Key > BestFrame)
-			{
-				BestFrame = Pair.Key;
-				Best = Pair.Value;
-			}
-		}
-		return BestFrame >= 0 ? Best : Map.CreateConstIterator()->Value;
-	};
-
-	for (int32 Frame : AllFrames)
-	{
-		const float RawY = SampleHold(Vertical, Frame); // file's Y (up) axis
-		// In-place preview: keep only the vertical bob and drop the horizontal
-		// advance (HorizontalX/Y), which would otherwise slide the mesh forward
-		// and snap back at the loop seam since the actor isn't driven by root motion.
-		OutAnimation.RootTranslationDeltas.Add(Frame, FVector(0.0f, 0.0f, RawY) * SWGWorldScale);
+		UE_LOG(LogTemp, Verbose, TEXT("FSWGAnimationReader: MSGS INFO declares %d message(s), decoded %d"), DeclaredCount, OutAnimation.Events.Num());
 	}
 }
 
 bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimationData& OutAnimation)
 {
+	OutAnimation = FSWGAnimationData();
 	if (!Reader.IsValid()) return false;
 
 	const TArray<FSWGIffChunk> TopLevel = Reader.ReadChunks();
@@ -433,6 +383,22 @@ bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimati
 			AnimatedBoneCount, QchnChunks.Num());
 	}
 
+	TArray<TMap<int32, float>> TranslationChannels;
+	TArray<float> StaticTranslations;
+	FSWGIffChunk Atrn, Strn;
+	if (Reader.FindChildForm(InnerForm, SWG_IFF_TAG('A','T','R','N'), Atrn))
+	{
+		for (const FSWGIffChunk& Channel : Reader.FindAllChildChunks(Atrn, SWG_IFF_TAG('C','H','N','L')))
+		{
+			TranslationChannels.Add(DecodeChnlChunk(Reader, Channel, bIsCompressed));
+		}
+	}
+	if (Reader.FindChildChunk(InnerForm, SWG_IFF_TAG('S','T','R','N'), Strn))
+	{
+		FSWGIFFChunkReader Values(Strn, Reader);
+		while (Values.CanRead(4)) StaticTranslations.Add(Values.ReadValueLE<float>());
+	}
+
 	for (const FSWGIffChunk& Xfin : Reader.ReadChildren(XfrmForm))
 	{
 		if (Xfin.IsForm() || Xfin.Tag != SWG_IFF_TAG('X','F','I','N'))
@@ -462,6 +428,49 @@ bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimati
 
 		FSWGAnimationBoneTrack Track;
 		Track.BoneName = BoneName;
+		if (!XfinReader.AtEnd())
+		{
+			if (!XfinReader.CanRead(bIsCompressed ? 7 : 16)) return false;
+			const uint32 TranslationMask = bIsCompressed ? XfinReader.ReadValueLE<uint8>() : XfinReader.ReadValueLE<uint32>();
+			TMap<int32, float> Axes[3];
+			TArray<int32> Frames[3];
+			TSet<int32> AllFrames;
+			for (int32 Axis = 0; Axis < 3; ++Axis)
+			{
+				const uint32 Channel = bIsCompressed ? XfinReader.ReadValueLE<uint16>() : XfinReader.ReadValueLE<uint32>();
+				if ((TranslationMask & (8u << Axis)) != 0)
+				{
+					if (Channel >= (uint32)TranslationChannels.Num() || TranslationChannels[Channel].IsEmpty()) return false;
+					Axes[Axis] = TranslationChannels[Channel];
+				}
+				else
+				{
+					if (Channel >= (uint32)StaticTranslations.Num() || !FMath::IsFinite(StaticTranslations[Channel])) return false;
+					Axes[Axis].Add(0, StaticTranslations[Channel]);
+				}
+				Axes[Axis].GetKeys(Frames[Axis]);
+				Frames[Axis].Sort();
+				for (int32 Frame : Frames[Axis]) if (Frame >= 0 && Frame < OutAnimation.FrameCount) AllFrames.Add(Frame);
+			}
+			auto Sample = [](const TMap<int32, float>& Values, const TArray<int32>& Keys, int32 Frame)
+			{
+				int32 Before = Keys[0];
+				for (int32 After : Keys)
+				{
+					if (After >= Frame)
+					{
+						const float Alpha = After == Before ? 0.f : FMath::Clamp((float)(Frame - Before) / (After - Before), 0.f, 1.f);
+						return FMath::Lerp(Values[Before], Values[After], Alpha);
+					}
+					Before = After;
+				}
+				return Values[Before];
+			};
+			for (int32 Frame : AllFrames)
+			{
+				Track.TranslationDeltas.Add(Frame, FVector(Sample(Axes[2], Frames[2], Frame), Sample(Axes[0], Frames[0], Frame), Sample(Axes[1], Frames[1], Frame)) * SWGWorldScale);
+			}
+		}
 
 		if (bHasTrack)
 		{
@@ -470,6 +479,7 @@ bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimati
 				UE_LOG(LogTemp, Warning,
 					TEXT("FSWGAnimationReader: rotation channel %d for bone '%s' is outside %d QCHN chunk(s)"),
 					RotationChannelIndex, *BoneName, QchnChunks.Num());
+				if (!Track.TranslationDeltas.IsEmpty()) OutAnimation.BoneTracks.Add(MoveTemp(Track));
 				continue;
 			}
 
@@ -493,13 +503,14 @@ bool FSWGAnimationReader::ReadAnimation(const FSWGIffReader& Reader, FSWGAnimati
 		else
 		{
 			// No static entry: runtime falls back to the skeleton BPRO bind rotation.
-			continue;
+			if (Track.TranslationDeltas.IsEmpty()) continue;
 		}
 
 		OutAnimation.BoneTracks.Add(MoveTemp(Track));
 	}
 
 	DecodeRootTranslation(Reader, InnerForm, OutAnimation);
+	DecodeEvents(Reader, InnerForm, OutAnimation);
 
 	return OutAnimation.BoneTracks.Num() > 0;
 }

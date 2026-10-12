@@ -409,6 +409,50 @@ bool USWGTreSubsystem::FindTemplateIntParam(const FString& TemplatePath, const T
 	return false;
 }
 
+bool USWGTreSubsystem::FindTemplateFormStringParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, FString& OutValue)
+{
+	FString CurrentPath = TemplatePath;
+	for (int32 Depth = 0; Depth < 16 && !CurrentPath.IsEmpty(); ++Depth)
+	{
+		const FSWGIffReader Reader = CreateIffReader(CurrentPath);
+		if (!Reader.IsValid())
+		{
+			return false;
+		}
+		if (FSWGObjectTemplateReader::FindStringFieldInForm(Reader, FormType, Key, OutValue))
+		{
+			return true;
+		}
+		if (!FSWGObjectTemplateReader::FindDervParentPath(Reader, CurrentPath))
+		{
+			return false;
+		}
+	}
+	return false;
+}
+
+bool USWGTreSubsystem::FindTemplateFormIntParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, int32& OutValue)
+{
+	FString CurrentPath = TemplatePath;
+	for (int32 Depth = 0; Depth < 16 && !CurrentPath.IsEmpty(); ++Depth)
+	{
+		const FSWGIffReader Reader = CreateIffReader(CurrentPath);
+		if (!Reader.IsValid())
+		{
+			return false;
+		}
+		if (FSWGObjectTemplateReader::FindIntFieldInForm(Reader, FormType, Key, OutValue))
+		{
+			return true;
+		}
+		if (!FSWGObjectTemplateReader::FindDervParentPath(Reader, CurrentPath))
+		{
+			return false;
+		}
+	}
+	return false;
+}
+
 bool USWGTreSubsystem::FindTemplateCreatureFloat(const FString& TemplatePath, const TCHAR* Key, int32 Index, float& OutValue)
 {
 	FString CurrentPath = TemplatePath;
@@ -464,8 +508,8 @@ const FSWGUIStyleSheet* USWGTreSubsystem::GetUIStyleSheet()
 		return nullptr;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("USWGTreSubsystem: parsed %s - %d image styles, %d aliases"),
-		*VirtualPath, Sheet->ImageStyles.Num(), Sheet->Aliases.Num());
+	UE_LOG(LogTemp, Log, TEXT("USWGTreSubsystem: parsed %s - %d image styles, %d aliases, %d sound elements"),
+		*VirtualPath, Sheet->ImageStyles.Num(), Sheet->Aliases.Num(), Sheet->ElementSounds.Num());
 	UIStyleSheet = MoveTemp(Sheet);
 	return UIStyleSheet.Get();
 }

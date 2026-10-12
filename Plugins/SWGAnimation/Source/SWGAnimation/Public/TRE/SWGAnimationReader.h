@@ -3,11 +3,19 @@
 #include "CoreMinimal.h"
 #include "TRE/SWGIffReader.h"
 
-/** One bone's decoded rotation keyframes — sparse (only frames actually present in the file). */
+/** One bone's decoded rotation and translation delta keyframes, in UE space. */
 struct FSWGAnimationBoneTrack
 {
 	FString BoneName; // as stored in the file's XFIN entries (lowercase) — matches FSWGMeshData::BoneNames' convention
 	TMap<int32, FQuat> Keyframes; // frame index -> rotation; frame 0 is always present for an animated bone
+	TMap<int32, FVector> TranslationDeltas;
+};
+
+/** One named MSGS event and the frames it fires on (30 fps frame indices, ascending). */
+struct FSWGAnimationEvent
+{
+	FString Name;
+	TArray<int32> Frames;
 };
 
 struct FSWGAnimationData
@@ -18,10 +26,8 @@ struct FSWGAnimationData
 
 	// Root bone's translation delta from its bind pose, per frame — sparse,
 	// already converted to UE space (axis rotation + meters->100uu, matching every
-	// other position value in this codebase). Empty if the clip has no
-	// FORM ATRN/LOCT data at all (root stays at its bind pose translation).
-	// See this file's class comment for the two source encodings this comes
-	// from (CHNL-only vs CHNL+LOCT).
+	// other position value in this codebase). Only vertical bob is applied;
+	// horizontal root travel is driven by the actor.
 	TMap<int32, FVector> RootTranslationDeltas;
 
 	/**
@@ -33,25 +39,37 @@ struct FSWGAnimationData
 	 * LOCT, i.e. one authored in place.
 	 */
 	float RootTravelDistance = 0.0f;
+
+	/** FORM MSGS named events, in file order. Empty for clips without one. */
+	TArray<FSWGAnimationEvent> Events;
 };
 
 /**
- * Parses SWG's .ans keyframe animation format (rotation tracks only; root/bone
- * translation FORM ATRN/CHNL not yet decoded, so imported clips play in place).
+ * Parses SWG's .ans rotation and translation tracks. Horizontal root motion
+ * stays in place; the actor drives locomotion.
  * Undocumented format, reverse-engineered like FSWGSkeletonReader.
  *
  * Two top-level encodings, same outer shape (INFO/XFRM/AROT+QCHN/SROT/ATRN+
  * CHNL/STRN/MSGS): FORM CKAT (compressed quats, 4 bytes/key) and FORM KFAT
  * (raw 4×float32 quats, 16 bytes/key). XFIN bone descriptors are
  * [name, null-terminated][hasTrack:uint8][channelIndex:uint16 (CKAT) or
- * uint32 (KFAT)]. One QCHN per hasTrack=1 bone, in XFRM order; a hasTrack=0
+ * uint32 (KFAT)]. Each index selects a QCHN for hasTrack=1; a hasTrack=0
  * bone's index instead selects a constant rotation from SROT, and only falls
  * back to the bind pose when SROT has no such entry.
  *
  * Sibling order under the version form is XFRM, AROT, SROT, ATRN, STRN — SROT
- * is NOT inside FORM AROT. Root translation comes from ATRN/CHNL (+ LOCT when
- * present); STRN (per-bone static translation) and MSGS (named events) are
- * still not decoded.
+ * is NOT inside FORM AROT. XFIN then stores a translation mask (uint8 CKAT,
+ * uint32 KFAT) and three scalar indices (uint16 CKAT, uint32 KFAT). Bits
+ * 0x08/0x10/0x20 select animated X/Y/Z from ATRN's CHNL array; clear bits
+ * select static float deltas from STRN. Values add to the skeleton bind pose.
+ *
+ * FORM MSGS (a version-form child after STRN; 2802 of 7277 retail clips):
+ * INFO = [uint16 message count], then one MESG per message, laid out
+ * [uint16 frameCount][name, null-terminated][frameCount x uint16 frame]. Frames
+ * are strictly ascending, in the clip's own frame rate (30 fps), and may be 0.
+ * Identical in CKAT and KFAT; checked on every retail clip (chunk sizes add up
+ * exactly, INFO count always equals the MESG count). Names seen: event_footstep,
+ * event_vocalize, event_hit*, event_attack*, fireN, sound_<name>, hpevent_*.
  *
  * CKAT QCHN: [uint16 sample-count][3 per-axis scale bytes], then
  * sample-count 6-byte records [frame:uint16][quat:uint32]. The quat stores
@@ -64,16 +82,9 @@ struct FSWGAnimationData
  * (W,X,Y,Z) with no frame-index prefix, then 20-byte
  * [frame:uint32][4×float32 (W,X,Y,Z)] records.
  *
- * Root translation, in different combinations per file (idle clips: 3×
- * CHNL, no LOCT; locomotion clips: 1× CHNL + LOCT):
- *   CHNL (single-float channel, e.g. vertical bob): [uint32 count][frame-0
- *     value:float] header, then 6-byte [frame:uint16][value:float] records.
- *   LOCT (2D horizontal offset): [total-distance:float][count:uint32]
- *     header, then frame-0 [X:float][Y:double] (Y is 8 bytes), then 14-byte
- *     [frame:uint16][X:float][Y:double] records. Semantic meaning of X/Y
- *     (offset vs velocity, axis mapping) unconfirmed — only the byte layout is.
- * When both are present, LOCT supplies horizontal (X,Y) and CHNL supplies
- * vertical; with only 3× CHNL (no LOCT), each is read as one of the 3 axes.
+ * CHNL is [count][frame,float]*. Count/frame are uint16 in CKAT, uint32 in
+ * KFAT. Root bob uses the root XFIN's Y channel, not the first CHNL. LOCT's
+ * first float is total ground travel, retained for authored gait speed.
  */
 class SWGANIMATION_API FSWGAnimationReader
 {
@@ -97,12 +108,12 @@ private:
 	static TArray<FQuat> DecodeStaticRotations(const FSWGIffReader& Reader,	const FSWGIffChunk& Srot, bool bIsCompressed);
 
 	/** Decodes a single CHNL chunk (one scalar channel) into a sparse frame->value map. */
-	static TMap<int32, float> DecodeChnlChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Chnl);
+	static TMap<int32, float> DecodeChnlChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Chnl, bool bIsCompressed);
 
-	/** Decodes a LOCT chunk into sparse frame->(X,Y) maps — see this file's class comment. */
-	static void DecodeLoctChunk(const FSWGIffReader& Reader, const FSWGIffChunk& Loct, TMap<int32, float>& OutX, TMap<int32, float>& OutY);
+	/** Decodes FORM MSGS (a sibling of ATRN) into OutAnimation.Events; see this file's class comment. */
+	static void DecodeEvents(const FSWGIffReader& Reader, const FSWGIffChunk& InnerForm, FSWGAnimationData& OutAnimation);
 
-	/** Parses FORM ATRN's CHNL children plus an optional sibling LOCT chunk into OutAnimation.RootTranslationDeltas. */
+	/** Retains root vertical bob and LOCT's authored ground travel. */
 	static void DecodeRootTranslation(const FSWGIffReader& Reader, const FSWGIffChunk& InnerForm, FSWGAnimationData& OutAnimation);
 	static FQuat DecodeCompressedQuaternion(
 		uint32 PackedValue,

@@ -41,35 +41,67 @@ namespace
 		FSWGIffChunk ActionsForm;
 		if (Reader.FindChildForm(StatForm, TagActs, ActionsForm))
 		{
-			auto ReadActionChunk = [&Reader, &State](const FSWGIffChunk& Action)
+			auto ParseActionChunk = [&Reader](const FSWGIffChunk& Action, FSWGAnimationAction& OutAction, bool& bOutUseAddTrack)
 			{
 				FSWGIFFChunkReader ActionReader(Action, Reader);
-
-				FString ActionName;
-				FString LogicalAnimationName;
-				if (!ActionReader.ReadTerminiatedString(ActionName) || ActionName.IsEmpty())
+				if (!ActionReader.ReadTerminiatedString(OutAction.ActionName) || OutAction.ActionName.IsEmpty())
 				{
-					return;
+					return false;
 				}
-				ActionReader.ReadTerminiatedString(LogicalAnimationName);
+				ActionReader.ReadTerminiatedString(OutAction.LogicalName);
 
-				State.Actions.Add(MoveTemp(ActionName), MoveTemp(LogicalAnimationName));
+				// [bool 0][bool useAddTrack]; the first one is always zero in shipped data.
+				uint8 FirstFlag = 0;
+				uint8 UseAddTrack = 0;
+				ActionReader.ReadValueLE(FirstFlag);
+				ActionReader.ReadValueLE(UseAddTrack);
+				bOutUseAddTrack = UseAddTrack != 0;
+				return true;
 			};
 
 			for (const FSWGIffChunk& Child : Reader.ReadChildren(ActionsForm))
 			{
+				FSWGAnimationAction Action;
+				bool bUseAddTrack = false;
 				if (Child.Tag == TagActn)
 				{
-					ReadActionChunk(Child);
+					if (ParseActionChunk(Child, Action, bUseAddTrack))
+					{
+						Action.bUseAddTrack = bUseAddTrack;
+					}
+					else
+					{
+						continue;
+					}
 				}
 				else if (Child.IsForm())
 				{
-					FSWGIffChunk WrappedAction;
-					if (Reader.FindChildChunk(Child, TagActn, WrappedAction))
+					// MVAC: the real action, then a machine-named ("action45") one for
+					// the moving variant.
+					const TArray<FSWGIffChunk> Wrapped = Reader.FindAllChildChunks(Child, TagActn);
+					if (Wrapped.Num() == 0 || !ParseActionChunk(Wrapped[0], Action, bUseAddTrack))
 					{
-						ReadActionChunk(WrappedAction);
+						continue;
+					}
+					Action.bUseAddTrack = bUseAddTrack;
+					if (Wrapped.Num() > 1)
+					{
+						FSWGAnimationAction Moving;
+						bool bMovingUseAddTrack = false;
+						if (ParseActionChunk(Wrapped[1], Moving, bMovingUseAddTrack))
+						{
+							Action.MovingLogicalName = MoveTemp(Moving.LogicalName);
+							Action.bMovingUseAddTrack = bMovingUseAddTrack;
+						}
 					}
 				}
+				else
+				{
+					continue;
+				}
+
+				State.Actions.Add(Action.ActionName, Action.LogicalName);
+				State.ActionDetails.Add(Action.ActionName, MoveTemp(Action));
 			}
 		}
 

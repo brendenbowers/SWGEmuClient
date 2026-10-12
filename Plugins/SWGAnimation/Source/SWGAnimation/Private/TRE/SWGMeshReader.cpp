@@ -512,6 +512,15 @@ void FSWGMeshReader::TransformMesh(FSWGMeshData& Mesh, const FSWGMeshPartTransfo
 		}
 		Hardpoint.Rotation = (PartRotation * FRotationMatrix::Make(Hardpoint.Rotation)).ToQuat();
 	}
+	for (FSWGMeshEffectPart& EffectPart : Mesh.EffectParts)
+	{
+		const FVector Old = EffectPart.Translation;
+		for (int32 Row = 0; Row < 3; ++Row)
+		{
+			EffectPart.Translation[Row] = PartRotation.M[Row][0] * Old.X + PartRotation.M[Row][1] * Old.Y + PartRotation.M[Row][2] * Old.Z + PartTranslation[Row];
+		}
+		EffectPart.Rotation = (PartRotation * FRotationMatrix::Make(EffectPart.Rotation)).ToQuat();
+	}
 }
 
 bool FSWGMeshReader::ReadComponentMesh(const FSWGIffReader& Reader, FReadComponentPart ReadPart, FSWGMeshData& OutMesh)
@@ -550,14 +559,25 @@ bool FSWGMeshReader::ReadComponentMesh(const FSWGIffReader& Reader, FReadCompone
 			UE_LOG(LogTemp, Warning, TEXT("FSWGMeshReader: truncated CMPA PART"));
 			continue;
 		}
-		// Particle (.prt) and sprite (.spr) parts are effects, not geometry.
-		if (!PartPath.EndsWith(TEXT(".lod")) && !PartPath.EndsWith(TEXT(".msh")) && !PartPath.EndsWith(TEXT(".cmp")))
-		{
-			continue;
-		}
 		if (!PartPath.StartsWith(TEXT("appearance/")))
 		{
 			PartPath = TEXT("appearance/") + PartPath;
+		}
+		// Particle (.prt) and sprite (.spr) parts are effects, not geometry.
+		if (PartPath.EndsWith(TEXT(".prt")) || PartPath.EndsWith(TEXT(".spr")))
+		{
+			FSWGMeshData EffectOnly;
+			EffectOnly.EffectParts.Add({PartPath, FQuat::Identity, FVector::ZeroVector});
+			if (!Transform.IsIdentity())
+			{
+				TransformMesh(EffectOnly, Transform);
+			}
+			OutMesh.EffectParts.Append(MoveTemp(EffectOnly.EffectParts));
+			continue;
+		}
+		if (!PartPath.EndsWith(TEXT(".lod")) && !PartPath.EndsWith(TEXT(".msh")) && !PartPath.EndsWith(TEXT(".cmp")))
+		{
+			continue;
 		}
 
 		FSWGMeshData PartData;
@@ -572,6 +592,7 @@ bool FSWGMeshReader::ReadComponentMesh(const FSWGIffReader& Reader, FReadCompone
 		}
 		OutMesh.Submeshes.Append(MoveTemp(PartData.Submeshes));
 		OutMesh.Hardpoints.Append(MoveTemp(PartData.Hardpoints));
+		OutMesh.EffectParts.Append(MoveTemp(PartData.EffectParts));
 		if (PartData.bHasBoundingBox)
 		{
 			OutMesh.BoundingBox = OutMesh.bHasBoundingBox ? OutMesh.BoundingBox + PartData.BoundingBox : PartData.BoundingBox;

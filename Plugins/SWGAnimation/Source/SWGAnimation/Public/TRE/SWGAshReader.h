@@ -21,6 +21,29 @@ struct FSWGAnimationStateLink
 	FString TransitionAnimationName;
 };
 
+/**
+ * One FORM ACTS entry, a bare ACTN or a FORM MVAC (EditableMovementAnimationAction,
+ * SWGEmu.exe 0x7f6cb0). An ACTN is [action name][logical animation][bool][bool];
+ * the second bool is useAddTrack (0x7f7d60) — the action plays on the controller's
+ * "add" track over the "loop" track instead of replacing it. The first bool is
+ * zero in every shipped .ash. An MVAC holds two ACTNs and plays the second while
+ * the creature has non-zero velocity (0x7f6f80/0x7f7150), the first otherwise.
+ */
+struct FSWGAnimationAction
+{
+	FString ActionName;
+
+	/** Logical animation played when stationary (or always, for a bare ACTN). */
+	FString LogicalName;
+	bool bUseAddTrack = false;
+
+	/** The MVAC's moving variant; empty for a bare ACTN. Its machine name ("action45") is dropped. */
+	FString MovingLogicalName;
+	bool bMovingUseAddTrack = false;
+
+	bool HasMovingVariant() const { return !MovingLogicalName.IsEmpty() && MovingLogicalName != TEXT("default"); }
+};
+
 /** One node of the animation state hierarchy — a state the creature can be in, and the logical animation it loops while in it. */
 struct FSWGAnimationState
 {
@@ -43,6 +66,9 @@ struct FSWGAnimationState
 	 * means no override here; see ResolveAction.
 	 */
 	TMap<FString, FString> Actions;
+
+	/** The same actions with their track details; Actions is the Logical name of each entry here. */
+	TMap<FString, FSWGAnimationAction> ActionDetails;
 };
 
 /**
@@ -105,6 +131,22 @@ struct FSWGAnimationStateHierarchy
 			}
 		}
 		return FString();
+	}
+
+	/** ResolveAction's counterpart that returns the whole entry (track flags, moving variant); null when undefined. */
+	const FSWGAnimationAction* ResolveActionDetail(const FSWGAnimationState& State, const FString& ActionName) const
+	{
+		for (const FSWGAnimationState* Node = &State; Node; Node = States.IsValidIndex(Node->ParentIndex) ? &States[Node->ParentIndex] : nullptr)
+		{
+			if (const FSWGAnimationAction* Found = Node->ActionDetails.Find(ActionName))
+			{
+				if (!Found->LogicalName.IsEmpty() && Found->LogicalName != TEXT("default"))
+				{
+					return Found;
+				}
+			}
+		}
+		return nullptr;
 	}
 
 	/** Path from the root down to State, as the names FSWGAnimationStateLink::DestinationPath is written in. */
