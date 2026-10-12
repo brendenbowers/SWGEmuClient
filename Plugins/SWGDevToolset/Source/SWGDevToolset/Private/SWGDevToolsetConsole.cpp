@@ -1,6 +1,11 @@
 #include "DevToolset.h"
+#include "SWGFxMaterialBuilder.h"
+#include "SWGObjectScrollBuilder.h"
 #include "SWGSkyMaterialBuilder.h"
+#include "SWGTerrainTintBuilder.h"
 #include "HAL/IConsoleManager.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Containers/Ticker.h"
 
 namespace
 {
@@ -26,5 +31,89 @@ namespace
 		FConsoleCommandDelegate::CreateLambda([]()
 		{
 			SWGSkyMaterials::BuildAll();
+		}));
+
+	FAutoConsoleCommand CreateFxMaterialsCommand(
+		TEXT("swg.CreateFxMaterials"),
+		TEXT("swg.CreateFxMaterials [rebuild] - generates the M_SWGParticle_* masters under /Game/SWGEmu/Materials; rebuild regenerates existing ones. Editor only, never during PIE."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			// Run once the asset registry has finished scanning; headless ExecCmds fire before that and stall.
+			const bool bRebuild = Args.Contains(TEXT("rebuild"));
+			const bool bQuitWhenDone = Args.Contains(TEXT("quit"));
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([bRebuild, bQuitWhenDone](float)
+			{
+				IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+				if (Registry.IsLoadingAssets())
+				{
+					return true;
+				}
+				SWGFxMaterials::BuildAll(bRebuild);
+				if (bQuitWhenDone)
+				{
+					FPlatformMisc::RequestExit(false);
+				}
+				return false;
+			}), 0.5f);
+		}));
+
+	FAutoConsoleCommand ObjectScrollCommand(
+		TEXT("swg.AddScrollToObjectMaterials"),
+		TEXT("swg.AddScrollToObjectMaterials [dump] [quit] - adds ScrollUV1/ScrollUV2 to the object masters (dump only logs their graphs). Editor only, never during PIE."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const bool bDumpOnly = Args.Contains(TEXT("dump"));
+			const bool bQuitWhenDone = Args.Contains(TEXT("quit"));
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([bDumpOnly, bQuitWhenDone](float)
+			{
+				IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+				if (Registry.IsLoadingAssets())
+				{
+					return true;
+				}
+				if (bDumpOnly)
+				{
+					SWGObjectScroll::Dump();
+				}
+				else
+				{
+					SWGObjectScroll::AddToObjectMaterials();
+				}
+				if (bQuitWhenDone)
+				{
+					FPlatformMisc::RequestExit(false);
+				}
+				return false;
+			}), 0.5f);
+		}));
+
+	FAutoConsoleCommand TerrainTintCommand(
+		TEXT("swg.AddTintToTerrainMaterial"),
+		TEXT("swg.AddTintToTerrainMaterial [dump] [quit] - multiplies M_SWGTerrainBlend's base colour by the ground tint carried in the terrain mesh UV1/UV2 (dump only logs the graph). Editor only, never during PIE."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const bool bDumpOnly = Args.Contains(TEXT("dump"));
+			const bool bQuitWhenDone = Args.Contains(TEXT("quit"));
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([bDumpOnly, bQuitWhenDone](float)
+			{
+				IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+				if (Registry.IsLoadingAssets())
+				{
+					return true;
+				}
+				if (bDumpOnly)
+				{
+					SWGTerrainTintMaterial::Dump();
+				}
+				else
+				{
+					SWGTerrainTintMaterial::AddToTerrainMaterial();
+				}
+				if (bQuitWhenDone)
+				{
+					FPlatformMisc::RequestExit(false);
+				}
+				return false;
+			}), 0.5f);
 		}));
 }
