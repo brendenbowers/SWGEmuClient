@@ -1,7 +1,8 @@
 // swg.CreateSkyMaterials — builds the sky-sprite (alpha) and cloud-layer
 // parent materials under /Game/SWGEmu/Materials so the runtime can
 // instance them. The other SWG materials were authored by hand in the
-// editor; these two are generated here so their graphs are reproducible.
+// editor; these are generated here so their graphs are reproducible. The planet
+// materials live in SWGSpacePlanetBuilder (swg.CreateSpacePlanetAssets).
 
 #include "SWGSkyMaterialBuilder.h"
 #include "CoreMinimal.h"
@@ -23,9 +24,16 @@
 #include "Materials/MaterialExpressionOneMinus.h"
 #include "Materials/MaterialExpressionSaturate.h"
 #include "Materials/MaterialExpressionNormalize.h"
+#include "Materials/MaterialExpressionTransform.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
+#include "Materials/MaterialExpressionLinearInterpolate.h"
 #include "Materials/MaterialExpressionArctangent2.h"
 #include "Materials/MaterialExpressionArcsine.h"
 #include "Materials/MaterialExpressionAppendVector.h"
+#include "Materials/MaterialExpressionFresnel.h"
+#include "Materials/MaterialExpressionPower.h"
+#include "Materials/MaterialExpressionTransformPosition.h"
+#include "Materials/MaterialExpressionNoise.h"
 #include "MaterialEditingLibrary.h"
 #include "AssetToolsModule.h"
 #include "Factories/MaterialFactoryNew.h"
@@ -80,6 +88,8 @@ namespace
 
 		Material->MaterialDomain = MD_Surface;
 		Material->BlendMode = BLEND_Translucent;
+		// Backgrounds must composite before heterogeneous gas volumes, rather than covering them after DOF.
+		Material->TranslucencyPass = MTP_BeforeDOF;
 		Material->SetShadingModel(MSM_Unlit);
 		Material->TwoSided = true;
 
@@ -195,13 +205,16 @@ namespace
 
 		Material->MaterialDomain = MD_Surface;
 		Material->BlendMode = BLEND_Additive;
+		Material->TranslucencyPass = MTP_BeforeDOF;
 		Material->SetShadingModel(MSM_Unlit);
 		Material->TwoSided = true;
-		Material->bIsSky = true;
 
 		auto* CameraPosition = AddExpression<UMaterialExpressionCameraPositionWS>(Material, -1500, 0);
 		auto* WorldPosition = AddExpression<UMaterialExpressionWorldPosition>(Material, -1500, 150);
 		auto* ToPixel = AddExpression<UMaterialExpressionSubtract>(Material, -1300, 80);
+		auto* LocalDirection = AddExpression<UMaterialExpressionTransform>(Material, -1225, 80);
+		LocalDirection->TransformSourceType = TRANSFORMSOURCE_World;
+		LocalDirection->TransformType = TRANSFORM_Local;
 		auto* Direction = AddExpression<UMaterialExpressionNormalize>(Material, -1150, 80);
 		auto* DirX = AddExpression<UMaterialExpressionComponentMask>(Material, -1000, 0);
 		DirX->R = true; DirX->G = false; DirX->B = false; DirX->A = false;
@@ -232,7 +245,8 @@ namespace
 
 		UMaterialEditingLibrary::ConnectMaterialExpressions(WorldPosition, TEXT(""), ToPixel, TEXT("A"));
 		UMaterialEditingLibrary::ConnectMaterialExpressions(CameraPosition, TEXT(""), ToPixel, TEXT("B"));
-		UMaterialEditingLibrary::ConnectMaterialExpressions(ToPixel, TEXT(""), Direction, TEXT(""));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(ToPixel, TEXT(""), LocalDirection, TEXT(""));
+		UMaterialEditingLibrary::ConnectMaterialExpressions(LocalDirection, TEXT(""), Direction, TEXT(""));
 		UMaterialEditingLibrary::ConnectMaterialExpressions(Direction, TEXT(""), DirX, TEXT(""));
 		UMaterialEditingLibrary::ConnectMaterialExpressions(Direction, TEXT(""), DirY, TEXT(""));
 		UMaterialEditingLibrary::ConnectMaterialExpressions(Direction, TEXT(""), DirZ, TEXT(""));

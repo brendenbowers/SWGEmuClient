@@ -1,7 +1,11 @@
 #include "DevToolset.h"
 #include "SWGFxMaterialBuilder.h"
+#include "SWGHoloUIBuilder.h"
 #include "SWGObjectScrollBuilder.h"
 #include "SWGSkyMaterialBuilder.h"
+#include "SWGSpaceDustBuilder.h"
+#include "SWGSpaceNebulaBuilder.h"
+#include "SWGSpacePlanetBuilder.h"
 #include "SWGTerrainTintBuilder.h"
 #include "HAL/IConsoleManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -109,6 +113,98 @@ namespace
 				{
 					SWGTerrainTintMaterial::AddToTerrainMaterial();
 				}
+				if (bQuitWhenDone)
+				{
+					FPlatformMisc::RequestExit(false);
+				}
+				return false;
+			}), 0.5f);
+		}));
+
+	FAutoConsoleCommand CreateSpaceNebulaAssetsCommand(
+		TEXT("swg.CreateSpaceNebulaAssets"),
+		TEXT("swg.CreateSpaceNebulaAssets [rebuild] [quit] - generates T_SWGNebulaNoise, M_SWGSpaceNebula and M_SWGSpaceWisp under /Game/SWGEmu; rebuild regenerates existing ones. Editor only, never during PIE."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const bool bRebuild = Args.Contains(TEXT("rebuild"));
+			const bool bQuitWhenDone = Args.Contains(TEXT("quit"));
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([bRebuild, bQuitWhenDone](float)
+			{
+				IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+				if (Registry.IsLoadingAssets())
+				{
+					return true;
+				}
+				SWGSpaceNebulaAssets::BuildAll(bRebuild);
+				if (bQuitWhenDone)
+				{
+					FPlatformMisc::RequestExit(false);
+				}
+				return false;
+			}), 0.5f);
+		}));
+
+	FAutoConsoleCommand CreateSpaceDustAssetsCommand(
+		TEXT("swg.CreateSpaceDustAssets"),
+		TEXT("swg.CreateSpaceDustAssets [rebuild] [quit] - generates M_SWGSpaceDust under /Game/SWGEmu/Materials; rebuild regenerates an existing one. Editor only, never during PIE."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const bool bRebuild = Args.Contains(TEXT("rebuild"));
+			const bool bQuitWhenDone = Args.Contains(TEXT("quit"));
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([bRebuild, bQuitWhenDone](float)
+			{
+				IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+				if (Registry.IsLoadingAssets())
+				{
+					return true;
+				}
+				SWGSpaceDustAssets::BuildAll(bRebuild);
+				if (bQuitWhenDone)
+				{
+					FPlatformMisc::RequestExit(false);
+				}
+				return false;
+			}), 0.5f);
+		}));
+
+	FAutoConsoleCommand CreateSpacePlanetAssetsCommand(
+		TEXT("swg.CreateSpacePlanetAssets"),
+		TEXT("swg.CreateSpacePlanetAssets [rebuild] [quit] - generates M_SWGPlanetAtmosphere, M_SWGPlanetSurface, M_SWGPlanetCloud and M_SWGSunSprite under /Game/SWGEmu/Materials; rebuild regenerates existing ones. Editor only, never during PIE."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const bool bRebuild = Args.Contains(TEXT("rebuild"));
+			const bool bQuitWhenDone = Args.Contains(TEXT("quit"));
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([bRebuild, bQuitWhenDone](float)
+			{
+				IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+				if (Registry.IsLoadingAssets())
+				{
+					return true;
+				}
+				SWGSpacePlanetAssets::BuildAll(bRebuild);
+				if (bQuitWhenDone)
+				{
+					FPlatformMisc::RequestExit(false);
+				}
+				return false;
+			}), 0.5f);
+		}));
+
+	FAutoConsoleCommand CreateHoloUIAssetsCommand(
+		TEXT("swg.CreateHoloUIAssets"),
+		TEXT("swg.CreateHoloUIAssets [rebuild] [quit] - generates M_SWGHoloUI, M_SWGHoloUIArc, M_SWGHoloRadar and M_SWGHologramHud (the piloting HUD hologram materials; the last is M_SWGHologram without depth test) under /Game/SWGEmu/Materials; rebuild regenerates existing ones. Editor only, never during PIE."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const bool bRebuild = Args.Contains(TEXT("rebuild"));
+			const bool bQuitWhenDone = Args.Contains(TEXT("quit"));
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([bRebuild, bQuitWhenDone](float)
+			{
+				IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+				if (Registry.IsLoadingAssets())
+				{
+					return true;
+				}
+				SWGHoloUIAssets::BuildAll(bRebuild);
 				if (bQuitWhenDone)
 				{
 					FPlatformMisc::RequestExit(false);
