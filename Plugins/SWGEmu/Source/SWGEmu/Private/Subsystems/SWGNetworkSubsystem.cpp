@@ -318,6 +318,14 @@ void USWGNetworkSubsystem::ProcessIncomingMessages()
 		TSharedPtr<FSWGNetMessage> Msg = FSWGMessageRegistry::Get().Create(Opcode, Reader);
 		if (!Msg)
 		{
+			// Once per opcode, so a message the server sends that no handler knows is visible without Verbose.
+			static TSet<uint32> ReportedUnhandledOpcodes;
+			bool bAlreadyReported = false;
+			ReportedUnhandledOpcodes.Add(Opcode, &bAlreadyReported);
+			if (!bAlreadyReported)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SWG MSG: first unhandled opcode 0x%08X (%d bytes)"), Opcode, Pkt.Data.Num());
+			}
 			UE_LOG(LogTemp, Verbose, TEXT("SWG MSG: unhandled opcode 0x%08X (%d payload bytes)"),
 				Opcode, Pkt.Data.Num());
 			continue;

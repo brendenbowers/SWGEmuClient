@@ -19,6 +19,7 @@ enum class ESWGObjControllerOp : uint32
 	CombatSpam         = 0x134u, // One line of the combat log
 	ObjectMenuRequest  = 0x146u, // Client: what can I do with this object? (radial menu)
 	ObjectMenuResponse = 0x147u, // The radial menu items the server offers for it
+	Flourish           = 0x166u, // An entertainer performed a flourish (one int, 1-8; -1 = stopping, outro next)
 
 	// ── Crafting ────────────────────────────────────────────────
 	CraftingSchematicList      = 0x102u, // Server: schematics the tool/station offers (session start)
