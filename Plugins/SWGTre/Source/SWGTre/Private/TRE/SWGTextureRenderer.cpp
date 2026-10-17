@@ -4,6 +4,7 @@
 #include "TRE/SWGIffTags.h"
 #include "Engine/Texture2D.h"
 #include "TextureResource.h"
+#include "Async/ParallelFor.h"
 
 namespace
 {
@@ -770,7 +771,8 @@ UTexture2D* FSWGImageTexture::Create(const FSWGImage& Image, const FName& BaseNa
 		const int32 NextHeight = FMath::Max(LevelHeight / 2, 1);
 		TArray<FColor> Next;
 		Next.SetNumUninitialized(NextWidth * NextHeight);
-		for (int32 Y = 0; Y < NextHeight; ++Y)
+		// Rows in parallel: a 4096 planet map is 22 mips of work on the game thread otherwise.
+		ParallelFor(NextHeight, [&](int32 Y)
 		{
 			for (int32 X = 0; X < NextWidth; ++X)
 			{
@@ -785,7 +787,7 @@ UTexture2D* FSWGImageTexture::Create(const FSWGImage& Image, const FName& BaseNa
 				}
 				Next[Y * NextWidth + X] = FColor((Sum[0] + 2) / 4, (Sum[1] + 2) / 4, (Sum[2] + 2) / 4, (Sum[3] + 2) / 4);
 			}
-		}
+		});
 		Level = MoveTemp(Next);
 		LevelWidth = NextWidth;
 		LevelHeight = NextHeight;
