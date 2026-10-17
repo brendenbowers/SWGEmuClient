@@ -14,6 +14,7 @@
 #include "SWGSurveyWidget.h"
 #include "SWGCraftingWidget.h"
 #include "SWGStructurePlacementWidget.h"
+#include "SWGAudioOptionsWidget.h"
 #include "CommonInputSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
 #include "Engine/GameInstance.h"
@@ -224,6 +225,7 @@ void USWGWindowUISubsystem::HandleWindowClosed(USWGWindowWidget* Window)
 		if (USWGUISubsystem* Router = GetRouter()) { Router->NotifyFeatureStateChanged(ESWGUIFeature::Survey); }
 	}
 	if (Window == CraftingWindow) { CraftingWindow = nullptr; }
+	if (Window == AudioOptionsWindow) { AudioOptionsWindow = nullptr; }
 	for (auto It = ExamineWindows.CreateIterator(); It; ++It)
 	{
 		if (It->Value == Window)
@@ -579,6 +581,22 @@ void USWGWindowUISubsystem::OpenCrafting()
 	CraftingWindow = CreateWidget<USWGCraftingWidget>(PlayerController, CraftingClass);
 	ShowWindow(CraftingWindow);
 	CraftingWindow->CenterOnScreen();
+}
+
+// ── Audio options ────────────────────────────────────────────────────────────
+
+void USWGWindowUISubsystem::ToggleAudioOptions()
+{
+	if (AudioOptionsWindow)
+	{
+		AudioOptionsWindow->Close();
+		return;
+	}
+	APlayerController* PlayerController = GetController();
+	if (!PlayerController) { return; }
+	AudioOptionsWindow = CreateWidget<USWGAudioOptionsWidget>(PlayerController);
+	ShowWindow(AudioOptionsWindow);
+	AudioOptionsWindow->CenterOnScreen();
 }
 
 // ── Missions and travel ──────────────────────────────────────────────────────

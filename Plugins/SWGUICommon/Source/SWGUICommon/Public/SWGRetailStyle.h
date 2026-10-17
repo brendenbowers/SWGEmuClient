@@ -82,6 +82,7 @@ public:
 	UFUNCTION() void HandleUnhovered();
 	UFUNCTION() void HandlePressed();
 	UFUNCTION() void HandleReleased();
+	UFUNCTION() void HandleClicked();
 
 private:
 	bool bPressed = false;

@@ -4,6 +4,7 @@
 #include "SWGHoloStyle.h"
 #include "SWGInventoryQuery.h"
 #include "SWGRetailStyle.h"
+#include "SWGUISound.h"
 #include "SWGClickForwarder.h"
 #include "Blueprint/SlateBlueprintLibrary.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
@@ -610,6 +611,7 @@ void USWGHoloCraftingWidget::RefreshAssemblyCard()
 		const FLinearColor Color = SlotEntry.IsFull() ? FullColor : SlotEntry.bOptional ? OptionalEmptyColor : RequiredEmptyColor;
 		UButton* Button = WidgetTree->ConstructWidget<UButton>();
 		Button->SetStyle(SWGHoloStyle::ChipStyle());
+		SWGUISound::BindButton(Button);
 		Button->SetBackgroundColor(Index == FocusedSlotIndex ? FLinearColor(0.12f, 0.55f, 0.7f) : FLinearColor(0.08f, 0.25f, 0.35f));
 		UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
 		Button->AddChild(Row);
@@ -762,6 +764,7 @@ UButton* USWGHoloCraftingWidget::AddStageAction(UPanelWidget* Parent, const FTex
 {
 	UButton* Button = WidgetTree->ConstructWidget<UButton>();
 	Button->SetStyle(SWGHoloStyle::ChipStyle());
+	SWGUISound::BindButton(Button);
 	UTextBlock* Label = WidgetTree->ConstructWidget<UTextBlock>();
 	Label->SetText(Caption);
 	Label->SetFont(SWGHoloStyle::Font(12));

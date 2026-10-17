@@ -1,5 +1,6 @@
 #include "SWGActionSlotWidget.h"
 #include "SWGActionBarWidget.h"
+#include "SWGUISound.h"
 #include "Components/SizeBox.h"
 
 void USWGActionSlotWidget::InitialiseSlot(USWGActionBarWidget* InOwningBar, int32 InSlotIndex, const FText& InKeyLabel)
@@ -65,6 +66,7 @@ void USWGActionSlotWidget::NativeConstruct()
 	if (SlotButton)
 	{
 		SlotButton->OnClicked.AddDynamic(this, &USWGActionSlotWidget::HandleClicked);
+		SWGUISound::BindButton(SlotButton);
 	}
 
 	// The bar sets these before the slot is constructed, so apply them now that

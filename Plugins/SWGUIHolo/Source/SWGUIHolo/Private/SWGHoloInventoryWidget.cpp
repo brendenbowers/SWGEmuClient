@@ -7,6 +7,7 @@
 #include "SWGHoloShelfActor.h"
 #include "SWGHoloStyle.h"
 #include "SWGRetailStyle.h"
+#include "SWGUISound.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/SWGEquipmentComponent.h"
@@ -119,6 +120,7 @@ void USWGHoloInventoryWidget::ApplyHoloStyle()
 	for (UButton* Arrow : { PagePrevious.Get(), PageNext.Get() })
 	{
 		Arrow->SetStyle(SWGHoloStyle::ChipStyle());
+		SWGUISound::BindButton(Arrow);
 		if (UTextBlock* Text = Cast<UTextBlock>(Arrow->GetContent()))
 		{
 			Style(Text, SWGHoloStyle::Font(12), SWGHoloStyle::BrightText);

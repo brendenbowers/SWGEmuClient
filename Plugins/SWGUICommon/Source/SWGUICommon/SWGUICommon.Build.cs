@@ -26,5 +26,8 @@ public class SWGUICommon : ModuleRules
 			"GeometryFramework",
 			"AnimationCore",
 		});
+
+		// Playback only; no SWGAudio type appears in this module's headers.
+		PrivateDependencyModuleNames.Add("SWGAudio");
 	}
 }

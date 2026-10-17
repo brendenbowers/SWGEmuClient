@@ -33,6 +33,9 @@ public:
 	virtual void NotifyDataChanged(ESWGUIFeature Feature) override;
 	virtual void NotifyRadialMenuClosed() override;
 
+	/** The sound options window; not a router feature, so it is opened directly (swg.Audio.Options). */
+	void ToggleAudioOptions();
+
 private:
 	USWGUISubsystem* GetRouter() const;
 	APlayerController* GetController() const;
@@ -90,6 +93,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<class USWGCraftingWidget> CraftingWindow;
+
+	UPROPERTY()
+	TObjectPtr<class USWGAudioOptionsWidget> AudioOptionsWindow;
 
 	UPROPERTY()
 	TObjectPtr<class USWGMissionBrowserWidget> MissionWindow;

@@ -2,6 +2,7 @@
 
 
 #include "ULoginWidget.h"
+#include "SWGUISound.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Misc/ScopeExit.h"
@@ -14,6 +15,7 @@ void ULoginWidget::NativeConstruct()
     if (ConnectButton)
     {
         ConnectButton->OnClicked.AddDynamic(this, &ULoginWidget::OnConnectClicked);
+        SWGUISound::BindButton(ConnectButton);
     }
 
 	if (USWGClientFlowSubsystem* FlowSubsystem = GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>())

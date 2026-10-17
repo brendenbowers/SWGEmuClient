@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "UGalaxySelectWidget.h"
+#include "SWGUISound.h"
 #include "UGalaxyListEntryData.h"
 #include "Subsystems/SWGClientFlowSubsystem.h"
 
@@ -11,10 +12,12 @@ void UGalaxySelectWidget::NativeConstruct()
 	if (BackButton)
 	{
 		BackButton->OnClicked.AddDynamic(this, &UGalaxySelectWidget::OnBackClicked);
+		SWGUISound::BindButton(BackButton);
 	}
 	if (NextButton)
 	{
 		NextButton->OnClicked.AddDynamic(this, &UGalaxySelectWidget::OnNextClicked);
+		SWGUISound::BindButton(NextButton);
 	}
 
 	RefreshGalaxyList();
