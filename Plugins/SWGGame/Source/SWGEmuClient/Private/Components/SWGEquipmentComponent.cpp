@@ -120,7 +120,7 @@ void USWGEquipmentComponent::SetClientDataWearables(const TArray<FSWGClientDataW
 					{
 						Equipment->AttachWearableSkeletalMesh(WearableId, Mesh, Materials);
 					}
-				});
+				}, GetOwner());
 		}
 	}
 }
@@ -148,7 +148,7 @@ void USWGEquipmentComponent::SetMountCovering(const FString& MountAppearancePath
 				{
 					Equipment->AttachWearableSkeletalMesh(WearableId, Mesh, Materials);
 				}
-			});
+			}, GetOwner());
 	}
 }
 
@@ -352,7 +352,7 @@ void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquipt
 				{
 					Equipment->AttachWearableSkeletalMesh(ObjectId, Mesh, Materials);
 				}
-			});
+			}, GetOwner());
 	}
 }
 
@@ -366,7 +366,7 @@ UMeshComponent* USWGEquipmentComponent::FindItemVisual(uint64 ObjectId) const
 	return HardpointComponentsByObjectId.FindRef(ObjectId);
 }
 
-void USWGEquipmentComponent::AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials, int32 RetryCount)
+void USWGEquipmentComponent::AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials, int32 RetryCount, TSharedPtr<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe> LoadingOwner)
 {
 	if (!Mesh || !GetOwner())
 	{
@@ -401,8 +401,10 @@ void USWGEquipmentComponent::AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh*
 		{
 			HeldMaterials.Emplace(Material);
 		}
+		if (!LoadingOwner)
+			if (USWGMeshGeneratorSubsystem* Meshes = GetWorld()->GetGameInstance()->GetSubsystem<USWGMeshGeneratorSubsystem>()) LoadingOwner = Meshes->TrackLoading(GetOwner());
 		FTimerHandle Unused;
-		GetWorld()->GetTimerManager().SetTimer(Unused, [WeakThis, ObjectId, HeldMesh, MeshData, HeldMaterials, RetryCount]()
+		GetWorld()->GetTimerManager().SetTimer(Unused, [WeakThis, ObjectId, HeldMesh, MeshData, HeldMaterials, RetryCount, LoadingOwner]()
 		{
 			if (USWGEquipmentComponent* StrongThis = WeakThis.Get())
 			{
@@ -411,7 +413,7 @@ void USWGEquipmentComponent::AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh*
 				{
 					RetryMaterials.Add(Material.Get());
 				}
-				StrongThis->AttachMeshToHardpoint(ObjectId, HeldMesh.Get(), MeshData, RetryMaterials, RetryCount + 1);
+				StrongThis->AttachMeshToHardpoint(ObjectId, HeldMesh.Get(), MeshData, RetryMaterials, RetryCount + 1, LoadingOwner);
 			}
 		}, BodyMeshPollInterval, false);
 		return;
@@ -443,7 +445,7 @@ void USWGEquipmentComponent::AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh*
 	}
 }
 
-void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkeletalMesh* Mesh, const TArray<UMaterialInterface*>& Materials, int32 RetryCount)
+void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkeletalMesh* Mesh, const TArray<UMaterialInterface*>& Materials, int32 RetryCount, TSharedPtr<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe> LoadingOwner)
 {
 	if (!Mesh || !GetOwner())
 	{
@@ -478,7 +480,9 @@ void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkelet
 			HeldMaterials.Emplace(Material);
 		}
 		FTimerHandle Unused;
-		GetWorld()->GetTimerManager().SetTimer(Unused, [WeakThis, ObjectId, HeldMesh, HeldMaterials, RetryCount]()
+		if (!LoadingOwner)
+			if (USWGMeshGeneratorSubsystem* Meshes = GetWorld()->GetGameInstance()->GetSubsystem<USWGMeshGeneratorSubsystem>()) LoadingOwner = Meshes->TrackLoading(GetOwner());
+		GetWorld()->GetTimerManager().SetTimer(Unused, [WeakThis, ObjectId, HeldMesh, HeldMaterials, RetryCount, LoadingOwner]()
 		{
 			if (USWGEquipmentComponent* StrongThis = WeakThis.Get())
 			{
@@ -487,7 +491,7 @@ void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkelet
 				{
 					RetryMaterials.Add(Material.Get());
 				}
-				StrongThis->AttachWearableSkeletalMesh(ObjectId, HeldMesh.Get(), RetryMaterials, RetryCount + 1);
+				StrongThis->AttachWearableSkeletalMesh(ObjectId, HeldMesh.Get(), RetryMaterials, RetryCount + 1, LoadingOwner);
 			}
 		}, BodyMeshPollInterval, false);
 		return;

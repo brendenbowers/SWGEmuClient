@@ -3,6 +3,7 @@
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGAnimatedMaterialSubsystem.h"
 #include "Common/SWGWorldScale.h"
+#include "Objects/World/SWGShip.h"
 #include "Components/DynamicMeshComponent.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
@@ -533,7 +534,9 @@ USWGMeshGeneratorSubsystem::~USWGMeshGeneratorSubsystem()
 
 void USWGMeshGeneratorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
+	bIsShuttingDown = false;
 	TreSubsystem = Cast<USWGTreSubsystem>(Collection.InitializeDependency(USWGTreSubsystem::StaticClass()));
+	TreSubsystem->OnDeinitializing.AddUObject(this, &USWGMeshGeneratorSubsystem::Deinitialize);
 
 	 MeshUtilities = FModuleManager::LoadModulePtr<IMeshUtilities>("MeshUtilities");
 	 check(MeshUtilities);
@@ -600,11 +603,25 @@ FString USWGMeshGeneratorSubsystem::ResolveCombatActionClip(AActor& Actor, const
 
 void USWGMeshGeneratorSubsystem::Deinitialize()
 {
-	PendingRequests.Reset();
+	if (bIsShuttingDown) return;
+	bIsShuttingDown = true;
+	// Cancel waiting callers before destroying their unresolved promises.
+	TArray<FSWGPendingMeshRequest> CancelledRequests = MoveTemp(PendingRequests);
+	for (FSWGPendingMeshRequest& Request : CancelledRequests)
+	{
+		TSWGScopedPromiseFulfiller<FSWGMeshGenerationResult> ResultGuard(Request.Promise);
+	}
+	// Workers only enqueue game-thread completions; waiting here cannot depend on those completions.
+	for (TFuture<void>& Task : ParsingTasks) Task.Wait();
+	ParsingTasks.Reset();
+	if (SkeletalAnimationPipeline) SkeletalAnimationPipeline->Shutdown();
+	Super::Deinitialize();
 }
 
 void USWGMeshGeneratorSubsystem::Tick(float DeltaTime)
 {
+	if (bIsShuttingDown) return;
+	LoadingRequests.RemoveAll([](const auto& Entry) { return !Entry.IsValid(); });
 	// One request per tick for now — spreads mesh-build work across frames
 	// instead of hitching on a backlog, matching the reasoning (if not yet the
 	// background-thread mechanics) behind USWGTerrainSubsystem's async bake.
@@ -637,11 +654,12 @@ TStatId USWGMeshGeneratorSubsystem::GetStatId() const
 
 bool USWGMeshGeneratorSubsystem::IsTickable() const
 {
-	return true;
+	return !bIsShuttingDown;
 }
 
 TFuture<FSWGMeshGenerationResult> USWGMeshGeneratorSubsystem::RequestMesh(AActor* Actor, const FString& MeshVirtualPath, bool bSkeletal)
 {
+	if (bIsShuttingDown) return MakeFulfilledPromise<FSWGMeshGenerationResult>(FSWGMeshGenerationResult()).GetFuture();
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestMesh called with a null actor"));
@@ -650,17 +668,19 @@ TFuture<FSWGMeshGenerationResult> USWGMeshGeneratorSubsystem::RequestMesh(AActor
 
 	FSWGPendingMeshRequest Request;
 	Request.Actor = Actor;
-	Request.MeshVirtualPaths = { MeshVirtualPath };
+	if (MeshVirtualPath.EndsWith(TEXT(".apt"), ESearchCase::IgnoreCase)) Request.AppearancePath = MeshVirtualPath;
+	else Request.MeshVirtualPaths = { MeshVirtualPath };
 	Request.bSkeletal = bSkeletal;
 	Request.Promise = MakeUnique<TPromise<FSWGMeshGenerationResult>>();
 	TFuture<FSWGMeshGenerationResult> Future = Request.Promise->GetFuture();
-	PendingRequests.Add(MoveTemp(Request));
+	QueueMeshRequest(MoveTemp(Request));
 
 	return Future;
 }
 
 TFuture<FSWGMeshGenerationResult> USWGMeshGeneratorSubsystem::RequestMesh(AActor* Actor, const uint32 TemplateCrc)
 {
+	if (bIsShuttingDown) return MakeFulfilledPromise<FSWGMeshGenerationResult>(FSWGMeshGenerationResult()).GetFuture();
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestMesh called with a null actor"));
@@ -672,13 +692,14 @@ TFuture<FSWGMeshGenerationResult> USWGMeshGeneratorSubsystem::RequestMesh(AActor
 	Request.TemplateCrc = TemplateCrc;
 	Request.Promise = MakeUnique<TPromise<FSWGMeshGenerationResult>>();
 	TFuture<FSWGMeshGenerationResult> Future = Request.Promise->GetFuture();
-	PendingRequests.Add(MoveTemp(Request));
+	QueueMeshRequest(MoveTemp(Request));
 
 	return Future;
 }
 
 void USWGMeshGeneratorSubsystem::RequestMeshForTemplatePath(AActor* Actor, const FString& TemplatePath)
 {
+	if (bIsShuttingDown) return;
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestMeshForTemplatePath called with a null actor"));
@@ -691,13 +712,14 @@ void USWGMeshGeneratorSubsystem::RequestMeshForTemplatePath(AActor* Actor, const
 	// Only world-snapshot objects (buildings, static props, terrain
 	// decoration) go through this entry point — see FSWGPendingMeshRequest::bStatic.
 	Request.bStatic = true;
-	PendingRequests.Add(MoveTemp(Request));
+	QueueMeshRequest(MoveTemp(Request));
 }
 
 void USWGMeshGeneratorSubsystem::RequestItemMesh(uint32 TemplateCrc, int32 ContainmentType, const FSWGCustomizationVariables& Customization,
 	TFunction<void(UStaticMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnStaticComplete,
-	TFunction<void(USkeletalMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnSkeletalComplete)
+	TFunction<void(USkeletalMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnSkeletalComplete, AActor* LoadingOwner)
 {
+	if (bIsShuttingDown) return;
 	if (!OnStaticComplete && !OnSkeletalComplete)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestItemMesh called with no callbacks"));
@@ -731,11 +753,12 @@ void USWGMeshGeneratorSubsystem::RequestItemMesh(uint32 TemplateCrc, int32 Conta
 	Request.Customization = Customization;
 	Request.OnItemMeshReady = MoveTemp(OnStaticComplete);
 	Request.OnItemSkeletalMeshReady = MoveTemp(OnSkeletalComplete);
-	PendingRequests.Add(MoveTemp(Request));
+	QueueMeshRequest(MoveTemp(Request), LoadingOwner);
 }
 
 void USWGMeshGeneratorSubsystem::RequestAppearanceMesh(const FString& AppearancePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)> OnComplete)
 {
+	if (bIsShuttingDown) return;
 	if (!OnComplete)
 	{
 		return;
@@ -752,11 +775,12 @@ void USWGMeshGeneratorSubsystem::RequestAppearanceMesh(const FString& Appearance
 		{
 			OnComplete(Mesh, Materials);
 		};
-	PendingRequests.Add(MoveTemp(Request));
+	QueueMeshRequest(MoveTemp(Request));
 }
 
 void USWGMeshGeneratorSubsystem::RequestTemplateStaticMesh(const FString& TemplatePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)> OnComplete)
 {
+	if (bIsShuttingDown) return;
 	if (!OnComplete)
 	{
 		return;
@@ -769,11 +793,12 @@ void USWGMeshGeneratorSubsystem::RequestTemplateStaticMesh(const FString& Templa
 		{
 			OnComplete(Mesh, Materials);
 		};
-	PendingRequests.Add(MoveTemp(Request));
+	QueueMeshRequest(MoveTemp(Request));
 }
 
 void USWGMeshGeneratorSubsystem::RequestAppearanceMeshWithHardpoints(const FString& AppearancePath, TFunction<void(UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials, const TArray<FSWGMeshHardpoint>& Hardpoints)> OnComplete, const FSWGCustomizationVariables& Customization)
 {
+	if (bIsShuttingDown) return;
 	if (!OnComplete)
 	{
 		return;
@@ -787,19 +812,51 @@ void USWGMeshGeneratorSubsystem::RequestAppearanceMeshWithHardpoints(const FStri
 		{
 			OnComplete(Mesh, Materials, MeshData.Hardpoints);
 		};
+	QueueMeshRequest(MoveTemp(Request));
+}
+
+void USWGMeshGeneratorSubsystem::QueueMeshRequest(FSWGPendingMeshRequest&& Request, AActor* LoadingOwner)
+{
+	Request.LoadingOwner = TrackLoading(LoadingOwner ? LoadingOwner : Request.Actor.Get());
 	PendingRequests.Add(MoveTemp(Request));
+}
+
+TSharedPtr<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe> USWGMeshGeneratorSubsystem::TrackLoading(AActor* Owner)
+{
+	if (!Owner) return nullptr;
+	auto Token = MakeShared<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe>(Owner);
+	LoadingRequests.Add(Token);
+	return Token;
+}
+
+bool USWGMeshGeneratorSubsystem::HasPendingMeshes(TFunctionRef<bool(const AActor*)> IsRelevant) const
+{
+	for (const auto& Entry : LoadingRequests)
+	{
+		const auto Owner = Entry.Pin();
+		if (Owner.IsValid())
+			if (const AActor* Actor = Owner->Get(); IsValid(Actor) && IsRelevant(Actor)) return true;
+	}
+	return false;
 }
 
 void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 {
+	ParsingTasks.RemoveAll([](const TFuture<void>& Task) { return Task.IsReady(); });
 	while (PendingRequests.Num() > 0)
 	{
 		FSWGPendingMeshRequest Request = PendingRequests.Pop();
+		// Parsing must not inspect actors that can be destroyed while the worker runs.
+		const FString ActorName = Request.Actor.IsValid() ? Request.Actor->GetName() : TEXT("<gone>");
+		const bool bIsItemRequest = Request.OnItemMeshReady || Request.OnItemSkeletalMeshReady;
+		const FString ActorClassName = Request.Actor.IsValid() ? Request.Actor->GetClass()->GetName()
+			: (bIsItemRequest ? ASWGItem::StaticClass()->GetName() : TEXT("Unknown"));
 		// Diagnostic: pins down where a request silently vanishes without hitting
 		// any existing error/warning log.
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ProcessNextRequest starting for actor %s (crc %08X, %d path(s) already resolved)"),
-			Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, Request.MeshVirtualPaths.Num());
-		Async(EAsyncExecution::ThreadPool, [this, Request = MoveTemp(Request)]() mutable
+			*ActorName, Request.TemplateCrc, Request.MeshVirtualPaths.Num());
+		const TWeakObjectPtr<USWGMeshGeneratorSubsystem> WeakThis(this);
+		ParsingTasks.Add(Async(EAsyncExecution::ThreadPool, [this, WeakThis, ActorName, ActorClassName, Request = MoveTemp(Request)]() mutable
 			{
 				// Covers every plain "nothing more specific to report" early
 				// return below — no explicit SetValue needed at those sites,
@@ -810,12 +867,13 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 
 				// An actor-less static request (RequestAppearanceMesh) still
 				// gets its callback on failure, so the caller can stop waiting.
-				auto FailItemRequest = [&Request]()
+				auto FailItemRequest = [&Request, WeakThis]()
 					{
 						if (Request.OnItemMeshReady)
 						{
-							AsyncTask(ENamedThreads::GameThread, [OnItemMeshReady = MoveTemp(Request.OnItemMeshReady)]()
+							AsyncTask(ENamedThreads::GameThread, [WeakThis, LoadingOwner = Request.LoadingOwner, OnItemMeshReady = MoveTemp(Request.OnItemMeshReady)]()
 								{
+									if (!WeakThis.IsValid() || WeakThis->bIsShuttingDown) return;
 									OnItemMeshReady(nullptr, FSWGMeshData(), {});
 								});
 						}
@@ -864,13 +922,13 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 
 				if (Request.MeshVirtualPaths.IsEmpty())
 				{
-					UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: no mesh path to parse for actor %s (template CRC %08X)"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc);
+					UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: no mesh path to parse for actor %s (template CRC %08X)"), *ActorName, Request.TemplateCrc);
 					FailItemRequest();
 					return;
 				}
 
 				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: resolved %d mesh path(s) for actor %s (crc %08X): %s"),
-					Request.MeshVirtualPaths.Num(), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
+					Request.MeshVirtualPaths.Num(), *ActorName, Request.TemplateCrc, *FString::Join(Request.MeshVirtualPaths, TEXT(", ")));
 
 				FSWGMeshData MeshData;
 				TArray<FSWGMeshData> LodMeshData;
@@ -891,17 +949,13 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				}
 				MeshData.SourceAppearancePath = Request.AppearancePath;
 				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ParseMesh returned %s for actor %s (crc %08X), %d submesh(es)"),
-					bParsed ? TEXT("true") : TEXT("false"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, MeshData.Submeshes.Num());
+					bParsed ? TEXT("true") : TEXT("false"), *ActorName, Request.TemplateCrc, MeshData.Submeshes.Num());
 				if (!bParsed)
 				{
 					FailItemRequest();
 					return;
 				}
 
-				const bool bIsItemRequest = Request.OnItemMeshReady || Request.OnItemSkeletalMeshReady;
-				const FString ActorClassName = Request.Actor.IsValid()
-					? Request.Actor->GetClass()->GetName()
-					: (bIsItemRequest ? ASWGItem::StaticClass()->GetName() : TEXT("Unknown"));
 				// A static request is keyed by its template, or by the appearance
 				// itself when it came in without one (RequestAppearanceMesh).
 				const FString& StaticKey = Request.TemplatePath.IsEmpty() ? Request.AppearancePath : Request.TemplatePath;
@@ -936,11 +990,12 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 				// its own continuation. Without it this lambda's operator() is const,
 				// Request is a const FSWGPendingMeshRequest, and any attempt to pass
 				// it on selects the (deleted) copy constructor instead of the move.
-				AsyncTask(ENamedThreads::GameThread, [this, Request = MoveTemp(Request), MeshData, LodMeshData = MoveTemp(LodMeshData), CacheHash, DebugName, YawCorrectionDegrees, Mobility, Collision = MoveTemp(Collision), Floor = MoveTemp(Floor), bHasCollision]() mutable
+				AsyncTask(ENamedThreads::GameThread, [this, WeakThis, Request = MoveTemp(Request), MeshData, LodMeshData = MoveTemp(LodMeshData), CacheHash, DebugName, YawCorrectionDegrees, Mobility, Collision = MoveTemp(Collision), Floor = MoveTemp(Floor), bHasCollision]() mutable
 					{
 						// Own guard over the same (moved-in) Promise — the outer
 						// lambda's guard Dismiss()'d before handing off here.
 						TSWGScopedPromiseFulfiller<FSWGMeshGenerationResult> ResultGuard(Request.Promise);
+						if (!WeakThis.IsValid() || WeakThis->bIsShuttingDown) return;
 
 						if (Request.OnItemSkeletalMeshReady && Request.bSkeletal)
 						{
@@ -991,8 +1046,10 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							// guard over the same (about-to-be-moved) Promise.
 							ResultGuard.Dismiss();
 							SkeletalAnimationPipeline->RequestGeneratedSkeletalMesh(SkeletonPath, Request.MeshVirtualPaths, Skeleton)
-								.Next([this, Request = MoveTemp(Request), MeshData, ItemPaletteTints, ItemTextureIndices](USkeletalMesh* GeneratedMesh) mutable
+								.Next([this, WeakThis, Request = MoveTemp(Request), MeshData, ItemPaletteTints, ItemTextureIndices](USkeletalMesh* GeneratedMesh) mutable
 									{
+										TSWGScopedPromiseFulfiller<FSWGMeshGenerationResult> ResultGuard(Request.Promise);
+										if (!WeakThis.IsValid() || WeakThis->bIsShuttingDown) return;
 										// See FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh's
 										// own comment: the importer names each material slot after its
 										// shader path but leaves the material null — resolve the same real
@@ -1008,10 +1065,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 											}
 										}
 										Request.OnItemSkeletalMeshReady(GeneratedMesh, MeshData, Materials);
-										if(Request.Promise.IsValid())
-										{
-											Request.Promise->SetValue(FSWGMeshGenerationResult(GeneratedMesh, MoveTemp(Materials), MoveTemp(MeshData)));
-										}
+										ResultGuard.Succeed(FSWGMeshGenerationResult(GeneratedMesh, MoveTemp(Materials), MoveTemp(MeshData)));
 									});
 							return;
 						}
@@ -1101,7 +1155,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 						// own comment for why this can't be assumed non-null unconditionally.
 						if (SkeletalAnimationPipeline)
 						{
-							SkeletalAnimationPipeline->TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent, PaletteTintsPtr, MorphWeightsPtr, TextureIndicesPtr);
+							SkeletalAnimationPipeline->TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent, PaletteTintsPtr, MorphWeightsPtr, TextureIndicesPtr, Request.LoadingOwner);
 							if (Request.bSkeletal && Request.Actor->IsA<ACharacter>())
 							{
 								RegisterCharacterAppearance(*Request.Actor, Request.AppearancePath, Request.MeshVirtualPaths);
@@ -1123,7 +1177,7 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 
 						ResultGuard.Succeed(FSWGMeshGenerationResult(MeshComponent, {}, MoveTemp(MeshData)));
 					});
-			});
+			}));
 	}
 }
 
@@ -1704,8 +1758,9 @@ FSWGCustomizationVariables USWGMeshGeneratorSubsystem::ToCustomizationVariables(
 }
 
 void USWGMeshGeneratorSubsystem::RequestWearableMesh(const FString& LmgPath, const TMap<FString, int32>& NamedCustomization,
-	TFunction<void(USkeletalMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnSkeletalComplete)
+	TFunction<void(USkeletalMesh*, const FSWGMeshData, const TArray<UMaterialInterface*>&)> OnSkeletalComplete, AActor* LoadingOwner)
 {
+	if (bIsShuttingDown) return;
 	if (!OnSkeletalComplete)
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGMeshGeneratorSubsystem: RequestWearableMesh called with no callback"));
@@ -1731,7 +1786,7 @@ void USWGMeshGeneratorSubsystem::RequestWearableMesh(const FString& LmgPath, con
 	Request.AppearancePath = LmgPath;
 	Request.Customization = ToCustomizationVariables(NamedCustomization);
 	Request.OnItemSkeletalMeshReady = MoveTemp(OnSkeletalComplete);
-	PendingRequests.Add(MoveTemp(Request));
+	QueueMeshRequest(MoveTemp(Request), LoadingOwner);
 }
 
 bool USWGMeshGeneratorSubsystem::ResolveTemplateStringParam(const FString& TemplatePath, FSWGIffTag FormType, const TCHAR* Key, FString& OutValue)
@@ -1834,7 +1889,10 @@ bool USWGMeshGeneratorSubsystem::ResolvePortalLayoutPath(const FString& Template
 
 bool USWGMeshGeneratorSubsystem::ResolveInteriorLayoutPath(const FString& TemplatePath, FString& OutIlfPath)
 {
-	return ResolveTemplateStringParam(TemplatePath, SWG_IFF_TAG('S','B','O','T'), TEXT("interiorLayoutFileName"), OutIlfPath) && !OutIlfPath.IsEmpty();
+	const FSWGIffReader TemplateReader = TreSubsystem->CreateIffReader(TemplatePath);
+	const bool bShip = TemplateReader.IsValid() && TemplateReader.GetRootFormType() == FName(TEXT("SSHP"));
+	const FSWGIffTag Form = bShip ? SWG_IFF_TAG('S','S','H','P') : SWG_IFF_TAG('S','B','O','T');
+	return ResolveTemplateStringParam(TemplatePath, Form, TEXT("interiorLayoutFileName"), OutIlfPath) && !OutIlfPath.IsEmpty();
 }
 
 bool USWGMeshGeneratorSubsystem::ResolveLodLevels(const FString& LodPath, TArray<FSWGLodLevel>& OutLevels)
@@ -3020,6 +3078,24 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 	UMaterialInterface* Result = nullptr;
 	FSWGShaderData ShaderData;
 	FSWGShaderReader::ReadShader(TreSubsystem->CreateIffReader(ShaderVirtualPath), ShaderData);
+	FSWGEffectData TexturelessEffect;
+	if (ShaderData.Textures.IsEmpty()
+		&& FSWGShaderReader::ReadEffect(TreSubsystem->CreateIffReader(ShaderData.bHasInlineEffect ? ShaderVirtualPath : ShaderData.EffectName), TexturelessEffect)
+		&& !TexturelessEffect.Implementations.IsEmpty()
+		&& !TexturelessEffect.Implementations.ContainsByPredicate([](const FSWGEffectImplementation& Impl) { return !Impl.Passes.IsEmpty(); }))
+	{
+		// Retail collision proxies have no drawing passes; preserve their geometry with zero-opacity rendering.
+		UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGSkySpriteAlpha.M_SWGSkySpriteAlpha"));
+		UTexture2D* Transparent = UTexture2D::CreateTransient(1, 1, PF_B8G8R8A8);
+		if (!Parent || !Transparent) return nullptr;
+		void* Pixel = Transparent->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+		FMemory::Memzero(Pixel, sizeof(FColor));
+		Transparent->GetPlatformData()->Mips[0].BulkData.Unlock(); Transparent->UpdateResource();
+		UMaterialInstanceDynamic* Invisible = UMaterialInstanceDynamic::Create(Parent, this);
+		Invisible->SetTextureParameterValue(TEXT("Diffuse"), Transparent);
+		ObjectMaterialCache.Add(ShaderVirtualPath, Invisible);
+		return Invisible;
+	}
 
 	// SWTS flipbooks and SWSH switches carry no textures of their own: take the effect from the base
 	// (or first) shader and collect one diffuse texture per frame for USWGAnimatedMaterialSubsystem.
@@ -3119,11 +3195,11 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 		// effect names one (a_punchout: 128), floored at a third for blended
 		// effects whose test is only a near-zero fringe cut (e_radialflora: 7).
 		const FSWGEffectRenderStates EffectStates = GetOrReadEffectRenderStates(ShaderData.EffectName);
-		// Glass is the exception: every a_alpha_envmask* shader in the TRE is a
-		// window, bottle, lens or windshield. Plain a_alpha shares its render
+		// Glass is the exception: alpha_envmask shader families render windows,
+		// bottles, lenses and windshields. Plain a_alpha shares its render
 		// states but is mostly leaf cards, so it stays masked.
 		const bool bGlass = EffectStates.bAlphaBlend && !EffectStates.bWritesDepth
-			&& ShaderData.EffectName.Contains(TEXT("a_alpha_envmask"), ESearchCase::IgnoreCase);
+			&& ShaderData.EffectName.Contains(TEXT("_alpha_envmask"), ESearchCase::IgnoreCase);
 		if (bGlass && !ObjectMaterialParentTranslucent)
 		{
 			ObjectMaterialParentTranslucent = LoadObject<UMaterialInterface>(nullptr,
@@ -3649,7 +3725,10 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 		MeshComponent->SetMaterial(i, Materials[i]);
 	}
 
-	MeshComponent->SetMobility(Mobility);
+	const ASWGCell* ShipCell = Cast<ASWGCell>(&Actor);
+	const bool bShipGeometry = Actor.IsA<ASWGShip>() || (ShipCell && ShipCell->OwningBuilding.IsValid() && ShipCell->OwningBuilding->IsA<ASWGShip>());
+	const USceneComponent* AttachedParent = Actor.GetRootComponent() ? Actor.GetRootComponent()->GetAttachParent() : nullptr;
+	MeshComponent->SetMobility(bShipGeometry || (AttachedParent && AttachedParent->Mobility == EComponentMobility::Movable) ? EComponentMobility::Movable : Mobility);
 
 	// Retail draws nothing past the last level's far distance.
 	if (!LodLevels.IsEmpty())
@@ -3687,13 +3766,18 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 				const float NetworkZ = Creature ? Creature->LastNetworkZ : (Actor.GetActorLocation().Z - Capsule->GetScaledCapsuleHalfHeight());
 
 				const FVector Extent = MeshBounds.GetExtent();
+				const float OldHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
 				const float NewHalfHeight = FMath::Max(Extent.Z, 1.0f);
 				const float NewRadius = FMath::Clamp(FMath::Min(Extent.X, Extent.Y), 1.0f, NewHalfHeight);
 				Capsule->SetCapsuleSize(NewRadius, NewHalfHeight);
 
-				FVector CorrectedLocation = Actor.GetActorLocation();
-				CorrectedLocation.Z = NetworkZ + Capsule->GetScaledCapsuleHalfHeight();
-				Actor.SetActorLocation(CorrectedLocation);
+				USWGMovementComponent* Movement = Cast<USWGMovementComponent>(Character->GetCharacterMovement());
+				if (!Movement || !Movement->AdjustNetworkCapsuleHeight(Capsule->GetScaledCapsuleHalfHeight() - OldHalfHeight))
+				{
+					FVector CorrectedLocation = Actor.GetActorLocation();
+					CorrectedLocation.Z = NetworkZ + Capsule->GetScaledCapsuleHalfHeight();
+					Actor.SetActorLocation(CorrectedLocation);
+				}
 
 				MeshComponent->SetRelativeLocation(FVector(0.0f, 0.0f, -MeshBounds.GetCenter().Z));
 

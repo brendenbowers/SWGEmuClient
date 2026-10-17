@@ -22,6 +22,7 @@ bool FSWGTerminalSpawnHandler::ClassifyGameObjectType(int32 GameObjectType, ESWG
 		case SWGGameObjectType::TravelTerminal:  OutType = ESWGTerminalType::Travel;  break;
 		case SWGGameObjectType::BazaarTerminal:  OutType = ESWGTerminalType::Bazaar;  break;
 		case SWGGameObjectType::BankTerminal:    OutType = ESWGTerminalType::Bank;    break;
+		case SWGGameObjectType::SpaceTerminal: OutType = ESWGTerminalType::Space; break;
 		default:                  OutType = ESWGTerminalType::Other;   break;
 	}
 	return true;

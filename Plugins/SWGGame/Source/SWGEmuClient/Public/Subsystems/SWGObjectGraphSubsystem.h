@@ -17,6 +17,7 @@ class UDataTable;
 class ULevelStreaming;
 class ASWGCell;
 class ASWGCreature;
+class ASWGShip;
 struct FSWGNetMessage;
 struct FSceneCreateObjectMessage;
 struct FBaselinesMessage;
@@ -29,7 +30,18 @@ struct FUpdateContainmentMessage;
 struct FUpdateTransformMessage;
 struct FUpdateTransformWithParentMessage;
 struct FObjControllerMessageIn;
+struct FShipUpdateTransformMessage;
 class USWGTerrainSubsystem;
+struct FCreateMissileMessage;
+
+/** A missile in flight at a ship, from CreateMissileMessage; it ends when its time to hit has passed. */
+struct FSWGIncomingMissile
+{
+	int32 MissileId = 0;
+	int64 SourceId = 0;
+	int64 TargetId = 0;
+	double ExpiresAt = 0.0;
+};
 
 /**
  * Owns the live object graph: the CRC->actor-class dispatch table (built once
@@ -74,6 +86,12 @@ public:
 	// ── ObjectId -> Actor registry ──────────────────────────────────
 
 	AActor* FindActor(int64 ObjectId) const;
+	ASWGShip* FindContainingShip(int64 ObjectId) const;
+	ASWGShip* GetLocalPlayerShip() const { return FindContainingShip(LocalPlayerObjectId); }
+	FTransform GetSpaceFrame() const;
+	void RefreshSpaceFrame();
+	bool IsLocalPlayerPiloting() const;
+	bool IsLocalSpaceSceneReady() const;
 
 	/**
 	 * The template CRC SceneCreateObjectByCrc reported for ObjectId, or 0 if
@@ -200,7 +218,30 @@ public:
 	 */
 	void OnZoneLevelLoaded();
 
+	// ── Space HUD feeds ─────────────────────────────────────────────
+
+	/** Every non-contained space object (ships, stations, props) that has a live actor. */
+	void GetSpaceObjectActors(TArray<AActor*>& OutActors) const;
+
+	/** Missiles in flight at TargetId whose time to hit has not passed at Now (FPlatformTime::Seconds). */
+	int32 CountIncomingMissiles(int64 TargetId, double Now) const;
+
+	/** Records a missile launched at TargetId that hits in SecondsToHit; CreateMissileMessage does this. */
+	void NoteIncomingMissile(int32 MissileId, int64 SourceId, int64 TargetId, double SecondsToHit);
+
 private:
+	void TryPlaceSpacePilot();
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FSWGSpaceFrameTest;
+	friend class FSWGZoneSceneReadinessTest;
+	friend class FSWGShipHudTest;
+	friend class FSWGSpaceWindowRenderTest;
+	friend class FSWGSpaceTeardownTest;
+	friend class FSWGSpaceAttachmentTest;
+	friend class FSWGSpaceHudTest;
+	friend class FSWGSpaceHudHoloTest;
+	friend struct FSWGSpaceZoneFixture;
+#endif
 	void HandleMessageReceived(TSharedPtr<FSWGNetMessage> Msg);
 
 	void HandleCmdStartScene(const FCmdStartSceneMessage& Msg);
@@ -217,6 +258,7 @@ private:
 	void HandleDeltas(const FDeltasMessage& Msg);
 	void HandleUpdateContainment(const FUpdateContainmentMessage& Msg);
 	void HandleUpdateTransform(const FUpdateTransformMessage& Msg);
+	void HandleShipUpdateTransform(const FShipUpdateTransformMessage& Msg);
 	void HandleUpdateTransformWithParent(const FUpdateTransformWithParentMessage& Msg);
 	/** Smoothed (or immediate for teleports and the local pawn) move to a world-space destination — shared by both transform messages. */
 	void ApplyNetworkTransform(AActor* Actor, int64 ObjectId, const FVector& NewLocation, float YawDegrees);
@@ -270,6 +312,11 @@ private:
 	bool bCrcMapBuilt = false;
 
 	TMap<int64, TWeakObjectPtr<AActor>> ActorRegistry;
+	TMap<uint16, int64> ShipObjectIds;
+	TMap<int64, FTransform> SpaceObjectPoses;
+	TArray<FSWGIncomingMissile> IncomingMissiles;
+	TMap<TWeakObjectPtr<AActor>, TPair<bool, bool>> StoredShipInteriorVisibility;
+	bool bSpaceScene = false;
 
 	/** ObjectId -> template CRC, recorded for every SceneCreateObjectByCrc regardless of whether an actor spawned — see FindObjectCrc. */
 	TMap<int64, uint32> ObjectCrcById;

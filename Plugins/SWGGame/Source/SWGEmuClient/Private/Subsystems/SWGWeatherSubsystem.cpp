@@ -121,6 +121,12 @@ void USWGWeatherSubsystem::ResetPlanet(const FString& NewPlanetName)
 
 bool USWGWeatherSubsystem::Tick(float DeltaSeconds)
 {
+	if (Terrain && Terrain->IsSpaceScene())
+	{
+		StopParticle();
+		TargetRow = nullptr;
+		return true;
+	}
 	UWorld* World = GetGameInstance() ? GetGameInstance()->GetWorld() : nullptr;
 	APlayerController* Controller = World ? World->GetFirstPlayerController() : nullptr;
 	if (!Controller || !Tre || !Terrain || !Terrain->IsTerrainLoaded())

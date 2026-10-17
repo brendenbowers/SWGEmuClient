@@ -192,6 +192,13 @@ class SWGEMUCLIENT_API FSWGSkeletalAnimationPipeline
 public:
 	explicit FSWGSkeletalAnimationPipeline(USWGMeshGeneratorSubsystem& InOwner);
 	~FSWGSkeletalAnimationPipeline();
+	void Shutdown();
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FSWGSpaceTeardownTest;
+	friend class FSWGSpaceSkeletalLifetimeTest;
+	TFunction<void()> BeforeSkeletalBuildForTest;
+	TFunction<void(bool)> AfterSkeletalBuildForTest;
+#endif
 
 	/** Feeds each actor's live horizontal speed into its blend space every
 	 *  tick, drains a budgeted number of finished builds (finalizing them on
@@ -206,7 +213,7 @@ public:
 	 * locomotion LAT. Swaps in the generated skeletal mesh directly on
 	 * Character->GetMesh()
 	 */
-	void TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, float>* MorphWeights = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr);
+	void TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent, const TMap<FString, FLinearColor>* PaletteTintOverrides = nullptr, const TMap<FString, float>* MorphWeights = nullptr, const TMap<FString, int32>* TextureIndexOverrides = nullptr, TSharedPtr<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe> LoadingOwner = nullptr);
 
 	/**
 	 * Loads the once-built USkeletalMesh for this skeleton+mesh-parts

@@ -60,6 +60,8 @@ public:
 
 	/** Select the lit room, including when the player spawns directly inside it. */
 	void SetLitRoom(ASWGCell* Cell);
+	/** A pilot's exterior camera must show the hull even while its pawn stays inside. */
+	void SetExteriorCameraActive(bool bActive);
 
 	/**
 	 * True while the local player overlaps a cell trigger, stands within the
@@ -150,6 +152,7 @@ private:
 
 	/** Counted, not a bool, so straddling two triggers in a doorway doesn't reveal the shell early. */
 	int32 NonSeeThroughOverlapCount = 0;
+	bool bExteriorCameraActive = false;
 
 	/** Same idea for every cell trigger — the player is "inside" while any of them overlaps. */
 	int32 InteriorOverlapCount = 0;

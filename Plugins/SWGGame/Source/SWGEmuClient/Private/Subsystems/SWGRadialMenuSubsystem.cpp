@@ -4,6 +4,7 @@
 #include "Subsystems/SWGItemTransferSubsystem.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
+#include "Subsystems/SWGShipLaunchSubsystem.h"
 #include "Subsystems/SWGCommandSubsystem.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGTargetSubsystem.h"
@@ -365,6 +366,16 @@ const TArray<USWGRadialMenuSubsystem::FSWGClientRadialRule>& USWGRadialMenuSubsy
 			{
 				OnMissionTerminalUsed.Broadcast(ObjectId);
 				return true;
+			}
+			if (ObjectGraph)
+			{
+				const AActor* Actor = ObjectGraph->FindActor(ObjectId);
+				const USWGTerminalComponent* Terminal = Actor ? Actor->FindComponentByClass<USWGTerminalComponent>() : nullptr;
+				if (Terminal && Terminal->TerminalType == ESWGTerminalType::Space)
+				{
+					if (USWGShipLaunchSubsystem* Launch = GetGameInstance()->GetSubsystem<USWGShipLaunchSubsystem>()) Launch->RequestShips(ObjectId);
+					return true;
+				}
 			}
 			if (ObjectGraph && Tre && Commands)
 			{

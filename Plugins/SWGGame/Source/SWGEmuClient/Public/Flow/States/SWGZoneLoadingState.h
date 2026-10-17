@@ -4,6 +4,7 @@
 #include "UObject/WeakObjectPtr.h"
 
 class USWGObjectGraphSubsystem;
+class USWGTreSubsystem;
 
 /**
  * Transient handoff from CharacterSelected carrying the scene data from CmdStartScene.
@@ -20,8 +21,10 @@ struct FSWGSceneStartPayload : public FSWGTransitionPayload
 class FSWGZoneLoadingState : public ISWGFlowState
 {
 public:
+	static FName GetLevelForTerrain(const USWGTreSubsystem& Tre, const FString& TerrainName);
 	virtual void Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload) override;
 	virtual void Exit (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx) override;
+	virtual void Tick (USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, float Dt) override;
 
 private:
 	void OnReadyStatesChanged(USWGClientFlowSubsystem& UIStateMachine, const FSWGFlowContext& Ctx, const int32 Epoch);
@@ -39,4 +42,5 @@ private:
 	// OpenLevel world travel, unlike ordinary member fields. Root cause unknown.
 	FString PendingTerrainName;
 	FVector PendingSpawnPosition = FVector::ZeroVector;
+	float LoadingSeconds = 0.f;
 };

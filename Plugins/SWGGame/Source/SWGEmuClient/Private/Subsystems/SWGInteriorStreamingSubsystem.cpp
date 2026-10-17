@@ -1,5 +1,6 @@
 #include "Subsystems/SWGInteriorStreamingSubsystem.h"
 #include "Objects/World/SWGBuilding.h"
+#include "Objects/World/SWGShip.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Common/SWGWorldScale.h"
 #include "Engine/GameInstance.h"
@@ -100,6 +101,11 @@ bool USWGInteriorStreamingSubsystem::WantsRoom(const FViewState& View, ASWGBuild
 	if (Building.IsPlayerInside() || Building.OwnsCell(View.PlayerContainerId))
 	{
 		return true;
+	}
+	if (Building.IsA<ASWGShip>())
+	{
+		USWGObjectGraphSubsystem* Graph = Building.GetGameInstance() ? Building.GetGameInstance()->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+		if (Graph && Graph->GetLocalPlayerShip() == &Building) return true;
 	}
 
 	// A closed room is only ever seen from inside, so it loads when the player

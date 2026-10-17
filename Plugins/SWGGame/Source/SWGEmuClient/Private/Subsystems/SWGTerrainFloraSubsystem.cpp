@@ -30,11 +30,11 @@ namespace
 	TAutoConsoleVariable<int32> CVarFloraRadialFar(TEXT("swg.FloraRadialFar"), 1, TEXT("Far radial tier (distant tree sprites)."));
 
 	TAutoConsoleVariable<float> CVarFloraDensityScale(
-		TEXT("swg.FloraDensityScale"), 1.0f,
+		TEXT("swg.FloraDensityScale"), 1.5f,
 		TEXT("Multiplies every flora family's density. 0 places nothing."));
 
 	TAutoConsoleVariable<float> CVarFloraDistanceScale(
-		TEXT("swg.FloraDistanceScale"), 1.0f,
+		TEXT("swg.FloraDistanceScale"), 2.0f,
 		TEXT("Multiplies each tier's authored streaming distance (FSWGTerrainHeader)."));
 
 	TAutoConsoleVariable<int32> CVarFloraParticles(
@@ -137,6 +137,8 @@ void USWGTerrainFloraSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void USWGTerrainFloraSubsystem::Deinitialize()
 {
+	if (bIsShuttingDown) return;
+	bIsShuttingDown = true;
 	if (TerrainSubsystem)
 	{
 		TerrainSubsystem->OnTerrainLoaded.RemoveAll(this);
@@ -152,8 +154,38 @@ TStatId USWGTerrainFloraSubsystem::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(USWGTerrainFloraSubsystem, STATGROUP_Tickables);
 }
 
+bool USWGTerrainFloraSubsystem::IsSpawnAreaReady(const FVector2D& Center) const
+{
+	if (CVarFlora.GetValueOnGameThread() == 0) return true;
+	if (!bTerrainLoaded || !Planet) return false;
+	// shortcut: flora beyond 128 m streams after reveal; widen this if spawn captures show distant pop-in.
+	constexpr float ReadyRadius = 128.f;
+	for (int32 Index = 0; Index < (int32)ESWGTerrainFloraTier::Count; ++Index)
+	{
+		const ESWGTerrainFloraTier Tier = (ESWGTerrainFloraTier)Index;
+		if (!IsTierEnabled(Tier)) continue;
+		const float Distance = FMath::Min(ReadyRadius, Planet->GetVegetationTier(Tier).MaxDistance
+			* FMath::Max(0.f, CVarFloraDistanceScale.GetValueOnGameThread()));
+		if (Distance <= 0.f) continue;
+		const float Size = FSWGTerrainFloraPlacer::GetCellSize(*Planet, Tier);
+		const FIntPoint CenterCell = FSWGTerrainFloraPlacer::CellCoordAt(Size, Center);
+		const int32 Radius = FMath::CeilToInt(Distance / Size) + 1;
+		for (int32 Y = -Radius; Y <= Radius; ++Y)
+			for (int32 X = -Radius; X <= Radius; ++X)
+			{
+				const FCellKey Key{Tier, CenterCell + FIntPoint(X, Y)};
+				if (!IsCellWanted(Tier, Key.Coord, Center, false)
+					|| FVector2D::Distance(FSWGTerrainFloraPlacer::CellCenter(Size, Key.Coord), Center) > Distance + Size * UE_HALF_SQRT_2) continue;
+				const FCell* Cell = Cells.Find(Key);
+				if (!Cell || Cell->bPlaceInFlight || Cell->PlacedEditVersion < Cell->WantedEditVersion || !Cell->PendingGroups.IsEmpty()) return false;
+			}
+	}
+	return true;
+}
+
 void USWGTerrainFloraSubsystem::Tick(float DeltaTime)
 {
+	if (bIsShuttingDown) return;
 	TimeUntilNextSweep -= DeltaTime;
 	if (TimeUntilNextSweep <= 0.0f)
 	{
@@ -166,6 +198,7 @@ void USWGTerrainFloraSubsystem::Tick(float DeltaTime)
 
 void USWGTerrainFloraSubsystem::OnTerrainLoaded()
 {
+	if (bIsShuttingDown) return;
 	ResetAll();
 	Planet = TerrainSubsystem ? TerrainSubsystem->MakeBakeSource().Planet : nullptr;
 	if (!Planet)
@@ -179,7 +212,6 @@ void USWGTerrainFloraSubsystem::OnTerrainLoaded()
 
 void USWGTerrainFloraSubsystem::OnZoneReset()
 {
-	bTerrainLoaded = false;
 	ResetAll();
 }
 
@@ -235,6 +267,7 @@ void USWGTerrainFloraSubsystem::SpawnFloraActor()
 void USWGTerrainFloraSubsystem::ResetAll()
 {
 	++Generation;
+	bTerrainLoaded = false;
 	for (TPair<FCellKey, FCell>& Pair : Cells)
 	{
 		ClearCellParticles(Pair.Value);
@@ -257,6 +290,8 @@ void USWGTerrainFloraSubsystem::ResetAll()
 
 bool USWGTerrainFloraSubsystem::GetStreamingCenter(FVector2D& OutRawPosition) const
 {
+	// Readiness waits for the spawn ring, even before possession or cell placement.
+	if (TerrainSubsystem && TerrainSubsystem->GetSpawnSceneLoadingCenter(OutRawPosition)) return true;
 	const UWorld* World = GetWorld();
 	const APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
 	const APawn* Pawn = PlayerController ? PlayerController->GetPawn() : nullptr;
@@ -393,18 +428,19 @@ void USWGTerrainFloraSubsystem::PumpPlaceQueue()
 	}
 }
 
-void USWGTerrainFloraSubsystem::StartCellPlacement(const FCellKey& Key)
+TFuture<void> USWGTerrainFloraSubsystem::StartCellPlacement(const FCellKey& Key)
 {
+	if (bIsShuttingDown) return {};
 	FCell* Cell = Cells.Find(Key);
 	if (!Cell || Cell->bPlaceInFlight)
 	{
-		return;
+		return {};
 	}
 
 	const USWGTerrainSubsystem::FSWGTerrainBakeSource Source = TerrainSubsystem->MakeBakeSource();
 	if (!Source.Planet)
 	{
-		return;
+		return {};
 	}
 
 	Cell->bPlaceInFlight = true;
@@ -414,17 +450,32 @@ void USWGTerrainFloraSubsystem::StartCellPlacement(const FCellKey& Key)
 	const int32 JobEditVersion = Cell->WantedEditVersion;
 	const float DensityScale = FMath::Max(0.0f, CVarFloraDensityScale.GetValueOnGameThread());
 
-	Async(EAsyncExecution::ThreadPool, [this, Key, Source, JobGeneration, JobEditVersion, DensityScale]()
+	TWeakObjectPtr<USWGTerrainFloraSubsystem> WeakThis(this);
+	return Async(EAsyncExecution::ThreadPool, [
+#if WITH_DEV_AUTOMATION_TESTS
+		BeforePlacement = BeforePlacementForTest, AfterPlacement = AfterPlacementForTest,
+#endif
+		WeakThis, Key, Source, JobGeneration, JobEditVersion, DensityScale]()
 		{
+#if WITH_DEV_AUTOMATION_TESTS
+			if (BeforePlacement) BeforePlacement();
+#endif
 			TArray<FSWGTerrainFloraInstance> Instances;
 			const TArrayView<const FSWGTerrainLayer> ExtraLayers = Source.EditLayers ? MakeArrayView(*Source.EditLayers) : TArrayView<const FSWGTerrainLayer>();
 			FSWGTerrainFloraPlacer::PlaceCell(*Source.Planet, ExtraLayers, Key.Tier, Key.Coord, DensityScale,
 				[&Source](const FVector2D& RawPosition) { return Source.IsInHole(RawPosition); }, Instances);
 
-			AsyncTask(ENamedThreads::GameThread, [this, Key, JobGeneration, JobEditVersion, Instances = MoveTemp(Instances)]() mutable
+#if WITH_DEV_AUTOMATION_TESTS
+			const int32 PlacedCount = Instances.Num();
+#endif
+			AsyncTask(ENamedThreads::GameThread, [WeakThis, Key, JobGeneration, JobEditVersion, Instances = MoveTemp(Instances)]() mutable
 				{
-					OnCellPlaced(Key, JobGeneration, JobEditVersion, MoveTemp(Instances));
+					if (USWGTerrainFloraSubsystem* Self = WeakThis.Get(); Self && !Self->bIsShuttingDown)
+						Self->OnCellPlaced(Key, JobGeneration, JobEditVersion, MoveTemp(Instances));
 				});
+#if WITH_DEV_AUTOMATION_TESTS
+			if (AfterPlacement) AfterPlacement(PlacedCount);
+#endif
 		});
 }
 
@@ -648,6 +699,7 @@ void USWGTerrainFloraSubsystem::FlushPendingGroups(const FCellKey& Key, FCell& C
 
 void USWGTerrainFloraSubsystem::RequestAppearance(const FString& AppearanceKey, bool bRadial)
 {
+	if (bIsShuttingDown) return;
 	FAppearanceMesh& Appearance = Appearances.Add(AppearanceKey);
 	Appearance.bRequested = true;
 
@@ -672,11 +724,12 @@ void USWGTerrainFloraSubsystem::RequestAppearance(const FString& AppearanceKey, 
 	}
 
 	const int32 RequestGeneration = Generation;
-	MeshGenerator->RequestAppearanceMesh(AppearanceKey, [this, AppearanceKey, RequestGeneration](UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)
+	TWeakObjectPtr<USWGTerrainFloraSubsystem> WeakThis(this);
+	MeshGenerator->RequestAppearanceMesh(AppearanceKey, [WeakThis, AppearanceKey, RequestGeneration](UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials)
 		{
-			if (RequestGeneration == Generation)
+			if (USWGTerrainFloraSubsystem* Self = WeakThis.Get(); Self && !Self->bIsShuttingDown && RequestGeneration == Self->Generation)
 			{
-				OnAppearanceMeshReady(AppearanceKey, Mesh, Materials);
+				Self->OnAppearanceMeshReady(AppearanceKey, Mesh, Materials);
 			}
 		});
 }
@@ -744,6 +797,8 @@ UInstancedStaticMeshComponent* USWGTerrainFloraSubsystem::CreateGroupComponent(E
 	UInstancedStaticMeshComponent* Component = NewObject<UInstancedStaticMeshComponent>(FloraActor);
 	Component->SetMobility(EComponentMobility::Static);
 	Component->SetStaticMesh(Appearance.Mesh);
+	// Keep detailed vegetation twice as far out without changing other meshes.
+	Component->SetLODDistanceScale(0.5f);
 	for (int32 SlotIndex = 0; SlotIndex < Appearance.Materials.Num(); ++SlotIndex)
 	{
 		if (Appearance.Materials[SlotIndex])

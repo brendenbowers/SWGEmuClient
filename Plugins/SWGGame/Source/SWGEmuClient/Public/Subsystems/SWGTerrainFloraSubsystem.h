@@ -44,12 +44,20 @@ public:
 	// FTickableGameObject
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
-	virtual bool IsTickable() const override { return bTerrainLoaded; }
+	virtual bool IsTickable() const override { return bTerrainLoaded && !bIsShuttingDown; }
 
 	/** swg.FloraStats — per-tier cell/instance counts, the flora sample at the player, and every appearance's state. */
 	void DumpStats() const;
+	/** Enabled flora near the spawn has placed its current terrain edits and attached its instances. */
+	bool IsSpawnAreaReady(const FVector2D& Center) const;
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FSWGSpaceFloraLifetimeTest;
+	friend class FSWGZoneFloraReadinessTest;
+	TFunction<void()> BeforePlacementForTest;
+	TFunction<void(int32)> AfterPlacementForTest;
+#endif
 	/** One placement cell of one tier — the streaming unit. */
 	struct FCellKey
 	{
@@ -129,7 +137,7 @@ private:
 	/** Starts worker placements for queued cells, nearest first, up to MaxPlacementsInFlight. */
 	void PumpPlaceQueue();
 
-	void StartCellPlacement(const FCellKey& Key);
+	TFuture<void> StartCellPlacement(const FCellKey& Key);
 
 	/** A finished placement on the game thread — grouped by appearance and attached, or dropped if the cell is gone or stale. */
 	void OnCellPlaced(const FCellKey& Key, int32 Generation, int32 EditVersion, TArray<FSWGTerrainFloraInstance>&& Instances);
@@ -199,6 +207,7 @@ private:
 	int32 Generation = 0;
 
 	bool bTerrainLoaded = false;
+	bool bIsShuttingDown = false;
 	float TimeUntilNextSweep = 0.0f;
 
 	static constexpr int32 MaxPlacementsInFlight = 3;

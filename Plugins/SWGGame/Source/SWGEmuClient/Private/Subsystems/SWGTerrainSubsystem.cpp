@@ -1,4 +1,8 @@
 #include "Subsystems/SWGTerrainSubsystem.h"
+#include "Subsystems/SWGTerrainFloraSubsystem.h"
+#include "Components/SWGSpaceNebulaComponent.h"
+#include "Components/SWGSpaceDustComponent.h"
+#include "Components/SWGSpacePlanetComponent.h"
 #include "Common/SWGWorldScale.h"
 #include "HAL/IConsoleManager.h"
 #include "Subsystems/SWGTreSubsystem.h"
@@ -13,9 +17,11 @@
 #include "Objects/Creature/SWGCreature.h"
 #include "Objects/World/SWGBuilding.h"
 #include "Objects/World/SWGCell.h"
+#include "Objects/World/SWGShip.h"
 #include "Objects/World/SWGParticleEmitterActor.h"
 #include "Objects/World/SWGSoundEmitter.h"
 #include "TRE/SWGTerrainReader.h"
+#include "TRE/SWGSpaceTerrainReader.h"
 #include "TRE/SWGTerrainEvaluator.h"
 #include "TRE/SWGWorldSnapshotReader.h"
 #include "TRE/SWGTerrainModifier.h"
@@ -385,6 +391,12 @@ namespace
 
 void USWGTerrainSubsystem::RelightPlanet()
 {
+	if (SpaceData)
+	{
+		SetupSpaceScene(*SpaceData);
+		UpdateSpaceScene(0);
+		return;
+	}
 	if (ActiveTerrainVirtualPath.IsEmpty() || !bTerrainDataCached)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("swg.RelightPlanet: no planet loaded"));
@@ -397,6 +409,8 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	TreSubsystem = Cast<USWGTreSubsystem>(Collection.InitializeDependency(USWGTreSubsystem::StaticClass()));
 	MeshGenerator = Cast<USWGMeshGeneratorSubsystem>(Collection.InitializeDependency(USWGMeshGeneratorSubsystem::StaticClass()));
+	TreSubsystem->OnDeinitializing.AddUObject(this, &USWGTerrainSubsystem::Deinitialize);
+	FormTagMappingTable = LoadObject<UDataTable>(nullptr, TEXT("/Game/SWGEmu/Data/DT_SWGFormTagMappings.DT_SWGFormTagMappings"));
 	Network = Cast<USWGNetworkSubsystem>(Collection.InitializeDependency(USWGNetworkSubsystem::StaticClass()));
 	if (Network)
 	{
@@ -406,6 +420,8 @@ void USWGTerrainSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void USWGTerrainSubsystem::Deinitialize()
 {
+	if (bIsShuttingDown) return;
+	bIsShuttingDown = true;
 	if (Network && MessageHandle.IsValid())
 	{
 		Network->OnMessageReceived.Remove(MessageHandle);
@@ -461,6 +477,7 @@ float USWGTerrainSubsystem::GetDayFraction() const
 void USWGTerrainSubsystem::BeginLoadTerrain(const FString TerrainVirtualPath, const FVector& SpawnPosition)
 {
 	check(IsInGameThread());
+	if (bIsShuttingDown) return;
 
 	// Everything from the previous planet goes now, not when the new data
 	// lands: buildings for the new zone register holes and pads before the
@@ -469,37 +486,58 @@ void USWGTerrainSubsystem::BeginLoadTerrain(const FString TerrainVirtualPath, co
 
 	SpawnRawPosition = FVector2D(SpawnPosition.X, SpawnPosition.Y);
 	ActiveTerrainVirtualPath = TerrainVirtualPath;
-
-	Async(EAsyncExecution::Thread, [this, TerrainVirtualPath, SpawnPosition]()
+	FSWGIffReader SceneReader = TreSubsystem->CreateIffReader(TerrainVirtualPath);
+	if (SceneReader.GetRootFormType() == FName(TEXT("STAT")))
+	{
+		TSharedPtr<FSWGSpaceTerrainData> Parsed = MakeShared<FSWGSpaceTerrainData>();
+		if (!FSWGSpaceTerrainReader::Read(SceneReader, *Parsed) || !SetupSpaceScene(*Parsed))
 		{
-			LoadTerrain(TerrainVirtualPath, SpawnPosition);
-		});
+			Error(FString::Printf(TEXT("Failed to load space scene: %s"), *TerrainVirtualPath), TerrainGeneration);
+			return;
+		}
+		SpaceData = Parsed;
+		bTerrainDataCached = true;
+		UpdateSpaceScene(0);
+		OnTerrainLoaded.Broadcast();
+		OnTerrainReady.Broadcast();
+		return;
+	}
+
+	const int32 Generation = TerrainGeneration;
+	WorkerTasks.Add(Async(EAsyncExecution::Thread, [this, TerrainVirtualPath, SpawnPosition, Generation]()
+		{
+			LoadTerrain(TerrainVirtualPath, SpawnPosition, Generation);
+		}));
 }
 
-void USWGTerrainSubsystem::Error(const FString& ErrorMessage)
+void USWGTerrainSubsystem::Error(const FString& ErrorMessage, int32 Generation)
 {
 	if (!IsInGameThread())
 	{
-		AsyncTask(ENamedThreads::GameThread, [this, ErrorMessage]()
+		TWeakObjectPtr<USWGTerrainSubsystem> WeakThis(this);
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, ErrorMessage, Generation]()
 			{
-				Error(ErrorMessage);
+				if (USWGTerrainSubsystem* Self = WeakThis.Get()) Self->Error(ErrorMessage, Generation);
 			});
 		return;
 	}
 	else
 	{
-		OnTerrainError.Broadcast(ErrorMessage);
+		if (!bIsShuttingDown && Generation == TerrainGeneration) OnTerrainError.Broadcast(ErrorMessage);
 	}
 }
 
-void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const FVector& SpawnPosition)
+void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const FVector& SpawnPosition, int32 Generation)
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	if (BeforeTerrainParseForTest) BeforeTerrainParseForTest();
+#endif
 	UE_LOG(LogTemp, Verbose, TEXT("USWGTerrainSubsystem: Begin loading terrain: %s"), *TerrainVirtualPath);
 
 	TSharedPtr<FSWGTerrainData, ESPMode::ThreadSafe> Parsed = MakeShared<FSWGTerrainData, ESPMode::ThreadSafe>();
 	if (!ParseTerrain(TerrainVirtualPath, *Parsed))
 	{
-		Error(FString::Printf(TEXT("Failed to parse terrain: %s"), *TerrainVirtualPath));
+		Error(FString::Printf(TEXT("Failed to parse terrain: %s"), *TerrainVirtualPath), Generation);
 		return;
 	}
 
@@ -545,11 +583,11 @@ void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const 
 	}
 
 	// Nothing here touched a UObject; the streaming itself is game-thread work.
-	AsyncTask(ENamedThreads::GameThread, [this, TerrainVirtualPath, Parsed, Snapshot, BlendMasks, NodesByTile = MoveTemp(NodesByTile)]() mutable
+	TWeakObjectPtr<USWGTerrainSubsystem> WeakThis(this);
+	AsyncTask(ENamedThreads::GameThread, [this, WeakThis, Generation, TerrainVirtualPath, Parsed, Snapshot, BlendMasks, NodesByTile = MoveTemp(NodesByTile)]() mutable
 		{
-			if (TerrainVirtualPath != ActiveTerrainVirtualPath)
+			if (!WeakThis.IsValid() || bIsShuttingDown || Generation != TerrainGeneration)
 			{
-				// Zone changed again while this parsed; the newer load owns the subsystem now.
 				return;
 			}
 
@@ -563,6 +601,7 @@ void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const 
 			SpawnTerrainActor();
 			SpawnWaterBodies();
 			OnTerrainLoaded.Broadcast();
+			if (bIsShuttingDown || Generation != TerrainGeneration) return;
 
 			// The tiles the player lands on; OnTerrainReady waits for exactly these.
 			const FIntPoint SpawnTile = TileCoordAt(SpawnRawPosition);
@@ -581,6 +620,14 @@ void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const 
 			// Pads queued during the parse go in before the first bake so the
 			// spawn tiles come out flattened rather than re-baked a moment later.
 			FlushPendingObjectTerrainModifications();
+			const int32 SnapshotRadius = FMath::Clamp(CVarSnapshotLoadRadius.GetValueOnGameThread(), 0,
+				FMath::Max(0, CVarTerrainLoadRadius.GetValueOnGameThread()));
+			for (int32 Y = -SnapshotRadius; Y <= SnapshotRadius; ++Y)
+				for (int32 X = -SnapshotRadius; X <= SnapshotRadius; ++X)
+				{
+					const FIntPoint Coord = SpawnTile + FIntPoint(X, Y);
+					if (IsTileOnMap(Coord)) InitialSnapshotTiles.Add(Coord);
+				}
 
 			TimeUntilNextSweep = 0.0f;
 			UpdateStreaming();
@@ -617,13 +664,80 @@ void USWGTerrainSubsystem::SpawnTerrainActor()
 	TerrainMeshActor = TerrainActor;
 }
 
+bool USWGTerrainSubsystem::IsSpawnSceneReady() const
+{
+	if (!bTerrainDataCached) return false;
+	if (SpaceData)
+	{
+		if (IsValid(SpacePlanet) && SpacePlanet->GetRegion().bPending) return false;
+		USWGObjectGraphSubsystem* Graph = GetGameInstance()->GetSubsystem<USWGObjectGraphSubsystem>();
+		if (!Graph) return false;
+		const AActor* Player = Graph->FindActor(Graph->GetLocalPlayerObjectId());
+		const ASWGShip* Ship = Graph->GetLocalPlayerShip();
+		TSet<const AActor*> InteriorActors;
+		if (Ship)
+			for (const ASWGCell* Cell : Ship->Cells)
+				if (IsValid(Cell))
+					for (const auto& Prop : Cell->InteriorActors)
+						if (Prop.IsValid()) InteriorActors.Add(Prop.Get());
+		return !MeshGenerator || !MeshGenerator->HasPendingMeshes([this, Graph, Player, Ship, &InteriorActors](const AActor* Actor)
+		{
+			if (Actor->GetWorld() != GetWorld()) return false;
+			if (InteriorActors.Contains(Actor)) return true;
+			for (const AActor* Owner = Actor; Owner; Owner = Owner->GetAttachParentActor())
+			{
+				if (Owner == Player || (Ship && Owner == Ship)) return true;
+				if (const ASWGCell* Cell = Cast<ASWGCell>(Owner); Ship && Cell && Cell->OwningBuilding.Get() == Ship) return true;
+				if (const ISWGNetworkObjectInterface* Object = Cast<ISWGNetworkObjectInterface>(Owner);
+					Ship && Object && Graph->FindContainingShip(Object->GetObjectId()) == Ship) return true;
+			}
+			return false;
+		});
+	}
+	if (!bInitialTilesReported || InitialTiles.IsEmpty()) return false;
+	if (USWGTerrainFloraSubsystem* Flora = GetGameInstance()->GetSubsystem<USWGTerrainFloraSubsystem>();
+		Flora && Flora->IsTickable() && !Flora->IsSpawnAreaReady(SpawnRawPosition)) return false;
+	for (const FIntPoint& Coord : InitialTiles)
+	{
+		const FSWGTerrainTile* Tile = Tiles.Find(Coord);
+		if (!Tile || Tile->bBakeInFlight || Tile->LiveEditVersion < Tile->WantedEditVersion) return false;
+	}
+	TSet<const AActor*> SnapshotActors;
+	for (const FIntPoint& Coord : InitialSnapshotTiles)
+	{
+		const FSWGTerrainTile* Tile = Tiles.Find(Coord);
+		if (!Tile || !Tile->bSnapshotSpawned || Tile->bSnapshotResolveInFlight || !Tile->PendingSnapshotObjects.IsEmpty()) return false;
+		for (const auto& Actor : Tile->SnapshotActors)
+			if (Actor.IsValid()) SnapshotActors.Add(Actor.Get());
+	}
+	return !MeshGenerator || !MeshGenerator->HasPendingMeshes([this, &SnapshotActors](const AActor* Actor)
+	{
+		if (Actor->GetWorld() != GetWorld()) return false;
+		// Unplaced cells can still be in cell-local coordinates; their snapshot identity is stable.
+		for (const AActor* Owner = Actor; Owner; Owner = Owner->GetAttachParentActor())
+		{
+			if (SnapshotActors.Contains(Owner)) return true;
+			const FVector Raw = SWGToRawSpace(Owner->GetActorLocation());
+			if (InitialTiles.Contains(TileCoordAt(FVector2D(Raw.X, Raw.Y)))) return true;
+		}
+		return false;
+	});
+}
+
 void USWGTerrainSubsystem::ResetZone()
 {
 	check(IsInGameThread());
 
 	++TerrainGeneration;
+#if WITH_DEV_AUTOMATION_TESTS
+	if (BeforeWorkerDrainForTest) BeforeWorkerDrainForTest();
+#endif
+	// Workers only enqueue completions; drain before resetting the data they read.
+	for (TFuture<void>& Task : WorkerTasks) Task.Wait();
+	WorkerTasks.Reset();
 	bTerrainDataCached = false;
 	bInitialTilesReported = false;
+	bSpawnSceneLoading = true;
 	bHasLastStreamingCenter = false;
 	OnZoneReset.Broadcast();
 
@@ -637,6 +751,7 @@ void USWGTerrainSubsystem::ResetZone()
 		DestroySnapshotActors(Pair.Value);
 	}
 	InitialTiles.Reset();
+	InitialSnapshotTiles.Reset();
 	// In-flight bakes still count until they land and see the new generation.
 
 	if (IsValid(TerrainMeshActor))
@@ -669,7 +784,13 @@ void USWGTerrainSubsystem::ResetZone()
 	CloudLayers.Reset();
 	CloudMaterials.Reset();
 
+	Environment = FSWGEnvironmentRow();
 	PlanetData.Reset();
+	SpaceData.Reset();
+	SpaceLights.Reset();
+	SpaceLightDirections.Reset();
+	if (IsValid(SpaceNebula)) SpaceNebula->Teardown();
+	SpaceNebula = nullptr; SpaceDust = nullptr; SpacePlanet = nullptr;
 	ShaderBlendMasks.Reset();
 	SnapshotData.Reset();
 	SnapshotNodesByTile.Reset();
@@ -684,6 +805,13 @@ void USWGTerrainSubsystem::ResetZone()
 
 void USWGTerrainSubsystem::Tick(float DeltaTime)
 {
+	if (bIsShuttingDown) return;
+	WorkerTasks.RemoveAll([](const TFuture<void>& Task) { return Task.IsReady(); });
+	if (SpaceData)
+	{
+		UpdateSpaceScene(DeltaTime);
+		return;
+	}
 	SpawnPendingSnapshotObjects();
 
 	// The day moves continuously; a full cycle is a few hours so per-frame
@@ -706,6 +834,119 @@ void USWGTerrainSubsystem::Tick(float DeltaTime)
 TStatId USWGTerrainSubsystem::GetStatId() const
 {
 	RETURN_QUICK_DECLARE_CYCLE_STAT(USWGTerrainSubsystem, STATGROUP_Tickables);
+}
+
+bool USWGTerrainSubsystem::SetupSpaceScene(const FSWGSpaceTerrainData& Data)
+{
+	UWorld* World = GetWorld();
+	if (!World || !MeshGenerator || Data.Skybox.IsEmpty() || Data.SkyboxFlags != 0) return false;
+	UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGSkySpriteAlpha.M_SWGSkySpriteAlpha"));
+	if (!Parent) return false;
+	const TCHAR* Names[] = { TEXT("front"), TEXT("right"), TEXT("back"), TEXT("left"), TEXT("top"), TEXT("bottom") };
+	UTexture2D* Textures[6];
+	for (int32 Face = 0; Face < 6; ++Face)
+	{
+		Textures[Face] = MeshGenerator->GetOrLoadObjectTexture(FString::Printf(TEXT("texture/%s_%s.dds"), *Data.Skybox, Names[Face]), true, false, TA_Clamp);
+		if (!Textures[Face]) return false;
+	}
+	static const FName LightingTag(TEXT("SWGPlanetLighting"));
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (It->ActorHasTag(LightingTag)) It->Destroy();
+		else if (ADirectionalLight* Directional = Cast<ADirectionalLight>(*It)) Directional->GetComponent()->SetIntensity(0);
+		else if (ASkyLight* Fill = Cast<ASkyLight>(*It)) Fill->GetLightComponent()->SetIntensity(0);
+		else if (AExponentialHeightFog* Fog = Cast<AExponentialHeightFog>(*It)) Fog->GetComponent()->SetVisibility(false);
+		if (USkyAtmosphereComponent* Atmosphere = It->FindComponentByClass<USkyAtmosphereComponent>()) Atmosphere->SetVisibility(false);
+	}
+	SkyActor = World->SpawnActor<AActor>();
+	if (!SkyActor) return false;
+	SkyActor->Tags.Add(LightingTag);
+	USceneComponent* Root = NewObject<USceneComponent>(SkyActor);
+	SkyActor->SetRootComponent(Root); Root->RegisterComponent();
+	// Retail 0x868a30 cube corners, converted from native x/y-up/z into UE.
+	const FVector Corners[6][4] = {
+		{FVector(1,-1,1), FVector(1,1,1), FVector(1,1,-1), FVector(1,-1,-1)},
+		{FVector(1,1,1), FVector(-1,1,1), FVector(-1,1,-1), FVector(1,1,-1)},
+		{FVector(-1,1,1), FVector(-1,-1,1), FVector(-1,-1,-1), FVector(-1,1,-1)},
+		{FVector(-1,-1,1), FVector(1,-1,1), FVector(1,-1,-1), FVector(-1,-1,-1)},
+		{FVector(-1,-1,1), FVector(-1,1,1), FVector(1,1,1), FVector(1,-1,1)},
+		{FVector(1,-1,-1), FVector(1,1,-1), FVector(-1,1,-1), FVector(-1,-1,-1)} };
+	const FVector2f UV[4] = { FVector2f(0,0), FVector2f(1,0), FVector2f(1,1), FVector2f(0,1) };
+	for (int32 Face = 0; Face < 6; ++Face)
+	{
+		UE::Geometry::FDynamicMesh3 Mesh;
+		Mesh.EnableAttributes();
+		auto* UVs = Mesh.Attributes()->PrimaryUV();
+		auto* Normals = Mesh.Attributes()->PrimaryNormals();
+		const FVector3f Normal = FVector3f(FVector::CrossProduct(Corners[Face][1] - Corners[Face][0], Corners[Face][2] - Corners[Face][0]).GetSafeNormal());
+		for (int32 Corner = 0; Corner < 4; ++Corner)
+		{
+			Mesh.AppendVertex(FVector3d(Corners[Face][Corner] * USWGSpacePlanetComponent::SkyboxDistance));
+			UVs->AppendElement(UV[Corner]); Normals->AppendElement(Normal);
+		}
+		for (const UE::Geometry::FIndex3i Triangle : { UE::Geometry::FIndex3i(0,1,2), UE::Geometry::FIndex3i(0,2,3) })
+		{
+			const int32 Id = Mesh.AppendTriangle(Triangle);
+			UVs->SetTriangle(Id, Triangle); Normals->SetTriangle(Id, Triangle);
+		}
+		UDynamicMeshComponent* Component = NewObject<UDynamicMeshComponent>(SkyActor);
+		Component->SetupAttachment(Root);
+		Component->SetCollisionEnabled(ECollisionEnabled::NoCollision); Component->SetCastShadow(false);
+		Component->bAffectDistanceFieldLighting = false;
+		Component->RegisterComponent(); Component->SetMesh(MoveTemp(Mesh));
+		UMaterialInstanceDynamic* Material = UMaterialInstanceDynamic::Create(Parent, SkyActor);
+		Material->SetTextureParameterValue(TEXT("Diffuse"), Textures[Face]);
+		Material->SetScalarParameterValue(TEXT("Intensity"), 1);
+		Component->SetMaterial(0, Material);
+	}
+	AmbientLight = World->SpawnActor<ASkyLight>();
+	if (!AmbientLight) return false;
+	AmbientLight->Tags.Add(LightingTag);
+	USkyLightComponent* Ambient = AmbientLight->GetLightComponent();
+	// Captured once after the sky and stars exist (end of this function) so hulls pick up and reflect the scene.
+	Ambient->SetMobility(EComponentMobility::Movable); Ambient->SourceType = SLS_CapturedScene;
+	Ambient->SetRealTimeCaptureEnabled(false);
+	Ambient->SetCastShadows(false); Ambient->bLowerHemisphereIsBlack = false;
+	Ambient->SetLightColor(Data.Ambient); Ambient->SetIntensity(CVarAmbientIntensity.GetValueOnGameThread());
+	SpaceLights.Reset(); SpaceLightDirections.Reset();
+	for (const FSWGSpaceLight& Source : Data.Lights)
+	{
+		ADirectionalLight* Light = World->SpawnActor<ADirectionalLight>();
+		if (!Light) return false;
+		Light->Tags.Add(LightingTag);
+		UDirectionalLightComponent* Component = Light->GetComponent();
+		Component->SetMobility(EComponentMobility::Movable); Component->SetAtmosphereSunLight(false);
+		Component->SetUseTemperature(false);
+		const float Strength = FMath::Max(Source.Diffuse.R, FMath::Max(Source.Diffuse.G, Source.Diffuse.B));
+		Component->SetLightColor(Strength > 0 ? Source.Diffuse / Strength : FLinearColor::Black);
+		Component->SetIntensity(3 * FMath::Max(Strength, 0.f) * CVarSunIntensity.GetValueOnGameThread());
+		SpaceLights.Add(Light);
+		SpaceLightDirections.Add(FVector(Source.NativeVector.Z, Source.NativeVector.X, Source.NativeVector.Y).GetSafeNormal());
+	}
+	if (Data.StarCount > 0)
+	{
+		if (!SpawnStarField(Data.StarColorRamp, Data.StarCount)) return false;
+		StarFieldMaterial->SetScalarParameterValue(TEXT("Intensity"), CVarStarIntensity.GetValueOnGameThread());
+		// Behind the background planets, which sit tens of kilometres out (see USWGSpacePlanetComponent).
+		const float MeshRadius = StarDome->GetStaticMesh()->GetBounds().BoxExtent.GetMax();
+		if (MeshRadius > 0) StarDome->SetWorldScale3D(FVector(USWGSpacePlanetComponent::StarDomeRadius/MeshRadius));
+	}
+	if (!SetupSpaceLandmarks(Data) || !SetupSpacePostProcess()) return false;
+	// Everything the capture should see now exists; recaptured only by the next zone load.
+	Ambient->RecaptureSky();
+	return true;
+}
+
+void USWGTerrainSubsystem::UpdateSpaceScene(float DeltaTime)
+{
+	UWorld* World = GetWorld();
+	USWGObjectGraphSubsystem* Graph = GetGameInstance()->GetSubsystem<USWGObjectGraphSubsystem>();
+	const FQuat Rotation = Graph ? Graph->GetSpaceFrame().GetRotation().Inverse() : FQuat::Identity;
+	const APlayerCameraManager* Camera = World ? UGameplayStatics::GetPlayerCameraManager(World, 0) : nullptr;
+	if (IsValid(SkyActor)) SkyActor->SetActorTransform(FTransform(Rotation, Camera ? Camera->GetCameraLocation() : FVector::ZeroVector));
+	for (int32 Index = 0; Index < SpaceLights.Num(); ++Index)
+		if (IsValid(SpaceLights[Index])) SpaceLights[Index]->SetActorRotation(Rotation.RotateVector(SpaceLightDirections[Index]).Rotation());
+	UpdateSpaceLandmarks(DeltaTime, Camera ? Camera->GetCameraLocation() : FVector::ZeroVector);
 }
 
 void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath)
@@ -1195,6 +1436,8 @@ const FSWGEnvironmentRow& USWGTerrainSubsystem::ResolveCloudRow(const FSWGEnviro
 
 void USWGTerrainSubsystem::BlendEnvironment(const FSWGEnvironmentRow* FromRow, const FSWGEnvironmentRow& ToRow, float Alpha)
 {
+	// STAT owns space lighting; ground weather must not recreate the previous planet's clouds.
+	if (IsSpaceScene()) return;
 	const FSWGEnvironmentRow& From = FromRow ? *FromRow : Environment;
 	Alpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
 
@@ -1473,28 +1716,29 @@ FString USWGTerrainSubsystem::LoadStarPalettePath(const FString& ZoneName) const
 	return FString();
 }
 
-void USWGTerrainSubsystem::SpawnStarField(const FString& ZoneName)
+bool USWGTerrainSubsystem::SpawnStarField(const FString& PalettePath, int32 StarCount)
 {
 	StarFieldMaterial = nullptr;
 	UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/EngineSky/SM_SkySphere.SM_SkySphere"));
 	UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGStarField.M_SWGStarField"));
 	if (!IsValid(SkyActor) || !SphereMesh || !Parent || !TreSubsystem)
 	{
-		return;
+		return false;
 	}
 
 	// Palette: an uncompressed 32-bit TGA, one row of star tints.
 	TArray<FColor> Palette;
-	const FString PalettePath = LoadStarPalettePath(ZoneName);
 	if (!PalettePath.IsEmpty() && TreSubsystem->FileExists(PalettePath))
 	{
 		const TArray<uint8> Bytes = TreSubsystem->ExtractFile(PalettePath);
-		if (Bytes.Num() > 18 && Bytes[2] == 2 && (Bytes[16] == 32 || Bytes[16] == 24))
+		if (Bytes.Num() > 18 && Bytes[1] == 0 && Bytes[2] == 2 && (Bytes[16] == 32 || Bytes[16] == 24))
 		{
 			const int32 Width = Bytes[12] | (Bytes[13] << 8);
+			const int32 Height = Bytes[14] | (Bytes[15] << 8);
 			const int32 BytesPerPixel = Bytes[16] / 8;
 			const int32 Start = 18 + Bytes[0];
-			for (int32 Index = 0; Index < Width && Start + (Index + 1) * BytesPerPixel <= Bytes.Num(); ++Index)
+			if (Width <= 0 || Height != 1 || Start + Width*BytesPerPixel > Bytes.Num()) return false;
+			for (int32 Index = 0; Index < Width; ++Index)
 			{
 				const uint8* Pixel = Bytes.GetData() + Start + Index * BytesPerPixel;
 				Palette.Add(FColor(Pixel[2], Pixel[1], Pixel[0], 255));
@@ -1503,16 +1747,14 @@ void USWGTerrainSubsystem::SpawnStarField(const FString& ZoneName)
 	}
 	if (Palette.IsEmpty())
 	{
-		Palette.Add(FColor(200, 210, 255));
+		return false;
 	}
 
-	// Equirectangular star map: a few thousand points, brighter ones a
-	// little larger, tinted from the palette. Seeded by planet so the
-	// same sky comes back every visit.
-	constexpr int32 Width = 2048, Height = 1024, StarCount = 3500;
+	// shortcut: a deterministic star texture uses retail's palette/count; match native point generation when a retail capture is available.
+	constexpr int32 Width = 8192, Height = 4096;
 	TArray<FColor> Pixels;
 	Pixels.Init(FColor::Black, Width * Height);
-	FRandomStream Random((int32)GetTypeHash(ZoneName));
+	FRandomStream Random((int32)GetTypeHash(ActiveTerrainVirtualPath));
 	for (int32 Star = 0; Star < StarCount; ++Star)
 	{
 		// Uniform on the sphere, so the poles don't crowd.
@@ -1529,19 +1771,24 @@ void USWGTerrainSubsystem::SpawnStarField(const FString& ZoneName)
 		Pixels[Y * Width + X] = Colour;
 		if (Brightness > 0.6f)
 		{
-			// A small cross for the bright ones.
-			const FColor Halo(Colour.R / 2, Colour.G / 2, Colour.B / 2, 255);
-			if (X + 1 < Width) Pixels[Y * Width + X + 1] = Halo;
-			if (X > 0) Pixels[Y * Width + X - 1] = Halo;
-			if (Y + 1 < Height) Pixels[(Y + 1) * Width + X] = Halo;
-			if (Y > 0) Pixels[(Y - 1) * Width + X] = Halo;
+			// A compact radial profile avoids the enlarged cross-shaped stars of the low-resolution map.
+			for (int32 DY = -1; DY <= 1; ++DY)
+				for (int32 DX = -1; DX <= 1; ++DX)
+				{
+					if ((!DX && !DY) || Y + DY < 0 || Y + DY >= Height) continue;
+					const float Weight = DX && DY ? .125f : .35f;
+					FColor& Neighbor = Pixels[(Y + DY) * Width + (X + DX + Width) % Width];
+					Neighbor.R = FMath::Max(Neighbor.R, uint8(Colour.R * Weight));
+					Neighbor.G = FMath::Max(Neighbor.G, uint8(Colour.G * Weight));
+					Neighbor.B = FMath::Max(Neighbor.B, uint8(Colour.B * Weight));
+				}
 		}
 	}
 
 	UTexture2D* Texture = UTexture2D::CreateTransient(Width, Height, PF_B8G8R8A8, TEXT("SWGStarField"));
 	if (!Texture)
 	{
-		return;
+		return false;
 	}
 	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
 	void* Dest = Mip.BulkData.Lock(LOCK_READ_WRITE);
@@ -1568,6 +1815,7 @@ void USWGTerrainSubsystem::SpawnStarField(const FString& ZoneName)
 	Dome->SetMaterial(0, StarFieldMaterial);
 	Dome->RegisterComponent();
 	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: star field from %s (%d tints)"), *PalettePath, Palette.Num());
+	return true;
 }
 
 UTexture2D* USWGTerrainSubsystem::LoadGradientSkyTexture(const FString& VirtualPath) const
@@ -1667,14 +1915,6 @@ TSharedPtr<const FSWGWorldSnapshotData, ESPMode::ThreadSafe> USWGTerrainSubsyste
 	{
 		UE_LOG(LogTemp, Error, TEXT("USWGTerrainSubsystem: failed to parse world snapshot %s"), *SnapshotPath);
 		return nullptr;
-	}
-
-	if (!FormTagMappingTable)
-	{
-		// Loadable off the game thread — SWGInitializationState's own CRC map
-		// generation already does exactly this from a background ThreadPool task.
-		FormTagMappingTable = LoadObject<UDataTable>(nullptr,
-			TEXT("/Game/SWGEmu/Data/DT_SWGFormTagMappings.DT_SWGFormTagMappings"));
 	}
 
 	for (int32 NodeIndex = 0; NodeIndex < Snapshot->Nodes.Num(); ++NodeIndex)
@@ -3711,10 +3951,11 @@ void USWGTerrainSubsystem::UpdateStreaming()
 			}
 		}
 	}
-	// The spawn 3x3 is only pinned until it has reported ready.
-	if (!bInitialTilesReported)
+	// Keep the spawn rings stable until their scenery and terrain edits finish.
+	if (bSpawnSceneLoading)
 	{
 		Wanted.Append(InitialTiles);
+		Wanted.Append(InitialSnapshotTiles);
 	}
 
 	for (const FIntPoint& Coord : Wanted)
@@ -3754,11 +3995,11 @@ void USWGTerrainSubsystem::UpdateStreaming()
 		const int32 Distance = FMath::Max(FMath::Abs(Delta.X), FMath::Abs(Delta.Y));
 		FSWGTerrainTile& Tile = Pair.Value;
 
-		if (Distance <= SnapshotLoadRadius && !Tile.bSnapshotSpawned && !Tile.bSnapshotResolveInFlight)
+		if ((Distance <= SnapshotLoadRadius || (bSpawnSceneLoading && InitialSnapshotTiles.Contains(Pair.Key))) && !Tile.bSnapshotSpawned && !Tile.bSnapshotResolveInFlight)
 		{
 			StartSnapshotResolve(Pair.Key);
 		}
-		else if (Distance > SnapshotUnloadRadius && Tile.bSnapshotSpawned)
+		else if (Distance > SnapshotUnloadRadius && Tile.bSnapshotSpawned && !(bSpawnSceneLoading && InitialSnapshotTiles.Contains(Pair.Key)))
 		{
 			const int32 ActorCount = Tile.SnapshotActors.Num();
 			DestroySnapshotActors(Tile);
@@ -3774,6 +4015,7 @@ void USWGTerrainSubsystem::UpdateStreaming()
 
 void USWGTerrainSubsystem::StartSnapshotResolve(const FIntPoint& Coord)
 {
+	if (bIsShuttingDown) return;
 	check(IsInGameThread());
 
 	FSWGTerrainTile* Tile = Tiles.Find(Coord);
@@ -3792,13 +4034,14 @@ void USWGTerrainSubsystem::StartSnapshotResolve(const FIntPoint& Coord)
 
 	// Template IFF reads and the form-tag table lookup are all the resolve
 	// does; both are already exercised off the game thread by the mesh path.
-	Async(EAsyncExecution::ThreadPool, [this, Coord, Generation]()
+	TWeakObjectPtr<USWGTerrainSubsystem> WeakThis(this);
+	WorkerTasks.Add(Async(EAsyncExecution::ThreadPool, [this, WeakThis, Coord, Generation]()
 		{
 			TArray<FSWGWorldSnapshotSpawnInfo> Objects = ResolveSnapshotObjectsForTile(Coord);
 
-			AsyncTask(ENamedThreads::GameThread, [this, Coord, Generation, Objects = MoveTemp(Objects)]() mutable
+			AsyncTask(ENamedThreads::GameThread, [this, WeakThis, Coord, Generation, Objects = MoveTemp(Objects)]() mutable
 				{
-					if (Generation != TerrainGeneration)
+					if (!WeakThis.IsValid() || bIsShuttingDown || Generation != TerrainGeneration)
 					{
 						return;
 					}
@@ -3813,7 +4056,8 @@ void USWGTerrainSubsystem::StartSnapshotResolve(const FIntPoint& Coord)
 					FVector2D Center;
 					GetStreamingCenter(Center);
 					const FIntPoint Delta = Coord - TileCoordAt(Center);
-					if (FMath::Max(FMath::Abs(Delta.X), FMath::Abs(Delta.Y)) > CVarSnapshotUnloadRadius.GetValueOnGameThread())
+					if (FMath::Max(FMath::Abs(Delta.X), FMath::Abs(Delta.Y)) > CVarSnapshotUnloadRadius.GetValueOnGameThread()
+						&& !(bSpawnSceneLoading && InitialSnapshotTiles.Contains(Coord)))
 					{
 						return;
 					}
@@ -3823,7 +4067,7 @@ void USWGTerrainSubsystem::StartSnapshotResolve(const FIntPoint& Coord)
 						QueueSnapshotObjectsForTile(Coord, *LandedTile, MoveTemp(Objects));
 					}
 				});
-		});
+		}));
 }
 
 void USWGTerrainSubsystem::PumpBakeQueue()
@@ -3868,6 +4112,7 @@ void USWGTerrainSubsystem::PumpBakeQueue()
 void USWGTerrainSubsystem::StartTileBake(const FIntPoint& Coord)
 {
 	check(IsInGameThread());
+	if (bIsShuttingDown) return;
 
 	FSWGTerrainTile* Tile = Tiles.Find(Coord);
 	if (!Tile)
@@ -3882,15 +4127,17 @@ void USWGTerrainSubsystem::StartTileBake(const FIntPoint& Coord)
 	FSWGTerrainBakeSource Source = MakeBakeSource();
 	const int32 BakedVersion = Source.EditVersion;
 
-	Async(EAsyncExecution::ThreadPool, [this, Coord, Generation, BakedVersion, Source = MoveTemp(Source)]()
+	TWeakObjectPtr<USWGTerrainSubsystem> WeakThis(this);
+	WorkerTasks.Add(Async(EAsyncExecution::ThreadPool, [this, WeakThis, Coord, Generation, BakedVersion, Source = MoveTemp(Source)]()
 		{
 			FSWGTerrainTileBuild Build = BakeTerrainTile(Source, Coord);
 
-			AsyncTask(ENamedThreads::GameThread, [this, Coord, Generation, BakedVersion, Build = MoveTemp(Build)]() mutable
+			AsyncTask(ENamedThreads::GameThread, [this, WeakThis, Coord, Generation, BakedVersion, Build = MoveTemp(Build)]() mutable
 				{
+					if (!WeakThis.IsValid() || bIsShuttingDown) return;
 					OnTileBakeFinished(Coord, Generation, BakedVersion, Build);
 				});
-		});
+		}));
 }
 
 void USWGTerrainSubsystem::OnTileBakeFinished(const FIntPoint& Coord, int32 Generation, int32 BakedVersion, FSWGTerrainTileBuild& Build)
@@ -4089,9 +4336,9 @@ void USWGTerrainSubsystem::ApplyTerrainTileBuild(const FIntPoint& Coord, FSWGTer
 
 	// Shape changed, so the cooked collision is stale. bOnlyIfPending=false since
 	// the flags haven't changed. The initial spawn ring cooks synchronously while
-	// the loading screen is up; otherwise OnTerrainReady could fire after the
-	// render mesh was installed but before its async collision existed.
-	const bool bSpawnTile = !bInitialTilesReported && InitialTiles.Contains(Coord);
+	// the loading screen is up, including late building pad/hole rebakes;
+	// installing the render mesh alone does not make its async collision ready.
+	const bool bSpawnTile = bSpawnSceneLoading && InitialTiles.Contains(Coord);
 	const bool bWasAsyncCooking = Tile.Component->bUseAsyncCooking;
 	if (bSpawnTile)
 	{

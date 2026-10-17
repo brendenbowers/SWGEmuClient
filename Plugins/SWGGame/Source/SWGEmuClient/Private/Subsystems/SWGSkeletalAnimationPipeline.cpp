@@ -130,21 +130,37 @@ FSWGSkeletalAnimationPipeline::FSWGSkeletalAnimationPipeline(USWGMeshGeneratorSu
 
 FSWGSkeletalAnimationPipeline::~FSWGSkeletalAnimationPipeline()
 {
+	Shutdown();
+}
+
+void FSWGSkeletalAnimationPipeline::Shutdown()
+{
+	if (bShuttingDown.exchange(true)) return;
 	// Signal both pump loops to exit, then wait for them to actually notice
 	// and return before this object finishes destructing — a pump mid-loop
 	// still dereferences *this* (Owner, the queues, the atomics themselves),
 	// so this has to be a real wait, not fire-and-forget. Rare/teardown-only
 	// path (subsystem Deinitialize / game instance shutdown), so a short
 	// spin-sleep is fine — this is not a hot path.
-	bShuttingDown = true;
 	while (NumActiveWorkerTasks.load() > 0)
 	{
 		FPlatformProcess::Sleep(0.001f);
 	}
+	FSWGSkeletalMeshBuildRequest MeshRequest;
+	while (PendingSkeletalMeshRequests.Dequeue(MeshRequest)) MeshRequest.Promise->SetValue(nullptr);
+	FSWGSkeletalMeshBuildResult MeshResult;
+	while (CompletedSkeletalMeshBuilds.Dequeue(MeshResult)) MeshResult.Promise->SetValue(nullptr);
+	FSWGAnimSequenceBuildRequest AnimRequest;
+	while (PendingAnimSequenceRequests.Dequeue(AnimRequest)) AnimRequest.Promise->SetValue(nullptr);
+	FSWGAnimSequenceBuildResult AnimResult;
+	while (CompletedAnimSequenceBuilds.Dequeue(AnimResult)) AnimResult.Promise->SetValue(nullptr);
+	PendingSkeletalMeshFinalizeCount = 0;
+	PendingAnimSequenceFinalizeCount = 0;
 }
 
 void FSWGSkeletalAnimationPipeline::Tick(float DeltaTime)
 {
+	if (bShuttingDown.load()) return;
 	// Drop records whose component or anim instance is gone, then feed the
 	// survivors their live inputs (speed and steering for the blend space; the
 	// blend space itself owns sample selection, blending and playback-rate
@@ -1063,6 +1079,7 @@ void FSWGSkeletalAnimationPipeline::RequestSequences(const FString& SkeletonPath
 
 UBlendSpace* FSWGSkeletalAnimationPipeline::GetOrBuildSteeredBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const TArray<FString>& SamplePaths, const TArray<UAnimSequence*>& Sequences, const TArray<FVector2D>& Positions, float MaxSpeed, float MinSteer, float MaxSteer, const FString& Salt, USkeleton* TargetSkeleton)
 {
+	if (bShuttingDown.load()) return nullptr;
 	// Named from the sample set, so two creatures sharing one turn/strafe table share one asset.
 	uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GetTypeHash(Salt) ^ GeneratedAssetVersion;
 	for (int32 SampleIndex = 0; SampleIndex < SamplePaths.Num(); ++SampleIndex)
@@ -1167,6 +1184,7 @@ const TMap<FString, FString>& FSWGSkeletalAnimationPipeline::GetSlotHardpoints()
 
 TFuture<USkeletalMesh*> FSWGSkeletalAnimationPipeline::RequestGeneratedSkeletalMesh(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGSkeletonData& Skeleton)
 {
+	if (bShuttingDown.load()) return MakeFulfilledPromise<USkeletalMesh*>(nullptr).GetFuture();
 	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GeneratedAssetVersion;
 	const FString AssetName = FString::Printf(TEXT("SK_%u"), PathsHash);
 	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
@@ -1302,7 +1320,13 @@ void FSWGSkeletalAnimationPipeline::PumpSkeletalMeshWork()
 			// The actual expensive geometry-build pass — FMeshUtilities::
 			// BuildSkeletalMesh underneath, confirmed thread-safe (see
 			// mesh-threading-plan.html's engine-research table).
+#if WITH_DEV_AUTOMATION_TESTS
+			if (BeforeSkeletalBuildForTest) BeforeSkeletalBuildForTest();
+#endif
 			Result.bBuilt = FSWGSkeletalMeshImporter::BuildSkeletalMeshData(*MeshUtilitiesModule, MeshBuildSkeleton, MeshPartPtrs, Request.SlotHardpoints, Request.PackagePath, Result.BuildData);
+#if WITH_DEV_AUTOMATION_TESTS
+			if (AfterSkeletalBuildForTest) AfterSkeletalBuildForTest(Result.bBuilt);
+#endif
 		}
 
 		++PendingSkeletalMeshFinalizeCount;
@@ -1418,6 +1442,7 @@ void FSWGSkeletalAnimationPipeline::DrainCompletedSkeletalMeshBuilds(int32 MaxTo
 
 TFuture<UAnimSequence*> FSWGSkeletalAnimationPipeline::RequestLocomotionAnimSequence(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FString& ClipPath, const FSWGSkeletonData& Skeleton, USkeleton* TargetSkeleton)
 {
+	if (bShuttingDown.load()) return MakeFulfilledPromise<UAnimSequence*>(nullptr).GetFuture();
 	const uint32 PathsHash = GetTypeHash(SkeletonPath) ^ GetTypeHash(MeshVirtualPaths) ^ GetTypeHash(ClipPath) ^ GeneratedAssetVersion;
 	const FString AssetName = FString::Printf(TEXT("AS_%u"), PathsHash);
 	const FString PackagePath = TEXT("/Game/SWGEmu/Generated/") + AssetName;
@@ -1562,6 +1587,7 @@ void FSWGSkeletalAnimationPipeline::DrainCompletedAnimSequenceBuilds(int32 MaxTo
 
 UBlendSpace* FSWGSkeletalAnimationPipeline::GetOrBuildLocomotionBlendSpace(const FString& SkeletonPath, const TArray<FString>& MeshVirtualPaths, const FSWGLocomotionClipSet& ClipSet, UAnimSequence* IdleSequence, UAnimSequence* WalkSequence, UAnimSequence* RunSequence, float WalkSpeed, float RunSpeed, USkeleton* TargetSkeleton)
 {
+	if (bShuttingDown.load()) return nullptr;
 	// The clip paths rather than the loop animation name: two postures can
 	// resolve to different names over the same three clips (a species whose
 	// .ash gives sneaking and crouched the same loop), and that should share
@@ -1782,7 +1808,7 @@ void FSWGSkeletalAnimationPipeline::PlayLoopOnComponent(USkeletalMeshComponent& 
 		});
 }
 
-void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, float>* MorphWeights, const TMap<FString, int32>* TextureIndexOverrides)
+void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor, const TArray<FString>& MeshVirtualPaths, const TMap<FString, FString>& AnimationLatPaths, UMeshComponent* ProceduralMeshComponent, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, float>* MorphWeights, const TMap<FString, int32>* TextureIndexOverrides, TSharedPtr<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe> LoadingOwner)
 {
 	if (!Owner.TreSubsystem)
 	{
@@ -1864,7 +1890,7 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 	RequestGeneratedSkeletalMesh(SkeletonPath, MeshVirtualPaths, Skeleton)
 		.Next([this, ActorWeak, MeshVirtualPaths, SkeletonPath, Skeleton, LatPath, ClipSet, Posture, StateBitmask, ProceduralMeshComponentWeak,
 		 PaletteTintOverridesCopy, MorphWeightsCopy, TextureIndexOverridesCopy,
-		 bHasPaletteTintOverrides, bHasMorphWeights, bHasTextureIndexOverrides](USkeletalMesh* GeneratedMesh)
+		 bHasPaletteTintOverrides, bHasMorphWeights, bHasTextureIndexOverrides, LoadingOwner](USkeletalMesh* GeneratedMesh)
 		{
 			AActor* Actor = ActorWeak.Get();
 			if (!Actor || !GeneratedMesh)
@@ -1896,7 +1922,7 @@ void FSWGSkeletalAnimationPipeline::TryApplyGeneratedAnimatedMesh(AActor& Actor,
 
 			auto OnBlendSpaceReady = [this, ActorWeak, GeneratedMesh, TargetSkeleton, MeshVirtualPaths, SkeletonPath, Skeleton, LatPath, ClipSet, Posture, StateBitmask,
 				ProceduralMeshComponentWeak, PaletteTintOverridesCopy, MorphWeightsCopy, TextureIndexOverridesCopy,
-				bHasPaletteTintOverrides, bHasMorphWeights, bHasTextureIndexOverrides](UBlendSpace* LocomotionBlendSpace)
+				bHasPaletteTintOverrides, bHasMorphWeights, bHasTextureIndexOverrides, LoadingOwner](UBlendSpace* LocomotionBlendSpace)
 			{
 				AActor* Actor = ActorWeak.Get();
 				if (!Actor)

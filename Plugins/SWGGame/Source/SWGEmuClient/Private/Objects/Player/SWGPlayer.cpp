@@ -1,5 +1,6 @@
 #include "Objects/Player/SWGPlayer.h"
 #include "Common/SWGWorldScale.h"
+#include "SWGEffectsTypes.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -14,12 +15,18 @@
 #include "Engine/LocalPlayer.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Subsystems/SWGNetworkSubsystem.h"
+#include "Subsystems/SWGObjectGraphSubsystem.h"
 //#include "Network/Messages/Zone/DataTransformMessage.h"
 #include "Engine/GameInstance.h"
 #include "Network/Messages/Zone/Object/DataTransform.h"
 #include "Network/Messages/Zone/Object/DataTransformWithParent.h"
 #include "Objects/World/SWGCell.h"
 #include "Objects/World/SWGBuilding.h"
+#include "Objects/World/SWGShip.h"
+#include "Objects/World/SWGDoor.h"
+#include "Components/StaticMeshComponent.h"
+#include "Network/Messages/Zone/ShipUpdateTransformMessage.h"
+#include "Network/Objects/Zone/Object/SWGContainmentType.h"
 #include "Components/SWGPlayerProfileComponent.h"
 #include "Components/SWGExperienceComponent.h"
 #include "Components/SWGJournalComponent.h"
@@ -37,6 +44,12 @@
 
 namespace
 {
+	TAutoConsoleVariable<float> CVarShipCameraZoomMultiplier(
+		TEXT("swg.Space.ShipCameraZoomMultiplier"), 1.5f,
+		TEXT("Scales the exterior pilot camera's authored zoom distances (retail's ClientGame/CockpitCamera zoomMultiplier, floored at 1)."), ECVF_Default);
+	TAutoConsoleVariable<float> CVarShipThrottleOverride(
+		TEXT("swg.ShipThrottleOverride"), -1.f,
+		TEXT("Development flight throttle (0..1); -1 restores player control. Requires a ready, locally piloted ship."), ECVF_Cheat);
 	// Lumen occludes the colour ramp's ambient under tree canopies; retail's
 	// ambient reached everywhere, so some of the sky light is let through.
 	TAutoConsoleVariable<float> CVarSkylightLeaking(
@@ -153,6 +166,8 @@ void ASWGPlayer::UpdateCameraHeight()
 
 void ASWGPlayer::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	RestoreShipViewVisibility();
+	if (ControlledShip.IsValid()) ControlledShip->bPredictingLocalFlight = false;
 	UE_LOG(LogTemp, Warning, TEXT("ASWGPlayer::EndPlay for %s, reason=%d (Destroyed=0, LevelTransition=1, RemovedFromWorld=2, Quit=3)"),
 		*GetName(), (int32)EndPlayReason);
 
@@ -184,12 +199,15 @@ void ASWGPlayer::PossessedBy(AController* NewController)
 void ASWGPlayer::SetSceneLoadingLocked(bool bLocked)
 {
 	bSceneLoadingLocked = bLocked;
+	const UGameInstance* Game = GetGameInstance();
+	const USWGObjectGraphSubsystem* Graph = Game ? Game->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+	const bool bPiloting = Graph && Graph->GetLocalPlayerObjectId() == GetObjectId() && Graph->IsLocalPlayerPiloting();
 	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
 	{
 		Movement->StopMovementImmediately();
 		// A rider remains attached and inert; its mount owns movement even after
 		// scene loading completes.
-		Movement->SetMovementMode(bLocked || RiddenMount.IsValid() ? MOVE_None : MOVE_Walking);
+		Movement->SetMovementMode(bLocked || RiddenMount.IsValid() || bPiloting ? MOVE_None : MOVE_Walking);
 	}
 }
 
@@ -248,9 +266,9 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	PlayerInputComponent->BindAxisKey(EKeys::Gamepad_RightX, this, &ASWGPlayer::GamepadLookX);
 	PlayerInputComponent->BindAxisKey(EKeys::Gamepad_RightY, this, &ASWGPlayer::GamepadLookY);
 	PlayerInputComponent->BindKey(EKeys::Gamepad_LeftThumbstick, IE_Pressed, this, &ASWGPlayer::TargetNearest);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_RightThumbstick, IE_Pressed, this, &ASWGPlayer::ClearTarget);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_RightShoulder, IE_Pressed, this, &ASWGPlayer::CycleTargetNext);
-	PlayerInputComponent->BindKey(EKeys::Gamepad_LeftShoulder, IE_Pressed, this, &ASWGPlayer::CycleTargetPrevious);
+	PlayerInputComponent->BindKey(EKeys::Gamepad_RightThumbstick, IE_Pressed, this, &ASWGPlayer::OnGamepadView);
+	PlayerInputComponent->BindKey(EKeys::Gamepad_RightShoulder, IE_Pressed, this, &ASWGPlayer::OnGamepadTargetNext);
+	PlayerInputComponent->BindKey(EKeys::Gamepad_LeftShoulder, IE_Pressed, this, &ASWGPlayer::OnGamepadTargetPrevious);
 	PlayerInputComponent->BindKey(ActionBankShiftKey, IE_Pressed, this, &ASWGPlayer::ToggleActionBank);
 	PlayerInputComponent->BindKey(ZoomModifierKey, IE_Pressed, this, &ASWGPlayer::OnZoomModifierPressed);
 	PlayerInputComponent->BindKey(ZoomModifierKey, IE_Released, this, &ASWGPlayer::OnZoomModifierReleased);
@@ -260,6 +278,11 @@ void ASWGPlayer::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent
 	PlayerInputComponent->BindKey(WaypointListKey, IE_Pressed, this, &ASWGPlayer::ToggleWaypointList);
 	PlayerInputComponent->BindKey(DatapadKey, IE_Pressed, this, &ASWGPlayer::ToggleDatapad);
 	PlayerInputComponent->BindKey(PlanetMapKey, IE_Pressed, this, &ASWGPlayer::TogglePlanetMap);
+	PlayerInputComponent->BindKey(EKeys::F, IE_Pressed, this, &ASWGPlayer::ToggleShipView);
+	PlayerInputComponent->BindKey(EKeys::X, IE_Pressed, this, &ASWGPlayer::LeaveShipSeat);
+	// While piloting the action bar is hidden, so the D-pad's up and down zoom the exterior camera.
+	PlayerInputComponent->BindKey(EKeys::Gamepad_DPad_Up, IE_Pressed, this, &ASWGPlayer::OnShipZoomIn);
+	PlayerInputComponent->BindKey(EKeys::Gamepad_DPad_Down, IE_Pressed, this, &ASWGPlayer::OnShipZoomOut);
 
 	// Action bar hotkeys: 1-9, 0, then hyphen and equals — SWG's twelve-slot
 	// bank. Bound the same legacy way as the mouse keys above rather than
@@ -319,12 +342,14 @@ void ASWGPlayer::ToggleDatapad()
 
 void ASWGPlayer::ToggleActionBank()
 {
+	if (IsPilotingShip()) return;
 	bActionBankShifted = !bActionBankShifted;
 	OnActionBankChanged.Broadcast(GetActiveActionBank());
 }
 
 void ASWGPlayer::OnZoomModifierPressed()
 {
+	if (IsPilotingShip()) return;
 	bZoomModifierHeld = true;
 }
 
@@ -335,6 +360,7 @@ void ASWGPlayer::OnZoomModifierReleased()
 
 void ASWGPlayer::OnGamepadInteract()
 {
+	if (IsPilotingShip()) { LeaveShipSeat(); return; }
 	UGameInstance* GameInstance = GetGameInstance();
 	USWGTargetSubsystem* TargetSubsystem = GameInstance ? GameInstance->GetSubsystem<USWGTargetSubsystem>() : nullptr;
 	if (!TargetSubsystem)
@@ -397,6 +423,12 @@ void ASWGPlayer::OnMouseWheel(float Value)
 {
 	if (FMath::IsNearlyZero(Value))
 	{
+		return;
+	}
+
+	if (IsPilotingShip())
+	{
+		StepShipZoom(Value > 0.f ? -FMath::Max(1, FMath::RoundToInt(Value)) : FMath::Max(1, FMath::RoundToInt(-Value)));
 		return;
 	}
 
@@ -481,6 +513,7 @@ namespace
 
 void ASWGPlayer::GamepadLookX(float Value)
 {
+	if (IsPilotingShip()) return;
 	// Axis bindings fire every frame, zero included, so this is a clean per-frame
 	// "is the stick pushed sideways" that Tick reads to turn the body with the camera.
 	bIsGamepadSteering = !FMath::IsNearlyZero(Value);
@@ -492,6 +525,7 @@ void ASWGPlayer::GamepadLookX(float Value)
 
 void ASWGPlayer::GamepadLookY(float Value)
 {
+	if (IsPilotingShip()) return;
 	if (FMath::IsNearlyZero(Value))
 	{
 		return;
@@ -630,6 +664,9 @@ void ASWGPlayer::OnRightMouseButtonReleased()
 
 void ASWGPlayer::Move(const FInputActionValue& Value)
 {
+	const UGameInstance* Game = GetGameInstance();
+	if (const USWGObjectGraphSubsystem* Graph = Game ? Game->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+		Graph && Graph->IsLocalPlayerPiloting()) return;
 	const FVector2D MovementVector = Value.Get<FVector2D>();
 
 	if (!Controller)
@@ -694,6 +731,291 @@ void ASWGPlayer::RequestStandForMovement()
 	}
 }
 
+bool ASWGPlayer::IsPilotingShip() const
+{
+	const UGameInstance* Game = GetGameInstance();
+	const USWGObjectGraphSubsystem* Graph = Game ? Game->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+	return Graph && Graph->GetLocalPlayerObjectId() == GetObjectId() && Graph->IsLocalPlayerPiloting();
+}
+
+void ASWGPlayer::OnShipZoomIn() { StepShipZoom(-1); }
+void ASWGPlayer::OnShipZoomOut() { StepShipZoom(1); }
+
+float ASWGPlayer::GetShipZoomMultiplier()
+{
+	const float Value = CVarShipCameraZoomMultiplier.GetValueOnGameThread();
+	return FMath::IsFinite(Value) ? FMath::Max(1.f, Value) : 1.f;
+}
+
+ASWGPlayer::FShipZoomSteps ASWGPlayer::BuildShipZoomSteps(const TArray<float>& AuthoredDistances, float FirstPersonThreshold, float Multiplier)
+{
+	FShipZoomSteps Steps;
+	for (const float Distance : AuthoredDistances)
+	{
+		if (Distance > 0 && Distance >= FirstPersonThreshold) Steps.Distances.Add(Distance * Multiplier);
+	}
+	if (Steps.Distances.IsEmpty())
+	{
+		// No authored steps: factors of the hull-radius framing.
+		for (const float Factor : {0.6f, 0.8f, 1.f, 1.25f, 1.5f, 2.f, 2.5f, 3.f}) Steps.Distances.Add(Factor * Multiplier);
+		Steps.DefaultIndex = 2;
+		return Steps;
+	}
+	// Past the widest authored stop the camera pulls back to three times it.
+	Steps.bAuthored = true;
+	Steps.DefaultIndex = Steps.Distances.Num() - 1;
+	const float Widest = Steps.Distances.Last();
+	for (const float Factor : {1.25f, 1.5f, 2.f, 2.5f, 3.f}) Steps.Distances.Add(Widest * Factor);
+	return Steps;
+}
+
+ASWGPlayer::FShipZoomSteps ASWGPlayer::GetShipZoomSteps(const ASWGShip& Ship) const
+{
+	if (Ship.CockpitData.IsSet() && Ship.CockpitData->FrameAppearance.IsEmpty() && Ship.CockpitData->NativePobPosition.IsSet())
+		return BuildShipZoomSteps(Ship.CockpitData->ZoomDistances, Ship.CockpitData->FirstPersonThreshold, GetShipZoomMultiplier());
+	return BuildShipZoomSteps({}, 0.f, GetShipZoomMultiplier());
+}
+
+void ASWGPlayer::StepShipZoom(int32 Direction)
+{
+	if (!IsPilotingShip() || !bExteriorShipView) return;
+	const USWGObjectGraphSubsystem* Graph = GetGameInstance()->GetSubsystem<USWGObjectGraphSubsystem>();
+	const ASWGShip* Ship = Graph ? Graph->GetLocalPlayerShip() : nullptr;
+	if (!Ship) return;
+	const FShipZoomSteps Steps = GetShipZoomSteps(*Ship);
+	ShipZoomOffset = FMath::Clamp(ShipZoomOffset + Direction, -Steps.DefaultIndex, Steps.Distances.Num() - 1 - Steps.DefaultIndex);
+}
+
+void ASWGPlayer::OnGamepadView() { if (IsPilotingShip()) ToggleShipView(); else ClearTarget(); }
+void ASWGPlayer::OnGamepadTargetNext() { if (!IsPilotingShip()) CycleTargetNext(); }
+void ASWGPlayer::OnGamepadTargetPrevious() { if (!IsPilotingShip()) CycleTargetPrevious(); }
+
+bool ASWGPlayer::TickPilotShip(float DeltaTime)
+{
+	UGameInstance* Game = GetGameInstance();
+	USWGObjectGraphSubsystem* Graph = Game ? Game->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+	if (!Graph || !Graph->IsLocalPlayerPiloting())
+	{
+		if (ControlledShip.IsValid()) ControlledShip->bPredictingLocalFlight = false;
+		ControlledShip.Reset(); ShipThrottle = 0; TimeSinceShipSend = 0;
+		bExteriorShipView = false;
+		ShipCameraLook = FRotator::ZeroRotator;
+		RestoreShipViewVisibility();
+		return false;
+	}
+	ASWGShip* Ship = Graph->GetLocalPlayerShip();
+	APlayerController* PC = Cast<APlayerController>(Controller);
+	if (!Ship || !PC || !Graph->IsLocalSpaceSceneReady()) return true;
+	if (ControlledShip.Get() != Ship)
+	{
+		if (ControlledShip.IsValid()) ControlledShip->bPredictingLocalFlight = false;
+		ControlledShip = Ship;
+		bExteriorShipView = true;
+		ShipZoomOffset = 0;
+		ShipCameraDistance = -1.f;
+		ShipCameraLook = FRotator::ZeroRotator;
+		Ship->FlightSpeed = Ship->SpaceVelocity.Size();
+		ShipThrottle = Ship->ShipState.Flight.MaxSpeed > 0
+			? FMath::Clamp(float(Ship->SpaceVelocity.Size() / (Ship->ShipState.Flight.MaxSpeed * SWGWorldScale)), 0.f, 1.f) : 0.f;
+		TimeSinceShipSend = 0;
+		UE_LOG(LogTemp, Log, TEXT("Ship controls: W/S throttle, A/D yaw, Up/Down pitch, Q/E roll, F cockpit/exterior view"));
+	}
+	Ship->bPredictingLocalFlight = true;
+	Ship->bSmoothingSpacePose = false;
+	FVector Steering = FVector::ZeroVector;
+	if (!PC->IsMoveInputIgnored())
+	{
+		auto Axis = [PC](FKey Positive, FKey Negative) { return float(PC->IsInputKeyDown(Positive)) - float(PC->IsInputKeyDown(Negative)); };
+		// Unreal's processed analog values already apply DefaultInput's stick dead zones.
+		auto Analog = [PC](FKey Key) { const float Value = PC->GetInputAnalogKeyState(Key); return FMath::IsFinite(Value) ? FMath::Clamp(Value, -1.f, 1.f) : 0.f; };
+		const float ThrottleInput = Axis(EKeys::W, EKeys::S) + Analog(EKeys::Gamepad_RightTriggerAxis) - Analog(EKeys::Gamepad_LeftTriggerAxis);
+		ShipThrottle = FMath::Clamp(ShipThrottle + FMath::Clamp(ThrottleInput, -1.f, 1.f) * DeltaTime * 0.5f, 0.f, 1.f);
+		const float Override = CVarShipThrottleOverride.GetValueOnGameThread();
+		if (FMath::IsFinite(Override) && Override >= 0) ShipThrottle = FMath::Clamp(Override, 0.f, 1.f);
+		Steering = FVector(
+			FMath::Clamp(Axis(EKeys::Up, EKeys::Down) + Analog(EKeys::Gamepad_LeftY), -1.f, 1.f),
+			FMath::Clamp(Axis(EKeys::D, EKeys::A) + Axis(EKeys::Gamepad_RightShoulder, EKeys::Gamepad_LeftShoulder), -1.f, 1.f),
+			FMath::Clamp(Axis(EKeys::E, EKeys::Q) - Analog(EKeys::Gamepad_LeftX), -1.f, 1.f));
+		if (!PC->IsLookInputIgnored())
+		{
+			ShipCameraLook.Yaw = FRotator::NormalizeAxis(ShipCameraLook.Yaw + ShapeStick(Analog(EKeys::Gamepad_RightX), GamepadLookExponent) * GamepadLookRateDegrees * DeltaTime);
+			ShipCameraLook.Pitch = FMath::Clamp(ShipCameraLook.Pitch + ShapeStick(Analog(EKeys::Gamepad_RightY), GamepadLookExponent) * GamepadLookRateDegrees * DeltaTime, -80.f, 80.f);
+		}
+	}
+	Ship->IntegrateFlight(DeltaTime, ShipThrottle, Steering);
+	Graph->RefreshSpaceFrame();
+	TimeSinceShipSend += DeltaTime;
+	if (TimeSinceShipSend >= 0.2f)
+	{
+		if (USWGNetworkSubsystem* Network = Game->GetSubsystem<USWGNetworkSubsystem>())
+		{
+			FShipUpdateTransformMessage Msg;
+			// Retail sends ID zero; Core3 resolves the ship from its authoritative pilot.
+			Msg.Position = SWGToRawSpace(Ship->SpacePose.GetLocation());
+			Msg.Rotation = SWGUnrealToNativeRotation(Ship->SpacePose.GetRotation());
+			Msg.Velocity = SWGToRawSpace(Ship->SpaceVelocity);
+			Msg.AngularRates = FVector(Ship->FlightAngularRates.Y, -Ship->FlightAngularRates.X, Ship->FlightAngularRates.Z);
+			Msg.SyncStamp = uint32(uint64(FPlatformTime::Seconds() * 1000.0));
+			FSWGPacket Packet;
+			if (Msg.Serialize(Packet)) Network->SendMessage(Packet);
+		}
+		TimeSinceShipSend = 0;
+	}
+	return true;
+}
+
+void ASWGPlayer::ToggleShipView()
+{
+	const USWGObjectGraphSubsystem* Graph = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+	const APlayerController* PC = Cast<APlayerController>(GetController());
+	if (bSceneLoadingLocked || !Graph || !Graph->IsLocalPlayerPiloting() || !Graph->IsLocalSpaceSceneReady()
+		|| !PC || PC->IsMoveInputIgnored()) return;
+	bExteriorShipView = !bExteriorShipView;
+	ShipCameraLook = FRotator::ZeroRotator;
+	ShipCameraDistance = -1.f;
+}
+
+void ASWGPlayer::LeaveShipSeat()
+{
+	UGameInstance* Game = GetGameInstance();
+	const USWGObjectGraphSubsystem* Graph = Game ? Game->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+	const int32* Type = Graph ? Graph->FindContainmentType(GetObjectId()) : nullptr;
+	const APlayerController* PC = Cast<APlayerController>(GetController());
+	if (bSceneLoadingLocked || !Type || *Type != int32(ESWGContainmentType::ShipPilotPOB)
+		|| !PC || PC->IsMoveInputIgnored()) return;
+	// A destroyed or late-loading chair must not block a server-authorized exit request.
+	if (USWGCommandSubsystem* Commands = Game->GetSubsystem<USWGCommandSubsystem>())
+		Commands->SendCommand(TEXT("leaveStation"));
+}
+
+void ASWGPlayer::RestoreShipViewVisibility()
+{
+	if (APlayerController* PC = ShipViewController.Get())
+	{
+		for (const TWeakObjectPtr<AActor>& Actor : ShipViewHiddenActors)
+			if (Actor.Get(true)) PC->HiddenActors.Remove(Actor.Get(true));
+		for (const TWeakObjectPtr<UPrimitiveComponent>& Component : ShipViewHiddenComponents)
+			PC->HiddenPrimitiveComponents.Remove(Component);
+	}
+	ShipViewHiddenActors.Reset();
+	ShipViewHiddenComponents.Reset();
+	if (CameraShip.IsValid()) CameraShip->SetExteriorCameraActive(false);
+	CameraShip.Reset();
+	ShipViewController.Reset();
+}
+
+void ASWGPlayer::CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult)
+{
+	Super::CalcCamera(DeltaTime, OutResult);
+	USWGObjectGraphSubsystem* Graph = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	ASWGShip* Ship = Graph ? Graph->GetLocalPlayerShip() : nullptr;
+	auto Hide = [this, PC](AActor* Actor)
+	{
+		if (PC && IsValid(Actor) && !PC->HiddenActors.Contains(Actor))
+		{
+			PC->HiddenActors.Add(Actor);
+			ShipViewHiddenActors.Add(Actor);
+		}
+	};
+	if (bSceneLoadingLocked || !PC || !Ship || !Graph->IsLocalPlayerPiloting() || !Graph->IsLocalSpaceSceneReady())
+	{
+		RestoreShipViewVisibility();
+		// Narrow POB corridors can compress the spring arm into the walking body's capsule.
+		const FVector CameraOffset = OutResult.Location - GetCapsuleComponent()->GetComponentLocation();
+		if (!bSceneLoadingLocked && PC && Ship
+			&& CameraOffset.SizeSquared2D() < FMath::Square(GetCapsuleComponent()->GetScaledCapsuleRadius() + CameraBoom->ProbeSize)
+			&& FMath::Abs(CameraOffset.Z) < GetCapsuleComponent()->GetScaledCapsuleHalfHeight())
+		{
+			ShipViewController = PC;
+			Hide(this);
+		}
+		return;
+	}
+	const int64* ParentId = Graph->FindContainerId(GetObjectId());
+	const AActor* Seat = ParentId ? Graph->FindActor(*ParentId) : nullptr;
+	if (!Seat) { RestoreShipViewVisibility(); return; }
+	if (CameraShip.Get() != Ship || ShipViewController.Get() != PC || bAppliedExteriorShipView != bExteriorShipView)
+		RestoreShipViewVisibility();
+	CameraShip = Ship;
+	ShipViewController = PC;
+	bAppliedExteriorShipView = bExteriorShipView;
+	Ship->SetExteriorCameraActive(bExteriorShipView);
+	Hide(this);
+	if (!bExteriorShipView)
+	{
+		// HiddenActors also hides attached room roots; cockpit views hide only the hull's own primitives.
+		TInlineComponentArray<UPrimitiveComponent*> HullComponents;
+		Ship->GetComponents(HullComponents);
+		for (UPrimitiveComponent* Component : HullComponents)
+			if (!PC->HiddenPrimitiveComponents.Contains(Component))
+			{
+				PC->HiddenPrimitiveComponents.Add(Component);
+				ShipViewHiddenComponents.Add(Component);
+			}
+		if (Ship->CockpitData.IsSet() && Ship->CockpitData->FrameAppearance.IsEmpty()
+			&& Ship->CockpitData->NativePobPosition.IsSet())
+		{
+			// Retail's character branch adds 1.2m native unit-up, then the authored 1OFF.
+			const FVector Feet = GetActorLocation() - FVector(0, 0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+			const FVector Offset = SWGFx::SimToUnreal(FVector(Ship->CockpitData->NativeFirstPersonOffset)) + FVector(0, 0, 1.2 * SWGWorldScale);
+			OutResult.Location = Feet + GetActorTransform().TransformVectorNoScale(Offset);
+			OutResult.Rotation = GetActorRotation();
+		}
+		else
+		{
+			// shortcut: unsupported cockpit frames retain the chair offset until their appearance/anchor path is implemented.
+			OutResult.Location = Seat->GetActorTransform().TransformPosition(FVector(0, 0, SWGWorldScale));
+			OutResult.Rotation = Seat->GetActorRotation();
+		}
+		OutResult.Rotation = (OutResult.Rotation.Quaternion() * ShipCameraLook.Quaternion()).Rotator();
+	}
+	else
+	{
+		TArray<AActor*> Interior;
+		Ship->GetAttachedActors(Interior, true, true);
+		for (AActor* Actor : Interior) Hide(Actor);
+		for (ASWGCell* Cell : Ship->Cells)
+		{
+			Hide(Cell);
+			if (Cell) for (const TWeakObjectPtr<AActor>& Actor : Cell->InteriorActors) Hide(Actor.Get());
+		}
+		for (ASWGDoor* Door : Ship->Doors) Hide(Door);
+		if (Ship->CockpitData.IsSet() && Ship->CockpitData->FrameAppearance.IsEmpty() && Ship->CockpitData->NativePobPosition.IsSet())
+		{
+			// shortcut: Retail's Y offset is not applied yet; the zoom multiplier is the swg.Space.ShipCameraZoomMultiplier cvar.
+			const FShipZoomSteps Zoom = GetShipZoomSteps(*Ship);
+			if (Zoom.bAuthored)
+			{
+				const float TargetDistance = Zoom.Distances[FMath::Clamp(Zoom.DefaultIndex + ShipZoomOffset, 0, Zoom.Distances.Num() - 1)];
+				// Retail eases the current distance toward the selected stop with min(1, 5*dt).
+				ShipCameraDistance = ShipCameraDistance < 0.f ? TargetDistance : FMath::Lerp(ShipCameraDistance, TargetDistance, FMath::Min(1.f, 5.f * DeltaTime));
+				// Retail's empty-frame POB path pivots at the ship origin; constructor/update traces use pi/16 exterior pitch.
+				FRotator Orbit = ShipCameraLook;
+				Orbit.Pitch = FMath::Clamp(Orbit.Pitch - 11.25, -80., 80.);
+				OutResult.Rotation = (Ship->GetActorQuat() * Orbit.Quaternion()).Rotator();
+				OutResult.Location = Ship->GetActorLocation() - OutResult.Rotation.Vector() * (ShipCameraDistance * SWGWorldScale);
+				OutResult.FOV = 80.f;
+				return;
+			}
+		}
+		FBox Bounds(ForceInit);
+		TArray<UStaticMeshComponent*> Meshes;
+		Ship->GetComponents(Meshes);
+		for (const UStaticMeshComponent* HullMesh : Meshes)
+			if (HullMesh->GetStaticMesh() && HullMesh->GetVisibleFlag() && !HullMesh->bHiddenInGame) Bounds += HullMesh->Bounds.GetBox();
+		if (!Bounds.IsValid) Bounds = FBox(Ship->GetActorLocation() - FVector(500), Ship->GetActorLocation() + FVector(500));
+		const float Radius = FMath::Max(float(Bounds.GetExtent().Size()), SWGWorldScale);
+		const FVector Center = Bounds.GetCenter();
+		const FShipZoomSteps Zoom = GetShipZoomSteps(*Ship);
+		const float TargetFactor = Zoom.Distances[FMath::Clamp(Zoom.DefaultIndex + ShipZoomOffset, 0, Zoom.Distances.Num() - 1)];
+		ShipCameraDistance = ShipCameraDistance < 0.f ? TargetFactor : FMath::Lerp(ShipCameraDistance, TargetFactor, FMath::Min(1.f, 5.f * DeltaTime));
+		OutResult.Location = Center + Ship->GetActorQuat().RotateVector(ShipCameraLook.RotateVector(FVector(-2.5f * Radius, 0, .6f * Radius) * ShipCameraDistance));
+		OutResult.Rotation = FRotationMatrix::MakeFromX(Center - OutResult.Location).Rotator();
+	}
+	OutResult.FOV = 80.f;
+}
+
 void ASWGPlayer::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
@@ -702,6 +1024,7 @@ void ASWGPlayer::Tick(float DeltaTime)
 	{
 		return;
 	}
+	if (TickPilotShip(DeltaTime)) return;
 
 	const bool bMounted = RiddenMount.IsValid();
 
@@ -794,6 +1117,8 @@ void ASWGPlayer::SendDataTransformUpdate()
 	{
 		return;
 	}
+	if (USWGObjectGraphSubsystem* Graph = GameInstance->GetSubsystem<USWGObjectGraphSubsystem>();
+		Graph && (Graph->IsLocalPlayerPiloting() || !Graph->IsLocalSpaceSceneReady())) return;
 
 	// While mounted, this pawn's own transform is just the attached seat
 	// offset — report the mount's transform, under the mount's own object id,
@@ -904,19 +1229,20 @@ ASWGCell* ASWGPlayer::ResolveCurrentCell(const ASWGCreature* Target) const
 	}
 	TArray<AActor*> OverlappingActors;
 	Capsule->GetOverlappingActors(OverlappingActors, ASWGCell::StaticClass());
+	const USWGObjectGraphSubsystem* Graph = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
+	const ASWGShip* Ship = Graph ? Graph->FindContainingShip(Target->GetObjectId()) : nullptr;
 
 	for (AActor* OverlappingActor : OverlappingActors)
 	{
-		if (ASWGCell* Cell = Cast<ASWGCell>(OverlappingActor))
+		if (ASWGCell* Cell = Cast<ASWGCell>(OverlappingActor); Cell && (!Ship || Cell->OwningBuilding.Get() == Ship))
 		{
 			return Cell;
 		}
 	}
 
-	// Zoned in inside a room whose trigger hasn't been built yet: keep
-	// reporting relative to it rather than walk ourselves out of the building
-	// server-side. Once the trigger exists, the overlap above is the truth.
-	if (ASWGCell* Placed = Target->PlacedInCell.Get(); Placed && !Placed->TriggerVolume)
+	// Keep the confirmed ship room through missing/foreign triggers; ground rooms only wait for trigger creation.
+	if (ASWGCell* Placed = Target->PlacedInCell.Get(); Placed
+		&& (Ship ? Placed->OwningBuilding.Get() == Ship : !Placed->TriggerVolume))
 	{
 		return Placed;
 	}

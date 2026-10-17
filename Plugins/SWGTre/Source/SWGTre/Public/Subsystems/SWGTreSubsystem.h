@@ -30,6 +30,8 @@ class SWGTRE_API USWGTreSubsystem : public UGameInstanceSubsystem
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
+	/** Consumers stop and drain archive workers before the tables are cleared. */
+	FSimpleMulticastDelegate OnDeinitializing;
 
 	/**
 	 * Indexes every *.tre file found directly under Directory (non-recursive,

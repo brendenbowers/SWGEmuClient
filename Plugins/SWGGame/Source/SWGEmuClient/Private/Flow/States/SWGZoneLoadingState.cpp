@@ -4,10 +4,14 @@
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Kismet/GameplayStatics.h"
 #include "Subsystems/SWGTerrainSubsystem.h"
+#include "Subsystems/SWGTreSubsystem.h"
+#include "Engine/GameInstance.h"
 
-namespace
+FName FSWGZoneLoadingState::GetLevelForTerrain(const USWGTreSubsystem& Tre, const FString& TerrainName)
 {
-	const FName ZoneLevelName(TEXT("SWGLevel"));
+	return Tre.CreateIffReader(TerrainName).GetRootFormType() == FName(TEXT("STAT"))
+		? FName(TEXT("/Game/SWGEmu/Levels/SWGSpaceLevel"))
+		: FName(TEXT("/Game/SWGEmu/Levels/SWGLevel"));
 }
 
 void FSWGZoneLoadingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, const TSharedPtr<FSWGTransitionPayload>& Payload)
@@ -20,10 +24,20 @@ void FSWGZoneLoadingState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFl
 	}
 
 	const FCmdStartSceneMessage& Scene = *ScenePayload->Scene;
+	UGameInstance* SceneGameInstance = UIStateMachine.GetGameInstance();
+	USWGTreSubsystem* Tre = SceneGameInstance ? SceneGameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
+	if (!Tre)
+	{
+		UIStateMachine.Fail(TEXT("ZoneLoading requires the terrain archive subsystem"));
+		return;
+	}
+	const FName ZoneLevelName = GetLevelForTerrain(*Tre, Scene.TerrainName);
 
 	// Re-entered on every scene change (teleport, zone travel), not just login.
 	Ctx.bTerrainLoaded = false;
 	Ctx.bZoneReady = false;
+	LoadingSeconds = 0.f;
+	UIStateMachine.Status(TEXT("Loading zone scenery..."));
 
 	UWorld* World = UIStateMachine.GetWorld();
 
@@ -161,6 +175,17 @@ void FSWGZoneLoadingState::Exit(USWGClientFlowSubsystem& UIStateMachine, FSWGFlo
 	ObjectGraphWeak.Reset();
 }
 
+void FSWGZoneLoadingState::Tick(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowContext& Ctx, float Dt)
+{
+	LoadingSeconds += FMath::Max(0.f, Dt);
+	if (LoadingSeconds >= 180.f)
+	{
+		UIStateMachine.Fail(TEXT("Zone loading timed out while waiting for spawn terrain, objects or appearances. Please reconnect."));
+		return;
+	}
+	OnReadyStatesChanged(UIStateMachine, Ctx, UIStateMachine.Epoch);
+}
+
 void FSWGZoneLoadingState::OnReadyStatesChanged(USWGClientFlowSubsystem& UIStateMachine, const FSWGFlowContext& Ctx, const int32 Epoch)
 {
 	if (UIStateMachine.Epoch != Epoch)
@@ -178,8 +203,9 @@ void FSWGZoneLoadingState::OnReadyStatesChanged(USWGClientFlowSubsystem& UIState
 		return;
 	}
 
-	if (Ctx.bTerrainLoaded && Ctx.bZoneReady)
+	if (Ctx.bTerrainLoaded && Ctx.bZoneReady && UIStateMachine.TerrainSubsystem && UIStateMachine.TerrainSubsystem->IsSpawnSceneReady())
 	{
+		UIStateMachine.TerrainSubsystem->FinishSpawnSceneLoading();
 		UIStateMachine.TransitionTo(ESWGClientState::InWorld);
 	}
 }

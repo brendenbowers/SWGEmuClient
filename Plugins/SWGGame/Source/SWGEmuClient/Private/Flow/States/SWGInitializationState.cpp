@@ -5,6 +5,7 @@
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Objects/World/SWGParticleEmitterActor.h"
 #include "Objects/World/SWGSoundEmitter.h"
+#include "Objects/World/SWGShip.h"
 #include "Async/Async.h"
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGFormTagMapping.h"
@@ -146,6 +147,11 @@ void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 							continue;
 						}
 
+						if (FormType == FName(TEXT("SSHP")))
+						{
+							CrcToSubclass.Add(Crc, ASWGShip::StaticClass());
+							continue;
+						}
 						FSWGFormTagMapping* Mapping = FormTagMappingTable->FindRow<FSWGFormTagMapping>(FormType, TEXT("SWGInitializationState"), false);
 						if (!Mapping)
 						{

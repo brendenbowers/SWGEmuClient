@@ -552,6 +552,8 @@ void USWGPropAttachmentsComponent::SpawnObjectChild(const FSWGClientDataChild& C
 	Prop->Tags.Add(TEXT("SWGPropChild"));
 	Prop->StaticTemplatePath = Child.Path;
 	Prop->bInteriorLighting = IsInterior();
+	Prop->GetRootComponent()->SetMobility(Root->Mobility);
+	Prop->AttachToComponent(Root, FAttachmentTransformRules::KeepWorldTransform);
 	ChildActors.Add(Prop);
 	Generator->RequestMeshForTemplatePath(Prop, Child.Path);
 }
