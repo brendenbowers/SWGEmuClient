@@ -1,5 +1,6 @@
 #include "TRE/SWGDDSTextureLoader.h"
 #include "DDSFile.h"
+#include "ImageCore.h"
 #include "Engine/Texture2D.h"
 
 namespace
@@ -200,7 +201,8 @@ UTexture2D* FSWGDDSTextureLoader::LoadTexture2D(const TArray<uint8>& DDSBytes, c
 
 	const bool bDecodeLegacyNormal = bLegacyDXT5Normal
 		&& (Dds->DXGIFormat == EDXGIFormat::BC3_UNORM || Dds->DXGIFormat == EDXGIFormat::BC3_UNORM_SRGB);
-	const EPixelFormat PixelFormat = bDecodeLegacyNormal ? PF_B8G8R8A8 : MapDXGIFormatToPixelFormat(Dds->DXGIFormat);
+	const bool bDecodeRGB24 = Dds->DXGIFormat == EDXGIFormat::B8G8R8 || Dds->DXGIFormat == EDXGIFormat::R8G8B8;
+	const EPixelFormat PixelFormat = bDecodeLegacyNormal || bDecodeRGB24 ? PF_B8G8R8A8 : MapDXGIFormatToPixelFormat(Dds->DXGIFormat);
 	if (PixelFormat == PF_Unknown || !Dds->IsValidTexture2D() || Dds->Mips.Num() == 0)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("FSWGDDSTextureLoader: unsupported DDS '%s' (DXGIFormat=%s, mips=%d)"),
@@ -223,9 +225,18 @@ UTexture2D* FSWGDDSTextureLoader::LoadTexture2D(const TArray<uint8>& DDSBytes, c
 	}
 
 	TArray<uint8> DecodedMip;
+	auto DecodeRGB24 = [&](int32 MipIndex)
+	{
+		const FDDSMip& Mip = Dds->Mips[MipIndex];
+		const int64 Pixels = int64(Mip.Width) * Mip.Height;
+		if (Mip.DataSize != Pixels * 3) return false;
+		DecodedMip.SetNumUninitialized(Pixels * 4);
+		return Dds->GetMipImage(FImageView(DecodedMip.GetData(), Mip.Width, Mip.Height, ERawImageFormat::BGRA8), MipIndex);
+	};
+	if (bDecodeRGB24 && !DecodeRGB24(0)) { delete Dds; return nullptr; }
 	if (bDecodeLegacyNormal) DecodeLegacyDXT5NormalMip(Mip0, DecodedMip);
-	const uint8* Mip0Data = bDecodeLegacyNormal ? DecodedMip.GetData() : Mip0.Data;
-	const int64 Mip0DataSize = bDecodeLegacyNormal ? DecodedMip.Num() : Mip0.DataSize;
+	const uint8* Mip0Data = bDecodeLegacyNormal || bDecodeRGB24 ? DecodedMip.GetData() : Mip0.Data;
+	const int64 Mip0DataSize = bDecodeLegacyNormal || bDecodeRGB24 ? DecodedMip.Num() : Mip0.DataSize;
 
 	// Deliberately called with NO image data. CreateTransient() (Texture2D.cpp)
 	// calls its own internal UpdateResource() whenever image data is passed —
@@ -276,9 +287,10 @@ UTexture2D* FSWGDDSTextureLoader::LoadTexture2D(const TArray<uint8>& DDSBytes, c
 			break;
 		}
 
+		if (bDecodeRGB24 && !DecodeRGB24(MipIndex)) break;
 		if (bDecodeLegacyNormal) DecodeLegacyDXT5NormalMip(Mip, DecodedMip);
-		const void* SourceData = bDecodeLegacyNormal ? DecodedMip.GetData() : Mip.Data;
-		const int64 SourceDataSize = bDecodeLegacyNormal ? DecodedMip.Num() : Mip.DataSize;
+		const void* SourceData = bDecodeLegacyNormal || bDecodeRGB24 ? DecodedMip.GetData() : Mip.Data;
+		const int64 SourceDataSize = bDecodeLegacyNormal || bDecodeRGB24 ? DecodedMip.Num() : Mip.DataSize;
 		FTexture2DMipMap* MipMap = new FTexture2DMipMap(Mip.Width, Mip.Height, 1);
 		Texture->GetPlatformData()->Mips.Add(MipMap);
 		MipMap->BulkData.Lock(LOCK_READ_WRITE);
