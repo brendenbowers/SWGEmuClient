@@ -47,6 +47,7 @@ TSWGBaselineList<T> ReadBaselineVector(FSWGPacket& Packet, FReadItem ReadItem)
 	TSWGBaselineList<T> Out;
 	const int32 Count = Packet.ReadInt32();
 	Out.UpdateCounter = Packet.ReadUInt32();
+	if (Packet.IsError() || Count < 0 || Count > Packet.GetRemaining()) { Packet.SetError(); return Out; }
 	Out.Items.Reserve(Count);
 	for (int32 i = 0; i < Count; ++i)
 	{
@@ -61,6 +62,7 @@ TSWGBaselineList<T> ReadBaselineMap(FSWGPacket& Packet, FReadItem ReadItem)
 	TSWGBaselineList<T> Out;
 	const int32 Count = Packet.ReadInt32();
 	Out.UpdateCounter = Packet.ReadUInt32();
+	if (Packet.IsError() || Count < 0 || Count > Packet.GetRemaining()) { Packet.SetError(); return Out; }
 	Out.Items.Reserve(Count);
 	for (int32 i = 0; i < Count; ++i)
 	{
