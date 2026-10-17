@@ -25,7 +25,10 @@ public class SWGDevToolset : ModuleRules
 				"ToolsetRegistry",
 				"UnrealEd",
 				"MaterialEditor",
+				"RenderCore",
+				"RHI",
 				"AssetTools",
+				"AssetRegistry",
 			}
 		);
 
