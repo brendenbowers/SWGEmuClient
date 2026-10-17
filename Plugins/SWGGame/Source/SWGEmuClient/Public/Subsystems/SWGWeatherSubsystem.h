@@ -53,6 +53,9 @@ public:
 	TArray<FString> DescribeState() const;
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FSWGSpaceSceneTest;
+#endif
 	bool Tick(float DeltaSeconds);
 	void HandleMessageReceived(TSharedPtr<FSWGNetMessage> Message);
 	void HandleRoomChanged(ASWGCell* Cell);

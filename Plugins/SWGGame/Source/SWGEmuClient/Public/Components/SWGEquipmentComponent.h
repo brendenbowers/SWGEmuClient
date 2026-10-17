@@ -33,6 +33,7 @@ UCLASS(ClassGroup=(SWGEmu), meta=(BlueprintSpawnableComponent))
 class SWGEMUCLIENT_API USWGEquipmentComponent : public UActorComponent
 {
 	GENERATED_BODY()
+	friend class FSWGZoneSceneReadinessTest;
 
 public:
 	USWGEquipmentComponent();
@@ -123,7 +124,7 @@ protected:
 	 * USWGMeshGeneratorSubsystem::ProcessNextRequest) — it can still be
 	 * mid-flight when this item's mesh finishes.
 	 */
-	void AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials, int32 RetryCount = 0);
+	void AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials, int32 RetryCount = 0, TSharedPtr<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe> LoadingOwner = nullptr);
 
 	/**
 	 * Wearable clothing/armor counterpart to AttachMeshToHardpoint — attaches
@@ -140,7 +141,7 @@ protected:
 	 * is a separate, independently-queued async build that can still be
 	 * mid-flight when this item's mesh finishes.
 	 */
-	void AttachWearableSkeletalMesh(uint64 ObjectId, USkeletalMesh* Mesh, const TArray<UMaterialInterface*>& Materials, int32 RetryCount = 0);
+	void AttachWearableSkeletalMesh(uint64 ObjectId, USkeletalMesh* Mesh, const TArray<UMaterialInterface*>& Materials, int32 RetryCount = 0, TSharedPtr<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe> LoadingOwner = nullptr);
 
 	/**
 	 * Hides bare-skin body-mesh sections covered by currently-attached

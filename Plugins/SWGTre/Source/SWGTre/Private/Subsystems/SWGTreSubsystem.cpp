@@ -50,6 +50,8 @@ void USWGTreSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void USWGTreSubsystem::Deinitialize()
 {
+	OnDeinitializing.Broadcast();
+	OnDeinitializing.Clear();
 	Archives.Reset();
 	VirtualPathToArchiveIndex.Reset();
 	CrcToTemplatePath.Reset();

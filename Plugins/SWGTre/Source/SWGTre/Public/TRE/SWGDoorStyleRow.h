@@ -18,7 +18,7 @@ struct SWGTRE_API FSWGDoorStyleRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	FString DoorAppearance2;
 
-	/** True on every row where DoorAppearance2 is set — presumably mirrors the second leaf's move direction so both leaves open outward from center, not confirmed against any documented spec. */
+	/** Retail rotates the second leaf's appearance 180 degrees around local vertical; its slide is mirrored separately. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	bool bFlip2 = false;
 

@@ -34,7 +34,7 @@ public class SWGEmuClient : ModuleRules
 			"AnimGraphRuntime"
         });
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "EngineCameras" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "EngineCameras", "ImageWrapper" });
 
 		if (Target.bBuildEditor)
 		{

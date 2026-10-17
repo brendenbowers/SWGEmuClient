@@ -5,6 +5,7 @@
 #include "SWGPlayer.generated.h"
 
 class UCameraComponent;
+class UPrimitiveComponent;
 class USWGPlayerProfileComponent;
 class USWGExperienceComponent;
 class USWGJournalComponent;
@@ -57,6 +58,25 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	virtual void Tick(float DeltaTime) override;
+	virtual void CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult) override;
+	void ToggleShipView();
+
+	/** The exterior pilot camera's zoom stops: distances in native metres (authored CPIT steps times the multiplier, then wider ones), or factors of the hull radius when the ship has no authored steps. */
+	struct FShipZoomSteps
+	{
+		TArray<float> Distances;
+		/** The widest authored step: where the camera starts. */
+		int32 DefaultIndex = 0;
+		bool bAuthored = false;
+	};
+	static FShipZoomSteps BuildShipZoomSteps(const TArray<float>& AuthoredDistances, float FirstPersonThreshold, float Multiplier);
+	/** max(1, swg.Space.ShipCameraZoomMultiplier): retail's zoomMultiplier preference. */
+	static float GetShipZoomMultiplier();
+	/** Moves the exterior pilot camera one stop out (positive) or in (negative); ignored in the cockpit view. */
+	void StepShipZoom(int32 Direction);
+	void LeaveShipSeat();
+	float GetShipThrottle() const { return ShipThrottle; }
+	bool IsExteriorShipView() const { return bExteriorShipView; }
 	/** Reports the current transform immediately before server interactions; Tick throttles ordinary movement reports. */
 	void SendDataTransformUpdate();
 
@@ -296,6 +316,31 @@ protected:
 	TObjectPtr<UInputMappingContext> DefaultMappingContext;
 
 private:
+	friend class FSWGSpaceFrameTest;
+	friend class FSWGSpaceHudTest;
+	bool IsPilotingShip() const;
+	void OnGamepadView();
+	void OnShipZoomIn();
+	void OnShipZoomOut();
+	FShipZoomSteps GetShipZoomSteps(const class ASWGShip& Ship) const;
+	/** Stops from the default one; negative is closer. Reset when the pilot takes a new ship. */
+	int32 ShipZoomOffset = 0;
+	/** The distance the camera is at, easing toward the selected stop; negative until first used. */
+	float ShipCameraDistance = -1.f;
+	void OnGamepadTargetNext();
+	void OnGamepadTargetPrevious();
+	bool TickPilotShip(float DeltaTime);
+	TWeakObjectPtr<class ASWGShip> ControlledShip;
+	float ShipThrottle = 0.f;
+	float TimeSinceShipSend = 0.f;
+	bool bExteriorShipView = false;
+	FRotator ShipCameraLook = FRotator::ZeroRotator;
+	TWeakObjectPtr<class ASWGShip> CameraShip;
+	TWeakObjectPtr<class APlayerController> ShipViewController;
+	bool bAppliedExteriorShipView = false;
+	TArray<TWeakObjectPtr<AActor>> ShipViewHiddenActors;
+	TArray<TWeakObjectPtr<UPrimitiveComponent>> ShipViewHiddenComponents;
+	void RestoreShipViewVisibility();
 	float TimeSinceLastTransformSend = 0.0f;
 	int32 TransformMovementCounter = 0;
 	bool bWasMovingLastSend = false;

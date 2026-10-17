@@ -385,5 +385,12 @@ void ASWGBuilding::UnloadRoom(int32 CellIndex)
 void ASWGBuilding::SetExteriorShellHidden(bool bShouldHide)
 {
 	// Visibility only
-	SetActorHiddenInGame(bShouldHide);
+	SetActorHiddenInGame(bShouldHide && !bExteriorCameraActive);
+}
+
+void ASWGBuilding::SetExteriorCameraActive(bool bActive)
+{
+	if (bExteriorCameraActive == bActive) return;
+	bExteriorCameraActive = bActive;
+	SetExteriorShellHidden(NonSeeThroughOverlapCount > 0);
 }

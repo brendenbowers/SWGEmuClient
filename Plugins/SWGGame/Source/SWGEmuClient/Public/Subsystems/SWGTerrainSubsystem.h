@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Async/Future.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
 #include "TRE/SWGTerrainReader.h"
@@ -12,6 +13,7 @@
 #include "SWGTerrainSubsystem.generated.h"
 
 class USWGTreSubsystem;
+struct FSWGSpaceTerrainData;
 class USWGMeshGeneratorSubsystem;
 class USWGObjectGraphSubsystem;
 class ALandscape;
@@ -26,6 +28,10 @@ class UTexture2D;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 class UDynamicMeshComponent;
+class ULineBatchComponent;
+class USWGSpaceNebulaComponent;
+class USWGSpaceDustComponent;
+class USWGSpacePlanetComponent;
 class UPrimitiveComponent;
 
 namespace UE::Geometry { class FDynamicMesh3; }
@@ -170,7 +176,7 @@ public:
 	// FTickableGameObject
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
-	virtual bool IsTickable() const override { return bTerrainDataCached; }
+	virtual bool IsTickable() const override { return bTerrainDataCached && !bIsShuttingDown; }
 
 	/**
 	 * Entry point: parses the .trn on a worker, then streams tiles around
@@ -178,6 +184,16 @@ public:
 	 * OnTerrainReady when the tiles around the spawn are spawned and collidable.
 	 */
 	void BeginLoadTerrain(const FString TerrainVirtualPath, const FVector& SpawnPosition);
+	/** Spawn terrain edits and snapshot actors have finished building their appearances. */
+	bool IsSpawnSceneReady() const;
+	void FinishSpawnSceneLoading() { bSpawnSceneLoading = false; }
+	bool GetSpawnSceneLoadingCenter(FVector2D& OutRawPosition) const
+	{
+		if (!bSpawnSceneLoading) return false;
+		OutRawPosition = SpawnRawPosition;
+		return true;
+	}
+	bool IsSpaceScene() const { return SpaceData.IsValid(); }
 
 	/** The zone being streamed ("tatooine"), empty before the first BeginLoadTerrain. */
 	FString GetActivePlanetName() const { return FPaths::GetBaseFilename(ActiveTerrainVirtualPath); }
@@ -406,13 +422,31 @@ private:
 
 	// ── Load ─────────────────────────────────────────────────────────────
 
-	void Error(const FString& ErrorMessage);
+	void Error(const FString& ErrorMessage, int32 Generation);
 
 	/** Worker: parses the .trn and .ws, then hands both to the game thread to start streaming. */
-	void LoadTerrain(const FString& TerrainVirtualPath, const FVector& SpawnPosition);
+	void LoadTerrain(const FString& TerrainVirtualPath, const FVector& SpawnPosition, int32 Generation);
 
 	/** Creates the outdoor sky, sun, and ambient fill for the active planet, coloured from its colour ramp at swg.TimeOfDay. */
 	void SetupPlanetLighting(const FString& TerrainVirtualPath);
+	bool SetupSpaceScene(const FSWGSpaceTerrainData& Data);
+	void UpdateSpaceScene(float DeltaTime);
+	bool SetupSpaceLandmarks(const FSWGSpaceTerrainData& Data);
+	void UpdateSpaceLandmarks(float DeltaTime, const FVector& Viewpoint);
+	/** Unbound post-process volume for the space scene, tagged for zone teardown. */
+	bool SetupSpacePostProcess();
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FSWGSpaceSceneTest;
+	friend class FSWGSpaceWindowRenderTest;
+	friend class FSWGSpaceNebulaGasTest;
+	friend class FSWGSpaceTerrainLifetimeTest;
+	friend class FSWGSpaceFloraLifetimeTest;
+	friend class FSWGZoneSceneReadinessTest;
+	friend class FSWGZoneFloraReadinessTest;
+	friend struct FSWGSpaceZoneFixture;
+	TFunction<void()> BeforeTerrainParseForTest;
+	TFunction<void()> BeforeWorkerDrainForTest;
+#endif
 
 	/** The planet's base ("global" family, clear weather) row of its environment table; false when the planet has none. */
 	bool LoadPlanetEnvironment(const FString& ZoneName, FSWGEnvironmentRow& OutRow) const;
@@ -470,13 +504,10 @@ private:
 	TSharedPtr<const FSWGColorRamp> ResolveRamp(const FString& Path);
 
 	/**
-	 * The night sky's stars: the environment file's STAR chunk names a
-	 * palette (terrain/colorramp/stars_<planet>.tga, 64 star tints) and
-	 * retail scattered points from it. A star texture is generated from that
-	 * palette (equirectangular, seeded per planet) and drawn on its own dome
-	 * (M_SWGStarField), faded in by ApplyTimeOfDay as the sun sets.
+	 * Build a deterministic star dome from the scene's palette and count.
+	 * Its local-frame shader follows the sky actor's ship-relative rotation.
 	 */
-	void SpawnStarField(const FString& ZoneName);
+	bool SpawnStarField(const FString& PalettePath, int32 StarCount);
 
 	/** The STAR chunk's palette path from terrain/environment/<planet>.iff, or empty. */
 	FString LoadStarPalettePath(const FString& ZoneName) const;
@@ -807,6 +838,17 @@ private:
 	// GetHeightAt on the game thread and a dozen workers can all read it at
 	// once with nothing ever writing to it.
 	TSharedPtr<const FSWGTerrainData, ESPMode::ThreadSafe> PlanetData;
+	TSharedPtr<FSWGSpaceTerrainData> SpaceData;
+	UPROPERTY()
+	TArray<TObjectPtr<ADirectionalLight>> SpaceLights;
+	TArray<FVector> SpaceLightDirections;
+	/** The space scene's pieces, created on SkyActor by SetupSpaceLandmarks. */
+	UPROPERTY()
+	TObjectPtr<USWGSpaceNebulaComponent> SpaceNebula;
+	UPROPERTY()
+	TObjectPtr<USWGSpaceDustComponent> SpaceDust;
+	UPROPERTY()
+	TObjectPtr<USWGSpacePlanetComponent> SpacePlanet;
 	bool bTerrainDataCached = false;
 
 	/** Underwater camera state (UpdateUnderwater): the fog values to restore on surfacing. */
@@ -849,6 +891,8 @@ private:
 	// carries the old value and is discarded rather than written into the new
 	// zone's tiles.
 	int32 TerrainGeneration = 0;
+	bool bIsShuttingDown = false;
+	TArray<TFuture<void>> WorkerTasks;
 
 	FString ActiveTerrainVirtualPath;
 
@@ -861,7 +905,9 @@ private:
 
 	/** The 3x3 around the spawn; OnTerrainReady fires once all are live. */
 	TSet<FIntPoint> InitialTiles;
+	TSet<FIntPoint> InitialSnapshotTiles;
 	bool bInitialTilesReported = false;
+	bool bSpawnSceneLoading = true;
 
 	float TimeUntilNextSweep = 0.0f;
 

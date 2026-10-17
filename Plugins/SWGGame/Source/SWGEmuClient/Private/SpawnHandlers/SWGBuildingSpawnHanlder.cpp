@@ -2,6 +2,7 @@
 #include "Subsystems/SWGActorSpawnHandlerRegistry.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Objects/World/SWGBuilding.h"
+#include "Objects/World/SWGShip.h"
 #include "Objects/World/SWGCell.h"
 #include "Objects/World/SWGParticleEmitterActor.h"
 #include "Objects/World/SWGSoundEmitter.h"
@@ -17,6 +18,7 @@
 #include "Common/SWGLightingChannels.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
+#include "Components/SphereComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/GameInstance.h"
 #include "Subsystems/SWGTerrainSubsystem.h"
@@ -24,6 +26,12 @@
 #include "Common/SWGWorldScale.h"
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Async/Async.h"
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#endif
 
 namespace
 {
@@ -53,9 +61,8 @@ namespace
 	// vertex lighting, so the authored sum reads darker than a linear one).
 	constexpr float RoomLightScale = 1.0f;
 
-	// Point lights in the POB fall off as 1/(linear*d), d in metres. Inverse
-	// square matched at this distance: I = colour * PointMatchDistance^2 /
-	// (linear * PointMatchDistance), in candela once scaled.
+	// shortcut: UE inverse-square falloff matches the authored attenuation at
+	// two metres; use a custom light shader if exact retail falloff is needed.
 	constexpr float PointMatchDistanceMetres = 2.0f;
 	constexpr float PointRadiusPerUnitColour = 800.0f; // cm of reach per unit of colour, before clamping
 	constexpr float PointRadiusMin = 500.0f;
@@ -111,10 +118,14 @@ namespace
 			case ESWGPobLightType::Point:
 			{
 				UPointLightComponent* Point = NewObject<UPointLightComponent>(CellActor);
-				const float Linear = FMath::Max(LightData.LinearAttenuation, KINDA_SMALL_NUMBER);
+				const float Distance = PointMatchDistanceMetres;
+				const float AuthoredAttenuation = LightData.ConstantAttenuation
+					+ LightData.LinearAttenuation * Distance
+					+ LightData.QuadraticAttenuation * Distance * Distance;
+				const float Attenuation = AuthoredAttenuation > KINDA_SMALL_NUMBER ? AuthoredAttenuation : 1.0f;
 				Point->SetIntensityUnits(ELightUnits::Candelas);
-				Point->SetIntensity(RoomLightScale * Strength * PointMatchDistanceMetres / Linear);
-				Point->SetAttenuationRadius(FMath::Clamp(Strength * PointRadiusPerUnitColour / Linear, PointRadiusMin, PointRadiusMax));
+				Point->SetIntensity(RoomLightScale * Strength * Distance * Distance / Attenuation);
+				Point->SetAttenuationRadius(FMath::Clamp(Strength * PointRadiusPerUnitColour * Distance / Attenuation, PointRadiusMin, PointRadiusMax));
 				Point->SetRelativeLocation(LightData.Transform.GetLocation());
 				Light = Point;
 				break;
@@ -143,6 +154,60 @@ namespace
 			CellActor->AddRoomLight(Light);
 		}
 	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSWGRoomPointAttenuationTest, "SWGEmu.Fx.RoomPointAttenuation",
+		EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+	bool FSWGRoomPointAttenuationTest::RunTest(const FString& Parameters)
+	{
+		UGameInstance* Game = NewObject<UGameInstance>(GEngine);
+		Game->AddToRoot(); Game->InitializeStandalone();
+		UWorld* World = Game->GetWorldContext()->World();
+		if (!World) { Game->Shutdown(); Game->RemoveFromRoot(); return false; }
+		ON_SCOPE_EXIT
+		{
+			Game->Shutdown(); GEngine->DestroyWorldContext(World); World->DestroyWorld(false);
+			World->RemoveFromRoot(); Game->RemoveFromRoot();
+		};
+		World->InitializeActorsForPlay(FURL());
+		USWGTreSubsystem* Tre = Game->GetSubsystem<USWGTreSubsystem>();
+		Tre->LoadConfig();
+		if (!TestTrue(TEXT("retail lighting archives available"), Tre->LoadArchives())) return false;
+		for (const TCHAR* Path : {TEXT("appearance/sorosuub_space_yacht.pob"), TEXT("appearance/thm_corl_skyskraper_s01.pob")})
+		{
+			FSWGPobData Pob;
+			if (!TestTrue(Path, FSWGPobReader::ReadPob(Tre->CreateIffReader(Path), Pob))) return false;
+			int32 PointCount = 0, ZeroLinearCount = 0;
+			for (const FSWGPobCell& Cell : Pob.Cells)
+				for (const FSWGPobLight& Authored : Cell.Lights)
+					if (Authored.Type == ESWGPobLightType::Point)
+					{
+						++PointCount;
+						if (Authored.LinearAttenuation == 0) ++ZeroLinearCount;
+						ASWGCell* Actor = World->SpawnActor<ASWGCell>();
+						FSWGPobCell Single; Single.Lights.Add(Authored);
+						BuildRoomLights(Actor, Single);
+						UPointLightComponent* Light = Actor->FindComponentByClass<UPointLightComponent>();
+						if (!TestNotNull(TEXT("actual room builder creates point light"), Light)) return false;
+						const float Strength = FMath::Max3(Authored.DiffuseColor.R, Authored.DiffuseColor.G, Authored.DiffuseColor.B);
+						// The selected real assets use pure constant, linear, or quadratic attenuation.
+						const float Expected = Authored.QuadraticAttenuation > 0 ? Strength / Authored.QuadraticAttenuation
+							: Authored.LinearAttenuation > 0 ? Strength * 2 / Authored.LinearAttenuation
+							: Strength * 4 / Authored.ConstantAttenuation;
+						TestTrue(TEXT("authored falloff gives bounded physical intensity"), FMath::IsNearlyEqual(Light->Intensity, Expected) && Light->Intensity < 20);
+						TestFalse(TEXT("room light remains off before cell entry"), Light->GetVisibleFlag());
+						Actor->Destroy();
+					}
+			TestTrue(TEXT("fixture includes formerly explosive zero-linear point lights"), PointCount > 0 && ZeroLinearCount > 0);
+		}
+		ASWGCell* Actor = World->SpawnActor<ASWGCell>();
+		FSWGPobCell Invalid; FSWGPobLight Unattenuated{};
+		Unattenuated.Type = ESWGPobLightType::Point; Unattenuated.DiffuseColor = FLinearColor::White;
+		Invalid.Lights.Add(Unattenuated); BuildRoomLights(Actor, Invalid);
+		TestEqual(TEXT("zero attenuation falls back safely"), Actor->FindComponentByClass<UPointLightComponent>()->Intensity, 4.f);
+		return true;
+	}
+#endif
 
 	// How far below the building origin a floor must sit before its terrain is
 	// cut, in raw units. Rooms at entrance height keep theirs — a hole there is
@@ -710,6 +775,7 @@ bool FSWGCellSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSpawnA
 
 void FSWGCellSpawnHandler::CheckAndFinishCell(USWGObjectGraphSubsystem& ObjectGraph, int64 ObjectId, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem)
 {
+	if (!TreSubsystem || !MeshGeneratorSubsystem || !MeshGeneratorSubsystem->IsTickable()) return;
 	ASWGCell* CellActor = Cast<ASWGCell>(ObjectGraph.FindActor(ObjectId));
 	if (!CellActor || CellActor->OwningBuilding.IsValid())
 	{
@@ -736,9 +802,11 @@ void FSWGCellSpawnHandler::CheckAndFinishCell(USWGObjectGraphSubsystem& ObjectGr
 	// polling.
 	TWeakObjectPtr<ASWGCell> WeakCell = CellActor;
 	TWeakObjectPtr<USWGObjectGraphSubsystem> WeakObjectGraph = &ObjectGraph;
+	TWeakObjectPtr<USWGTreSubsystem> WeakTre = TreSubsystem;
+	TWeakObjectPtr<USWGMeshGeneratorSubsystem> WeakMeshes = MeshGeneratorSubsystem;
 	const int64 ContainerIdCopy = *ContainerId;
 	TSharedPtr<FDelegateHandle> Handle = MakeShared<FDelegateHandle>();
-	*Handle = ObjectGraph.OnObjectReady.AddLambda([WeakObjectGraph, WeakCell, ContainerIdCopy, Handle, TreSubsystem, MeshGeneratorSubsystem](int64 ReadyObjectId)
+	*Handle = ObjectGraph.OnObjectReady.AddLambda([WeakObjectGraph, WeakCell, ContainerIdCopy, Handle, WeakTre, WeakMeshes](int64 ReadyObjectId)
 		{
 			if (ReadyObjectId != ContainerIdCopy || !WeakObjectGraph.IsValid())
 			{
@@ -747,9 +815,9 @@ void FSWGCellSpawnHandler::CheckAndFinishCell(USWGObjectGraphSubsystem& ObjectGr
 
 			WeakObjectGraph->OnObjectReady.Remove(*Handle);
 
-			if (ASWGCell* Cell = WeakCell.Get())
+			if (ASWGCell* Cell = WeakCell.Get(); Cell && WeakTre.IsValid() && WeakMeshes.IsValid() && WeakMeshes->IsTickable())
 			{
-				CheckAndFinishCell(*WeakObjectGraph.Get(), Cell->GetObjectId(), TreSubsystem, MeshGeneratorSubsystem);
+				CheckAndFinishCell(*WeakObjectGraph.Get(), Cell->GetObjectId(), WeakTre.Get(), WeakMeshes.Get());
 			}
 		});
 }
@@ -821,7 +889,7 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 	// After ReadPob, not before: only the POB knows which cells to cut under.
 	// Rooms below the entrance are handled by removing terrain under them, not by
 	// sinking the pad, which put the doorway at the bottom of a pit.
-	if (UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr)
+	if (UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr; GameInstance && !Actor.IsA<ASWGShip>())
 	{
 		if (USWGTerrainSubsystem* TerrainSubsystem = GameInstance->GetSubsystem<USWGTerrainSubsystem>())
 		{
@@ -893,7 +961,8 @@ bool FSWGBuildingSpawnHandler::HandleActorSpawn(AActor& Actor, const FSWGActorSp
 
 void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* BuildingActor, int32 CellIndex, TObjectPtr<USWGTreSubsystem> TreSubsystem, TObjectPtr<USWGMeshGeneratorSubsystem> MeshGeneratorSubsystem, bool bForceInterior)
 {
-	if (!CellActor || !BuildingActor || CellActor->OwningBuilding.IsValid())
+	if (!CellActor || !BuildingActor || !TreSubsystem || !MeshGeneratorSubsystem
+		|| !MeshGeneratorSubsystem->IsTickable() || CellActor->OwningBuilding.IsValid())
 	{
 		// Null args, or already finished (e.g. a duplicate containment message).
 		return;
@@ -916,7 +985,8 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 	// Except the room the local player zoned in inside: streaming judges by
 	// the player's position, which isn't real until this cell is finished
 	// and USWGObjectGraphSubsystem::ApplyContainment can compose it.
-	const bool bHoldsLocalPlayer = ObjectGraph && ObjectGraph->IsLocalPlayerContainedIn(CellActor->GetObjectId());
+	const bool bHoldsLocalPlayer = ObjectGraph && (ObjectGraph->IsLocalPlayerContainedIn(CellActor->GetObjectId())
+		|| (BuildingActor->IsA<ASWGShip>() && ObjectGraph->GetLocalPlayerShip() == BuildingActor));
 	if (!bForceInterior && !bHoldsLocalPlayer)
 	{
 		USWGInteriorStreamingSubsystem* Streaming = GameInstance ? GameInstance->GetSubsystem<USWGInteriorStreamingSubsystem>() : nullptr;
@@ -946,7 +1016,10 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 	SpawnInteriorLayout(CellActor, BuildingActor, CellData, MeshGeneratorSubsystem);
 
 	TWeakObjectPtr<ASWGCell> CellActorWeakPtr = CellActor;
-	MeshGeneratorSubsystem->RequestMesh(CellActor, CellMeshPath).Next(OnGameThread([CellActorWeakPtr, TreSubsystem, MeshGeneratorSubsystem](const FSWGMeshGenerationResult& Result)
+	TWeakObjectPtr<ASWGBuilding> WeakBuilding = BuildingActor;
+	TWeakObjectPtr<USWGTreSubsystem> WeakTre = TreSubsystem;
+	TWeakObjectPtr<USWGMeshGeneratorSubsystem> WeakMeshes = MeshGeneratorSubsystem;
+	MeshGeneratorSubsystem->RequestMesh(CellActor, CellMeshPath).Next(OnGameThread([CellActorWeakPtr, WeakBuilding, WeakTre, WeakMeshes, CellIndex](const FSWGMeshGenerationResult& Result)
 		{
 			if (!CellActorWeakPtr.IsValid())
 			{
@@ -956,22 +1029,26 @@ void FSWGCellSpawnHandler::FinishCell(ASWGCell* CellActor, ASWGBuilding* Buildin
 
 			ASWGCell* CellActor = CellActorWeakPtr.Get();
 
-			if (!CellActor->OwningBuilding.IsValid())
+			if (!WeakBuilding.IsValid() || CellActor->OwningBuilding != WeakBuilding)
 			{
 				UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::FinishCell: CellActor's OwningBuilding is no longer valid when mesh generation completed"));
 				return;
 			}
 
-			ASWGBuilding* BuildingActor = CellActor->OwningBuilding.Get();
+			ASWGBuilding* BuildingActor = WeakBuilding.Get();
 
-			FSWGPobCell CellData = BuildingActor->PortalData.Cells[CellActor->CellNumber];
-			if (Result.MeshOrComponent.IsType<FEmptyVariantState>())
+			if (Result.MeshOrComponent.IsType<FEmptyVariantState>() || CellActor->CellNumber != CellIndex
+				|| !BuildingActor->PortalData.Cells.IsValidIndex(CellIndex))
 			{
-				UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::FinishCell: Failed to create or laod mesh for cell %s"), *CellData.CellName);
+				UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::FinishCell: Cancelled or stale mesh for cell %s"), *CellActor->GetName());
 				BuildingActor->Cells.Remove(CellActor);
 				CellActor->Destroy();
 				return;
 			}
+			USWGTreSubsystem* TreSubsystem = WeakTre.Get();
+			USWGMeshGeneratorSubsystem* MeshGeneratorSubsystem = WeakMeshes.Get();
+			if (!TreSubsystem || !TreSubsystem->IsLoaded() || !MeshGeneratorSubsystem || !MeshGeneratorSubsystem->IsTickable()) return;
+			const FSWGPobCell& CellData = BuildingActor->PortalData.Cells[CellIndex];
 
 			// Re-attach: USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent
 			// just replaced CellActor's root with the newly-built render mesh
@@ -1051,49 +1128,60 @@ void FSWGCellSpawnHandler::SpawnCellDoors(ASWGBuilding* BuildingActor, const FSt
 				*CellName, PortalRef.PortalNumber, *PortalRef.DoorStyle);
 			continue;
 		}
-		if (!StyleRow->DoorAppearance2.IsEmpty())
+		for (int32 Leaf = 0; Leaf < (StyleRow->DoorAppearance2.IsEmpty() ? 1 : 2); ++Leaf)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::SpawnCellDoors: door style '%s' is a double door (%s) — second leaf not spawned yet"),
-				*PortalRef.DoorStyle, *StyleRow->DoorAppearance2);
-		}
-
-		FString DoorMeshPath;
-		if (!MeshGeneratorSubsystem->ResolveAppearanceStaticMeshPath(StyleRow->DoorAppearance, DoorMeshPath) || DoorMeshPath.IsEmpty())
-		{
-			UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::SpawnCellDoors: portal %d door style %s: appearance %s resolved to no mesh"),
-				PortalRef.PortalNumber, *PortalRef.DoorStyle, *StyleRow->DoorAppearance);
-			continue;
-		}
-
-		ASWGDoor* DoorActor = World->SpawnActor<ASWGDoor>(ASWGDoor::StaticClass(), FTransform::Identity);
-		BuildingActor->Doors.Add(DoorActor);
-		DoorActor->PortalNumber = PortalRef.PortalNumber;
-		DoorActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
-		DoorActor->SetActorRelativeTransform(PortalRef.DoorHardpoint);
-
-		// Copied: the table row pointer isn't guaranteed to outlive the request.
-		const FSWGDoorStyleRow StyleCopy = *StyleRow;
-		TWeakObjectPtr<ASWGDoor> DoorActorWeakPtr = DoorActor;
-		TWeakObjectPtr<ASWGBuilding> OwningBuilding = BuildingActor;
-		const FTransform DoorHardpoint = PortalRef.DoorHardpoint;
-		MeshGeneratorSubsystem->RequestMesh(DoorActor, DoorMeshPath).Next(OnGameThread([DoorActorWeakPtr, StyleCopy, OwningBuilding, DoorHardpoint](const FSWGMeshGenerationResult& Result)
+			const bool bSecondLeaf = Leaf == 1;
+			const FString& Appearance = bSecondLeaf ? StyleRow->DoorAppearance2 : StyleRow->DoorAppearance;
+			const FQuat LeafRotation = FRotator(0, bSecondLeaf && StyleRow->bFlip2 ? 180.f : 0.f, 0).Quaternion();
+			FString DoorMeshPath;
+			if (!MeshGeneratorSubsystem->ResolveAppearanceStaticMeshPath(Appearance, DoorMeshPath) || DoorMeshPath.IsEmpty())
 			{
-				if (!DoorActorWeakPtr.IsValid() || !OwningBuilding.IsValid())
-				{
-					return;
-				}
+				UE_LOG(LogTemp, Warning, TEXT("FSWGCellSpawnHandler::SpawnCellDoors: portal %d door style %s: appearance %s resolved to no mesh"),
+					PortalRef.PortalNumber, *PortalRef.DoorStyle, *Appearance);
+				continue;
+			}
 
-				if (Result.MeshOrComponent.IsType<FEmptyVariantState>())
-				{
-					OwningBuilding->Doors.Remove(DoorActorWeakPtr.Get());
-					DoorActorWeakPtr->Destroy();
-					return;
-				}
+			ASWGDoor* DoorActor = World->SpawnActor<ASWGDoor>(ASWGDoor::StaticClass(), FTransform::Identity);
+			if (!DoorActor) continue;
+			BuildingActor->Doors.Add(DoorActor);
+			DoorActor->PortalNumber = PortalRef.PortalNumber;
+			DoorActor->AttachToActor(BuildingActor, FAttachmentTransformRules::KeepRelativeTransform);
+			const FTransform DoorHardpoint = FTransform(LeafRotation) * PortalRef.DoorHardpoint;
+			DoorActor->SetActorRelativeTransform(DoorHardpoint);
 
-				DoorActorWeakPtr->AttachToActor(OwningBuilding.Get(), FAttachmentTransformRules::KeepWorldTransform);
-				DoorActorWeakPtr->SetActorRelativeTransform(DoorHardpoint);
-				DoorActorWeakPtr->InitializeDoorStyle(&StyleCopy);
-			}));
+			// Copied: the table row pointer isn't guaranteed to outlive the request.
+			const FSWGDoorStyleRow StyleCopy = *StyleRow;
+			TWeakObjectPtr<ASWGDoor> DoorActorWeakPtr = DoorActor;
+			TWeakObjectPtr<ASWGBuilding> OwningBuilding = BuildingActor;
+			MeshGeneratorSubsystem->RequestMesh(DoorActor, DoorMeshPath).Next(OnGameThread([DoorActorWeakPtr, StyleCopy, OwningBuilding, DoorHardpoint, LeafRotation, bSecondLeaf](const FSWGMeshGenerationResult& Result)
+				{
+					if (!DoorActorWeakPtr.IsValid() || !OwningBuilding.IsValid())
+					{
+						return;
+					}
+
+					if (Result.MeshOrComponent.IsType<FEmptyVariantState>())
+					{
+						OwningBuilding->Doors.Remove(DoorActorWeakPtr.Get());
+						DoorActorWeakPtr->Destroy();
+						return;
+					}
+
+					DoorActorWeakPtr->AttachToActor(OwningBuilding.Get(), FAttachmentTransformRules::KeepWorldTransform);
+					DoorActorWeakPtr->SetActorRelativeTransform(DoorHardpoint);
+					DoorActorWeakPtr->InitializeDoorStyle(&StyleCopy);
+					// Both leaf sensors stay at the portal while their render meshes slide away.
+					if (DoorActorWeakPtr->TriggerVolume)
+					{
+						DoorActorWeakPtr->TriggerVolume->AttachToComponent(OwningBuilding->GetRootComponent(), FAttachmentTransformRules::KeepWorldTransform);
+						DoorActorWeakPtr->TriggerVolume->SetRelativeTransform(DoorHardpoint);
+					}
+					if (UPrimitiveComponent* DoorMesh = Cast<UPrimitiveComponent>(DoorActorWeakPtr->GetRootComponent()))
+						SWGSetInteriorLightingChannel(*DoorMesh, /*bAlsoWorld*/ true);
+					// Retail slides leaf two oppositely in the portal frame, independently of its mesh flip.
+					if (bSecondLeaf) DoorActorWeakPtr->OpenOffset = LeafRotation.UnrotateVector(-SWGToUnrealSpace(StyleCopy.MoveOffset));
+				}));
+		}
 	}
 }
 

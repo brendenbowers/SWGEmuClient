@@ -70,7 +70,10 @@ public:
 	TOptional<FVector> NetworkTargetLocation;
 	TOptional<float> NetworkTargetYaw;
 
-	void SetNetworkTarget(const FVector& Location, float Yaw);
+	/** Input is world space; an optional ship frame keeps locomotion targets independent of ship motion. */
+	void SetNetworkTarget(const FVector& Location, float Yaw, AActor* Frame = nullptr);
+	bool AdjustNetworkCapsuleHeight(float HeightDelta);
+	float GetNetworkTargetDistance2D(const FVector& Location, const AActor* Frame) const;
 
 	void ClearNetworkTarget()
 	{
@@ -80,6 +83,8 @@ public:
 		NetworkVelocity = FVector::ZeroVector;
 		NetworkTargetAge = 0.f;
 		LastNetworkUpdateTime = -1.f;
+		NetworkFrame.Reset();
+		bNetworkTargetRelative = false;
 	}
 
 	// Split in three: CREO base4 interleaves these with USWGEncumbranceComponent/
@@ -133,6 +138,9 @@ public:
 private:
 	friend class FSWGMovementPredictionTest;
 	FVector LastNetworkPosition = FVector::ZeroVector;
+	TWeakObjectPtr<AActor> NetworkFrame;
+	FTransform LastNetworkFramePose = FTransform::Identity;
+	bool bNetworkTargetRelative = false;
 	FVector NetworkVelocity = FVector::ZeroVector;
 	bool bHasNetworkPosition = false;
 	float NetworkTargetAge = 0.f;

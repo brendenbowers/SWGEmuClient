@@ -61,6 +61,12 @@ void USWGMovementComponent::ApplyDelta4(const FCreatureObjectDelta& Delta)
 
 void USWGMovementComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
+	if (bNetworkTargetRelative && (!NetworkFrame.IsValid() || NetworkFrame->IsActorBeingDestroyed()))
+	{
+		ClearNetworkTarget();
+		StopMovementImmediately();
+		return;
+	}
 	UpdateWaterState(DeltaTime);
 
 	if (NetworkTargetLocation.IsSet() && CharacterOwner && DeltaTime > KINDA_SMALL_NUMBER)
@@ -93,32 +99,75 @@ void USWGMovementComponent::UpdateWaterState(float DeltaTime)
 	bSwimmingByWater = Terrain->GetWaterInfoAt(static_cast<float>(Raw.X), static_cast<float>(Raw.Y), static_cast<float>(Raw.Z), SwimHeight).bSwimming;
 }
 
-void USWGMovementComponent::SetNetworkTarget(const FVector& Location, float Yaw)
+void USWGMovementComponent::SetNetworkTarget(const FVector& Location, float Yaw, AActor* Frame)
 {
 	if (Location.ContainsNaN() || !FMath::IsFinite(Yaw)) return;
+	if (Frame && Frame->IsActorBeingDestroyed()) { ClearNetworkTarget(); StopMovementImmediately(); return; }
+	if (NetworkFrame.Get() != Frame || bNetworkTargetRelative != (Frame != nullptr)) ClearNetworkTarget();
+	if (Frame && !bNetworkTargetRelative) LastNetworkFramePose = Frame->GetActorTransform();
+	NetworkFrame = Frame;
+	bNetworkTargetRelative = Frame != nullptr;
+	const FVector TargetLocation = Frame ? Frame->GetActorTransform().InverseTransformPosition(Location) : Location;
+	const float TargetYaw = Frame ? FRotator::NormalizeAxis(Yaw - Frame->GetActorRotation().Yaw) : Yaw;
 	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
 	const float Interval = Now - LastNetworkUpdateTime;
 	NetworkVelocity = FVector::ZeroVector;
 	if (bHasNetworkPosition && Interval >= 0.01f && Interval <= 2.f * NetworkPredictionSeconds)
 	{
-		NetworkVelocity = (Location - LastNetworkPosition) / Interval;
+		NetworkVelocity = (TargetLocation - LastNetworkPosition) / Interval;
 		NetworkVelocity.Z = 0.0;
 		const float SpeedLimit = GetPostureRunSpeed();
 		// No baseline speed yet: keep interpolation, rather than predicting an unbounded jump.
 		NetworkVelocity = SpeedLimit > KINDA_SMALL_NUMBER ? NetworkVelocity.GetClampedToMaxSize(SpeedLimit) : FVector::ZeroVector;
 	}
-	LastNetworkPosition = Location;
+	LastNetworkPosition = TargetLocation;
 	bHasNetworkPosition = true;
 	LastNetworkUpdateTime = Now;
 	NetworkTargetAge = 0.f;
-	NetworkTargetLocation = Location;
-	NetworkTargetYaw = Yaw;
+	NetworkTargetLocation = TargetLocation;
+	NetworkTargetYaw = TargetYaw;
+}
+
+float USWGMovementComponent::GetNetworkTargetDistance2D(const FVector& Location, const AActor* Frame) const
+{
+	if (!CharacterOwner) return 0;
+	if (Frame && bNetworkTargetRelative && NetworkFrame.Get() == Frame)
+		return FVector::Dist2D(LastNetworkFramePose.InverseTransformPosition(CharacterOwner->GetActorLocation()), Frame->GetActorTransform().InverseTransformPosition(Location));
+	return FVector::Dist2D(CharacterOwner->GetActorLocation(), Location);
+}
+
+bool USWGMovementComponent::AdjustNetworkCapsuleHeight(float HeightDelta)
+{
+	AActor* Frame = NetworkFrame.Get();
+	if (!bNetworkTargetRelative || !Frame || Frame->IsActorBeingDestroyed() || !CharacterOwner || !FMath::IsFinite(HeightDelta)) return false;
+	FTransform LocalPose = CharacterOwner->GetActorTransform().GetRelativeTransform(LastNetworkFramePose);
+	LocalPose.AddToTranslation(FVector(0,0,HeightDelta));
+	LastNetworkFramePose = Frame->GetActorTransform();
+	CharacterOwner->SetActorTransform(LocalPose * LastNetworkFramePose);
+	if (NetworkTargetLocation.IsSet()) NetworkTargetLocation->Z += HeightDelta;
+	LastNetworkPosition.Z += HeightDelta;
+	return true;
 }
 
 void USWGMovementComponent::TickNetworkSmoothing(float DeltaTime)
 {
+	AActor* Frame = NetworkFrame.Get();
+	if (bNetworkTargetRelative && (!Frame || Frame->IsActorBeingDestroyed())) { ClearNetworkTarget(); StopMovementImmediately(); return; }
+	const FTransform FramePose = Frame ? Frame->GetActorTransform() : FTransform::Identity;
 	NetworkTargetAge += DeltaTime;
-	const FVector Current = CharacterOwner->GetActorLocation();
+	const FVector Current = Frame ? LastNetworkFramePose.InverseTransformPosition(CharacterOwner->GetActorLocation()) : CharacterOwner->GetActorLocation();
+	const FRotator CurrentRotation = Frame ? LastNetworkFramePose.InverseTransformRotation(CharacterOwner->GetActorQuat()).Rotator() : CharacterOwner->GetActorRotation();
+	auto ApplyPose = [&](const FVector& Position)
+	{
+		CharacterOwner->SetActorLocation(Frame ? FramePose.TransformPosition(Position) : Position);
+		if (NetworkTargetYaw.IsSet())
+		{
+			const FRotator TargetRotation(Frame ? 0.f : CurrentRotation.Pitch, *NetworkTargetYaw, Frame ? 0.f : CurrentRotation.Roll);
+			const FQuat Rotation = FMath::RInterpTo(CurrentRotation, TargetRotation, DeltaTime, NetworkYawInterpSpeed).Quaternion();
+			CharacterOwner->SetActorRotation(Frame ? FramePose.TransformRotation(Rotation) : Rotation);
+		}
+		LastNetworkFramePose = FramePose;
+	};
 	const FVector Target = *NetworkTargetLocation + NetworkVelocity * FMath::Min(NetworkTargetAge, NetworkPredictionSeconds);
 	const FVector ToTarget = Target - Current;
 	const float HorizontalDistance = ToTarget.Size2D();
@@ -127,10 +176,10 @@ void USWGMovementComponent::TickNetworkSmoothing(float DeltaTime)
 	// finished moving idles rather than creeping the last fraction of a unit.
 	if (HorizontalDistance <= NetworkArrivalTolerance && (NetworkVelocity.IsNearlyZero() || NetworkTargetAge >= NetworkPredictionSeconds))
 	{
-		CharacterOwner->SetActorLocation(Target);
+		ApplyPose(Target);
 		Velocity = FVector::ZeroVector;
-		NetworkTargetLocation.Reset();
-		NetworkTargetYaw.Reset();
+		// A stationary passenger still follows the ship frame after walking stops.
+		if (!Frame) { NetworkTargetLocation.Reset(); NetworkTargetYaw.Reset(); }
 		return;
 	}
 
@@ -157,20 +206,11 @@ void USWGMovementComponent::TickNetworkSmoothing(float DeltaTime)
 	// Height tracks on its own clock: terrain can rise faster than the creature
 	// walks, and easing Z at the horizontal rate leaves it wading through slopes.
 	NewLocation.Z = FMath::FInterpTo(Current.Z, Target.Z, DeltaTime, NetworkHeightInterpSpeed);
-	CharacterOwner->SetActorLocation(NewLocation);
+	ApplyPose(NewLocation);
 
 	// The blend space reads Velocity to pick walk vs. run; deriving it from the
 	// step actually taken keeps the animation honest about the speed travelled.
-	Velocity = HorizontalDirection * (Step / DeltaTime);
-
-	if (NetworkTargetYaw.IsSet())
-	{
-		// RInterpTo rather than interpolating the yaw scalar: it normalizes the
-		// delta, so a heading crossing the 0/360 seam turns the short way.
-		const FRotator Rotation = CharacterOwner->GetActorRotation();
-		const FRotator TargetRotation(Rotation.Pitch, *NetworkTargetYaw, Rotation.Roll);
-		CharacterOwner->SetActorRotation(FMath::RInterpTo(Rotation, TargetRotation, DeltaTime, NetworkYawInterpSpeed));
-	}
+	Velocity = FramePose.TransformVectorNoScale(HorizontalDirection * (Step / DeltaTime));
 }
 
 void USWGMovementComponent::ApplyPostureAndStates(ESWGPosture NewPosture, int64 NewStateBitmask)

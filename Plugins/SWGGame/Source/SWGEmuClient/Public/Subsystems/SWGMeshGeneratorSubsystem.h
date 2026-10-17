@@ -139,6 +139,8 @@ struct FSWGLodLevel
 struct FSWGPendingMeshRequest
 {
 	TWeakObjectPtr<AActor> Actor;
+	/** Travels with the request through parsing, game-thread finalization and skeletal continuations. */
+	TSharedPtr<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe> LoadingOwner;
 
 	uint32 TemplateCrc = 0;
 
@@ -255,8 +257,16 @@ class SWGEMUCLIENT_API USWGMeshGeneratorSubsystem : public UGameInstanceSubsyste
 	// promoting to a public API instead.
 	friend class FSWGSkeletalAnimationPipeline;
 	friend class FSWGAppearanceFallbackTest;
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FSWGSpaceTeardownTest;
+	friend class FSWGSpaceSkeletalLifetimeTest;
+	friend class FSWGSpacePobCompletionLifetimeTest;
+	friend class FSWGZoneSceneReadinessTest;
+#endif
 	/** Builds its radial billboard mesh and per-shader materials through the private cache-or-build helpers. */
 	friend class USWGTerrainFloraSubsystem;
+	friend class USWGTerrainSubsystem;
+	friend class USWGSpacePlanetComponent;
 
 public:
 	// Declared (not defaulted) so the SkeletalAnimationPipeline raw-pointer
@@ -294,6 +304,8 @@ public:
 	/** Like RequestMesh(Actor, CrcClass), but for callers that already have the
 	 *  template's virtual path (world-snapshot objects) instead of a CRC. */
 	void RequestMeshForTemplatePath(AActor* Actor, const FString& TemplatePath);
+	bool HasPendingMeshes(TFunctionRef<bool(const AActor*)> IsRelevant) const;
+	TSharedPtr<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe> TrackLoading(AActor* Owner);
 
 	/**
 	 * Actor-less: resolves a static appearance (.apt/.lod, or a bare .msh)
@@ -392,7 +404,7 @@ public:
 	 */
 	void RequestItemMesh(uint32 TemplateCrc, int32 ContainmentType, const FSWGCustomizationVariables& Customization,
 		TFunction<void(UStaticMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnStaticComplete,
-		TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnSkeletalComplete);
+		TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnSkeletalComplete, AActor* LoadingOwner = nullptr);
 
 	/**
 	 * Skeletal-only sibling of RequestItemMesh for a wearable known by its
@@ -402,7 +414,7 @@ public:
 	 * stores it; the .lmg path is its own ACST key.
 	 */
 	void RequestWearableMesh(const FString& LmgPath, const TMap<FString, int32>& NamedCustomization,
-		TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnSkeletalComplete);
+		TFunction<void(USkeletalMesh* Mesh, const FSWGMeshData MeshData, const TArray<UMaterialInterface*>& Materials)> OnSkeletalComplete, AActor* LoadingOwner = nullptr);
 
 	/**
 	 * Reads the clientDataFile (.cdf) a mobile template names in its SHOT
@@ -800,6 +812,10 @@ private:
 	TObjectPtr<USWGTreSubsystem> TreSubsystem;
 
 	TArray<FSWGPendingMeshRequest> PendingRequests;
+	void QueueMeshRequest(FSWGPendingMeshRequest&& Request, AActor* LoadingOwner = nullptr);
+	TArray<TWeakPtr<TWeakObjectPtr<AActor>, ESPMode::ThreadSafe>> LoadingRequests;
+	TArray<TFuture<void>> ParsingTasks;
+	bool bIsShuttingDown = false;
 
 	/** Parent material for GetOrBuildObjectMaterial's per-shader MIDs — a single Texture2D parameter ("Diffuse") plugged straight into BaseColor. Authored as a plugin content asset, not generated at runtime. */
 	UPROPERTY()

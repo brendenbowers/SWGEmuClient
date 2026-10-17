@@ -101,7 +101,8 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 				UIStateMachine.Network->SendMessage(Ack.Serialize());
 				UE_LOG(LogTemp, Log, TEXT("FSWGInWorldState::Enter: sent TeleportAck for object %lld"), PlayerObjectId);
 
-				if (const AActor* PlayerActor = ObjectGraph->FindActor(PlayerObjectId))
+				if (const AActor* PlayerActor = ObjectGraph->FindActor(PlayerObjectId);
+					PlayerActor && !ObjectGraph->IsLocalPlayerPiloting() && ObjectGraph->IsLocalSpaceSceneReady())
 				{
 					const uint32 TimeStamp = (uint32)((uint64)(FPlatformTime::Seconds() * 1000.0) & 0xFFFFFFFFu);
 					const FQuat Direction = SWGCharacterHeadingToNativeRotation(PlayerActor->GetActorRotation());
@@ -157,7 +158,7 @@ void FSWGInWorldState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSWGFlowCo
 							PlayerObjectId, *Transform.Position.ToString());
 					}
 				}
-				else
+				else if (!PlayerActor)
 				{
 					UE_LOG(LogTemp, Warning, TEXT("FSWGInWorldState::Enter: could not find player actor %lld — DataTransform NOT sent"), PlayerObjectId);
 				}

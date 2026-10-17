@@ -18,6 +18,7 @@ enum class ESWGTerminalType : uint8
 	Travel,
 	Bazaar,
 	Bank,
+	Space,
 };
 
 /**

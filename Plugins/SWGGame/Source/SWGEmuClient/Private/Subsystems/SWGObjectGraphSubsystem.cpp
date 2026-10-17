@@ -36,6 +36,12 @@
 #include "Objects/Creature/SWGCreature.h"
 #include "Objects/Player/SWGPlayer.h"
 #include "Objects/World/SWGBuilding.h"
+#include "Objects/World/SWGShip.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "StaticMeshResources.h"
+#include "Network/Messages/Zone/ShipUpdateTransformMessage.h"
+#include "Network/Messages/Zone/CreateMissileMessage.h"
 #include "Objects/World/SWGCell.h"
 #include "Objects/World/SWGParticleEmitterActor.h"
 #include "Objects/World/SWGSoundEmitter.h"
@@ -86,11 +92,230 @@ void USWGObjectGraphSubsystem::Deinitialize()
 
 	ActorRegistry.Reset();
 	CrcToActorClass.Reset();
+	ShipObjectIds.Reset();
+	SpaceObjectPoses.Reset();
+	IncomingMissiles.Reset();
+	StoredShipInteriorVisibility.Reset();
+	bSpaceScene = false;
 	bCrcMapBuilt = false;
 }
 
 void USWGObjectGraphSubsystem::Tick(float DeltaTime)
-{}
+{
+	if (bSpaceScene)
+	{
+		const double Alpha = 1. - FMath::Exp(-15. * FMath::Max(0.f, DeltaTime));
+		for (const auto& Pair : ShipObjectIds)
+		{
+			ASWGShip* Ship = Cast<ASWGShip>(FindActor(Pair.Value));
+			if (!Ship || !Ship->bSmoothingSpacePose) continue;
+			Ship->SpacePose = FTransform(FQuat::Slerp(Ship->SpacePose.GetRotation(), Ship->ReplicatedSpacePose.GetRotation(), Alpha).GetNormalized(),
+				FMath::Lerp(Ship->SpacePose.GetLocation(), Ship->ReplicatedSpacePose.GetLocation(), Alpha));
+		}
+	}
+	RefreshSpaceFrame();
+	if (bSpaceScene && bRevealPendingPlayerPlacement)
+	{
+		if (IsLocalPlayerPiloting()) TryPlaceSpacePilot();
+		else if (ASWGCreature* Player = Cast<ASWGCreature>(FindActor(LocalPlayerObjectId)); Player && !Player->bAwaitingCellPlacement && IsLocalSpaceSceneReady())
+		{
+			Player->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+			bRevealPendingPlayerPlacement = false;
+			RevealCurrentZoneLevel();
+		}
+	}
+}
+
+bool USWGObjectGraphSubsystem::IsLocalPlayerPiloting() const
+{
+	const int32* Type = FindContainmentType(LocalPlayerObjectId);
+	return bSpaceScene && Type && (*Type == int32(ESWGContainmentType::ShipPilot) || *Type == int32(ESWGContainmentType::ShipPilotPOB));
+}
+
+bool USWGObjectGraphSubsystem::IsLocalSpaceSceneReady() const
+{
+	if (!bSpaceScene) return true;
+	ASWGShip* Ship = GetLocalPlayerShip();
+	if (!Ship || !Ship->bHasFlightBaseline || !Ship->TangibleComponent->bHasBase3
+		|| !ReadyObjects.Contains(Ship->GetObjectId()) || !ReadyObjects.Contains(LocalPlayerObjectId)) return false;
+	TArray<UStaticMeshComponent*> Meshes;
+	Ship->GetComponents(Meshes);
+	const bool bHasHull = Meshes.ContainsByPredicate([](const UStaticMeshComponent* Component)
+	{
+		const UStaticMesh* Mesh = Component->GetStaticMesh();
+		return Component->GetVisibleFlag() && !Component->bHiddenInGame && Mesh && Mesh->GetRenderData() && Mesh->GetRenderData()->LODResources.Num() > 0
+			&& Mesh->GetRenderData()->LODResources[0].GetNumVertices() > 0;
+	});
+	if (!bHasHull) return false;
+	const int64 ParentId = ContainerByObjectId.FindRef(LocalPlayerObjectId);
+	if (FindActor(ParentId) == Ship) return IsLocalPlayerPiloting();
+	ASWGCell* Cell = nullptr;
+	int64 Current = ParentId;
+	for (int32 Hop = 0; Hop < 16 && Current; ++Hop)
+	{
+		if ((Cell = Cast<ASWGCell>(FindActor(Current)))) break;
+		Current = ContainerByObjectId.FindRef(Current);
+	}
+	if (!Cell || Cell->OwningBuilding.Get() != Ship || !Cell->bCollisionReady) return false;
+	if (IsLocalPlayerPiloting())
+	{
+		const AActor* Seat = FindActor(ParentId);
+		return Seat && ReadyObjects.Contains(ParentId) && Seat->GetAttachParentActor() == Cell;
+	}
+	return true;
+}
+
+void USWGObjectGraphSubsystem::TryPlaceSpacePilot()
+{
+	if (!IsLocalSpaceSceneReady()) return;
+	ASWGCreature* Player = Cast<ASWGCreature>(FindActor(LocalPlayerObjectId));
+	AActor* Seat = FindActor(ContainerByObjectId.FindRef(LocalPlayerObjectId));
+	if (!Player || !Seat) return;
+	if (Player->bAwaitingCellPlacement)
+	{
+		const float HalfHeight = Player->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		FTransform Relative = Player->GetActorTransform();
+		Relative.SetLocation(FVector(Relative.GetLocation().X, Relative.GetLocation().Y, Player->LastNetworkZ + HalfHeight));
+		if (Seat->IsA<ASWGShip>()) Relative.SetLocation(FVector(0,0,HalfHeight));
+		Player->SetActorTransform(Relative * Seat->GetActorTransform());
+		Player->bAwaitingCellPlacement = false;
+		Player->PlacedInCell = Cast<ASWGCell>(Seat->GetAttachParentActor());
+	}
+	Player->GetCharacterMovement()->DisableMovement();
+	Player->SetActorEnableCollision(false);
+	if (ASWGCell* Cell = Cast<ASWGCell>(Seat->GetAttachParentActor()))
+		if (ASWGShip* Ship = GetLocalPlayerShip()) Ship->SetLitRoom(Cell);
+	bRevealPendingPlayerPlacement = false;
+	RevealCurrentZoneLevel();
+}
+
+ASWGShip* USWGObjectGraphSubsystem::FindContainingShip(int64 ObjectId) const
+{
+	for (int32 Hop = 0; Hop < 16 && ObjectId != 0; ++Hop)
+	{
+		if (ASWGShip* Ship = Cast<ASWGShip>(FindActor(ObjectId))) return Ship;
+		ObjectId = ContainerByObjectId.FindRef(ObjectId);
+	}
+	return nullptr;
+}
+
+FTransform USWGObjectGraphSubsystem::GetSpaceFrame() const
+{
+	ASWGShip* Ship = bSpaceScene ? GetLocalPlayerShip() : nullptr;
+	return Ship ? Ship->SpacePose : FTransform::Identity;
+}
+
+void USWGObjectGraphSubsystem::RefreshSpaceFrame()
+{
+	if (!bSpaceScene) return;
+	const ASWGShip* LocalShip = GetLocalPlayerShip();
+	const FTransform Frame = GetSpaceFrame();
+	TSet<TWeakObjectPtr<AActor>> StoredInterior;
+	for (const auto& Pair : ActorRegistry)
+	{
+		ASWGShip* Ship = Cast<ASWGShip>(Pair.Value.Get());
+		if (!Ship || Ship == LocalShip || ContainerByObjectId.FindRef(Pair.Key) == 0) continue;
+		// A datapad ship's generated rooms are separate actors; hiding its hull does not hide their collision.
+		Ship->SetLitRoom(nullptr);
+		TArray<AActor*> Children;
+		Ship->GetAttachedActors(Children, true, true);
+		for (ASWGCell* Cell : Ship->Cells)
+		{
+			if (!IsValid(Cell)) continue;
+			Children.AddUnique(Cell);
+			for (const auto& Prop : Cell->InteriorActors)
+				if (Prop.IsValid()) Children.AddUnique(Prop.Get());
+		}
+		for (AActor* Child : Children)
+		{
+			if (!IsValid(Child)) continue;
+			StoredInterior.Add(Child);
+			if (!StoredShipInteriorVisibility.Contains(Child))
+				StoredShipInteriorVisibility.Add(Child, {Child->IsHidden(), Child->GetActorEnableCollision()});
+			Child->SetActorHiddenInGame(true);
+			Child->SetActorEnableCollision(false);
+		}
+	}
+	for (auto It = StoredShipInteriorVisibility.CreateIterator(); It; ++It)
+	{
+		if (StoredInterior.Contains(It.Key())) continue;
+		if (AActor* Actor = It.Key().Get())
+		{
+			// Baselines can complete while suppressed; ready network actors use current containment.
+			const ISWGNetworkObjectInterface* Object = Cast<ISWGNetworkObjectInterface>(Actor);
+			if (Object && ReadyObjects.Contains(Object->GetObjectId()))
+				ApplyContainment(Actor, Object->GetObjectId(), ContainerByObjectId.FindRef(Object->GetObjectId()));
+			else
+			{
+				Actor->SetActorHiddenInGame(It.Value().Key);
+				Actor->SetActorEnableCollision(It.Value().Value);
+			}
+		}
+		It.RemoveCurrent();
+	}
+	for (const TPair<int64, FTransform>& Pair : SpaceObjectPoses)
+	{
+		if (ContainerByObjectId.FindRef(Pair.Key) != 0) continue;
+		AActor* Actor = FindActor(Pair.Key);
+		if (!Actor || Actor->IsA<ACharacter>() || Actor->IsA<ASWGCell>()) continue;
+		const ASWGShip* Ship = Cast<ASWGShip>(Actor);
+		const FTransform Pose = Ship ? Ship->SpacePose : Pair.Value;
+		Actor->SetActorTransform(Ship && Ship == LocalShip ? FTransform::Identity : Pose.GetRelativeTransform(Frame));
+	}
+}
+
+void USWGObjectGraphSubsystem::HandleShipUpdateTransform(const FShipUpdateTransformMessage& Msg)
+{
+	if (!bSpaceScene || !Msg.bValid) return;
+	const int64* ObjectId = ShipObjectIds.Find(Msg.ShipId);
+	ASWGShip* Ship = ObjectId ? Cast<ASWGShip>(FindActor(*ObjectId)) : nullptr;
+	if (!Ship || Ship->ShipState.ShipId != Msg.ShipId) return;
+	// Core3 broadcasts the pilot's report one step ahead for observers; it is not a correction.
+	if (Ship == GetLocalPlayerShip() && IsLocalPlayerPiloting() && Ship->bPredictingLocalFlight) return;
+	// Core3 stamps broadcasts with the recipient's clock; stationary viewers receive equal stamps.
+	if (Ship->bHasSpaceStamp && int32(Msg.SyncStamp - Ship->LastSpaceStamp) < 0) return;
+	const FTransform Pose(SWGNativeToUnrealRotation(Msg.Rotation.X, Msg.Rotation.Y, Msg.Rotation.Z, Msg.Rotation.W), SWGToUnrealSpace(Msg.Position));
+	Ship->bSmoothingSpacePose = (Ship != GetLocalPlayerShip() || !IsLocalPlayerPiloting()) && Ship->bHasSpaceStamp
+		&& FVector::DistSquared(Ship->SpacePose.GetLocation(), Pose.GetLocation()) < FMath::Square(200.f * SWGWorldScale);
+	Ship->ReplicatedSpacePose = Pose;
+	if (!Ship->bSmoothingSpacePose) Ship->SpacePose = Pose;
+	Ship->SpaceVelocity = SWGToUnrealSpace(Msg.Velocity);
+	Ship->FlightSpeed = Ship->SpaceVelocity.Size();
+	Ship->LastSpaceStamp = Msg.SyncStamp;
+	Ship->bHasSpaceStamp = true;
+	RefreshSpaceFrame();
+}
+
+void USWGObjectGraphSubsystem::GetSpaceObjectActors(TArray<AActor*>& OutActors) const
+{
+	OutActors.Reset();
+	for (const TPair<int64, FTransform>& Pair : SpaceObjectPoses)
+	{
+		if (ContainerByObjectId.FindRef(Pair.Key) != 0) continue;
+		AActor* Actor = FindActor(Pair.Key);
+		if (Actor && !Actor->IsA<ACharacter>() && !Actor->IsA<ASWGCell>()) OutActors.Add(Actor);
+	}
+}
+
+int32 USWGObjectGraphSubsystem::CountIncomingMissiles(int64 TargetId, double Now) const
+{
+	int32 Count = 0;
+	for (const FSWGIncomingMissile& Missile : IncomingMissiles)
+	{
+		if (Missile.TargetId == TargetId && Missile.ExpiresAt > Now) ++Count;
+	}
+	return Count;
+}
+
+void USWGObjectGraphSubsystem::NoteIncomingMissile(int32 MissileId, int64 SourceId, int64 TargetId, double SecondsToHit)
+{
+	const double Now = FPlatformTime::Seconds();
+	IncomingMissiles.RemoveAll([Now](const FSWGIncomingMissile& Missile) { return Missile.ExpiresAt <= Now; });
+	FSWGIncomingMissile& Missile = IncomingMissiles.AddDefaulted_GetRef();
+	Missile.MissileId = MissileId; Missile.SourceId = SourceId; Missile.TargetId = TargetId;
+	// The server sends whole seconds; a missile hitting "now" still warrants a beat of warning.
+	Missile.ExpiresAt = Now + FMath::Max(SecondsToHit, 1.0);
+}
 
 TStatId USWGObjectGraphSubsystem::GetStatId() const
 {
@@ -138,6 +363,12 @@ ULevel* USWGObjectGraphSubsystem::GetSpawnLevel() const
 
 void USWGObjectGraphSubsystem::RevealCurrentZoneLevel()
 {
+	if (bSpaceScene && !IsLocalSpaceSceneReady())
+	{
+		bRevealPendingPlayerPlacement = true;
+		if (ASWGCreature* Player = Cast<ASWGCreature>(FindActor(LocalPlayerObjectId))) Player->GetCharacterMovement()->DisableMovement();
+		return;
+	}
 	//ULevelStreaming* Streaming = CurrentZoneStreamingLevel.Get();
 	//if (!Streaming)
 	//{
@@ -264,6 +495,26 @@ void USWGObjectGraphSubsystem::HandleMessageReceived(TSharedPtr<FSWGNetMessage> 
 	{
 		HandleUpdateTransform(*static_cast<const FUpdateTransformMessage*>(Msg.Get()));
 	}
+	else if (Opcode == static_cast<uint32>(ESWGMessageOp::ShipUpdateTransform))
+	{
+		HandleShipUpdateTransform(*static_cast<const FShipUpdateTransformMessage*>(Msg.Get()));
+	}
+	else if (Opcode == static_cast<uint32>(ESWGMessageOp::ShipUpdateTransformCollision))
+	{
+		const auto& Collision = *static_cast<const FShipUpdateTransformCollisionMessage*>(Msg.Get());
+		ASWGShip* Ship = Collision.bValid && bSpaceScene ? Cast<ASWGShip>(FindActor(Collision.ObjectId)) : nullptr;
+		if (!Ship) return;
+		Ship->SpacePose = FTransform(SWGNativeToUnrealRotation(Collision.Rotation.X, Collision.Rotation.Y, Collision.Rotation.Z, Collision.Rotation.W), SWGToUnrealSpace(Collision.Position));
+		Ship->SpaceVelocity = Ship->FlightAngularRates = FVector::ZeroVector;
+		Ship->FlightSpeed = 0;
+		Ship->bSmoothingSpacePose = false;
+		RefreshSpaceFrame();
+	}
+	else if (Opcode == static_cast<uint32>(ESWGMessageOp::CreateMissileMessage))
+	{
+		const auto& Missile = *static_cast<const FCreateMissileMessage*>(Msg.Get());
+		if (Missile.bValid && bSpaceScene) NoteIncomingMissile(Missile.MissileId, Missile.SourceId, Missile.TargetId, Missile.SecondsToHit);
+	}
 	else if (Opcode == static_cast<uint32>(ESWGMessageOp::UpdateTransformMessageWithParent))
 	{
 		HandleUpdateTransformWithParent(*static_cast<const FUpdateTransformWithParentMessage*>(Msg.Get()));
@@ -287,6 +538,11 @@ void USWGObjectGraphSubsystem::HandleCmdStartScene(const FCmdStartSceneMessage& 
 	// from scratch; a stale containment here would misplace a reused id.
 	ActorRegistry.Reset();
 	ObjectCrcById.Reset();
+	ShipObjectIds.Reset();
+	SpaceObjectPoses.Reset();
+	IncomingMissiles.Reset();
+	StoredShipInteriorVisibility.Reset();
+	bSpaceScene = TreSubsystem && TreSubsystem->CreateIffReader(Msg.TerrainName).GetRootFormType() == FName(TEXT("STAT"));
 	ContainerByObjectId.Reset();
 	ContainmentTypeByObjectId.Reset();
 	CellNumberByObjectId.Reset();
@@ -305,6 +561,24 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 	{
 		UE_LOG(LogTemp, Warning, TEXT("USWGObjectGraphSubsystem: SceneCreateObjectByCrc for object %lld arrived before the CRC->actor-class map was built"), Msg.ObjectId);
 		return;
+	}
+	// Core3 repeats the POB owner stream; keep rooms, furniture and pending mesh requests on the same actors.
+	if (AActor* Existing = FindActor(Msg.ObjectId); Existing && ObjectCrcById.FindRef(Msg.ObjectId) == Msg.ObjectCrc)
+	{
+		const ISWGNetworkObjectInterface* Object = Cast<ISWGNetworkObjectInterface>(Existing);
+		if (Object && Object->GetObjectId() == Msg.ObjectId
+			&& (Existing->IsA<ASWGCreature>() || Existing->IsA<ASWGCell>() || Existing->IsA<ASWGShip>() || Existing->IsA<ASWGItem>()))
+		{
+			if (ASWGShip* Ship = Cast<ASWGShip>(Existing); Ship && bSpaceScene && !Ship->bPredictingLocalFlight)
+			{
+				// A stored ship's create pose becomes its launch pose; preserving the actor must not preserve the old position.
+				Ship->SpacePose = FTransform(SWGNativeToUnrealRotation(Msg.DirX, Msg.DirY, Msg.DirZ, Msg.DirW), SWGToUnrealSpace(FVector(Msg.PosX, Msg.PosY, Msg.PosZ)));
+				Ship->bSmoothingSpacePose = false;
+				SpaceObjectPoses.Add(Msg.ObjectId, Ship->SpacePose);
+				RefreshSpaceFrame();
+			}
+			return;
+		}
 	}
 
 	// Recorded unconditionally — an object that resolves to no actor class
@@ -402,6 +676,12 @@ void USWGObjectGraphSubsystem::HandleSceneCreateObject(const FSceneCreateObjectM
 	NewActor->SetActorEnableCollision(false);
 
 	ActorRegistry.Add(Msg.ObjectId, NewActor);
+	if (bSpaceScene)
+	{
+		SpaceObjectPoses.Add(Msg.ObjectId, FTransform(Rotation, Location));
+		if (ASWGShip* Ship = Cast<ASWGShip>(NewActor)) Ship->SpacePose = FTransform(Rotation, Location);
+		RefreshSpaceFrame();
+	}
 
 	// A registered handler (buildings, cells, ...) gets first refusal on
 	// continuing this actor's generation; only fall back to the generic
@@ -478,6 +758,12 @@ void USWGObjectGraphSubsystem::HandleBaselines(const FBaselinesMessage& Msg)
 		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: no baseline dispatch for FourCC '%s' (object %lld, slot %d)"),
 			*FourCC, Msg.ObjectId, Msg.BaselineType);
 	}
+	else if (ASWGShip* Ship = Cast<ASWGShip>(Actor); Ship && Msg.BaselineType == 6)
+	{
+		for (auto It = ShipObjectIds.CreateIterator(); It; ++It)
+			if (It.Value() == Msg.ObjectId) It.RemoveCurrent();
+		ShipObjectIds.Add(Ship->ShipState.ShipId, Msg.ObjectId);
+	}
 }
 
 void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesMessage& Msg)
@@ -493,6 +779,11 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 	// through the normal SceneCreateObjectByCrc/Baselines/SceneEndBaselines
 	// flow — it just also gets an UpdateContainmentMessage with a nonzero
 	ReadyObjects.Add(Msg.ObjectId);
+	if (const ISWGNetworkObjectInterface* Object = Cast<ISWGNetworkObjectInterface>(Actor); Object && Object->GetObjectId() != Msg.ObjectId)
+	{
+		OnObjectReady.Broadcast(Msg.ObjectId);
+		return;
+	}
 
 	const bool bIsLocalPlayer = LocalPlayerObjectId != 0 && Msg.ObjectId == LocalPlayerObjectId;
 
@@ -509,7 +800,7 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 			if (Actor->IsHidden())
 			{
 				Actor->SetActorHiddenInGame(false);
-				Actor->SetActorEnableCollision(true);
+				Actor->SetActorEnableCollision(!IsLocalPlayerPiloting());
 			}
 			if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor); Creature && Creature->bAwaitingCellPlacement)
 			{
@@ -552,6 +843,8 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 				if (APawn* PlayerPawn = Cast<APawn>(Actor))
 				{
 					PC->Possess(PlayerPawn);
+					if (bSpaceScene && (IsLocalPlayerPiloting() || bRevealPendingPlayerPlacement))
+						if (ASWGCreature* Creature = Cast<ASWGCreature>(Actor)) Creature->GetCharacterMovement()->DisableMovement();
 					UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: possessed local player actor %lld (%s)"),
 						Msg.ObjectId, *Actor->GetName());
 				}
@@ -577,10 +870,38 @@ void USWGObjectGraphSubsystem::HandleSceneEndBaselines(const FSceneEndBaselinesM
 void USWGObjectGraphSubsystem::HandleUpdateContainment(const FUpdateContainmentMessage& Msg)
 {
 	const int64 PreviousContainerId = ContainerByObjectId.FindRef(Msg.ObjectId);
+	const bool bWasLocalPilot = Msg.ObjectId == LocalPlayerObjectId && IsLocalPlayerPiloting();
 	ContainerByObjectId.Add(Msg.ObjectId, Msg.ContainerId);
 	ContainmentTypeByObjectId.Add(Msg.ObjectId, (int32)Msg.Type);
+	RefreshSpaceFrame();
 
 	AActor* Actor = FindActor(Msg.ObjectId);
+	if (bSpaceScene && Msg.ObjectId == LocalPlayerObjectId && PreviousContainerId != Msg.ContainerId)
+	{
+		if (ASWGCreature* Player = Cast<ASWGCreature>(Actor))
+		{
+			if (IsLocalPlayerPiloting())
+			{
+				// Core3's pilot-chair radial seats at (0,0.5,0), then sends containment without a new create.
+				Player->LastNetworkZ = .5f * SWGWorldScale;
+				Player->SetActorTransform(FTransform(FVector(0,0,Player->LastNetworkZ + Player->GetCapsuleComponent()->GetScaledCapsuleHalfHeight())));
+				Player->bAwaitingCellPlacement = true;
+				bRevealPendingPlayerPlacement = true;
+			}
+			else if (bWasLocalPilot)
+			{
+				Player->GetCharacterMovement()->StopMovementImmediately();
+				Player->GetCharacterMovement()->DisableMovement();
+				// LeaveStation copies the chair position; report feet there rather than the seated half-metre offset.
+				if (const AActor* PreviousSeat = FindActor(PreviousContainerId))
+				{
+					Player->LastNetworkZ = PreviousSeat->GetActorLocation().Z;
+					Player->SetActorLocation(PreviousSeat->GetActorLocation() + FVector(0,0,Player->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+				}
+				bRevealPendingPlayerPlacement = true;
+			}
+		}
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: UpdateContainmentMessage object=%lld container=%lld type=%u actor=%s"),
 		Msg.ObjectId, Msg.ContainerId, Msg.Type, Actor ? *Actor->GetName() : TEXT("<not spawned yet>"));
@@ -704,7 +1025,10 @@ void USWGObjectGraphSubsystem::HandleUpdateTransformWithParent(const FUpdateTran
 	}
 
 	const FTransform& BuildingTransform = Building->GetActorTransform();
-	const FVector NewLocation = GroundedLocationFor(Actor, BuildingTransform.TransformPosition(RelativeLocation));
+	const FVector WorldFeet = BuildingTransform.TransformPosition(RelativeLocation);
+	FVector NewLocation = GroundedLocationFor(Actor, WorldFeet);
+	if (bSpaceScene && Building->IsA<ASWGShip>() && Creature && Creature->GetCapsuleComponent())
+		NewLocation = WorldFeet + BuildingTransform.GetUnitAxis(EAxis::Z) * Creature->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
 	const float YawDegrees = FRotator::NormalizeAxis(BuildingTransform.Rotator().Yaw + RelativeYaw);
 
 	if (Creature)
@@ -722,6 +1046,14 @@ void USWGObjectGraphSubsystem::HandleUpdateTransformWithParent(const FUpdateTran
 
 void USWGObjectGraphSubsystem::ApplyNetworkTransform(AActor* Actor, int64 ObjectId, const FVector& NewLocation, float YawDegrees)
 {
+	if (bSpaceScene && !Actor->IsA<ACharacter>() && ContainerByObjectId.FindRef(ObjectId) == 0)
+	{
+		const FTransform Pose(FRotator(0, YawDegrees, 0), NewLocation);
+		SpaceObjectPoses.Add(ObjectId, Pose);
+		if (ASWGShip* Ship = Cast<ASWGShip>(Actor)) Ship->SpacePose = Pose;
+		RefreshSpaceFrame();
+		return;
+	}
 	const FVector OldLocation = Actor->GetActorLocation();
 	ACharacter* Character = Cast<ACharacter>(Actor);
 	USWGMovementComponent* Movement = Character ? Cast<USWGMovementComponent>(Character->GetCharacterMovement()) : nullptr;
@@ -746,7 +1078,20 @@ void USWGObjectGraphSubsystem::ApplyNetworkTransform(AActor* Actor, int64 Object
 		return;
 	}
 
-	if (Movement && !bIsLocalPlayer && !bTeleport)
+	const ASWGCreature* Creature = Cast<ASWGCreature>(Actor);
+	ASWGCell* Cell = Creature ? Creature->PlacedInCell.Get() : nullptr;
+	ASWGShip* CellShip = bSpaceScene && Cell ? Cast<ASWGShip>(Cell->OwningBuilding.Get()) : nullptr;
+	if (Movement && !bIsLocalPlayer && CellShip)
+	{
+		if (Movement->GetNetworkTargetDistance2D(NewLocation, CellShip) > MaxSmoothedMoveDistance)
+		{
+			Movement->ClearNetworkTarget();
+			Actor->SetActorLocation(NewLocation);
+			Actor->SetActorRotation(CellShip->GetActorQuat() * FRotator(0, YawDegrees - CellShip->GetActorRotation().Yaw, 0).Quaternion());
+		}
+		Movement->SetNetworkTarget(NewLocation, YawDegrees, CellShip);
+	}
+	else if (Movement && !bIsLocalPlayer && !bTeleport)
 	{
 		Movement->SetNetworkTarget(NewLocation, YawDegrees);
 	}
@@ -773,6 +1118,29 @@ void USWGObjectGraphSubsystem::ApplyNetworkTransform(AActor* Actor, int64 Object
 
 void USWGObjectGraphSubsystem::HandleObjControllerMessage(const FObjControllerMessageIn& Msg)
 {
+	if (bSpaceScene && Msg.GetSubOp() == ESWGObjControllerOp::DataTransform)
+	{
+		if (ASWGShip* Ship = Cast<ASWGShip>(FindActor(Msg.ObjectId)))
+		{
+			FSWGPacket Payload = Msg.AsPayloadPacket();
+			if (Payload.GetRemaining() != 36) return;
+			Payload.ReadUInt32(); // movement counter follows the envelope's zero field
+			const float X = Payload.ReadFloat(), Y = Payload.ReadFloat(), Z = Payload.ReadFloat(), W = Payload.ReadFloat();
+			const float Px = Payload.ReadFloat(), Pz = Payload.ReadFloat(), Py = Payload.ReadFloat();
+			const float Speed = Payload.ReadFloat();
+			FQuat Rotation = SWGNativeToUnrealRotation(X, Y, Z, W);
+			const FVector Position = SWGToUnrealSpace(FVector(Px, Py, Pz));
+			if (Payload.IsError() || Rotation.ContainsNaN() || Rotation.SizeSquared() < UE_SMALL_NUMBER
+				|| Position.ContainsNaN() || Position.GetAbsMax() > 8000 * SWGWorldScale || !FMath::IsFinite(Speed) || Speed < 0) return;
+			Ship->SpacePose = FTransform(Rotation.GetNormalized(), Position);
+			Ship->bSmoothingSpacePose = false;
+			Ship->SpaceVelocity = Ship->SpacePose.GetRotation().GetForwardVector() * FMath::Min(Speed, 512.f) * SWGWorldScale;
+			Ship->FlightSpeed = Ship->SpaceVelocity.Size();
+			Ship->FlightAngularRates = FVector::ZeroVector;
+			RefreshSpaceFrame();
+			return;
+		}
+	}
 	// Addressed to whichever creature changed posture, not just to us —
 	// a dying NPC's arrives with its own ObjectId.
 	if (Msg.GetSubOp() == ESWGObjControllerOp::PostureUpdate)
@@ -817,6 +1185,17 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ObjectId, i
 {
 	if (!Actor)
 	{
+		return;
+	}
+	// PLAY aliases share CREO components, but never own the body's containment or visibility.
+	if (const ISWGNetworkObjectInterface* Object = Cast<ISWGNetworkObjectInterface>(Actor); Object && Object->GetObjectId() != ObjectId) return;
+	if (ObjectId == LocalPlayerObjectId && IsLocalPlayerPiloting())
+	{
+		if (ASWGCreature* Player = Cast<ASWGCreature>(Actor))
+		{
+			Player->GetCharacterMovement()->DisableMovement();
+			Player->SetActorEnableCollision(false);
+		}
 		return;
 	}
 
@@ -873,6 +1252,10 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ObjectId, i
 			// or the server moved it between rooms) keeps world.
 			ASWGObject* Object = Cast<ASWGObject>(Actor);
 			const bool bRelative = Object && Object->bAwaitingCellPlacement;
+			if (bSpaceScene && bRelative)
+			{
+				if (const FTransform* LocalPose = SpaceObjectPoses.Find(ObjectId)) Actor->SetActorTransform(*LocalPose);
+			}
 			if (Object)
 			{
 				Object->bAwaitingCellPlacement = false;
@@ -924,6 +1307,11 @@ void USWGObjectGraphSubsystem::ApplyContainment(AActor* Actor, int64 ObjectId, i
 			if (Creature->GetObjectId() == LocalPlayerObjectId)
 			{
 				Creature->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+			}
+			else if (bSpaceScene && ContainerCell->OwningBuilding->IsA<ASWGShip>())
+			{
+				if (USWGMovementComponent* Movement = Creature->GetSWGMovementComponent())
+					Movement->SetNetworkTarget(Creature->GetActorLocation(), ContainerCell->OwningBuilding->GetActorRotation().Yaw + Relative.Rotator().Yaw, ContainerCell->OwningBuilding.Get());
 			}
 
 			// The local player zoned in inside a building: the level was held
@@ -1237,6 +1625,28 @@ void USWGObjectGraphSubsystem::HandleSceneDestroyObject(const FSceneDestroyObjec
 
 void USWGObjectGraphSubsystem::RemoveObject(int64 ObjectId)
 {
+	AActor* LocalBody = FindActor(LocalPlayerObjectId);
+	int64 Parent = ContainerByObjectId.FindRef(LocalPlayerObjectId);
+	for (int32 Hop = 0; bSpaceScene && Parent != 0 && Hop < 16; ++Hop)
+	{
+		if (Parent == ObjectId)
+		{
+			if (ASWGCreature* Player = Cast<ASWGCreature>(LocalBody))
+			{
+				Player->GetCharacterMovement()->StopMovementImmediately();
+				Player->GetCharacterMovement()->DisableMovement();
+				Player->SetActorEnableCollision(false);
+				Player->bAwaitingCellPlacement = true;
+				bRevealPendingPlayerPlacement = true;
+			}
+			break;
+		}
+		Parent = ContainerByObjectId.FindRef(Parent);
+	}
+	ObjectCrcById.Remove(ObjectId);
+	SpaceObjectPoses.Remove(ObjectId);
+	for (auto It = ShipObjectIds.CreateIterator(); It; ++It)
+		if (It.Value() == ObjectId) It.RemoveCurrent();
 	TWeakObjectPtr<AActor> Registered;
 	if (!ActorRegistry.RemoveAndCopyValue(ObjectId, Registered))
 	{
@@ -1284,32 +1694,71 @@ void USWGObjectGraphSubsystem::RemoveObject(int64 ObjectId)
 	// for each one.
 	TArray<AActor*> Attached;
 	Actor->GetAttachedActors(Attached, /*bResetArray*/ true, /*bRecursivelyIncludeAttachedActors*/ true);
+	// Deferred rooms and occupants can have containment before their physical attachment exists.
+	for (const auto& Pair : ContainerByObjectId)
+		if (Pair.Value == ObjectId)
+			if (AActor* Child = FindActor(Pair.Key); Child && Child != Actor) Attached.AddUnique(Child);
+	if (ASWGBuilding* Building = Cast<ASWGBuilding>(Actor))
+		for (ASWGCell* Cell : Building->Cells)
+			if (IsValid(Cell)) Attached.AddUnique(Cell);
+	TArray<AActor*> Rooms = Attached; Rooms.Add(Actor);
+	for (AActor* Room : Rooms)
+		if (ASWGCell* Cell = Cast<ASWGCell>(Room))
+			for (const auto& Prop : Cell->InteriorActors)
+				if (Prop.IsValid())
+				{
+					Attached.AddUnique(Prop.Get());
+					TArray<AActor*> PropChildren; Prop->GetAttachedActors(PropChildren, true, true);
+					for (AActor* Child : PropChildren) Attached.AddUnique(Child);
+				}
+	TArray<AActor*> Protected;
+	if (IsValid(LocalBody))
+	{
+		LocalBody->GetAttachedActors(Protected, true, true);
+		Protected.AddUnique(LocalBody);
+	}
+	// PLAY aliases share a physical body; remove every alias when that body is actually destroyed.
+	TArray<int64> Aliases;
+	for (const auto& Pair : ActorRegistry)
+		if (Pair.Value.Get() == Actor) Aliases.Add(Pair.Key);
+	for (int64 Alias : Aliases)
+	{
+		UnregisterStaticObject(Alias);
+		ObjectCrcById.Remove(Alias); SpaceObjectPoses.Remove(Alias); ContainmentTypeByObjectId.Remove(Alias);
+		OnObjectDestroyed.Broadcast(Alias);
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("USWGObjectGraphSubsystem: destroying object %lld (%s) and %d attached actor(s)"),
 		ObjectId, *Actor->GetName(), Attached.Num());
 
 	for (AActor* Child : Attached)
 	{
-		if (!Child)
+		if (!IsValid(Child))
 		{
 			continue;
 		}
+		if (Protected.Contains(Child))
+		{
+			if (Child == LocalBody) Child->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+			continue;
+		}
+		StoredShipInteriorVisibility.Remove(Child);
 
 		// Drop the child's own registry entry so it can't be looked up after this.
 		if (const ISWGNetworkObjectInterface* NetworkObject = Cast<ISWGNetworkObjectInterface>(Child))
 		{
 			const int64 ChildId = NetworkObject->GetObjectId();
-			ActorRegistry.Remove(ChildId);
-			ContainerByObjectId.Remove(ChildId);
-			ContainmentTypeByObjectId.Remove(ChildId);
-			CellNumberByObjectId.Remove(ChildId);
-			ReadyObjects.Remove(ChildId);
-			OnObjectDestroyed.Broadcast(ChildId);
+			if (ChildId != 0 && FindActor(ChildId) == Child)
+			{
+				RemoveObject(ChildId);
+				continue;
+			}
 		}
 
 		Child->Destroy();
 	}
 
+	StoredShipInteriorVisibility.Remove(Actor);
 	Actor->Destroy();
 }
 
@@ -1328,5 +1777,11 @@ void USWGObjectGraphSubsystem::HandleDeltas(const FDeltasMessage& Msg)
 	{
 		UE_LOG(LogTemp, Verbose, TEXT("USWGObjectGraphSubsystem: delta for object %lld type '%s' slot %d (%d update ops, not yet applied)"),
 			Msg.ObjectId, *Msg.GetObjectTypeFourCC(), Msg.DeltaType, Msg.UpdateCount);
+	}
+	else if (ASWGShip* Ship = Cast<ASWGShip>(Actor); Ship && Msg.DeltaType == 6)
+	{
+		for (auto It = ShipObjectIds.CreateIterator(); It; ++It)
+			if (It.Value() == Msg.ObjectId) It.RemoveCurrent();
+		ShipObjectIds.Add(Ship->ShipState.ShipId, Msg.ObjectId);
 	}
 }
