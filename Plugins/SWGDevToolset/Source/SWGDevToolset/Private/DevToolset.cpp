@@ -9,6 +9,8 @@
 #include "Engine/Selection.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerInput.h"
+#include "InputKeyEventArgs.h"
 #include "Misc/StringOutputDevice.h"
 #include "Subsystems/SWGTerrainSubsystem.h"
 #include "Containers/Ticker.h"
@@ -329,6 +331,18 @@ namespace
 	}
 }
 
+bool UDevToolset::SetGameKey(const FString& KeyName, bool bPressed)
+{
+	const FKey Key{FName(*KeyName)};
+	if (!Key.IsValid() || Key.IsAnalog()) return false;
+	UWorld* World = GEditor ? GEditor->PlayWorld : nullptr;
+	APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+	if (!PC || !PC->IsLocalController() || !PC->PlayerInput || (bPressed && PC->IsMoveInputIgnored())) return false;
+	PC->InputKey(FInputKeyEventArgs(nullptr, FInputDeviceId::CreateFromInternalId(0), Key,
+		bPressed ? IE_Pressed : IE_Released, FPlatformTime::Cycles64()));
+	return true;
+}
+
 FString UDevToolset::ExecuteConsoleCommand(const FString& Command)
 {
 	if (!GEngine)
@@ -423,6 +437,16 @@ bool UDevToolset::StopNavigation()
 
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSWGDevGameKeyTest, "SWG.DevToolset.GameKey", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FSWGDevGameKeyTest::RunTest(const FString& Parameters)
+{
+	TestFalse(TEXT("invalid button is rejected"), UDevToolset::SetGameKey(TEXT("NotAnUnrealButton"), true));
+	TestFalse(TEXT("analog input requires a different event path"), UDevToolset::SetGameKey(TEXT("MouseX"), true));
+	if (!GEngine || !GEngine->GetCurrentPlayWorld())
+		TestFalse(TEXT("button input cannot operate the editor without PIE"), UDevToolset::SetGameKey(TEXT("W"), true));
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSWGDevNavigationPointAdvanceTest,
 	"SWG.DevToolset.Navigation.PointAdvance",
