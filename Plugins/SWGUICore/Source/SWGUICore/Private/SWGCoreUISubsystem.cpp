@@ -202,6 +202,12 @@ void USWGCoreUISubsystem::PlayerControllerChanged(APlayerController* NewPlayerCo
 	if (NewPlayerController)
 	{
 		EnsureLayout();
+		// OpenLevel replaces the shell without another ZoneLoading state transition.
+		if (USWGClientFlowSubsystem* Flow = NewPlayerController->GetGameInstance()->GetSubsystem<USWGClientFlowSubsystem>();
+			Flow && Flow->GetState() == ESWGClientState::ZoneLoading)
+		{
+			HandleStateChanged(ESWGClientState::CharacterSelected, ESWGClientState::ZoneLoading);
+		}
 	}
 }
 

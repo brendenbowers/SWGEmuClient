@@ -31,6 +31,8 @@
 		{ "Name": "SWGUICore", "Enabled": true },
 		{ "Name": "SWGGame", "Enabled": true },
 		{ "Name": "SWGEmu", "Enabled": true },
+		{ "Name": "SWGEffects", "Enabled": true },
+		{ "Name": "SWGAudio", "Enabled": true },
 		{ "Name": "CommonUI", "Enabled": true },
 		{ "Name": "ModelWidget", "Enabled": true }
 	]

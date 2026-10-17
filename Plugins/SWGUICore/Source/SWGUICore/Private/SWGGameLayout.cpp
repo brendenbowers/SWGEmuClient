@@ -31,7 +31,7 @@ const FGameplayTag USWGGameLayout::TAG_Layer_Hud     = SWGGameLayoutTags::TAG_La
 USWGGameLayout* USWGGameLayout::GetOrCreate(APlayerController* PlayerController, TSubclassOf<USWGGameLayout> LayoutClass, bool& bCreated)
 {
 	bCreated = false;
-	if (ActiveLayout.IsValid())
+	if (ActiveLayout.IsValid() && ActiveLayout->IsInViewport())
 		return ActiveLayout.Get();
 
 	if (!PlayerController || !LayoutClass)

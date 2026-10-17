@@ -67,6 +67,7 @@ private:
 	void HandleMissionDockClosed();
 	void RefreshMissionLists();
 	void OpenTravel();
+	void OpenShipLaunch();
 	void OpenPlacement();
 
 	UPROPERTY()
@@ -107,6 +108,7 @@ private:
 	/** Ticket purchase is one responsive window; it expands and changes controls when gamepad becomes active. */
 	UPROPERTY()
 	TObjectPtr<class USWGTravelWidget> TravelWindow;
+	UPROPERTY() TObjectPtr<class USWGShipLaunchWidget> ShipLaunchWindow;
 
 	UPROPERTY()
 	TMap<int64, TObjectPtr<class USWGExamineWidget>> ExamineWindows;

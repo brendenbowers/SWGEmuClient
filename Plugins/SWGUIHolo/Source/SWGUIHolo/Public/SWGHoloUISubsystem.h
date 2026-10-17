@@ -40,6 +40,8 @@ private:
 	void OpenPlanetMap();
 	void OpenSurvey();
 	void OpenCrafting();
+	void OpenSpaceHud();
+	void CloseSpaceHud();
 	void HandleHoloInventoryClosed();
 	void HandleHoloMapClosed();
 
@@ -54,4 +56,8 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<class USWGHoloCraftingWidget> HoloCrafting;
+
+	/** The piloting HUD. Independent of the holograms above: it takes no camera and none of them steps it aside. */
+	UPROPERTY()
+	TObjectPtr<class USWGSpaceHudWidget> SpaceHud;
 };

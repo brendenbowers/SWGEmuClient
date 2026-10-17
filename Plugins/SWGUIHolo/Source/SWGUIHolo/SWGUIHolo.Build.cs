@@ -27,6 +27,14 @@ public class SWGUIHolo : ModuleRules
 			"AnimationCore",
 			"SWGUICommon",
 			"SWGUICore",
+			"SWGEffects",
+		});
+
+		// The space HUD tests wait for the HUD materials' shaders on the active RHI.
+		PrivateDependencyModuleNames.AddRange(new string[] {
+			"RHI",
+			"RenderCore",
+			"SWGAudio",
 		});
 	}
 }

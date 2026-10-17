@@ -31,7 +31,10 @@ enum class ESWGUIFeature : uint8
 	/** The structure placement host; holo placement views plug into it as modes. */
 	StructurePlacement,
 	/** The in-world HUD; only the Core presentation shows it. */
-	Hud
+	Hud,
+	ShipLaunch,
+	/** The piloting HUD (reticle, gauges, radar, target); only the Holo presentation provides it, and the HUD keeps its flat flight panel when none does. */
+	SpaceHud
 };
 
 /** What a presenter needs to open a feature. */

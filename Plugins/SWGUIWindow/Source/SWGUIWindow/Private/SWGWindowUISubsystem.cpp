@@ -5,6 +5,7 @@
 #include "SWGMissionBrowserWidget.h"
 #include "SWGMissionBrowserDockWidget.h"
 #include "SWGTravelWidget.h"
+#include "SWGShipLaunchWidget.h"
 #include "SWGInventoryWidget.h"
 #include "SWGInventoryDockWidget.h"
 #include "SWGExamineWidget.h"
@@ -105,6 +106,7 @@ void USWGWindowUISubsystem::OpenFeature(ESWGUIFeature Feature, const FSWGUIFeatu
 	case ESWGUIFeature::Travel:
 		OpenTravel();
 		break;
+	case ESWGUIFeature::ShipLaunch: OpenShipLaunch(); break;
 	case ESWGUIFeature::StructurePlacement:
 		OpenPlacement();
 		break;
@@ -133,6 +135,7 @@ void USWGWindowUISubsystem::CloseFeature(ESWGUIFeature Feature)
 		if (MissionDock) { MissionDock->Close(); }
 		break;
 	case ESWGUIFeature::Travel: if (TravelWindow) { TravelWindow->Close(); } break;
+	case ESWGUIFeature::ShipLaunch: if (ShipLaunchWindow) { ShipLaunchWindow->Close(); } break;
 	case ESWGUIFeature::StructurePlacement: if (PlacementWidget) { PlacementWidget->Close(); } break;
 	}
 }
@@ -150,6 +153,7 @@ bool USWGWindowUISubsystem::IsFeatureOpen(ESWGUIFeature Feature) const
 	case ESWGUIFeature::Datapad: return IsDatapadOpen();
 	case ESWGUIFeature::MissionBrowser: return MissionWindow != nullptr || MissionDock != nullptr;
 	case ESWGUIFeature::Travel: return TravelWindow != nullptr;
+	case ESWGUIFeature::ShipLaunch: return ShipLaunchWindow != nullptr;
 	case ESWGUIFeature::StructurePlacement: return PlacementWidget != nullptr && PlacementWidget->IsInViewport();
 	}
 	return false;
@@ -216,6 +220,7 @@ void USWGWindowUISubsystem::HandleWindowClosed(USWGWindowWidget* Window)
 	if (Window == InventoryWindow) { InventoryWindow = nullptr; }
 	if (Window == MissionWindow) { MissionWindow = nullptr; }
 	if (Window == TravelWindow) { TravelWindow = nullptr; }
+	if (Window == ShipLaunchWindow) { ShipLaunchWindow = nullptr; }
 	if (Window == WaypointWindow) { WaypointWindow = nullptr; }
 	if (Window == DatapadWindow) { DatapadWindow = nullptr; }
 	if (Window == PlanetMapWindow) { PlanetMapWindow = nullptr; }
@@ -710,6 +715,16 @@ void USWGWindowUISubsystem::OpenTravel()
 	TravelWindow->SetControllerMode(IsGamepadActive());
 	ShowWindow(TravelWindow);
 	TravelWindow->CenterOnScreen();
+}
+
+void USWGWindowUISubsystem::OpenShipLaunch()
+{
+	if (ShipLaunchWindow) { HandleWindowPressed(ShipLaunchWindow); return; }
+	if (APlayerController* Controller = GetController())
+	{
+		ShipLaunchWindow = CreateWidget<USWGShipLaunchWidget>(Controller, USWGShipLaunchWidget::StaticClass());
+		if (ShipLaunchWindow) { ShowWindow(ShipLaunchWindow); ShipLaunchWindow->CenterOnScreen(); }
+	}
 }
 
 // ── Structure placement ──────────────────────────────────────────────────────

@@ -44,6 +44,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "SWGEmu|UI")
 	bool IsFeatureOpen(ESWGUIFeature Feature) const;
 
+	/** True when some registered presenter can open the feature right now, so a caller with a fallback can choose it without a warning. */
+	bool CanOpenFeature(ESWGUIFeature Feature) const { return ResolvePresenter(Feature) != nullptr; }
+
 	/** Switches where a feature opens; an open one is swapped for the other presentation in place. */
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|UI")
 	void SetPresentation(ESWGUIFeature Feature, ESWGUIPresentation Presentation);
@@ -95,6 +98,7 @@ private:
 
 	UFUNCTION()
 	void HandleTravelWindowRequested();
+	UFUNCTION() void HandleShipLaunchWindowRequested();
 
 	UFUNCTION()
 	void HandleSurveyWindowRequested();
