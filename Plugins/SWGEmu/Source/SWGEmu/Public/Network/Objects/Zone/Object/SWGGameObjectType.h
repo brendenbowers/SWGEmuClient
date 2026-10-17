@@ -13,4 +13,5 @@ namespace SWGGameObjectType
 	constexpr int32 BazaarTerminal = 0x4002;
 	constexpr int32 MissionTerminal = 0x4006;
 	constexpr int32 TravelTerminal = 0x4012;
+	constexpr int32 SpaceTerminal = 0x400B;
 }

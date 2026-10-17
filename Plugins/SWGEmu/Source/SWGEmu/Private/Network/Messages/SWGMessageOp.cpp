@@ -45,6 +45,9 @@ FString GetMessageOpName(uint32 Opcode)
 		case ESWGMessageOp::PlayClientEffectLoc: return TEXT("PlayClientEffectLoc");
 		case ESWGMessageOp::PlayClientEventObjectMessage: return TEXT("PlayClientEventObjectMessage");
 		case ESWGMessageOp::ServerWeatherMessage: return TEXT("ServerWeatherMessage");
+		case ESWGMessageOp::ShipUpdateTransform: return TEXT("ShipUpdateTransform");
+		case ESWGMessageOp::ShipUpdateTransformCollision: return TEXT("ShipUpdateTransformCollision");
+		case ESWGMessageOp::CreateMissileMessage: return TEXT("CreateMissileMessage");
 		default:
 			return FString::Printf(TEXT("Unknown (0x%08X)"), Opcode);
 	}
