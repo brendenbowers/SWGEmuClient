@@ -3,6 +3,8 @@
 #include "Subsystems/SWGClientFlowSubsystem.h"
 #include "Subsystems/SWGTreSubsystem.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
+#include "Objects/World/SWGParticleEmitterActor.h"
+#include "Objects/World/SWGSoundEmitter.h"
 #include "Async/Async.h"
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGFormTagMapping.h"
@@ -125,6 +127,18 @@ void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 							continue;
 						}
 
+						if (ASWGSoundEmitter::IsSoundObjectTemplate(Path))
+						{
+							CrcToSubclass.Add(Crc, ASWGSoundEmitter::StaticClass());
+							continue;
+						}
+
+						if (ASWGParticleEmitterActor::IsParticleObjectTemplate(Path))
+						{
+							CrcToSubclass.Add(Crc, ASWGParticleEmitterActor::StaticClass());
+							continue;
+						}
+
 						FName FormType = Reader.GetRootFormType();
 						if (FormType == NAME_None)
 						{
@@ -139,7 +153,9 @@ void FSWGInitializationState::Enter(USWGClientFlowSubsystem& UIStateMachine, FSW
 							continue;
 						}
 
-						CrcToSubclass.Add(Crc, Mapping->ActorClass);
+						FString ParticlePath;
+						const bool bParticleProp = Mapping->ActorClass == ASWGStaticProp::StaticClass() && ASWGParticleEmitterActor::ResolveParticlePath(*TreSubsystem, Path, ParticlePath);
+						CrcToSubclass.Add(Crc, bParticleProp ? TSubclassOf<AActor>(ASWGParticleEmitterActor::StaticClass()) : Mapping->ActorClass);
 					}
 
 					StateMachine->Status(TEXT("Loading door styles"));

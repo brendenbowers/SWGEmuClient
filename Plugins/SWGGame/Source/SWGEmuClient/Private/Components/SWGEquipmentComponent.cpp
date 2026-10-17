@@ -5,6 +5,12 @@
 #include "Customization/SWGCustomizationVariables.h"
 #include "Network/Objects/Zone/Object/SWGContainmentType.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
+#include "Common/SWGWeaponHardpoints.h"
+#include "Components/SWGLightsaberComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Subsystems/SWGCombatVisualsSubsystem.h"
+#include "Subsystems/SWGTreSubsystem.h"
+#include "TRE/SWGMeshReader.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Character.h"
@@ -16,6 +22,9 @@ namespace
 	// so on a busy zone-in it can be tens of seconds behind an item's mesh.
 	constexpr float BodyMeshPollInterval = 0.25f;
 	constexpr int32 BodyMeshMaxRetries = 240; // 60s
+
+	// Blade colour when nothing names one (Luke's blue).
+	const FLinearColor DefaultBladeColor(0.3f, 0.55f, 1.f);
 }
 
 USWGEquipmentComponent::USWGEquipmentComponent()
@@ -116,6 +125,116 @@ void USWGEquipmentComponent::SetClientDataWearables(const TArray<FSWGClientDataW
 	}
 }
 
+void USWGEquipmentComponent::SetMountCovering(const FString& MountAppearancePath)
+{
+	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	USWGMeshGeneratorSubsystem* MeshGen = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr;
+	if (!MeshGen)
+	{
+		return;
+	}
+
+	// Their own id range so a mount's cdf wearables (SetClientDataWearables) keep their indices.
+	uint64 NextId = ClientDataWearableIdBase | 0x00FF0000ull;
+	for (const FString& LmgPath : MeshGen->ResolveMountCoveringMeshes(MountAppearancePath))
+	{
+		const uint64 WearableId = NextId++;
+		ClientDataWearableIds.Add(WearableId);
+		TWeakObjectPtr<USWGEquipmentComponent> WeakThis(this);
+		MeshGen->RequestWearableMesh(LmgPath, {},
+			[WeakThis, WearableId](USkeletalMesh* Mesh, const FSWGMeshData, const TArray<UMaterialInterface*>& Materials)
+			{
+				if (USWGEquipmentComponent* Equipment = WeakThis.Get())
+				{
+					Equipment->AttachWearableSkeletalMesh(WearableId, Mesh, Materials);
+				}
+			});
+	}
+}
+
+void USWGEquipmentComponent::ApplySlotRules()
+{
+	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	USWGMeshGeneratorSubsystem* MeshGen = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr;
+	if (!MeshGen || !MeshGen->GetSlotRuleManager())
+	{
+		return;
+	}
+
+	TMap<uint64, TArray<FString>> SlotsByItem;
+	TSet<FString> Occupied;
+	for (const FEquiptmentItem& Item : GatherCurrentEquipment())
+	{
+		TArray<FString> Slots;
+		if (SWGIsSlottedArrangement(Item.ContainmentType) && MeshGen->ResolveArrangementSlotNames(Item.TemplateCRC, Item.ContainmentType, Slots))
+		{
+			Occupied.Append(Slots);
+			SlotsByItem.Add(Item.ObjectId, MoveTemp(Slots));
+		}
+	}
+
+	for (const TPair<uint64, TArray<FString>>& Pair : SlotsByItem)
+	{
+		USkeletalMeshComponent* Wearable = WearableComponentsByObjectId.FindRef(Pair.Key);
+		if (!Wearable)
+		{
+			continue;
+		}
+		for (const TPair<FString, float>& Morph : MeshGen->ResolveSlotRuleMorphs(Pair.Value, Occupied))
+		{
+			Wearable->SetMorphTarget(FName(*Morph.Key), Morph.Value);
+		}
+	}
+}
+
+TArray<FString> USWGEquipmentComponent::DescribeWearables() const
+{
+	TArray<FString> Lines;
+	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	USWGMeshGeneratorSubsystem* MeshGen = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr;
+	const USWGTreSubsystem* Tre = GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
+	if (!MeshGen)
+	{
+		return Lines;
+	}
+
+	TMap<uint64, TArray<FString>> SlotsByItem;
+	TSet<FString> Occupied;
+	const TArray<FEquiptmentItem> Items = GatherCurrentEquipment();
+	for (const FEquiptmentItem& Item : Items)
+	{
+		TArray<FString> Slots;
+		if (SWGIsSlottedArrangement(Item.ContainmentType) && MeshGen->ResolveArrangementSlotNames(Item.TemplateCRC, Item.ContainmentType, Slots))
+		{
+			Occupied.Append(Slots);
+			SlotsByItem.Add(Item.ObjectId, MoveTemp(Slots));
+		}
+	}
+	Lines.Add(FString::Printf(TEXT("%s: %d item(s), %d wearable mesh(es), occupied slots: %s"), *GetOwner()->GetName(), Items.Num(), WearableComponentsByObjectId.Num(),
+		*FString::Join(Occupied.Array(), TEXT(", "))));
+	for (const FEquiptmentItem& Item : Items)
+	{
+		const TArray<FString>* Slots = SlotsByItem.Find(Item.ObjectId);
+		const USkeletalMeshComponent* Wearable = WearableComponentsByObjectId.FindRef(Item.ObjectId);
+		FString Morphs;
+		if (Slots)
+		{
+			for (const TPair<FString, float>& Morph : MeshGen->ResolveSlotRuleMorphs(*Slots, Occupied))
+			{
+				Morphs += FString::Printf(TEXT(" %s=%.0f"), *Morph.Key, Morph.Value);
+			}
+		}
+		Lines.Add(FString::Printf(TEXT("  %llu %s containment=%d slots=[%s] mesh=%s slotRuleMorphs:%s"), Item.ObjectId,
+			Tre ? *Tre->ResolveTemplatePath(Item.TemplateCRC) : TEXT("?"), Item.ContainmentType,
+			Slots ? *FString::Join(*Slots, TEXT(",")) : TEXT(""), Wearable ? TEXT("attached") : TEXT("none"), Morphs.IsEmpty() ? TEXT(" (none)") : *Morphs));
+	}
+	for (const uint64 Id : ClientDataWearableIds)
+	{
+		Lines.Add(FString::Printf(TEXT("  client wearable %llx mesh=%s"), Id, WearableComponentsByObjectId.Contains(Id) ? TEXT("attached") : TEXT("pending")));
+	}
+	return Lines;
+}
+
 void USWGEquipmentComponent::SetPreviewEquipment(TArray<FEquiptmentItem> InEquipment, FString InAlternateAppearance)
 {
 	EquipmentList.Items = MoveTemp(InEquipment);
@@ -152,15 +271,12 @@ void USWGEquipmentComponent::RemoveUnequippedVisuals(const TConstArrayView<FEqui
 
 	for (auto It = HardpointComponentsByObjectId.CreateIterator(); It; ++It)
 	{
-		if (EquippedIds.Contains(It.Key()))
+		if (EquippedIds.Contains(It.Key()) || DebugItemIds.Contains(It.Key()))
 		{
 			continue;
 		}
 
-		if (UStaticMeshComponent* ItemMeshComponent = It.Value())
-		{
-			ItemMeshComponent->DestroyComponent();
-		}
+		ReleaseItemVisual(It.Key(), It.Value());
 		It.RemoveCurrent();
 	}
 
@@ -177,6 +293,7 @@ void USWGEquipmentComponent::RemoveUnequippedVisuals(const TConstArrayView<FEqui
 	// Unequipping the last wearable produces no attach callback, so the body's
 	// hidden sections would otherwise never be re-shown.
 	ReconcileBodyOcclusion();
+	ApplySlotRules();
 }
 
 void USWGEquipmentComponent::BuildEquipmentVisuals(const TConstArrayView<FEquiptmentItem> CurrentEquipment)
@@ -318,6 +435,12 @@ void USWGEquipmentComponent::AttachMeshToHardpoint(uint64 ObjectId, UStaticMesh*
 	{
 		ItemMeshComponent->SetMaterial(i, Materials[i]);
 	}
+
+	BuildItemHardpoints(ObjectId, *ItemMeshComponent, MeshData.Hardpoints);
+	if (MeshData.SourceAppearancePath.EndsWith(TEXT(".lsb")))
+	{
+		EnsureSaber(ObjectId, *ItemMeshComponent, MeshData.SourceAppearancePath);
+	}
 }
 
 void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkeletalMesh* Mesh, const TArray<UMaterialInterface*>& Materials, int32 RetryCount)
@@ -394,6 +517,7 @@ void USWGEquipmentComponent::AttachWearableSkeletalMesh(uint64 ObjectId, USkelet
 	WearableComponent->SetLeaderPoseComponent(BodyMesh);
 
 	ReconcileBodyOcclusion();
+	ApplySlotRules();
 }
 
 void USWGEquipmentComponent::ReconcileBodyOcclusion()
@@ -444,4 +568,214 @@ void USWGEquipmentComponent::ReconcileBodyOcclusion()
 
 		BodyMesh->ShowMaterialSection(SectionIndex, SectionIndex, !bFullyCovered, /*LODIndex=*/0);
 	}
+}
+
+void USWGEquipmentComponent::BuildItemHardpoints(uint64 ObjectId, UStaticMeshComponent& ItemMesh, const TArray<FSWGMeshHardpoint>& Hardpoints)
+{
+	FSWGItemHardpoints& Set = HardpointsByObjectId.FindOrAdd(ObjectId);
+	for (const FSWGMeshHardpoint& Hardpoint : Hardpoints)
+	{
+		const FName Name(*Hardpoint.Name);
+		USceneComponent* Point = Set.ByName.FindRef(Name);
+		if (!Point)
+		{
+			Point = NewObject<USceneComponent>(GetOwner());
+			Point->RegisterComponent();
+			Point->AttachToComponent(&ItemMesh, FAttachmentTransformRules::KeepRelativeTransform);
+			Set.ByName.Add(Name, Point);
+		}
+		Point->SetRelativeTransform(FTransform(Hardpoint.Rotation, Hardpoint.Translation));
+	}
+}
+
+USceneComponent* USWGEquipmentComponent::GetItemHardpoint(uint64 ObjectId, FName Name) const
+{
+	const FSWGItemHardpoints* Set = HardpointsByObjectId.Find(ObjectId);
+	return Set ? Set->ByName.FindRef(Name).Get() : nullptr;
+}
+
+USceneComponent* USWGEquipmentComponent::GetWeaponHardpoint(FName Name, uint64 WeaponObjectId) const
+{
+	if (WeaponObjectId != 0)
+	{
+		if (USceneComponent* Point = GetItemHardpoint(WeaponObjectId, Name))
+		{
+			return Point;
+		}
+	}
+	for (const TPair<uint64, FSWGItemHardpoints>& Pair : HardpointsByObjectId)
+	{
+		if (USceneComponent* Point = Pair.Value.ByName.FindRef(Name).Get())
+		{
+			return Point;
+		}
+	}
+	return nullptr;
+}
+
+FString USWGEquipmentComponent::GetItemTemplatePath(uint64 ObjectId) const
+{
+	if (const FString* DebugPath = DebugTemplatePaths.Find(ObjectId))
+	{
+		return *DebugPath;
+	}
+
+	const UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	const USWGTreSubsystem* Tre = GameInstance ? GameInstance->GetSubsystem<USWGTreSubsystem>() : nullptr;
+	for (const FEquiptmentItem& Item : GatherCurrentEquipment())
+	{
+		if (Item.ObjectId == ObjectId)
+		{
+			return Tre ? Tre->ResolveTemplatePath(Item.TemplateCRC) : FString();
+		}
+	}
+	return FString();
+}
+
+void USWGEquipmentComponent::EnsureSaber(uint64 ObjectId, UStaticMeshComponent& ItemMesh, const FString& LsbPath)
+{
+	if (SaberByObjectId.FindRef(ObjectId))
+	{
+		return;
+	}
+
+	// Blade n runs from hardpoint tr<n>s to tr<n>e; a hilt without them gets one blade up its +Z.
+	TArray<FSWGSaberBladeAxis> Axes;
+	for (const TPair<FName, FName>& Edge : { TPair<FName, FName>(SWGWeaponHardpoint::TrailStart, SWGWeaponHardpoint::TrailEnd),
+		TPair<FName, FName>(SWGWeaponHardpoint::SecondTrailStart, SWGWeaponHardpoint::SecondTrailEnd) })
+	{
+		const USceneComponent* Start = GetItemHardpoint(ObjectId, Edge.Key);
+		const USceneComponent* End = GetItemHardpoint(ObjectId, Edge.Value);
+		if (Start && End)
+		{
+			FSWGSaberBladeAxis& Axis = Axes.AddDefaulted_GetRef();
+			Axis.Base = Start->GetRelativeLocation();
+			Axis.Direction = (End->GetRelativeLocation() - Start->GetRelativeLocation()).GetSafeNormal();
+		}
+	}
+
+	// The template names the blade colour (its swoosh) and the ignite / retract effects.
+	FSWGSaberStyle Style;
+	Style.Tint = DefaultBladeColor;
+	const FString TemplatePath = GetItemTemplatePath(ObjectId);
+	const UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	if (USWGCombatVisualsSubsystem* Visuals = GameInstance ? GameInstance->GetSubsystem<USWGCombatVisualsSubsystem>() : nullptr)
+	{
+		if (const FSWGWeaponVisuals* Weapon = Visuals->GetWeaponVisuals(TemplatePath))
+		{
+			// A saber with its own colour swoosh keeps it; the rest (object-hue sabers, whose hue the item customization would set) default to blue.
+			Style.Tint = Weapon->bHasSwoosh && !Weapon->bSwooshUseObjectHue ? Weapon->Swoosh.Color : DefaultBladeColor;
+			Style.BladeOnEffect = Weapon->BladeOnEffect;
+			Style.BladeOffEffect = Weapon->BladeOffEffect;
+		}
+	}
+
+	// The blade colour proper is the weapon's index_color_blade palette variable (SWGEmu.exe 0x64e890, 0x7ac280).
+	if (USWGMeshGeneratorSubsystem* MeshGen = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr)
+	{
+		for (const FEquiptmentItem& Item : GatherCurrentEquipment())
+		{
+			FSWGCustomizationVariables Customization;
+			FLinearColor BladeColor;
+			if (Item.ObjectId == ObjectId && FSWGCustomizationVariables::Parse(Item.CustomizationBytes, Customization)
+				&& MeshGen->ResolveBladeColor(Customization, LsbPath, BladeColor))
+			{
+				Style.Tint = BladeColor;
+				break;
+			}
+		}
+	}
+
+	USWGLightsaberComponent* Saber = NewObject<USWGLightsaberComponent>(GetOwner());
+	Saber->RegisterComponent();
+	Saber->AttachToComponent(&ItemMesh, FAttachmentTransformRules::KeepRelativeTransform);
+	if (!Saber->Setup(LsbPath, Axes, Style))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGEquipmentComponent: could not set up the lightsaber %s"), *LsbPath);
+		Saber->DestroyComponent();
+		return;
+	}
+	SaberByObjectId.Add(ObjectId, Saber);
+}
+
+void USWGEquipmentComponent::ReleaseItemVisual(uint64 ObjectId, UStaticMeshComponent* ItemMesh)
+{
+	if (FSWGItemHardpoints* Set = HardpointsByObjectId.Find(ObjectId))
+	{
+		for (const TPair<FName, TObjectPtr<USceneComponent>>& Pair : Set->ByName)
+		{
+			if (Pair.Value)
+			{
+				Pair.Value->DestroyComponent();
+			}
+		}
+		HardpointsByObjectId.Remove(ObjectId);
+	}
+
+	// A saber closes its blade before the hilt goes.
+	float LingerSeconds = 0.f;
+	if (USWGLightsaberComponent* Saber = SaberByObjectId.FindRef(ObjectId))
+	{
+		LingerSeconds = Saber->GetCloseSeconds();
+		Saber->Retract();
+		SaberByObjectId.Remove(ObjectId);
+	}
+
+	if (!ItemMesh)
+	{
+		return;
+	}
+	if (LingerSeconds <= 0.f || !GetWorld())
+	{
+		ItemMesh->DestroyComponent();
+		return;
+	}
+	TWeakObjectPtr<UStaticMeshComponent> WeakItemMesh(ItemMesh);
+	FTimerHandle Unused;
+	GetWorld()->GetTimerManager().SetTimer(Unused, FTimerDelegate::CreateLambda([WeakItemMesh]()
+	{
+		if (UStaticMeshComponent* Live = WeakItemMesh.Get())
+		{
+			Live->DestroyComponent();
+		}
+	}), LingerSeconds + 0.1f, false);
+}
+
+void USWGEquipmentComponent::AttachDebugItem(const FString& AppearancePath, const FString& TemplatePath)
+{
+	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	USWGMeshGeneratorSubsystem* MeshGen = GameInstance ? GameInstance->GetSubsystem<USWGMeshGeneratorSubsystem>() : nullptr;
+	if (!MeshGen)
+	{
+		return;
+	}
+
+	for (const uint64 DebugId : DebugItemIds)
+	{
+		if (const TObjectPtr<UStaticMeshComponent>* Existing = HardpointComponentsByObjectId.Find(DebugId))
+		{
+			ReleaseItemVisual(DebugId, *Existing);
+		}
+		HardpointComponentsByObjectId.Remove(DebugId);
+	}
+	DebugItemIds.Reset();
+	DebugTemplatePaths.Reset();
+	if (AppearancePath.IsEmpty())
+	{
+		return;
+	}
+
+	DebugItemIds.Add(DebugItemIdBase);
+	DebugTemplatePaths.Add(DebugItemIdBase, TemplatePath);
+	TWeakObjectPtr<USWGEquipmentComponent> WeakThis(this);
+	MeshGen->RequestAppearanceMeshWithHardpoints(AppearancePath, [WeakThis, AppearancePath](UStaticMesh* Mesh, const TArray<UMaterialInterface*>& Materials, const TArray<FSWGMeshHardpoint>& Hardpoints)
+	{
+		if (USWGEquipmentComponent* Equipment = WeakThis.Get())
+		{
+			FSWGMeshData Data;
+			Data.Hardpoints = Hardpoints;
+			Data.SourceAppearancePath = AppearancePath;
+			Equipment->AttachMeshToHardpoint(DebugItemIdBase, Mesh, Data, Materials);
+		}
+	});
 }

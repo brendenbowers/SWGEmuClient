@@ -1,6 +1,7 @@
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
 #include "TRE/SWGIffTags.h"
 #include "Subsystems/SWGTreSubsystem.h"
+#include "Subsystems/SWGAnimatedMaterialSubsystem.h"
 #include "Common/SWGWorldScale.h"
 #include "Components/DynamicMeshComponent.h"
 #include "DynamicMesh/DynamicMesh3.h"
@@ -15,6 +16,7 @@
 #include "TRE/SWGIffReader.h"
 #include "TRE/SWGDDSTextureLoader.h"
 #include "TRE/SWGShaderReader.h"
+#include "TRE/SWGLightsaberReader.h"
 #include "TRE/SWGResourceClassRow.h"
 #include "TRE/SWGCustomizationIdManager.h"
 #include "TRE/SWGCrc32.h"
@@ -26,6 +28,7 @@
 #include "Import/SWGSkeletalMeshImporter.h"
 #include "Import/SWGAnimationImporter.h"
 #include "Subsystems/SWGSkeletalAnimationPipeline.h"
+#include "Components/SWGAppearanceEffectsComponent.h"
 #include "Components/SWGCombatStateComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
@@ -56,6 +59,7 @@
 #include "Objects/Creature/SWGCreature.h"
 #include "Components/SWGMovementComponent.h"
 #include "Components/SWGTangibleComponent.h"
+#include "Components/SWGEquipmentComponent.h"
 #include "Subsystems/SWGTargetSubsystem.h"
 #include "HAL/FileManager.h"
 #include "Misc/ScopeExit.h"
@@ -70,6 +74,7 @@
 #include "Kismet/KismetRenderingLibrary.h"
 #include "Engine/Canvas.h"
 #include "Common/SWGAutoFulfillPromise.h"
+#include "HAL/IConsoleManager.h"
 
 using namespace UE::Geometry;
 
@@ -80,6 +85,31 @@ namespace
 	// (LODs, material slots, importer fixes) must bump this or the old asset
 	// keeps loading.
 	constexpr uint32 GeneratedStaticMeshVersion = 5;
+
+	// Scales every static mesh LOD switch distance (props, buildings, flora
+	// instances). Below 1 holds the detailed levels farther out; the .lod's
+	// own thresholds map 1:1 at 1.0. Applied through the engine's global
+	// factor, so no generated asset needs rebuilding.
+	TAutoConsoleVariable<float> CVarMeshLodDistanceScale(
+		TEXT("swg.MeshLodDistanceScale"), 0.35f,
+		TEXT("Static mesh LOD distance factor: 1 uses the .lod's authored distances, 0.35 keeps each level about 2.9x farther out."));
+
+	void ApplyMeshLodDistanceScale()
+	{
+		static float AppliedScale = -1.0f;
+		const float Scale = FMath::Max(0.01f, CVarMeshLodDistanceScale.GetValueOnGameThread());
+		if (FMath::IsNearlyEqual(Scale, AppliedScale))
+		{
+			return;
+		}
+		AppliedScale = Scale;
+		if (IConsoleVariable* EngineScale = IConsoleManager::Get().FindConsoleVariable(TEXT("r.StaticMeshLODDistanceScale")))
+		{
+			EngineScale->Set(Scale, ECVF_SetByCode);
+		}
+	}
+
+	FAutoConsoleVariableSink MeshLodDistanceScaleSink(FConsoleCommandDelegate::CreateStatic(&ApplyMeshLodDistanceScale));
 
 	// Whole-chunk null-terminated ascii string (chunk's only content is the
 	// string) — same idiom as FSWGMeshReader::ReadNullTerminatedString.
@@ -525,6 +555,38 @@ bool USWGMeshGeneratorSubsystem::SetDatapadPose(AActor& Actor, bool bHold)
 	return SkeletalAnimationPipeline && SkeletalAnimationPipeline->SetDatapadPose(Actor, bHold);
 }
 
+bool USWGMeshGeneratorSubsystem::PlayAnimAction(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace)
+{
+	return SkeletalAnimationPipeline && SkeletalAnimationPipeline->PlayAction(Actor, ActionName, WeaponStateName, OutTrace);
+}
+
+USWGCharacterAnimInstance* USWGMeshGeneratorSubsystem::FindLayeredAnimInstance(const AActor& Actor) const
+{
+	return SkeletalAnimationPipeline ? SkeletalAnimationPipeline->FindAnimInstance(Actor) : nullptr;
+}
+
+FString USWGMeshGeneratorSubsystem::DescribeAnimPlayback(const AActor& Actor) const
+{
+	return SkeletalAnimationPipeline ? SkeletalAnimationPipeline->DescribePlayback(Actor) : FString(TEXT("no pipeline"));
+}
+
+bool USWGMeshGeneratorSubsystem::ResolveSatLoopSource(const FString& SatPath, FSWGSatLoopSource& OutSource)
+{
+	return SkeletalAnimationPipeline && SkeletalAnimationPipeline->ResolveSatLoopSource(SatPath, OutSource);
+}
+
+void USWGMeshGeneratorSubsystem::PlayLoopOnComponent(USkeletalMeshComponent& Component, const FSWGSatLoopSource& Source, const FString& ClipPath, const TMap<FString, int32>& TextureIndexOverrides, TFunction<void(bool)> OnDone)
+{
+	if (SkeletalAnimationPipeline)
+	{
+		SkeletalAnimationPipeline->PlayLoopOnComponent(Component, Source, ClipPath, TextureIndexOverrides, MoveTemp(OnDone));
+	}
+	else if (OnDone)
+	{
+		OnDone(false);
+	}
+}
+
 FString USWGMeshGeneratorSubsystem::ResolveCombatActionClip(AActor& Actor, const FString& ActionName, const FString& WeaponStateName, FString* OutTrace)
 {
 	if (!SkeletalAnimationPipeline)
@@ -550,6 +612,7 @@ void USWGMeshGeneratorSubsystem::Tick(float DeltaTime)
 	{
 		ProcessNextRequest();
 	}
+	TickCharacterRecords();
 
 	// Feeds each actor's live horizontal speed into its blend space every
 	// tick — see FSWGSkeletalAnimationPipeline::Tick. SkeletalAnimationPipeline
@@ -811,7 +874,22 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 
 				FSWGMeshData MeshData;
 				TArray<FSWGMeshData> LodMeshData;
-				const bool bParsed = ParseMesh(Request, MeshData, LodMeshData);
+				bool bParsed = ParseMesh(Request, MeshData, LodMeshData);
+				if (!bParsed && !Request.AppearancePath.IsEmpty() && !Request.AppearancePath.Equals(TEXT("appearance/defaultappearance.apt"), ESearchCase::IgnoreCase))
+				{
+					Request.MeshVirtualPaths.Reset();
+					Request.AnimationLatPaths.Reset();
+					Request.LodLevels.Reset();
+					Request.CollisionSourcePath.Reset();
+					Request.bSkeletal = false;
+					MeshData = FSWGMeshData();
+					LodMeshData.Reset();
+					if (TryResolveAppearanceMeshPaths(TEXT("appearance/defaultappearance.apt"), Request.AppearancePath, Request.MeshVirtualPaths, Request.AnimationLatPaths, Request.bSkeletal, &Request.LodLevels, &Request.CollisionSourcePath))
+					{
+						bParsed = ParseMesh(Request, MeshData, LodMeshData);
+					}
+				}
+				MeshData.SourceAppearancePath = Request.AppearancePath;
 				UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: ParseMesh returned %s for actor %s (crc %08X), %d submesh(es)"),
 					bParsed ? TEXT("true") : TEXT("false"), Request.Actor.IsValid() ? *Request.Actor->GetName() : TEXT("<gone>"), Request.TemplateCrc, MeshData.Submeshes.Num());
 				if (!bParsed)
@@ -1014,11 +1092,20 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 						{
 							BuildAppearanceCollision(*Request.Actor, *MeshComponent, Collision, Floor.GetPtrOrNull(), DebugName);
 						}
+						// .cmp particle and sprite parts (lamp halos, bolt glows).
+						if (MeshComponent && !MeshData.EffectParts.IsEmpty())
+						{
+							USWGAppearanceEffectsComponent::Create(*Request.Actor, *MeshComponent, MeshData.EffectParts);
+						}
 						// SkeletalAnimationPipeline is null until Initialize() runs — see Tick()'s
 						// own comment for why this can't be assumed non-null unconditionally.
 						if (SkeletalAnimationPipeline)
 						{
 							SkeletalAnimationPipeline->TryApplyGeneratedAnimatedMesh(*Request.Actor, Request.MeshVirtualPaths, Request.AnimationLatPaths, MeshComponent, PaletteTintsPtr, MorphWeightsPtr, TextureIndicesPtr);
+							if (Request.bSkeletal && Request.Actor->IsA<ACharacter>())
+							{
+								RegisterCharacterAppearance(*Request.Actor, Request.AppearancePath, Request.MeshVirtualPaths);
+							}
 						}
 
 						if (Request.bSkeletal)
@@ -1026,6 +1113,10 @@ void USWGMeshGeneratorSubsystem::ProcessNextRequest()
 							if (ASWGCreature* Creature = Cast<ASWGCreature>(Request.Actor.Get()))
 							{
 								Creature->MountRiderPose = ResolveRiderPose(Request.AppearancePath);
+								if (Creature->EquipmentComponent)
+								{
+									Creature->EquipmentComponent->SetMountCovering(Request.AppearancePath);
+								}
 							}
 							TryAttachVehicleBody(*Request.Actor, Request.AppearancePath);
 						}
@@ -1196,6 +1287,43 @@ bool USWGMeshGeneratorSubsystem::ResolveMeshPathForTemplate(const FString& Templ
 
 bool USWGMeshGeneratorSubsystem::ResolveAppearanceMeshPaths(const FString& AppearancePath, const FString& DebugContext, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, TArray<FSWGLodLevel>* OutLodLevels, FString* OutCollisionSourcePath)
 {
+	if (TryResolveAppearanceMeshPaths(AppearancePath, DebugContext, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal, OutLodLevels, OutCollisionSourcePath))
+	{
+		return true;
+	}
+	// Non-mesh appearances and empty container templates must stay meshless.
+	const bool bMeshAppearance = AppearancePath.EndsWith(TEXT(".apt")) || AppearancePath.EndsWith(TEXT(".sat"))
+		|| AppearancePath.EndsWith(TEXT(".lod")) || AppearancePath.EndsWith(TEXT(".msh"))
+		|| AppearancePath.EndsWith(TEXT(".cmp")) || AppearancePath.EndsWith(TEXT(".lsb"));
+	if (!bMeshAppearance
+		|| AppearancePath.Equals(TEXT("appearance/defaultappearance.apt"), ESearchCase::IgnoreCase))
+	{
+		return false;
+	}
+	OutMeshVirtualPaths.Reset();
+	OutAnimationLatPaths.Reset();
+	if (OutLodLevels) OutLodLevels->Reset();
+	if (OutCollisionSourcePath) OutCollisionSourcePath->Reset();
+	bOutSkeletal = false;
+	UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: using defaultappearance for %s (from %s)"), *AppearancePath, *DebugContext);
+	return TryResolveAppearanceMeshPaths(TEXT("appearance/defaultappearance.apt"), DebugContext, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal, OutLodLevels, OutCollisionSourcePath);
+}
+
+bool USWGMeshGeneratorSubsystem::TryResolveAppearanceMeshPaths(const FString& AppearancePath, const FString& DebugContext, TArray<FString>& OutMeshVirtualPaths, TMap<FString, FString>& OutAnimationLatPaths, bool& bOutSkeletal, TArray<FSWGLodLevel>* OutLodLevels, FString* OutCollisionSourcePath, int32 Depth)
+{
+	if (Depth >= 8) return false;
+	// A lightsaber appearance is a blade description; its mesh is the hilt (BASE).
+	if (AppearancePath.EndsWith(TEXT(".lsb")))
+	{
+		FSWGLightsaber Saber;
+		if (!FSWGLightsaberReader::Read(TreSubsystem->CreateIffReader(AppearancePath), Saber) || Saber.HiltAppearancePath.IsEmpty())
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s has no readable hilt (from %s)"), *AppearancePath, *DebugContext);
+			return false;
+		}
+		return TryResolveAppearanceMeshPaths(Saber.HiltAppearancePath, DebugContext, OutMeshVirtualPaths, OutAnimationLatPaths, bOutSkeletal, OutLodLevels, OutCollisionSourcePath, Depth + 1);
+	}
+
 	const bool bIsSat = AppearancePath.EndsWith(TEXT(".sat"));
 	const bool bIsApt = AppearancePath.EndsWith(TEXT(".apt"));
 	// Buildings' portalLayoutFilename-derived exterior path (see
@@ -1210,6 +1338,12 @@ bool USWGMeshGeneratorSubsystem::ResolveAppearanceMeshPaths(const FString& Appea
 	const bool bIsMsh = AppearancePath.EndsWith(TEXT(".msh")) || AppearancePath.EndsWith(TEXT(".cmp"));
 	if (!bIsSat && !bIsApt && !bIsLod && !bIsMsh)
 	{
+		// A particle appearance has no mesh (ASWGParticleEmitterActor plays it instead), nor does a sprite; both only ride on .cmp parts.
+		if (AppearancePath.EndsWith(TEXT(".prt")) || AppearancePath.EndsWith(TEXT(".spr")))
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("USWGMeshGeneratorSubsystem: %s is a particle effect, not a mesh (from %s)"), *AppearancePath, *DebugContext);
+			return false;
+		}
 		UE_LOG(LogTemp, Warning, TEXT("USWGMeshGeneratorSubsystem: unrecognized appearanceFilename extension: %s"), *AppearancePath);
 		return false;
 	}
@@ -1431,6 +1565,15 @@ void USWGMeshGeneratorSubsystem::TryAttachVehicleBody(AActor& Actor, const FStri
 			BodyComponent->SetupAttachment(BodyActor->GetRootComponent());
 			BodyComponent->RegisterComponent();
 
+			// engine_N / ground hardpoints for the vehicle effects.
+			if (ASWGObject* BodyObject = Cast<ASWGObject>(BodyActor))
+			{
+				for (const FSWGMeshHardpoint& Hardpoint : Hardpoints)
+				{
+					BodyObject->MeshHardpoints.Add(FName(*Hardpoint.Name), FTransform(Hardpoint.Rotation, Hardpoint.Translation));
+				}
+			}
+
 			if (ASWGCreature* Creature = Cast<ASWGCreature>(BodyActor))
 			{
 				if (const FSWGMeshHardpoint* PlayerHardpoint = Hardpoints.FindByPredicate(
@@ -1516,7 +1659,16 @@ bool USWGMeshGeneratorSubsystem::ResolveLmgMeshPath(const FString& LmgPath, FStr
 
 bool USWGMeshGeneratorSubsystem::ResolveClientDataFile(uint32 TemplateCrc, FSWGClientDataFile& OutClientData)
 {
-	const FString TemplatePath = TreSubsystem->ResolveTemplatePath(TemplateCrc);
+	return ReadClientDataFile(TemplateCrc, OutClientData) && (!OutClientData.Wearables.IsEmpty() || !OutClientData.Customization.IsEmpty());
+}
+
+bool USWGMeshGeneratorSubsystem::ReadClientDataFile(uint32 TemplateCrc, FSWGClientDataFile& OutClientData)
+{
+	return ReadClientDataFile(TreSubsystem->ResolveTemplatePath(TemplateCrc), OutClientData);
+}
+
+bool USWGMeshGeneratorSubsystem::ReadClientDataFile(const FString& TemplatePath, FSWGClientDataFile& OutClientData)
+{
 	FString CdfPath;
 	if (TemplatePath.IsEmpty() || !ResolveTemplateStringParam(TemplatePath, SWG_IFF_TAG('S','H','O','T'), TEXT("clientDataFile"), CdfPath) || CdfPath.IsEmpty())
 	{
@@ -1529,7 +1681,7 @@ bool USWGMeshGeneratorSubsystem::ResolveClientDataFile(uint32 TemplateCrc, FSWGC
 		return false;
 	}
 
-	return !OutClientData.Wearables.IsEmpty() || !OutClientData.Customization.IsEmpty();
+	return true;
 }
 
 FSWGCustomizationVariables USWGMeshGeneratorSubsystem::ToCustomizationVariables(const TMap<FString, int32>& NamedCustomization)
@@ -2573,6 +2725,17 @@ TMap<FString, FLinearColor> USWGMeshGeneratorSubsystem::ResolveCustomizationPale
 	return Result;
 }
 
+bool USWGMeshGeneratorSubsystem::ResolveBladeColor(const FSWGCustomizationVariables& Customization, const FString& AppearancePath, FLinearColor& OutColor)
+{
+	const TMap<FString, FLinearColor> Tints = ResolveCustomizationPaletteTints(Customization, AppearancePath);
+	if (const FLinearColor* Found = Tints.Find(TEXT("index_color_blade")))
+	{
+		OutColor = *Found;
+		return true;
+	}
+	return false;
+}
+
 TMap<FString, float> USWGMeshGeneratorSubsystem::ResolveCustomizationMorphWeights(const FSWGCustomizationVariables& Customization, const FString& AppearancePath)
 {
 	TMap<FString, float> Result;
@@ -2795,7 +2958,7 @@ FSWGEffectRenderStates USWGMeshGeneratorSubsystem::GetOrReadEffectRenderStates(c
 	return States;
 }
 
-UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, const FString& ReplaceableTexturePath)
+UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const FString& ShaderVirtualPath, const TMap<FString, FLinearColor>* PaletteTintOverrides, const TMap<FString, int32>* TextureIndexOverrides, const FString& ReplaceableTexturePath, UTexture2D* DiffuseOverride)
 {
 	if (ShaderVirtualPath.IsEmpty())
 	{
@@ -2846,7 +3009,7 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 	// customization, not reusable shader-wide — bypass the shared cache
 	// entirely for it (both read and, further below, write).
 	// A decal-substituted material is likewise per-object, not shader-wide.
-	if (!TintOverride && !TintOverride2 && !TextureIndexOverride && ReplaceableTexturePath.IsEmpty())
+	if (!TintOverride && !TintOverride2 && !TextureIndexOverride && ReplaceableTexturePath.IsEmpty() && !DiffuseOverride)
 	{
 		if (TObjectPtr<UMaterialInterface>* Existing = ObjectMaterialCache.Find(ShaderVirtualPath))
 		{
@@ -2857,6 +3020,43 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 	UMaterialInterface* Result = nullptr;
 	FSWGShaderData ShaderData;
 	FSWGShaderReader::ReadShader(TreSubsystem->CreateIffReader(ShaderVirtualPath), ShaderData);
+
+	// SWTS flipbooks and SWSH switches carry no textures of their own: take the effect from the base
+	// (or first) shader and collect one diffuse texture per frame for USWGAnimatedMaterialSubsystem.
+	FSWGShaderAnimation Animation;
+	TArray<UTexture2D*> AnimationFrames;
+	if (ShaderData.Textures.IsEmpty() && FSWGShaderReader::ReadAnimation(TreSubsystem->CreateIffReader(ShaderVirtualPath), Animation))
+	{
+		auto LoadFrameShader = [&](const FString& FrameShaderPath, FSWGShaderData& OutData) { return !FrameShaderPath.IsEmpty() && FSWGShaderReader::ReadShader(TreSubsystem->CreateIffReader(FrameShaderPath), OutData); };
+		if (Animation.bSwitchesShaders)
+		{
+			for (const FString& FrameShaderPath : Animation.Shaders)
+			{
+				FSWGShaderData FrameData;
+				const FSWGShaderTexture* FrameDiffuse = LoadFrameShader(FrameShaderPath, FrameData) ? FrameData.FindTexture(ESWGShaderTextureUsage::Diffuse) : nullptr;
+				AnimationFrames.Add(FrameDiffuse ? GetOrLoadObjectTexture(FrameDiffuse->VirtualPath, /*bSRGB=*/true) : nullptr);
+				if (AnimationFrames.Num() == 1)
+				{
+					ShaderData = FrameData;
+				}
+			}
+		}
+		else
+		{
+			LoadFrameShader(Animation.BaseShaderPath, ShaderData);
+			for (const FSWGShaderAnimationTexture& Frame : Animation.Textures)
+			{
+				if (Frame.Tag == TEXT("MAIN"))
+				{
+					AnimationFrames.Add(GetOrLoadObjectTexture(Frame.TexturePath, /*bSRGB=*/true));
+				}
+			}
+		}
+		if (AnimationFrames.IsEmpty() || AnimationFrames.Contains(nullptr))
+		{
+			AnimationFrames.Reset();
+		}
+	}
 
 	const FSWGShaderTexture* DiffuseDef = ShaderData.FindTexture(ESWGShaderTextureUsage::Diffuse);
 	const FSWGShaderTexture* NormalDef = ShaderData.FindTexture(ESWGShaderTextureUsage::Normal);
@@ -2873,7 +3073,7 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 	{
 		TexturePath = ShaderCustomization.TextureVariants[*TextureIndexOverride];
 	}
-	UTexture2D* Texture = GetOrLoadObjectTexture(TexturePath, /*bSRGB=*/true);
+	UTexture2D* Texture = DiffuseOverride ? DiffuseOverride : !AnimationFrames.IsEmpty() ? AnimationFrames[0] : GetOrLoadObjectTexture(TexturePath, /*bSRGB=*/true);
 	UTexture2D* NormalTexture = NormalDef ? GetOrLoadObjectTexture(NormalDef->VirtualPath, /*bSRGB=*/false,
 		/*bLegacyDXT5Normal=*/NormalDef->Tag.Equals(TEXT("CNRM"), ESearchCase::IgnoreCase)) : nullptr;
 	UTexture2D* SpecularTexture = SpecularDef ? GetOrLoadObjectTexture(SpecularDef->VirtualPath, /*bSRGB=*/false) : nullptr;
@@ -3029,6 +3229,19 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 				}
 
 				Result = MID;
+
+				if (USWGAnimatedMaterialSubsystem* Animated = GetGameInstance() ? GetGameInstance()->GetSubsystem<USWGAnimatedMaterialSubsystem>() : nullptr)
+				{
+					if (AnimationFrames.Num() > 1)
+					{
+						Animated->RegisterFlipbook(MID, Animation, AnimationFrames, ShaderVirtualPath);
+					}
+					if (!ShaderData.Scrolls.IsEmpty())
+					{
+						const FSWGShaderScroll* MainScroll = ShaderData.Scrolls.FindByPredicate([](const FSWGShaderScroll& Candidate) { return Candidate.Tag == TEXT("MAIN"); });
+						Animated->RegisterScroll(MID, MainScroll ? *MainScroll : ShaderData.Scrolls[0], ShaderVirtualPath);
+					}
+				}
 			}
 		}
 		else
@@ -3037,7 +3250,7 @@ UMaterialInterface* USWGMeshGeneratorSubsystem::GetOrBuildObjectMaterial(const F
 		}
 	}
 
-	if (!TintOverride && !TintOverride2 && !TextureIndexOverride)
+	if (!TintOverride && !TintOverride2 && !TextureIndexOverride && !DiffuseOverride)
 	{
 		ObjectMaterialCache.Add(ShaderVirtualPath, Result);
 	}
@@ -3546,6 +3759,14 @@ UMeshComponent* USWGMeshGeneratorSubsystem::BuildGeneratedMeshComponent(AActor& 
 		if (OldRoot && OldRoot != MeshComponent)
 		{
 			OldRoot->AttachToComponent(MeshComponent, FAttachmentTransformRules::KeepWorldTransform);
+		}
+	}
+
+	if (ASWGObject* SWGObject = Cast<ASWGObject>(&Actor); SWGObject && !MeshData.Hardpoints.IsEmpty())
+	{
+		for (const FSWGMeshHardpoint& Hardpoint : MeshData.Hardpoints)
+		{
+			SWGObject->MeshHardpoints.Add(FName(*Hardpoint.Name), FTransform(Hardpoint.Rotation, Hardpoint.Translation));
 		}
 	}
 

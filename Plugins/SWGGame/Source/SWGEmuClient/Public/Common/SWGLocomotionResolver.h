@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Common/SWGPostureTypes.h"
+#include "TRE/SWGLatReader.h"
 
 struct FSWGAnimationState;
 struct FSWGAnimationStateHierarchy;
@@ -26,12 +27,45 @@ struct FSWGLocomotionClipSet
 	FString WalkPath;
 	FString RunPath;
 
-	bool IsValid() const { return !IdlePath.IsEmpty() && !WalkPath.IsEmpty() && !RunPath.IsEmpty(); }
+	/** TSCL playback-rate multiplier of the loop's clips (1 when the .lat has none). */
+	float TimeScale = 1.0f;
 
-	/** Clip paths only — two postures resolving to the same three clips need no blend space swap, whatever they're named. */
+	/** YWAT turn-in-place clips (creature .lats): turning left (YNEG) and right (YPOS) while standing still. Empty when the loop has none. */
+	FString TurnLeftPath;
+	FString TurnRightPath;
+
+	/** One DRAT branch: the speed ramp played while moving in that direction (SWGAnimLayer::Direction code). */
+	struct FDirectionalClips
+	{
+		uint8 Direction = 0;
+		FString IdlePath;
+		FString WalkPath;
+		FString RunPath;
+
+		bool operator==(const FDirectionalClips& Other) const
+		{
+			return Direction == Other.Direction && IdlePath == Other.IdlePath && WalkPath == Other.WalkPath && RunPath == Other.RunPath;
+		}
+	};
+
+	/** DRAT strafe/backpedal ramps (ranged combat stances); empty for ordinary loops, whose IdlePath/WalkPath/RunPath already are the Forward ramp. */
+	TArray<FDirectionalClips> Directional;
+
+	/** AGAT ambient action table of the loop; empty when it has none. Not part of equality. */
+	TArray<FSWGLatIdleAction> IdleActions;
+	float IdleActionMinSeconds = 0.0f;
+	float IdleActionMaxSeconds = 0.0f;
+
+	bool IsValid() const { return !IdlePath.IsEmpty() && !WalkPath.IsEmpty() && !RunPath.IsEmpty(); }
+	bool IsDirectional() const { return Directional.Num() > 1; }
+	bool HasTurnClips() const { return !TurnLeftPath.IsEmpty() && !TurnRightPath.IsEmpty(); }
+
+	/** Clip paths only — two postures resolving to the same clips need no blend space swap, whatever they're named. */
 	bool operator==(const FSWGLocomotionClipSet& Other) const
 	{
-		return IdlePath == Other.IdlePath && WalkPath == Other.WalkPath && RunPath == Other.RunPath;
+		return IdlePath == Other.IdlePath && WalkPath == Other.WalkPath && RunPath == Other.RunPath
+			&& TurnLeftPath == Other.TurnLeftPath && TurnRightPath == Other.TurnRightPath
+			&& Directional == Other.Directional;
 	}
 	bool operator!=(const FSWGLocomotionClipSet& Other) const { return !(*this == Other); }
 };
@@ -77,6 +111,30 @@ namespace SWGLocomotion
 	 * what to perform, the .ash what that means here, the .lat which clip.
 	 */
 	SWGEMUCLIENT_API FString ResolveActionClip(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, const FSWGAnimationState& State, const FString& ActionName);
+
+	/** An .ash action resolved down to the clip and the layer it plays on. */
+	struct FSWGResolvedAction
+	{
+		FString LogicalName;
+		FString ClipPath;
+
+		/** Bone mask asset of the clip (PPTR), empty for a full-body clip. */
+		FString MaskPath;
+		float TimeScale = 1.0f;
+
+		/** useAddTrack: plays on the additive "add" track. */
+		bool bAdditive = false;
+
+		/** The MVAC moving variant was chosen. */
+		bool bMovingVariant = false;
+	};
+
+	/**
+	 * Like ResolveActionClip but keeps the layering data. bMoving selects an
+	 * MVAC's second (moving) action when the entry has one that resolves to a
+	 * clip; otherwise the stationary action is used. False when nothing resolves.
+	 */
+	SWGEMUCLIENT_API bool ResolveAction(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, const FSWGAnimationState& State, const FString& ActionName, bool bMoving, FSWGResolvedAction& OutAction);
 
 	/**
 	 * Full posture -> clips resolution.

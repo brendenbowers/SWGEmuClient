@@ -10,6 +10,7 @@
 #include "Components/SWGCombatStateComponent.h"
 #include "Components/SWGGroupComponent.h"
 #include "Components/SWGPerformanceComponent.h"
+#include "Components/SWGCreatureSoundComponent.h"
 #include "Components/SWGMovementComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Subsystems/SWGTargetSubsystem.h"
@@ -31,6 +32,7 @@ ASWGCreature::ASWGCreature(const FObjectInitializer& ObjectInitializer)
 	CombatStateComponent = CreateDefaultSubobject<USWGCombatStateComponent>(TEXT("CombatStateComponent"));
 	GroupComponent = CreateDefaultSubobject<USWGGroupComponent>(TEXT("GroupComponent"));
 	PerformanceComponent = CreateDefaultSubobject<USWGPerformanceComponent>(TEXT("PerformanceComponent"));
+	CreatureSoundComponent = CreateDefaultSubobject<USWGCreatureSoundComponent>(TEXT("CreatureSoundComponent"));
 	GetCapsuleComponent()->SetCollisionResponseToChannel(
 		USWGTargetSubsystem::SelectionChannel, ECR_Block);
 	GetCharacterMovement()->bOrientRotationToMovement = true;

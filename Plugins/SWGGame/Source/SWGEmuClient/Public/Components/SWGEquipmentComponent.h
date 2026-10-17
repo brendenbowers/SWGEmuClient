@@ -11,9 +11,22 @@
 
 struct FSWGPacket;
 struct FSWGMeshData;
+struct FSWGMeshHardpoint;
 class USkeletalMesh;
 class USkeletalMeshComponent;
 class UMeshComponent;
+class USceneComponent;
+class USWGLightsaberComponent;
+
+/** The hardpoint scene components riding one item's mesh, by name (muzzle, tr1s, ...). */
+USTRUCT()
+struct FSWGItemHardpoints
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TMap<FName, TObjectPtr<USceneComponent>> ByName;
+};
 
 /** CREO base6 — equipped items + composite appearance override. */
 UCLASS(ClassGroup=(SWGEmu), meta=(BlueprintSpawnableComponent))
@@ -51,8 +64,35 @@ public:
 	 */
 	void SetClientDataWearables(const TArray<FSWGClientDataWearable>& Wearables);
 
+	/**
+	 * Wears the saddle covering wearable_appearance_map names for a mount's appearance (the retail
+	 * mount code does this when the appearance is set up). Permanent, like SetClientDataWearables.
+	 */
+	void SetMountCovering(const FString& MountAppearancePath);
+
+	/**
+	 * Writes the slot_rule_manager blend variables of every worn item into its mesh (a jacket's belt
+	 * hiding under a vest). Run after the worn set changes.
+	 */
+	void ApplySlotRules();
+
+	/** Debug listing of the worn items: slots, mesh state and the slot-rule morphs they receive. */
+	TArray<FString> DescribeWearables() const;
+
 	/** The mesh showing an equipped item on the body (worn or held), if it has one yet. */
 	UMeshComponent* FindItemVisual(uint64 ObjectId) const;
+
+	/** A hardpoint of a held (static-mesh) item as a scene component on its mesh, or null if the item or hardpoint is unknown. */
+	USceneComponent* GetItemHardpoint(uint64 ObjectId, FName Name) const;
+
+	/** The named hardpoint of a weapon; WeaponObjectId 0, or an id we do not hold, searches every held item. */
+	USceneComponent* GetWeaponHardpoint(FName Name, uint64 WeaponObjectId = 0) const;
+
+	/** The held item's template path (for its swoosh, blade colour and effects), or empty. */
+	FString GetItemTemplatePath(uint64 ObjectId) const;
+
+	/** Debug: shows a weapon or .lsb appearance in the hand without the server; an empty path removes it. */
+	void AttachDebugItem(const FString& AppearancePath, const FString& TemplatePath);
 
 protected:
 	/**
@@ -128,4 +168,22 @@ protected:
 	 *  so a held item is reused rather than duplicated, and can be detached. */
 	UPROPERTY()
 	TMap<uint64, TObjectPtr<UStaticMeshComponent>> HardpointComponentsByObjectId;
+
+	/** Weapon hardpoints (muzzle, trail ends) of the items in HardpointComponentsByObjectId. */
+	UPROPERTY()
+	TMap<uint64, FSWGItemHardpoints> HardpointsByObjectId;
+
+	/** The blades of held lightsaber hilts. */
+	UPROPERTY()
+	TMap<uint64, TObjectPtr<USWGLightsaberComponent>> SaberByObjectId;
+
+	/** Items shown by AttachDebugItem: not in any equipment list, so never reconciled away. */
+	TSet<uint64> DebugItemIds;
+	TMap<uint64, FString> DebugTemplatePaths;
+	static constexpr uint64 DebugItemIdBase = 1ull << 62;
+
+	void BuildItemHardpoints(uint64 ObjectId, UStaticMeshComponent& ItemMesh, const TArray<FSWGMeshHardpoint>& Hardpoints);
+	void EnsureSaber(uint64 ObjectId, UStaticMeshComponent& ItemMesh, const FString& LsbPath);
+	/** Tears down a held item's mesh with its hardpoints and blades (a saber retracts first). */
+	void ReleaseItemVisual(uint64 ObjectId, UStaticMeshComponent* ItemMesh);
 };

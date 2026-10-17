@@ -17,6 +17,7 @@ class USWGCombatStateComponent;
 class USWGGroupComponent;
 class USWGPerformanceComponent;
 class USWGMovementComponent;
+class USWGCreatureSoundComponent;
 class ASWGCell;
 
 /**
@@ -84,6 +85,10 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
 	TObjectPtr<USWGPerformanceComponent> PerformanceComponent;
+
+	/** Animation-event, vocalize and footstep audio from the creature's .cdf. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SWGEmu")
+	TObjectPtr<USWGCreatureSoundComponent> CreatureSoundComponent;
 
 	// Loose fields — too small to warrant a component (see world-object-plan.html)
 	int32 BankCredits    = 0;

@@ -2,6 +2,7 @@
 
 #include "TRE/SWGAshReader.h"
 #include "TRE/SWGLatReader.h"
+#include "Animation/SWGAnimationLayerLogic.h"
 
 namespace
 {
@@ -109,7 +110,7 @@ namespace
 	 * the right neutral choice), then "whatever isn't a moving clip", which
 	 * also covers single-clip loops like blocking and incapacitated.
 	 */
-	FString IdlePathOf(const FSWGLatEntry& Entry)
+	const FSWGLatClip* IdleClipOf(const FSWGLatEntry& Entry)
 	{
 		const FSWGLatClip* IdleClip = FindClipByParameter(Entry, TEXT("zero_speed"));
 		if (!IdleClip)
@@ -130,6 +131,12 @@ namespace
 					return Clip.ParameterName != TEXT("locomotion");
 				});
 		}
+		return IdleClip;
+	}
+
+	FString IdlePathOf(const FSWGLatEntry& Entry)
+	{
+		const FSWGLatClip* IdleClip = IdleClipOf(Entry);
 		return IdleClip ? IdleClip->AnsPath : FString();
 	}
 }
@@ -249,6 +256,48 @@ FString SWGLocomotion::ResolveActionClip(const FSWGAnimationStateHierarchy& Hier
 	return Entry ? IdlePathOf(*Entry) : FString();
 }
 
+bool SWGLocomotion::ResolveAction(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, const FSWGAnimationState& State, const FString& ActionName, bool bMoving, FSWGResolvedAction& OutAction)
+{
+	OutAction = FSWGResolvedAction();
+
+	const FSWGAnimationAction* Action = ActionName.IsEmpty() ? nullptr : Hierarchy.ResolveActionDetail(State, ActionName);
+	if (!Action)
+	{
+		return false;
+	}
+
+	// An MVAC plays its second action while moving, when that one resolves to a clip.
+	if (bMoving && Action->HasMovingVariant())
+	{
+		if (const FSWGLatEntry* MovingEntry = Lat.Find(Action->MovingLogicalName))
+		{
+			if (const FSWGLatClip* MovingClip = IdleClipOf(*MovingEntry))
+			{
+				OutAction.LogicalName = Action->MovingLogicalName;
+				OutAction.ClipPath = MovingClip->AnsPath;
+				OutAction.MaskPath = MovingClip->MaskPath;
+				OutAction.TimeScale = SWGAnimLayer::EffectiveTimeScale(MovingClip->TimeScale);
+				OutAction.bAdditive = Action->bMovingUseAddTrack;
+				OutAction.bMovingVariant = true;
+				return true;
+			}
+		}
+	}
+
+	const FSWGLatEntry* Entry = Lat.Find(Action->LogicalName);
+	const FSWGLatClip* Clip = Entry ? IdleClipOf(*Entry) : nullptr;
+	if (!Clip)
+	{
+		return false;
+	}
+	OutAction.LogicalName = Action->LogicalName;
+	OutAction.ClipPath = Clip->AnsPath;
+	OutAction.MaskPath = Clip->MaskPath;
+	OutAction.TimeScale = SWGAnimLayer::EffectiveTimeScale(Clip->TimeScale);
+	OutAction.bAdditive = Action->bUseAddTrack;
+	return true;
+}
+
 FString SWGLocomotion::ResolveTransitionClip(const FSWGAnimationStateHierarchy& Hierarchy, const FSWGLatData& Lat, ESWGPosture FromPosture, int64 FromStateBitmask, ESWGPosture ToPosture, int64 ToStateBitmask)
 {
 	const FSWGAnimationState* FromState = ResolveState(Hierarchy, FromPosture, FromStateBitmask);
@@ -340,6 +389,46 @@ bool SWGLocomotion::ResolveClipSet(const FSWGAnimationStateHierarchy& Hierarchy,
 	}
 	OutClipSet.WalkPath = MovingPaths.Num() > 0 ? MovingPaths[0] : OutClipSet.IdlePath;
 	OutClipSet.RunPath = MovingPaths.Num() > 0 ? MovingPaths.Last() : OutClipSet.WalkPath;
+
+	OutClipSet.TimeScale = SWGAnimLayer::EffectiveTimeScale(FoundEntry->TimeScale);
+	OutClipSet.IdleActions = FoundEntry->IdleActions;
+	OutClipSet.IdleActionMinSeconds = FoundEntry->IdleActionMinSeconds;
+	OutClipSet.IdleActionMaxSeconds = FoundEntry->IdleActionMaxSeconds;
+
+	// YWAT: turn-in-place clips (the NONE branch already is IdlePath).
+	if (FoundEntry->HasYawClips() && FoundEntry->YawNegativeClips.Num() > 0 && FoundEntry->YawPositiveClips.Num() > 0)
+	{
+		OutClipSet.TurnLeftPath = FoundEntry->YawNegativeClips[0].AnsPath;
+		OutClipSet.TurnRightPath = FoundEntry->YawPositiveClips[0].AnsPath;
+	}
+
+	// DRAT: a speed ramp per movement direction.
+	if (FoundEntry->IsDirectional())
+	{
+		TArray<uint8> Codes;
+		FoundEntry->ClipsByDirection.GetKeys(Codes);
+		Codes.Sort();
+		for (const uint8 Code : Codes)
+		{
+			FSWGLatEntry DirectionEntry;
+			DirectionEntry.Clips = FoundEntry->ClipsByDirection[Code];
+
+			FSWGLocomotionClipSet::FDirectionalClips Directional;
+			Directional.Direction = Code;
+			Directional.IdlePath = IdlePathOf(DirectionEntry);
+			const TArray<FString> DirectionMoving = MovingPathsOf(DirectionEntry);
+			if (Directional.IdlePath.IsEmpty())
+			{
+				Directional.IdlePath = DirectionMoving.Num() > 0 ? DirectionMoving[0] : FString();
+			}
+			Directional.WalkPath = DirectionMoving.Num() > 0 ? DirectionMoving[0] : Directional.IdlePath;
+			Directional.RunPath = DirectionMoving.Num() > 0 ? DirectionMoving.Last() : Directional.WalkPath;
+			if (!Directional.IdlePath.IsEmpty())
+			{
+				OutClipSet.Directional.Add(MoveTemp(Directional));
+			}
+		}
+	}
 
 	return OutClipSet.IsValid();
 }

@@ -29,4 +29,8 @@ public:
 	// see SWGCreatureBaselineParser::ParseBase6.
 	void ApplyBase6(const FCreatureObjectBaseline& Baseline);
 	void ApplyDelta6(const FCreatureObjectDelta& Delta);
+
+	/** Fired after a base6/delta6 update; audio listens for the performance index (PerformanceType) changing. */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPerformanceChanged, USWGPerformanceComponent& /*Component*/);
+	static FOnPerformanceChanged OnPerformanceChanged;
 };

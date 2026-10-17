@@ -63,6 +63,8 @@ void ASWGBuilding::OnCellTriggerBeginOverlap(UPrimitiveComponent* OverlappedComp
 	}
 }
 
+ASWGBuilding::FOnLocalPlayerRoomChanged ASWGBuilding::OnLocalPlayerRoomChanged;
+
 void ASWGBuilding::SetLitRoom(ASWGCell* Cell)
 {
 	if (LitRoom == Cell)
@@ -78,6 +80,7 @@ void ASWGBuilding::SetLitRoom(ASWGCell* Cell)
 	{
 		Cell->SetRoomLightsEnabled(true);
 	}
+	OnLocalPlayerRoomChanged.Broadcast(Cell);
 }
 
 void ASWGBuilding::OnCellTriggerEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex)

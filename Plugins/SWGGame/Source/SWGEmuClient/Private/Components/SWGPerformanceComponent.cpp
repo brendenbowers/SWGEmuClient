@@ -1,5 +1,7 @@
 #include "Components/SWGPerformanceComponent.h"
 
+USWGPerformanceComponent::FOnPerformanceChanged USWGPerformanceComponent::OnPerformanceChanged;
+
 USWGPerformanceComponent::USWGPerformanceComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
@@ -13,6 +15,7 @@ void USWGPerformanceComponent::ApplyBase6(const FCreatureObjectBaseline& Baselin
 	PerformanceStartTime = Baseline.PerformanceStartTime;
 	PerformanceType = Baseline.PerformanceType;
 	bHasBase6 = true;
+	OnPerformanceChanged.Broadcast(*this);
 }
 
 void USWGPerformanceComponent::ApplyDelta6(const FCreatureObjectDelta& Delta)
@@ -21,5 +24,9 @@ void USWGPerformanceComponent::ApplyDelta6(const FCreatureObjectDelta& Delta)
 	if (Delta.MoodString.IsSet())           { MoodString = *Delta.MoodString; }
 	if (Delta.MoodId.IsSet())               { MoodId = *Delta.MoodId; }
 	if (Delta.PerformanceStartTime.IsSet()) { PerformanceStartTime = *Delta.PerformanceStartTime; }
-	if (Delta.PerformanceType.IsSet())      { PerformanceType = *Delta.PerformanceType; }
+	if (Delta.PerformanceType.IsSet())
+	{
+		PerformanceType = *Delta.PerformanceType;
+		OnPerformanceChanged.Broadcast(*this);
+	}
 }

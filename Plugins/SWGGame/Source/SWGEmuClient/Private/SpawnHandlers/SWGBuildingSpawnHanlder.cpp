@@ -3,6 +3,8 @@
 #include "Subsystems/SWGObjectGraphSubsystem.h"
 #include "Objects/World/SWGBuilding.h"
 #include "Objects/World/SWGCell.h"
+#include "Objects/World/SWGParticleEmitterActor.h"
+#include "Objects/World/SWGSoundEmitter.h"
 #include "Objects/World/SWGDoor.h"
 #include "Objects/World/SWGStaticProp.h"
 #include "TRE/SWGInteriorLayoutReader.h"
@@ -640,6 +642,28 @@ void FSWGCellSpawnHandler::SpawnInteriorLayout(ASWGCell* CellActor, ASWGBuilding
 			continue;
 		}
 
+		if (ASWGSoundEmitter::IsSoundObjectTemplate(Node.TemplatePath))
+		{
+			if (ASWGSoundEmitter* Emitter = World->SpawnActor<ASWGSoundEmitter>(ASWGSoundEmitter::StaticClass(), Node.Transform * CellTransform, SpawnParams))
+			{
+				CellActor->InteriorActors.Add(Emitter);
+				Emitter->InitFromTemplate(Node.TemplatePath);
+			}
+			continue;
+		}
+
+		FString ParticlePath;
+		USWGTreSubsystem* TreForParticles = World->GetGameInstance() ? World->GetGameInstance()->GetSubsystem<USWGTreSubsystem>() : nullptr;
+		if (ASWGParticleEmitterActor::IsParticleObjectTemplate(Node.TemplatePath) || (TreForParticles && ASWGParticleEmitterActor::ResolveParticlePath(*TreForParticles, Node.TemplatePath, ParticlePath)))
+		{
+			if (ASWGParticleEmitterActor* Emitter = World->SpawnActor<ASWGParticleEmitterActor>(ASWGParticleEmitterActor::StaticClass(), Node.Transform * CellTransform, SpawnParams))
+			{
+				CellActor->InteriorActors.Add(Emitter);
+				Emitter->InitFromTemplate(Node.TemplatePath);
+			}
+			continue;
+		}
+
 		ASWGStaticProp* Prop = World->SpawnActor<ASWGStaticProp>(ASWGStaticProp::StaticClass(), Node.Transform * CellTransform, SpawnParams);
 		if (!Prop)
 		{
@@ -647,6 +671,7 @@ void FSWGCellSpawnHandler::SpawnInteriorLayout(ASWGCell* CellActor, ASWGBuilding
 		}
 
 		Prop->bInteriorLighting = true;
+		Prop->StaticTemplatePath = Node.TemplatePath;
 		CellActor->InteriorActors.Add(Prop);
 		MeshGeneratorSubsystem->RequestMeshForTemplatePath(Prop, Node.TemplatePath);
 	}
