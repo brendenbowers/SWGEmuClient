@@ -12,7 +12,7 @@
 /** Reads the real game files: .ans MSGS events, cdf event resolution and the terrain surface references. */
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForCreatureSoundTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -52,7 +52,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGAnimationEventsTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCreatureSoundTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -136,7 +136,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGCreatureEventResolutionTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCreatureSoundTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -241,7 +241,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGTerrainSurfaceFamiliesTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCreatureSoundTest(*this);
 	if (!Tre)
 	{
 		return false;

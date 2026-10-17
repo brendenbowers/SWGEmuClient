@@ -460,10 +460,18 @@ void USWGPropAttachmentsComponent::TickFlicker(float TimeSeconds)
 			const float Blend = 0.5f + 0.5f * (0.6f * FMath::Sin(TimeSeconds * 5.1f + Slot.FlickerPhase) + 0.4f * FMath::Sin(TimeSeconds * 11.3f + Slot.FlickerPhase * 1.7f));
 			Slot.Light->SetLightColor(FLinearColor::LerpUsingHSV(Slot.Color, Slot.SecondColor, Blend));
 			RangeCm = FMath::Lerp(Slot.RangeCm, Slot.SecondRangeCm, Blend);
-			Slot.Light->SetAttenuationRadius(RangeCm);
 		}
 		SWGRetailLight::ApplyFalloff(*Slot.Light, Slot.FalloffExponent);
-		Slot.Light->SetIntensity(SWGRetailLight::ComputeIntensity(Slot.FalloffExponent, Slot.Brightness * IntensityScale, RangeCm));
+		float Brightness = Slot.Brightness;
+		if (Slot.Light->bUseInverseSquaredFalloff && Slot.bFlicker)
+		{
+			// Vary emitted power; keep the culling sphere stable instead of visibly inflating it with each flash.
+			const float StableRange = FMath::Max(Slot.RangeCm, Slot.SecondRangeCm);
+			Brightness *= FMath::Square(RangeCm / FMath::Max(StableRange, 1.f));
+			RangeCm = StableRange;
+		}
+		Slot.Light->SetAttenuationRadius(RangeCm);
+		Slot.Light->SetIntensity(SWGRetailLight::ComputeIntensity(Slot.FalloffExponent, Brightness * IntensityScale, RangeCm));
 	}
 }
 

@@ -16,6 +16,7 @@
 #include "Components/SWGTerminalComponent.h"
 #include "Components/SWGTangibleComponent.h"
 #include "Objects/Creature/SWGCreature.h"
+#include "Objects/Player/SWGPlayer.h"
 #include "Objects/SWGNetworkObjectInterface.h"
 #include "Objects/SWGObject.h"
 #include "Objects/Tangible/SWGItem.h"
@@ -163,6 +164,11 @@ void USWGRadialMenuSubsystem::SelectOption(int64 ObjectId, int32 RadialId)
 	{
 		if (Network)
 		{
+			// Core3 rejects interior interactions when its player containment is still outside the building.
+			if (ASWGPlayer* Player = ObjectGraph ? Cast<ASWGPlayer>(ObjectGraph->FindActor(ObjectGraph->GetLocalPlayerObjectId())) : nullptr)
+			{
+				Player->SendDataTransformUpdate();
+			}
 			FObjectMenuSelectMessage Select;
 			Select.ObjectId = ObjectId;
 			Select.RadialId = static_cast<uint8>(RadialId);

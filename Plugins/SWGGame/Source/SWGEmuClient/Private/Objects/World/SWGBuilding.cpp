@@ -2,6 +2,7 @@
 #include "Objects/World/SWGCell.h"
 #include "Objects/Player/SWGPlayer.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Components/SWGTangibleComponent.h"
 #include "Components/SWGConditionComponent.h"
 #include "Components/SWGDefenderComponent.h"
@@ -30,10 +31,18 @@ void ASWGBuilding::RegisterCellTrigger(ASWGCell* Cell, bool bCanSeeParent)
 		return;
 	}
 
+	if (CellSeeParentByTrigger.Contains(Cell->TriggerVolume)) return;
 	CellSeeParentByTrigger.Add(Cell->TriggerVolume, bCanSeeParent);
 
 	Cell->TriggerVolume->OnComponentBeginOverlap.AddDynamic(this, &ASWGBuilding::OnCellTriggerBeginOverlap);
 	Cell->TriggerVolume->OnComponentEndOverlap.AddDynamic(this, &ASWGBuilding::OnCellTriggerEndOverlap);
+	// A streamed trigger may already overlap the player when its callbacks are bound.
+	TArray<AActor*> Occupants;
+	Cell->TriggerVolume->GetOverlappingActors(Occupants, ASWGPlayer::StaticClass());
+	for (AActor* Occupant : Occupants)
+	{
+		OnCellTriggerBeginOverlap(Cell->TriggerVolume, Occupant, nullptr, INDEX_NONE, false, FHitResult());
+	}
 }
 
 void ASWGBuilding::OnCellTriggerBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
@@ -92,11 +101,22 @@ void ASWGBuilding::OnCellTriggerEndOverlap(UPrimitiveComponent* OverlappedCompon
 
 	InteriorOverlapCount = FMath::Max(0, InteriorOverlapCount - 1);
 
-	// Leaving the lit room for the outdoors; a doorway into the next room
-	// overlaps both, and that room's begin already took the lights over.
-	if (InteriorOverlapCount == 0 && OverlappedComponent && LitRoom.Get() == OverlappedComponent->GetOwner())
+	// Backing out of a doorway must restore the room still overlapping the player.
+	if (OverlappedComponent && LitRoom.Get() == OverlappedComponent->GetOwner())
 	{
-		SetLitRoom(nullptr);
+		ASWGCell* RemainingRoom = nullptr;
+		TArray<AActor*> Overlaps;
+		CastChecked<ASWGPlayer>(OtherActor)->GetCapsuleComponent()->GetOverlappingActors(Overlaps, ASWGCell::StaticClass());
+		for (AActor* Overlap : Overlaps)
+		{
+			ASWGCell* Cell = CastChecked<ASWGCell>(Overlap);
+			if (Cell != OverlappedComponent->GetOwner() && Cell->OwningBuilding.Get() == this)
+			{
+				RemainingRoom = Cell;
+				break;
+			}
+		}
+		SetLitRoom(RemainingRoom);
 	}
 
 	const bool* bCanSeeParent = CellSeeParentByTrigger.Find(OverlappedComponent);

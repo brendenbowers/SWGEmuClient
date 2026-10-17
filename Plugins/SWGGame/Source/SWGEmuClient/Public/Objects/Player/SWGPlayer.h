@@ -57,6 +57,8 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	virtual void Tick(float DeltaTime) override;
+	/** Reports the current transform immediately before server interactions; Tick throttles ordinary movement reports. */
+	void SendDataTransformUpdate();
 
 	/** Keeps the runtime-spawned pawn inert until terrain/interior collision is ready. */
 	void SetSceneLoadingLocked(bool bLocked);
@@ -234,13 +236,6 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category = "SWGEmu|Targeting")
 	float TargetCycleRadius = 6000.0f;
-	// Sends the current position/orientation to the server as a
-	// FDataTransformMessage, throttled by Tick — see the .cpp for the
-	// send-rate/stop-detection reasoning. Reports RiddenMount's transform
-	// under its own object id while mounted, rather than this pawn's own
-	// (attached, so its own transform is just the seat offset).
-	void SendDataTransformUpdate();
-
 	class ASWGCell* ResolveCurrentCell(const ASWGCreature* Target) const;
 
 	// Third-person: a spring arm holding the camera behind/above the
@@ -308,6 +303,7 @@ private:
 
 	/** The cell id last reported to the server (0 = world), so a change of room logs once rather than every send. */
 	int64 LastReportedParentId = 0;
+	friend class FSWGStationaryCellUpdateTest;
 	bool bIsMouseLooking = false;
 	bool bIsGamepadSteering = false;
 	bool bActionBankShifted = false;

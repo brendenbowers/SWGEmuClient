@@ -17,7 +17,7 @@
 /** Stage 6: world particle objects, flora particle children and ambient .sat mesh particles resolve in the real data. */
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForWorldParticlesTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -39,7 +39,7 @@ namespace
 		return Tre;
 	}
 
-	TArray<FString> FindFilesWithExtension(const USWGTreSubsystem& Tre, const TCHAR* Extension)
+	TArray<FString> FindWorldParticleFilesWithExtension(const USWGTreSubsystem& Tre, const TCHAR* Extension)
 	{
 		TArray<FString> Paths = Tre.FindVirtualPaths(Extension);
 		Paths.RemoveAll([Extension](const FString& Path) { return !Path.EndsWith(Extension, ESearchCase::IgnoreCase); });
@@ -59,13 +59,13 @@ namespace
 		}
 	}
 
-	FString FirstString(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk)
+	FString FirstWorldParticleString(const FSWGIffReader& Reader, const FSWGIffChunk& Chunk)
 	{
 		return FString(UTF8_TO_TCHAR(reinterpret_cast<const char*>(Reader.GetChunkData(Chunk))));
 	}
 
 	/** SMAT/0003: the first MSGN mesh path and LATX's skeleton -> lat pair (the chain ResolveAppearanceMeshPaths walks). */
-	bool ReadSatChain(const USWGTreSubsystem& Tre, const FString& SatPath, FString& OutMeshPath, FString& OutSkeletonPath, FString& OutLatPath)
+	bool ReadWorldParticleSatChain(const USWGTreSubsystem& Tre, const FString& SatPath, FString& OutMeshPath, FString& OutSkeletonPath, FString& OutLatPath)
 	{
 		const FSWGIffReader Reader = Tre.CreateIffReader(SatPath);
 		FSWGIffChunk Smat, Version, Msgn, Latx;
@@ -75,7 +75,7 @@ namespace
 			return false;
 		}
 
-		OutMeshPath = FirstString(Reader, Msgn);
+		OutMeshPath = FirstWorldParticleString(Reader, Msgn);
 		const uint8* Data = Reader.GetChunkData(Latx);
 		const int32 Size = Reader.GetChunkSize(Latx);
 		if (Size < 4 || (Data[0] | (Data[1] << 8)) < 1)
@@ -100,7 +100,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGWorldParticleObjectsTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForWorldParticlesTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -112,7 +112,7 @@ bool FSWGWorldParticleObjectsTest::RunTest(const FString& Parameters)
 
 	int32 TotalNodes = 0;
 	TSet<FString> DistinctParticleTemplates, Checked, OtherParticleTemplates;
-	for (const FString& SnapshotPath : FindFilesWithExtension(*Tre, TEXT(".ws")))
+	for (const FString& SnapshotPath : FindWorldParticleFilesWithExtension(*Tre, TEXT(".ws")))
 	{
 		if (!SnapshotPath.StartsWith(TEXT("snapshot/")))
 		{
@@ -179,7 +179,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGWorldParticleFloraTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForWorldParticlesTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -187,7 +187,7 @@ bool FSWGWorldParticleFloraTest::RunTest(const FString& Parameters)
 	ON_SCOPE_EXIT{ Tre->RemoveFromRoot(); };
 
 	int32 TotalChildren = 0, TotalRadial = 0, Missing = 0;
-	for (const FString& TerrainPath : FindFilesWithExtension(*Tre, TEXT(".trn")))
+	for (const FString& TerrainPath : FindWorldParticleFilesWithExtension(*Tre, TEXT(".trn")))
 	{
 		if (!TerrainPath.StartsWith(TEXT("terrain/")))
 		{
@@ -330,7 +330,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGWorldParticleSkeletalTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForWorldParticlesTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -339,7 +339,7 @@ bool FSWGWorldParticleSkeletalTest::RunTest(const FString& Parameters)
 
 	// Every .sat a .prt draws as a mesh particle needs a mesh, skeleton and a root loop clip.
 	TSet<FString> SatPaths;
-	for (const FString& PrtPath : FindFilesWithExtension(*Tre, TEXT(".prt")))
+	for (const FString& PrtPath : FindWorldParticleFilesWithExtension(*Tre, TEXT(".prt")))
 	{
 		FSWGParticleEffect Effect;
 		if (!FSWGParticleEffectReader::Read(Tre->CreateIffReader(PrtPath), Effect))
@@ -358,7 +358,7 @@ bool FSWGWorldParticleSkeletalTest::RunTest(const FString& Parameters)
 	}
 
 	int32 Ambient = 0;
-	for (const FString& SatPath : FindFilesWithExtension(*Tre, TEXT(".sat")))
+	for (const FString& SatPath : FindWorldParticleFilesWithExtension(*Tre, TEXT(".sat")))
 	{
 		if (SatPath.StartsWith(TEXT("appearance/pt_ambient_")))
 		{
@@ -370,7 +370,7 @@ bool FSWGWorldParticleSkeletalTest::RunTest(const FString& Parameters)
 	for (const FString& SatPath : SatPaths)
 	{
 		FString MeshPath, SkeletonPath, LatPath;
-		if (!TestTrue(*(SatPath + TEXT(" .sat reads")), ReadSatChain(*Tre, SatPath, MeshPath, SkeletonPath, LatPath)))
+		if (!TestTrue(*(SatPath + TEXT(" .sat reads")), ReadWorldParticleSatChain(*Tre, SatPath, MeshPath, SkeletonPath, LatPath)))
 		{
 			continue;
 		}

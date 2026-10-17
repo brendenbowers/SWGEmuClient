@@ -24,7 +24,7 @@
 namespace
 {
 	/** A TRE subsystem outside the game-instance lifecycle, so this runs without a world. */
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForCombatAnimationChainTest(FAutomationTestBase& Test)
 	{
 		// The subsystem's ClassWithin is UGameInstance, so it needs one as its
 		// outer even though nothing here uses the game instance for anything.
@@ -57,7 +57,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGCombatManagerChainTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCombatAnimationChainTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -263,7 +263,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGDeathPostureChainTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForCombatAnimationChainTest(*this);
 	if (!Tre)
 	{
 		return false;

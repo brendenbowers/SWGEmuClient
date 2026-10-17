@@ -14,7 +14,7 @@
 /** Stage 5: the wind -> clip rule, and that every cdf flag/banner, particle and light reference resolves in the real data. */
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForPropAttachmentsTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -36,7 +36,7 @@ namespace
 		return Tre;
 	}
 
-	TArray<FString> FindFilesWithExtension(const USWGTreSubsystem& Tre, const TCHAR* Extension)
+	TArray<FString> FindPropFilesWithExtension(const USWGTreSubsystem& Tre, const TCHAR* Extension)
 	{
 		TArray<FString> Paths = Tre.FindVirtualPaths(Extension);
 		Paths.RemoveAll([Extension](const FString& Path) { return !Path.EndsWith(Extension, ESearchCase::IgnoreCase); });
@@ -127,7 +127,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGPropFlagsTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForPropAttachmentsTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -136,7 +136,7 @@ bool FSWGPropFlagsTest::RunTest(const FString& Parameters)
 
 	int32 FlagCount = 0, BannerCount = 0;
 	TSet<FString> SeenSats;
-	for (const FString& CdfPath : FindFilesWithExtension(*Tre, TEXT(".cdf")))
+	for (const FString& CdfPath : FindPropFilesWithExtension(*Tre, TEXT(".cdf")))
 	{
 		FSWGClientDataFile Data;
 		if (!FSWGClientDataFileReader::Read(Tre->CreateIffReader(CdfPath), Data))
@@ -226,7 +226,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGPropObjectsTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForPropAttachmentsTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -235,7 +235,7 @@ bool FSWGPropObjectsTest::RunTest(const FString& Parameters)
 
 	int32 GroundParticles = 0, ShipObjects = 0, Glows = 0, PointLights = 0, NightOnly = 0, MissingParticles = 0, ChildParticles = 0;
 	TSet<FString> Missing;
-	for (const FString& CdfPath : FindFilesWithExtension(*Tre, TEXT(".cdf")))
+	for (const FString& CdfPath : FindPropFilesWithExtension(*Tre, TEXT(".cdf")))
 	{
 		FSWGClientDataFile Data;
 		if (!FSWGClientDataFileReader::Read(Tre->CreateIffReader(CdfPath), Data))
@@ -315,7 +315,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGPropChildrenTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForPropAttachmentsTest(*this);
 	if (!Tre)
 	{
 		return false;
@@ -346,7 +346,7 @@ bool FSWGPropChildrenTest::RunTest(const FString& Parameters)
 	};
 
 	int32 NodesWithChildren = 0, WithSnapshotChildren = 0, ExactDuplicates = 0, Snapshots = 0;
-	for (const FString& SnapshotPath : FindFilesWithExtension(*Tre, TEXT(".ws")))
+	for (const FString& SnapshotPath : FindPropFilesWithExtension(*Tre, TEXT(".ws")))
 	{
 		if (!SnapshotPath.StartsWith(TEXT("snapshot/")))
 		{

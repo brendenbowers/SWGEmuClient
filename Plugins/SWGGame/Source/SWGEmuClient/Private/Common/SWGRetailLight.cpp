@@ -6,7 +6,7 @@
 namespace
 {
 	TAutoConsoleVariable<int32> CVarRetailFalloff(
-		TEXT("swg.Fx.PropLightRetailFalloff"), 1,
+		TEXT("swg.Fx.PropLightRetailFalloff"), 0,
 		TEXT("1 = point lights (props, .cef lights) use the retail attenuation curve with a hard range cutoff; 0 = UE inverse-square falloff."));
 
 	TAutoConsoleVariable<float> CVarReferenceMetres(
@@ -62,6 +62,10 @@ void SWGRetailLight::ApplyFalloff(UPointLightComponent& Light, float Exponent)
 	if ((bool)Light.bUseInverseSquaredFalloff != bInverseSquared)
 	{
 		Light.SetUseInverseSquaredFalloff(bInverseSquared);
+	}
+	if (bInverseSquared && Light.SourceRadius <= 0.f)
+	{
+		Light.SetSourceRadius(5.f);
 	}
 	if (!FMath::IsNearlyEqual(Light.LightFalloffExponent, Exponent))
 	{

@@ -13,7 +13,7 @@
 namespace
 {
 	// From the editor's console the world is the editor's; use the running game's instead.
-	UGameInstance* FindRunningGameInstance(UWorld* World)
+	UGameInstance* FindCreatureSoundGameInstance(UWorld* World)
 	{
 		if (World && World->GetGameInstance())
 		{
@@ -35,7 +35,7 @@ namespace
 	/** The current target's sound component, or the local player's without a target. */
 	USWGCreatureSoundComponent* FindSoundComponent(UWorld* World)
 	{
-		UGameInstance* GameInstance = FindRunningGameInstance(World);
+		UGameInstance* GameInstance = FindCreatureSoundGameInstance(World);
 		const USWGObjectGraphSubsystem* ObjectGraph = GameInstance ? GameInstance->GetSubsystem<USWGObjectGraphSubsystem>() : nullptr;
 		if (!ObjectGraph)
 		{

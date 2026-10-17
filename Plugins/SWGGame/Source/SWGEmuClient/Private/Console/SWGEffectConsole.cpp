@@ -15,7 +15,7 @@
 namespace
 {
 	// From the editor's console the world is the editor's; use the running game's instead.
-	UGameInstance* FindRunningGameInstance(UWorld* World)
+	UGameInstance* FindEffectGameInstance(UWorld* World)
 	{
 		if (World && World->GetGameInstance())
 		{
@@ -40,7 +40,7 @@ static FAutoConsoleCommandWithWorldAndArgs GEffectPlayOnTargetCommand(
 	TEXT("swg.Effect.PlayOnTarget <cef> [hardpoint] - plays a clienteffect on the current target, or on the player without one."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 	{
-		UGameInstance* GameInstance = FindRunningGameInstance(World);
+		UGameInstance* GameInstance = FindEffectGameInstance(World);
 		USWGEffectSubsystem* Effects = GameInstance ? GameInstance->GetSubsystem<USWGEffectSubsystem>() : nullptr;
 		if (!Effects || Args.IsEmpty())
 		{
@@ -63,7 +63,7 @@ static FAutoConsoleCommandWithWorldAndArgs GEffectPlayAtPlayerCommand(
 	TEXT("swg.Effect.PlayAtPlayer <cef> - plays a clienteffect at the player's position through the location path."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 	{
-		UGameInstance* GameInstance = FindRunningGameInstance(World);
+		UGameInstance* GameInstance = FindEffectGameInstance(World);
 		USWGEffectSubsystem* Effects = GameInstance ? GameInstance->GetSubsystem<USWGEffectSubsystem>() : nullptr;
 		const APlayerController* Controller = GameInstance ? GameInstance->GetFirstLocalPlayerController() : nullptr;
 		const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;

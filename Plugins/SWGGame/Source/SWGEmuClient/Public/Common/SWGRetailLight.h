@@ -5,10 +5,9 @@
 class UPointLightComponent;
 
 /**
- * Retail D3D lights fade as 1 / (c + l*d + q*d*d) and stop dead at the range. UE's non-inverse-square point light fades as
- * (1 - (d/R)^2)^exponent, so the exponent is fitted to the retail ratio between 0.1 R and 0.5 R, and the intensity is set so
- * the light matches the old candela (inverse-square) brightness at a reference distance. Inverse-square lights keep a bright,
- * wide skirt that reads as a halo; this does not. swg.Fx.PropLightRetailFalloff = 0 restores the inverse-square look.
+ * Uses Unreal's physical inverse-square point lights by default. The optional retail mode fits
+ * (1 - (d/R)^2)^exponent to SWG's 1 / (c + l*d + q*d*d), matching brightness at a reference distance.
+ * swg.Fx.PropLightRetailFalloff = 1 selects the fitted retail curve.
  */
 namespace SWGRetailLight
 {

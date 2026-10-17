@@ -34,14 +34,14 @@ namespace
 	// combat_manager variable tags, as stored: LEVP is the script's PVEL (projectile speed), LTTA ATTL (effect seconds),
 	// TPAP / NTPA the particle and lightning appearances, TPHE / 2PHE the attacker hardpoints they ride.
 	const FString VarProjectileSpeed = TEXT("LEVP");
-	const FString VarEffectSeconds = TEXT("LTTA");
+	const FString VarVisualEffectSeconds = TEXT("LTTA");
 	const FString VarParticle = TEXT("TPAP");
 	const FString VarLightning = TEXT("NTPA");
 	const FString VarHardpoint = TEXT("TPHE");
 	const FString VarSecondHardpoint = TEXT("2PHE");
 
 	// The scripts' own default (use_particle_system.pst) when an entry sets no LTTA.
-	constexpr float DefaultEffectSeconds = 3.f;
+	constexpr float DefaultVisualEffectSeconds = 3.f;
 
 	constexpr float MinFlightSeconds = 0.02f;
 	constexpr float MaxFlightSeconds = 3.f;
@@ -71,7 +71,7 @@ namespace
 		}
 	}
 
-	const FString& FirstEvent(const TArray<FSWGClientDataEvent>& Events, const TCHAR* EventName)
+	const FString& FirstVisualEvent(const TArray<FSWGClientDataEvent>& Events, const TCHAR* EventName)
 	{
 		static const FString Empty;
 		for (const FSWGClientDataEvent& Event : Events)
@@ -211,8 +211,8 @@ const FSWGWeaponVisuals* USWGCombatVisualsSubsystem::GetWeaponVisuals(const FStr
 	if (Tre->FindTemplateFormStringParam(WeaponTemplate, SWG_IFF_TAG('S', 'H', 'O', 'T'), TEXT("clientDataFile"), ClientDataPath)
 		&& FSWGClientDataFileReader::Read(Tre->CreateIffReader(ClientDataPath), ClientData))
 	{
-		Visuals->BladeOnEffect = FirstEvent(ClientData.EffectEvents, TEXT("bladeon"));
-		Visuals->BladeOffEffect = FirstEvent(ClientData.EffectEvents, TEXT("bladeoff"));
+		Visuals->BladeOnEffect = FirstVisualEvent(ClientData.EffectEvents, TEXT("bladeon"));
+		Visuals->BladeOffEffect = FirstVisualEvent(ClientData.EffectEvents, TEXT("bladeoff"));
 	}
 
 	VisualsCache.Add(WeaponTemplate, Visuals);
@@ -492,7 +492,7 @@ void USWGCombatVisualsSubsystem::PlayParticleScript(const FCombatActionIn& Actio
 
 	const bool bTwoParticles = Script.PlaybackScript.Contains(TEXT("2_particle"));
 	const bool bLightning = Script.PlaybackScript.Contains(TEXT("lightning"));
-	const float Seconds = ParseEffectSeconds(Script.GetVariable(VarEffectSeconds), DefaultEffectSeconds);
+	const float Seconds = ParseEffectSeconds(Script.GetVariable(VarVisualEffectSeconds), DefaultVisualEffectSeconds);
 
 	// The scripts' own defaults: a lone particle rides the muzzle, a pair the two hands, lightning leaves the right hand.
 	FString Hardpoint = Script.GetVariable(VarHardpoint);

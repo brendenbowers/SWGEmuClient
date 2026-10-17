@@ -22,7 +22,7 @@
 
 namespace
 {
-	USWGTreSubsystem* LoadTreSubsystem(FAutomationTestBase& Test)
+	USWGTreSubsystem* LoadTreForLayeredAnimationTest(FAutomationTestBase& Test)
 	{
 		UGameInstance* Outer = NewObject<UGameInstance>(GetTransientPackage());
 		USWGTreSubsystem* Tre = Outer ? NewObject<USWGTreSubsystem>(Outer) : nullptr;
@@ -136,7 +136,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FSWGLayeredAnimationDataTest::RunTest(const FString& Parameters)
 {
-	USWGTreSubsystem* Tre = LoadTreSubsystem(*this);
+	USWGTreSubsystem* Tre = LoadTreForLayeredAnimationTest(*this);
 	if (!Tre)
 	{
 		return false;

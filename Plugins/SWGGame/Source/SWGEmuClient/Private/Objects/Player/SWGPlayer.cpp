@@ -110,6 +110,10 @@ ASWGPlayer::ASWGPlayer(const FObjectInitializer& ObjectInitializer)
 		UE_LOG(LogTemp, Warning, TEXT("ASWGPlayer: M_TargetOutline not found — the target will have no outline"));
 	}
 	ApplySkylightLeaking();
+	FollowCamera->PostProcessSettings.bOverride_BloomIntensity = true;
+	FollowCamera->PostProcessSettings.BloomIntensity = 0.15f;
+	FollowCamera->PostProcessSettings.bOverride_BloomThreshold = true;
+	FollowCamera->PostProcessSettings.BloomThreshold = 2.f;
 
 	// Capsule starts at ACharacter's default size (88 half-height) here, before
 	// any real mesh exists — USWGMeshGeneratorSubsystem resizes it to the
@@ -764,9 +768,12 @@ void ASWGPlayer::Tick(float DeltaTime)
 	const bool bIsMoving = Speed > KINDA_SMALL_NUMBER;
 
 	TimeSinceLastTransformSend += DeltaTime;
+	// A streamed room can acquire its trigger after the player's final stop report.
+	const ASWGCell* CurrentCell = ResolveCurrentCell(TransformTarget);
+	const bool bCellChanged = (CurrentCell ? CurrentCell->GetObjectId() : 0) != LastReportedParentId;
 
 	if ((bIsMoving && TimeSinceLastTransformSend >= TransformSendInterval)
-		|| (bWasMovingLastSend && !bIsMoving))
+		|| (bWasMovingLastSend && !bIsMoving) || bCellChanged)
 	{
 		SendDataTransformUpdate();
 		TimeSinceLastTransformSend = 0.0f;

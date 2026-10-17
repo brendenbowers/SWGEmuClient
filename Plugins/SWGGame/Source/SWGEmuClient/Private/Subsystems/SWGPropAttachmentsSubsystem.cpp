@@ -37,7 +37,7 @@ namespace
 		TEXT("How many times a second prop distance gating is re-evaluated."));
 
 	TAutoConsoleVariable<float> CVarLightIntensity(
-		TEXT("swg.Fx.PropLightIntensity"), 2500.f,
+		TEXT("swg.Fx.PropLightIntensity"), 125.f,
 		TEXT("Candelas of a prop light whose cdf brightness is 1 (a streetlamp)."));
 
 	TAutoConsoleVariable<int32> CVarEnabled(

@@ -8,7 +8,7 @@
 
 namespace
 {
-	UWorld* FindGameWorld(UWorld* World)
+	UWorld* FindVehicleGameWorld(UWorld* World)
 	{
 		if (World && World->IsGameWorld())
 		{
@@ -33,7 +33,7 @@ static FAutoConsoleCommandWithWorldAndArgs GVehicleInfoCommand(
 	TEXT("swg.Vehicle.Info - lists every vehicle with hover dynamics: client data file, engine sounds and state, tilt."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 	{
-		UWorld* GameWorld = FindGameWorld(World);
+		UWorld* GameWorld = FindVehicleGameWorld(World);
 		const USWGVehicleSubsystem* Vehicles = GameWorld ? GameWorld->GetSubsystem<USWGVehicleSubsystem>() : nullptr;
 		if (!Vehicles)
 		{

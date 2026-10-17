@@ -9,7 +9,7 @@
 
 namespace
 {
-	UWorld* FindGameWorld(UWorld* World)
+	UWorld* FindTerrainGameWorld(UWorld* World)
 	{
 		if (GEngine && (!World || !World->IsGameWorld()))
 		{
@@ -23,7 +23,7 @@ namespace
 
 	USWGTerrainSubsystem* TerrainForConsole(UWorld* World)
 	{
-		World = FindGameWorld(World);
+		World = FindTerrainGameWorld(World);
 		UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
 		return GameInstance ? GameInstance->GetSubsystem<USWGTerrainSubsystem>() : nullptr;
 	}
@@ -31,7 +31,7 @@ namespace
 	/** The local pawn's raw-space position, or false when there is none. */
 	bool GetPlayerRawPosition(UWorld* World, FVector& OutRaw)
 	{
-		World = FindGameWorld(World);
+		World = FindTerrainGameWorld(World);
 		const APlayerController* Controller = World ? World->GetFirstPlayerController() : nullptr;
 		const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
 		if (!Pawn) { return false; }
