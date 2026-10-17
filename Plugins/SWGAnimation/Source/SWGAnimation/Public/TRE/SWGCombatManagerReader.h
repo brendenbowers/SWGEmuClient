@@ -22,6 +22,21 @@ struct FSWGCombatActionAnimation
 	/** The defender's reaction, from CAHD, e.g. "get_hit_light_mid_center". Empty when the defender plays nothing. */
 	FString DefenderAction;
 
+	/**
+	 * Every STRN variable, keyed by its four-character tag exactly as stored. SWG tags are
+	 * written backwards in the file: BDNS = SNDB (begin sound), LDNS = SNDL (loop), EDNS =
+	 * SNDE (end), LTTA = ATTL (effect seconds), NTOW = WOTN (temp weapon template).
+	 */
+	TMap<FString, FString> Variables;
+
+	/** The variable's value, or an empty string when the entry doesn't set it. */
+	const FString& GetVariable(const FString& Tag) const
+	{
+		static const FString Empty;
+		const FString* Value = Variables.Find(Tag);
+		return Value ? *Value : Empty;
+	}
+
 	bool IsValid() const { return !AttackerAction.IsEmpty() || !DefenderAction.IsEmpty(); }
 };
 

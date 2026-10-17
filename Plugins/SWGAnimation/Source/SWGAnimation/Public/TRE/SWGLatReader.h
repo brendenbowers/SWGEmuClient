@@ -14,6 +14,23 @@ struct FSWGLatClip
 {
 	FString AnsPath;
 	FString ParameterName;
+
+	/**
+	 * Bone mask the clip is restricted to (PPTR's second string, e.g.
+	 * "appearance/mask/mask_upper_body.iff"); empty when the clip drives the
+	 * whole body. Read it with FSWGMaskReader.
+	 */
+	FString MaskPath;
+
+	/** Product of the TSCL wrappers (TimeScaleSkeletalAnimation) enclosing the clip: its playback-rate multiplier. 1 when none. */
+	float TimeScale = 1.0f;
+};
+
+/** One entry of an AGAT (ActionGeneratorSkeletalAnimation) table: an .ash action name and its relative weight. */
+struct FSWGLatIdleAction
+{
+	FString ActionName;
+	float Weight = 0.0f;
 };
 
 /** One logical animation name and the clips it resolves to, in file order. */
@@ -33,6 +50,29 @@ struct FSWGLatEntry
 
 	/** That selector's branches keyed by value ("vehicle_landspeeder", "default", ...) — from its VAL table. */
 	TMap<FString, TArray<FSWGLatClip>> ClipsBySelectorValue;
+
+	/** TSCL wrapper (TimeScaleSkeletalAnimation): playback-rate multiplier of the entry's first clip (each clip also carries its own). 1 when none. */
+	float TimeScale = 1.0f;
+
+	/**
+	 * DRAT wrapper (DirectionSkeletalAnimation): the clips of each authored
+	 * movement direction, keyed by DIR code (SWGAnimLayer::Direction). Empty
+	 * for non-directional entries. Clips holds the Forward branch (or the first
+	 * authored one when there is no Forward).
+	 */
+	TMap<uint8, TArray<FSWGLatClip>> ClipsByDirection;
+
+	/** YWAT wrapper (YawSkeletalAnimation): turn-in-place clips. Clips holds the NONE branch; these hold YNEG (turning left) and YPOS (turning right). */
+	TArray<FSWGLatClip> YawNegativeClips;
+	TArray<FSWGLatClip> YawPositiveClips;
+
+	/** AGAT wrapper: ambient action table and the min/max seconds between actions. */
+	TArray<FSWGLatIdleAction> IdleActions;
+	float IdleActionMinSeconds = 0.0f;
+	float IdleActionMaxSeconds = 0.0f;
+
+	bool IsDirectional() const { return ClipsByDirection.Num() > 0; }
+	bool HasYawClips() const { return YawNegativeClips.Num() > 0 || YawPositiveClips.Num() > 0; }
 
 	/** The clips for SelectorValue, falling back to the "default" value's branch, then to Clips. */
 	const TArray<FSWGLatClip>& ClipsFor(const FString& SelectorValue) const
@@ -79,6 +119,13 @@ struct FSWGLatData
  * INFO(.ans path) + PUNF(parameter name) shape — so this reader flattens
  * every PXAT under an ANIM into an ordered clip list and keeps each clip's
  * PUNF parameter name, which is what tells the two apart where it matters.
+ *
+ * Wrapper layouts (see Docs/RetailAnimationNotes.md), all inside a FORM 0000:
+ *   TSCL: INFO(float scale), one child template.
+ *   DRAT: INFO(u8 direction count), FORM DIR  x n { INFO(u8 code), child template }.
+ *   YWAT: FORM YNEG / YPOS / NONE, each wrapping a child template.
+ *   AGAT: INFO(float min, float max seconds), ACTN(u16 count, {name, float weight}), FORM LOOP { child }.
+ * They fill the matching FSWGLatEntry fields; Clips stays the default branch.
  */
 class SWGANIMATION_API FSWGLatReader
 {

@@ -146,6 +146,12 @@ const FSWGUIImageStyle* FSWGUIStyleSheet::FindImageStyle(const FString& DottedPa
 	return nullptr;
 }
 
+const FString* FSWGUIStyleSheet::FindElementSound(const FString& DottedPath, const FString& Attribute) const
+{
+	const TMap<FString, FString>* Attributes = ElementSounds.Find(DottedPath.ToLower());
+	return Attributes ? Attributes->Find(Attribute.ToLower()) : nullptr;
+}
+
 bool FSWGUIStyleReader::Read(const TArray<uint8>& Data, FSWGUIStyleSheet& OutSheet)
 {
 	if (Data.IsEmpty())
@@ -237,6 +243,18 @@ bool FSWGUIStyleReader::Read(const TArray<uint8>& Data, FSWGUIStyleSheet& OutShe
 				Stack.Add({ Tag.Name, Segment });
 			}
 			continue;
+		}
+
+		// "." is the data's placeholder for no sound, and a value with a dot that isn't a .snd path is a widget reference.
+		for (const TPair<FString, FString>& Attribute : Tag.Attributes)
+		{
+			const bool bSoundKey = Attribute.Key.Contains(TEXT("Sound"), ESearchCase::IgnoreCase);
+			const bool bSoundValue = !Attribute.Value.IsEmpty() && (!Attribute.Value.Contains(TEXT(".")) || Attribute.Value.EndsWith(TEXT(".snd")));
+			if (bSoundKey && bSoundValue)
+			{
+				const FString ElementPath = !NameAttribute ? ParentPath : (ParentPath.IsEmpty() ? NameAttribute->ToLower() : ParentPath + TEXT(".") + NameAttribute->ToLower());
+				OutSheet.ElementSounds.FindOrAdd(ElementPath).Add(Attribute.Key.ToLower(), Attribute.Value);
+			}
 		}
 
 		if (Tag.Name == TEXT("ImageStyle") && NameAttribute)

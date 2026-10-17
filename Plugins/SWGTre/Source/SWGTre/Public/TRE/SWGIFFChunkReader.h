@@ -26,6 +26,9 @@ public:
 
 	bool ReadTerminiatedString(FString& Value);
 
+	/** Like ReadTerminiatedString, but the final string may end at the chunk end without a null (a few .cdf entries do). */
+	bool ReadLenientString(FString& Value);
+
 	bool ReadTerminatedStrings(TArray<FString>& Values, int32 Count = -1);
 	TArray<FString> ReadTerminatedStrings(int32 Count = -1)
 	{
@@ -40,6 +43,26 @@ public:
 	}
 
 	int32 GetPosition() { return Position; }
+
+	int32 GetRemaining() const { return Chunk.DataSize - Position; }
+
+	/** Copies the next Count bytes out verbatim; false (and nothing consumed) if fewer remain. */
+	bool ReadBytes(int32 Count, TArray<uint8>& Bytes)
+	{
+		if (Count < 0 || !CanRead(Count))
+		{
+			return false;
+		}
+		Bytes.Reset();
+		if (Count > 0)
+		{
+			Bytes.Append(Data + Position, Count);
+		}
+		Position += Count;
+		return true;
+	}
+
+	bool ReadRemainingBytes(TArray<uint8>& Bytes) { return ReadBytes(GetRemaining(), Bytes); }
 
 	bool Skip(int32 Skip)
 	{

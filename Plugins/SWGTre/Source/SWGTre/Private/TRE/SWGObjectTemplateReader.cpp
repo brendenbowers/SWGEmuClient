@@ -163,3 +163,67 @@ bool FSWGObjectTemplateReader::FindDervParentPath(const FSWGIffReader& Reader, F
 	FSWGIFFChunkReader ChunkReader(Xxxx, Reader);
 	return ChunkReader.ReadTerminiatedString(OutParentPath) && !OutParentPath.IsEmpty();
 }
+
+namespace
+{
+	/** Opens the named XXXX chunk of FormType's versioned data form and reads past the has-value flag. */
+	bool OpenFormField(const FSWGIffReader& Reader, FSWGIffTag FormType, const TCHAR* Key, FSWGIffChunk& OutChunk)
+	{
+		FSWGIffChunk Form;
+		if (!Reader.FindForm(FormType, Form))
+		{
+			return false;
+		}
+
+		for (const FSWGIffChunk& DataForm : Reader.ReadChildren(Form))
+		{
+			if (!DataForm.IsForm() || DataForm.FormType == SWG_IFF_TAG('D','E','R','V'))
+			{
+				continue;
+			}
+
+			for (const FSWGIffChunk& Child : Reader.FindAllChildChunks(DataForm, SWG_IFF_TAG('X','X','X','X')))
+			{
+				FSWGIFFChunkReader ChunkReader(Child, Reader);
+				FString ChunkKey;
+				if (ChunkReader.ReadTerminiatedString(ChunkKey) && ChunkKey.Equals(Key))
+				{
+					OutChunk = Child;
+					return true;
+				}
+			}
+			return false;
+		}
+		return false;
+	}
+}
+
+bool FSWGObjectTemplateReader::FindStringFieldInForm(const FSWGIffReader& Reader, FSWGIffTag FormType, const TCHAR* Key, FString& OutValue)
+{
+	FSWGIffChunk Chunk;
+	if (!OpenFormField(Reader, FormType, Key, Chunk))
+	{
+		return false;
+	}
+
+	FSWGIFFChunkReader ChunkReader(Chunk, Reader);
+	FString Skipped;
+	uint8 HasValue = 0;
+	ChunkReader.ReadTerminiatedString(Skipped);
+	return ChunkReader.ReadValueLE(HasValue) && HasValue != 0 && ChunkReader.ReadTerminiatedString(OutValue) && !OutValue.IsEmpty();
+}
+
+bool FSWGObjectTemplateReader::FindIntFieldInForm(const FSWGIffReader& Reader, FSWGIffTag FormType, const TCHAR* Key, int32& OutValue)
+{
+	FSWGIffChunk Chunk;
+	if (!OpenFormField(Reader, FormType, Key, Chunk))
+	{
+		return false;
+	}
+
+	FSWGIFFChunkReader ChunkReader(Chunk, Reader);
+	FString Skipped;
+	uint8 HasValue = 0, ValueType = 0;
+	ChunkReader.ReadTerminiatedString(Skipped);
+	return ChunkReader.ReadValueLE(HasValue) && HasValue != 0 && ChunkReader.ReadValueLE(ValueType) && ValueType == 0x20 && ChunkReader.ReadValueLE(OutValue);
+}

@@ -76,10 +76,25 @@ struct FSWGMeshHardpoint
 	FVector Translation = FVector::ZeroVector;
 };
 
+/** A .prt or .spr PART of a .cmp: an effect riding on the mesh, placed in UE axes (centimetres) relative to the mesh origin. */
+struct FSWGMeshEffectPart
+{
+	/** Full virtual path (appearance/ prefix added). */
+	FString Path;
+	FQuat Rotation = FQuat::Identity;
+	FVector Translation = FVector::ZeroVector;
+};
+
 struct FSWGMeshData
 {
 	TArray<FSWGMeshSubmesh> Submeshes;
 	TArray<FSWGMeshHardpoint> Hardpoints;
+
+	/** Particle and sprite parts of a .cmp (nested ones included); drawn by the mesh generator's effect step, not geometry. */
+	TArray<FSWGMeshEffectPart> EffectParts;
+
+	/** The appearance file the request named (a .lsb whose hilt this mesh is, say); set by the mesh generator, not the readers. */
+	FString SourceAppearancePath;
 
 	/** Named blend shapes for this mesh part (see FSWGMeshMorphTarget) — only
 	 *  .mgn parts with a FORM BLTS have any; most don't (e.g. hands/arms

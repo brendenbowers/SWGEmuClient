@@ -3,6 +3,8 @@
 #if WITH_EDITOR
 
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimTypes.h"
+#include "Animation/SWGAnimEventNotify.h"
 #include "Animation/Skeleton.h"
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/IAnimationDataModel.h"
@@ -42,20 +44,28 @@ bool FSWGAnimationImporter::BuildAnimSequenceData(
 	OutData.FrameCount = Animation.FrameCount;
 	OutData.BoneTracks.Reserve(Skeleton.Joints.Num());
 
+	for (const FSWGAnimationEvent& Event : Animation.Events)
+	{
+		for (const int32 Frame : Event.Frames)
+		{
+			OutData.Events.Add({ FName(*Event.Name), Frame });
+		}
+	}
+
 	for (const FSWGSkeletonJoint& Joint : Skeleton.Joints)
 	{
 		FSWGAnimBoneTrackData& TrackData = OutData.BoneTracks.AddDefaulted_GetRef();
 		TrackData.BoneName = FName(*Joint.Name);
 
 		TrackData.ScaleKeys.Init(FVector::OneVector, Animation.FrameCount);
-
-		// Only the root bone gets a translation curve — every other bone's
-		// position is a fixed offset from its parent (rotation/FK-driven
-		// only), matching how the source data itself only ever supplies one
-		// translation curve (FORM ATRN) for the whole clip, not one per bone.
+		const FSWGAnimationBoneTrack* const* FoundTrack = BoneNameToTrack.Find(Joint.Name.ToLower());
 		if (Joint.Name.Equals(TEXT("root"), ESearchCase::IgnoreCase) && Animation.RootTranslationDeltas.Num() > 0)
 		{
 			TrackData.PosKeys = SWGBuildDenseTranslationTrack(Animation.RootTranslationDeltas, Animation.FrameCount, Joint.BindPoseTranslation);
+		}
+		else if (FoundTrack && !Joint.Name.Equals(TEXT("root"), ESearchCase::IgnoreCase) && !(*FoundTrack)->TranslationDeltas.IsEmpty())
+		{
+			TrackData.PosKeys = SWGBuildDenseTranslationTrack((*FoundTrack)->TranslationDeltas, Animation.FrameCount, Joint.BindPoseTranslation);
 		}
 		else
 		{
@@ -66,8 +76,7 @@ bool FSWGAnimationImporter::BuildAnimSequenceData(
 		// actual local rotation is the full Pre/Post composition (see
 		// FSWGSkeletonJoint::ComposeLocalRotation), same as
 		// FSWGSkeletalMeshImporter composes for the bind pose.
-		const FSWGAnimationBoneTrack* const* FoundTrack = BoneNameToTrack.Find(Joint.Name.ToLower());
-		if (FoundTrack)
+		if (FoundTrack && !(*FoundTrack)->Keyframes.IsEmpty())
 		{
 			TrackData.RotKeys = SWGBuildDenseRotationTrack((*FoundTrack)->Keyframes, Animation.FrameCount, Joint.BindPoseRotation);
 			for (FQuat& Rot : TrackData.RotKeys)
@@ -140,6 +149,36 @@ UAnimSequence* FSWGAnimationImporter::FinalizeAnimSequence(
 
 	Controller.NotifyPopulated();
 	Controller.CloseBracket(false);
+
+	// Notifies live outside the data model; the frame-indexed ones sit on one track.
+	AnimSequence->Notifies.Reset();
+	AnimSequence->AnimNotifyTracks.Reset();
+	FAnimNotifyTrack& EventTrack = AnimSequence->AnimNotifyTracks.AddDefaulted_GetRef();
+	EventTrack.TrackName = TEXT("SWGEvents");
+	EventTrack.TrackColor = FLinearColor::White;
+
+	const float PlayLength = AnimSequence->GetPlayLength();
+	for (const FSWGAnimEventBuildData& Event : Data.Events)
+	{
+		float EventTime = static_cast<float>(Event.Frame) / static_cast<float>(Data.FrameRate);
+		if (EventTime > PlayLength + UE_KINDA_SMALL_NUMBER)
+		{
+			continue;
+		}
+		EventTime = FMath::Min(EventTime, PlayLength);
+
+		FAnimNotifyEvent& NotifyEvent = AnimSequence->Notifies.AddDefaulted_GetRef();
+		NotifyEvent.NotifyName = Event.EventName;
+		NotifyEvent.Link(AnimSequence, EventTime);
+		NotifyEvent.TriggerTimeOffset = GetTriggerTimeOffsetForType(AnimSequence->CalculateOffsetForNotify(EventTime));
+		NotifyEvent.TrackIndex = 0;
+		NotifyEvent.Guid = FGuid::NewGuid();
+
+		USWGAnimEventNotify* Notify = NewObject<USWGAnimEventNotify>(AnimSequence, NAME_None, RF_Transactional);
+		Notify->EventName = Event.EventName;
+		NotifyEvent.Notify = Notify;
+	}
+	AnimSequence->RefreshCacheData();
 
 	AnimSequence->MarkPackageDirty();
 	AnimSequence->PostEditChange();

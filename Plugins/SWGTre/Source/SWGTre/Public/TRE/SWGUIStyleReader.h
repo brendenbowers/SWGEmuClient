@@ -31,13 +31,23 @@ struct SWGTRE_API FSWGUIStyleSheet
 	TMap<FString, FString> Aliases;
 
 	const FSWGUIImageStyle* FindImageStyle(const FString& DottedPath) const;
+
+	/**
+	 * Sound attributes of styled elements (ButtonStyle MouseOverSound / ReleaseSound, TextboxStyle
+	 * SoundKeyclick), keyed by the element's lowercased dotted path ("new.buttons.hud.style"), then by
+	 * lowercased attribute name. Values are the sheet's own names: "ui_rollover" means sound/ui_rollover.snd.
+	 */
+	TMap<FString, TMap<FString, FString>> ElementSounds;
+
+	/** The sound named by Attribute on the element at DottedPath, or nullptr. */
+	const FString* FindElementSound(const FString& DottedPath, const FString& Attribute) const;
 };
 
 /**
  * Parser for the retail UI .inc format: an XML-like tree of <Namespace>,
  * <ImageStyle>, <RectangleStyle>, ... elements with single-quoted attributes
- * that may each sit on their own line. Only Namespace nesting and ImageStyle
- * leaves are kept; everything else is skipped structurally.
+ * that may each sit on their own line. Only Namespace nesting, ImageStyle
+ * leaves and sound attributes are kept; everything else is skipped structurally.
  */
 class SWGTRE_API FSWGUIStyleReader
 {

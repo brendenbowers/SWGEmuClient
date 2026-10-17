@@ -64,6 +64,10 @@ namespace
 			FString Value;
 			StrnReader.ReadTerminiatedString(Value);
 
+			// Every variable is kept: sounds, particles and timings are the playback
+			// script's parameters, read by whoever runs its actions.
+			OutAnimation.Variables.Add(VarName, Value);
+
 			if (VarName == VarAttackerAction)
 			{
 				OutAnimation.AttackerAction = MoveTemp(Value);
@@ -72,8 +76,24 @@ namespace
 			{
 				OutAnimation.DefenderAction = MoveTemp(Value);
 			}
-			// Other variables (HSWS, speeds, timings) belong to the playback
-			// script, which nothing runs yet.
+		}
+
+		// Numeric variables (LTTA effect seconds, LEVP projectile speed) ride FLOT chunks: a tag, then a float.
+		for (const FSWGIffChunk& Flot : Reader.FindAllChildChunks(VarsForm, SWG_IFF_TAG('F', 'L', 'O', 'T')))
+		{
+			FSWGIFFChunkReader FlotReader(Flot, Reader);
+			if (!FlotReader.CanRead(VarNameLength + 4))
+			{
+				continue;
+			}
+			ANSICHAR NameChars[VarNameLength + 1] = {};
+			for (int32 i = 0; i < VarNameLength; ++i)
+			{
+				NameChars[i] = static_cast<ANSICHAR>(FlotReader.ReadValueLE<uint8>());
+			}
+			float Number = 0.f;
+			FlotReader.ReadValueLE(Number);
+			OutAnimation.Variables.Add(FString(ANSI_TO_TCHAR(NameChars)), FString::SanitizeFloat(Number));
 		}
 
 		return OutAnimation.IsValid();

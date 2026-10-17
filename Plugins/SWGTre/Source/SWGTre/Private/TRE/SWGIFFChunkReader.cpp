@@ -81,3 +81,24 @@ bool FSWGIFFChunkReader::SkipString()
 	Position++;
 	return true;
 }
+
+bool FSWGIFFChunkReader::ReadLenientString(FString& Value)
+{
+	if (!Data || Position < 0 || Position >= Chunk.DataSize)
+	{
+		return false;
+	}
+
+	const int32 Start = Position;
+	while (Position < Chunk.DataSize && Data[Position] != 0)
+	{
+		Position++;
+	}
+
+	Value = FString::ConstructFromPtrSize((const ANSICHAR*)(Data + Start), Position - Start);
+	if (Position < Chunk.DataSize)
+	{
+		Position++; // null terminator
+	}
+	return true;
+}

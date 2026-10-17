@@ -76,6 +76,9 @@ bool FSWGShaderReader::ReadShader(const FSWGIffReader& Reader, FSWGShaderData& O
 		OutShader.EffectName = ReadCString(Reader.GetChunkData(EffectNameChunk), Reader.GetChunkSize(EffectNameChunk));
 	}
 
+	FSWGIffChunk InlineEffect;
+	OutShader.bHasInlineEffect = Reader.FindChildForm(Form0000, SWG_IFF_TAG('E','F','C','T'), InlineEffect);
+
 	FSWGIffChunk TxmsForm;
 	if (!Reader.FindChildForm(Form0000, SWG_IFF_TAG('T','X','M','S'), TxmsForm))
 	{
@@ -178,7 +181,305 @@ bool FSWGShaderReader::ReadShader(const FSWGIffReader& Reader, FSWGShaderData& O
 		}
 	}
 
+	// FORM TSNS > CHUNK 0000: repeated [4-byte reversed tag][u1 v1 u2 v2].
+	FSWGIffChunk TsnsForm;
+	if (Reader.FindChildForm(Form0000, SWG_IFF_TAG('T','S','N','S'), TsnsForm))
+	{
+		for (const FSWGIffChunk& Child : Reader.ReadChildren(TsnsForm))
+		{
+			if (Child.IsForm())
+			{
+				continue;
+			}
+
+			const uint8* Data = Reader.GetChunkData(Child);
+			const int32 Size = Reader.GetChunkSize(Child);
+			for (int32 Offset = 0; Offset + 20 <= Size; Offset += 20)
+			{
+				FSWGShaderScroll Scroll;
+				Scroll.Tag = ReadReversedTag(Data + Offset);
+				FMemory::Memcpy(&Scroll.U1, Data + Offset + 4, 4 * sizeof(float));
+				OutShader.Scrolls.Add(MoveTemp(Scroll));
+			}
+		}
+	}
+
 	return OutShader.Textures.Num() > 0;
+}
+
+int32 FSWGShaderAnimation::GetFrameAt(float TimeSeconds) const
+{
+	if (Timing != ESWGShaderTiming::DeltaTime || SecondsPerFrame <= 0.f || FrameCount <= 0)
+	{
+		return 0;
+	}
+	return FMath::FloorToInt(TimeSeconds / SecondsPerFrame) % FrameCount;
+}
+
+bool FSWGShaderReader::ReadAnimation(const FSWGIffReader& Reader, FSWGShaderAnimation& OutAnimation)
+{
+	OutAnimation = FSWGShaderAnimation();
+	if (!Reader.IsValid())
+	{
+		return false;
+	}
+
+	FSWGIffChunk RootForm;
+	if (Reader.FindForm(SWG_IFF_TAG('S','W','T','S'), RootForm))
+	{
+		OutAnimation.bSwitchesShaders = false;
+	}
+	else if (Reader.FindForm(SWG_IFF_TAG('S','W','S','H'), RootForm))
+	{
+		OutAnimation.bSwitchesShaders = true;
+	}
+	else
+	{
+		return false;
+	}
+
+	const TArray<FSWGIffChunk> VersionForms = Reader.FindChildForms(RootForm);
+	if (VersionForms.IsEmpty())
+	{
+		return false;
+	}
+
+	for (const FSWGIffChunk& Child : Reader.ReadChildren(VersionForms[0]))
+	{
+		if (Child.IsForm())
+		{
+			FSWGIffChunk Data;
+			if (!Reader.FindChildChunk(Child, SWG_IFF_TAG('0','0','0','0'), Data) || Data.DataSize < 4)
+			{
+				return false;
+			}
+			const uint8* Bytes = Reader.GetChunkData(Data);
+			FMemory::Memcpy(&OutAnimation.FrameCount, Bytes, sizeof(int32));
+
+			if (Child.FormType == SWG_IFF_TAG('D','T','S','T') && Data.DataSize == 8)
+			{
+				OutAnimation.Timing = ESWGShaderTiming::DeltaTime;
+				FMemory::Memcpy(&OutAnimation.SecondsPerFrame, Bytes + 4, sizeof(float));
+			}
+			else if (Child.FormType == SWG_IFF_TAG('D','F','S','T') && Data.DataSize == 4)
+			{
+				OutAnimation.Timing = ESWGShaderTiming::DeltaFrame;
+			}
+			else if (Child.FormType == SWG_IFF_TAG('D','R','F','S') && Data.DataSize == 4)
+			{
+				OutAnimation.Timing = ESWGShaderTiming::RandomFrame;
+			}
+			else if (Child.FormType == SWG_IFF_TAG('D','R','T','S') && Data.DataSize == 12)
+			{
+				OutAnimation.Timing = ESWGShaderTiming::RandomTime;
+				FMemory::Memcpy(&OutAnimation.RandomTimeA, Bytes + 4, sizeof(float));
+				FMemory::Memcpy(&OutAnimation.RandomTimeB, Bytes + 8, sizeof(float));
+			}
+			else
+			{
+				return false;
+			}
+			continue;
+		}
+
+		const uint8* Bytes = Reader.GetChunkData(Child);
+		if (Child.Tag == SWGIffTags::Name)
+		{
+			FString Path = ReadCString(Bytes, Child.DataSize);
+			Path.ReplaceInline(TEXT("\\"), TEXT("/"));
+			if (OutAnimation.bSwitchesShaders)
+			{
+				OutAnimation.Shaders.Add(MoveTemp(Path));
+			}
+			else
+			{
+				OutAnimation.BaseShaderPath = MoveTemp(Path);
+			}
+		}
+		else if (Child.Tag == SWG_IFF_TAG('T','E','X','T') && Child.DataSize > 4)
+		{
+			FSWGShaderAnimationTexture Frame;
+			Frame.Tag = ReadReversedTag(Bytes);
+			Frame.TexturePath = ReadCString(Bytes + 4, Child.DataSize - 4);
+			Frame.TexturePath.ReplaceInline(TEXT("\\"), TEXT("/"));
+			OutAnimation.Textures.Add(MoveTemp(Frame));
+		}
+	}
+
+	return OutAnimation.Timing != ESWGShaderTiming::None && OutAnimation.GetDeclaredFrames() > 0;
+}
+
+ESWGEffectBlendMode FSWGEffectPass::GetBlendMode() const
+{
+	if (!bAlphaBlend)
+	{
+		return bAlphaTest ? ESWGEffectBlendMode::Masked : ESWGEffectBlendMode::Opaque;
+	}
+	if (BlendOperation == 2)
+	{
+		return ESWGEffectBlendMode::Subtractive;
+	}
+	if (BlendOperation != 0)
+	{
+		return ESWGEffectBlendMode::Other;
+	}
+	if (DestFactor == ESWGEffectBlendFactor::One)
+	{
+		return ESWGEffectBlendMode::Additive;
+	}
+	if (SourceFactor == ESWGEffectBlendFactor::SrcAlpha && DestFactor == ESWGEffectBlendFactor::InvSrcAlpha)
+	{
+		return ESWGEffectBlendMode::Translucent;
+	}
+	if (DestFactor == ESWGEffectBlendFactor::SrcColor || SourceFactor == ESWGEffectBlendFactor::DestColor)
+	{
+		return ESWGEffectBlendMode::Modulate;
+	}
+	return ESWGEffectBlendMode::Other;
+}
+
+ESWGEffectBlendMode FSWGEffectData::GetBlendMode() const
+{
+	if (Implementations.IsEmpty() || Implementations[0].Passes.IsEmpty())
+	{
+		return ESWGEffectBlendMode::Opaque;
+	}
+	return Implementations[0].Passes[0].GetBlendMode();
+}
+
+bool FSWGShaderReader::ReadEffect(const FSWGIffReader& Reader, FSWGEffectData& OutEffect)
+{
+	OutEffect = FSWGEffectData();
+
+	FSWGIffChunk EfctForm;
+	if (!Reader.IsValid() || !Reader.FindForm(SWG_IFF_TAG('E','F','C','T'), EfctForm))
+	{
+		return false;
+	}
+	const TArray<FSWGIffChunk> VersionForms = Reader.FindChildForms(EfctForm);
+	if (VersionForms.IsEmpty())
+	{
+		return false;
+	}
+	OutEffect.Version = FCString::Atoi(*VersionForms[0].FormType.ToString());
+
+	for (const FSWGIffChunk& ImplForm : Reader.ReadChildren(VersionForms[0]))
+	{
+		if (!ImplForm.IsForm() || ImplForm.FormType != SWG_IFF_TAG('I','M','P','L'))
+		{
+			continue;
+		}
+		const TArray<FSWGIffChunk> ImplVersions = Reader.FindChildForms(ImplForm);
+		if (ImplVersions.IsEmpty())
+		{
+			return false;
+		}
+
+		FSWGEffectImplementation Implementation;
+		Implementation.Version = FCString::Atoi(*ImplVersions[0].FormType.ToString());
+		for (const FSWGIffChunk& Child : Reader.ReadChildren(ImplVersions[0]))
+		{
+			const uint8* Bytes = Reader.GetChunkData(Child);
+			if (!Child.IsForm())
+			{
+				if (Child.Tag == SWG_IFF_TAG('S','C','A','P'))
+				{
+					Implementation.Capabilities.Append(Bytes, Child.DataSize);
+				}
+				else if (Child.Tag == SWG_IFF_TAG('O','P','T','N'))
+				{
+					Implementation.Options.Append(Bytes, Child.DataSize);
+				}
+				else if (Child.Tag == SWGIffTags::Data && Child.DataSize >= 1)
+				{
+					Implementation.Level = Bytes[0];
+					if (Child.DataSize >= 5)
+					{
+						Implementation.Phase = ReadReversedTag(Bytes + 1);
+					}
+					for (int32 FlagIndex = 0; FlagIndex < 2 && 5 + FlagIndex < Child.DataSize; ++FlagIndex)
+					{
+						Implementation.Flags[FlagIndex] = Bytes[5 + FlagIndex];
+					}
+				}
+				continue;
+			}
+
+			if (Child.FormType != SWG_IFF_TAG('P','A','S','S'))
+			{
+				continue;
+			}
+			const TArray<FSWGIffChunk> PassVersions = Reader.FindChildForms(Child);
+			if (PassVersions.IsEmpty())
+			{
+				return false;
+			}
+
+			FSWGEffectPass Pass;
+			Pass.Version = FCString::Atoi(*PassVersions[0].FormType.ToString());
+			for (const FSWGIffChunk& PassChild : Reader.ReadChildren(PassVersions[0]))
+			{
+				if (!PassChild.IsForm())
+				{
+					if (PassChild.Tag == SWGIffTags::Data)
+					{
+						Pass.RawData.Append(Reader.GetChunkData(PassChild), PassChild.DataSize);
+					}
+					continue;
+				}
+
+				if (PassChild.FormType == SWG_IFF_TAG('P','V','S','H'))
+				{
+					FSWGIffChunk Program;
+					if (Reader.FindChildChunk(PassChild, SWG_IFF_TAG('0','0','0','0'), Program))
+					{
+						Pass.VertexProgram = ReadCString(Reader.GetChunkData(Program), Program.DataSize);
+					}
+				}
+				else if (PassChild.FormType == SWG_IFF_TAG('P','P','S','H'))
+				{
+					for (const FSWGIffChunk& PixelVersion : Reader.FindChildForms(PassChild))
+					{
+						FSWGIffChunk Program;
+						if (Reader.FindChildChunk(PixelVersion, SWGIffTags::Data, Program) && Program.DataSize > 1)
+						{
+							// DATA = [byte][path]; the leading byte is 1 in every file.
+							Pass.PixelProgram = ReadCString(Reader.GetChunkData(Program) + 1, Program.DataSize - 1);
+						}
+					}
+				}
+			}
+
+			if (Pass.Version >= 5 && Pass.RawData.Num() >= 18)
+			{
+				const TArray<uint8>& Data = Pass.RawData;
+				Pass.FixedFunctionStages = Data[0];
+				Pass.FogMode = Data[2];
+				Pass.bDepthTest = Data[4] != 0;
+				Pass.bDepthWrite = Data[5] != 0;
+				Pass.DepthCompare = Data[6];
+				Pass.bAlphaBlend = Data[7] != 0;
+				Pass.BlendOperation = Data[8];
+				Pass.SourceFactor = static_cast<ESWGEffectBlendFactor>(FMath::Min<uint8>(Data[9], (uint8)ESWGEffectBlendFactor::SrcAlphaSat));
+				Pass.DestFactor = static_cast<ESWGEffectBlendFactor>(FMath::Min<uint8>(Data[10], (uint8)ESWGEffectBlendFactor::SrcAlphaSat));
+				Pass.bAlphaTest = Data[11] != 0;
+				if (Pass.bAlphaTest)
+				{
+					Pass.AlphaReferenceTag = ReadReversedTag(Data.GetData() + 12);
+				}
+				Pass.AlphaCompare = Data[16];
+				Pass.ColorWriteMask = Data[17];
+			}
+			else if (Pass.RawData.Num() >= 1)
+			{
+				Pass.FixedFunctionStages = Pass.RawData[0];
+			}
+			Implementation.Passes.Add(MoveTemp(Pass));
+		}
+		OutEffect.Implementations.Add(MoveTemp(Implementation));
+	}
+
+	return !OutEffect.Implementations.IsEmpty();
 }
 
 float FSWGEffectRenderStates::ResolveAlphaThreshold(const FSWGShaderData& Shader, float Fallback) const
