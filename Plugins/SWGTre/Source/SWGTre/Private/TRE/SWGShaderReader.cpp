@@ -74,6 +74,7 @@ bool FSWGShaderReader::ReadShader(const FSWGIffReader& Reader, FSWGShaderData& O
 	if (Reader.FindChildChunk(Form0000, SWGIffTags::Name, EffectNameChunk))
 	{
 		OutShader.EffectName = ReadCString(Reader.GetChunkData(EffectNameChunk), Reader.GetChunkSize(EffectNameChunk));
+		OutShader.EffectName.ReplaceInline(TEXT("\\"), TEXT("/"));
 	}
 
 	FSWGIffChunk InlineEffect;
@@ -82,7 +83,7 @@ bool FSWGShaderReader::ReadShader(const FSWGIffReader& Reader, FSWGShaderData& O
 	FSWGIffChunk TxmsForm;
 	if (!Reader.FindChildForm(Form0000, SWG_IFF_TAG('T','X','M','S'), TxmsForm))
 	{
-		return false;
+		return !OutShader.EffectName.IsEmpty() || OutShader.bHasInlineEffect;
 	}
 
 	for (const FSWGIffChunk& TxmForm : Reader.ReadChildren(TxmsForm))

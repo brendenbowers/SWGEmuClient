@@ -7,6 +7,7 @@ class FSWGIffReader;
 
 struct FSWGPobPortalRef
 {
+	uint8 Flags = 0; // Extra byte in PRTL/0005; retained without guessing its meaning.
     int32   PortalNumber;
     int32   ConnectingCellIndex;
     bool    bIsPassable;
@@ -15,6 +16,7 @@ struct FSWGPobPortalRef
     FString DoorStyle;          // empty = open archway, no door object
     FTransform DoorHardpoint;   // shared building-local space (Sheet 00 §00.4); always present
 	TArray<FVector> OpeningVertices;  // empty if portal has FORM NULL instead of FORM CMSH   
+	TArray<int32> OpeningIndices; // PRTO/0004 indexed portal mesh; empty for legacy polygon records.
 };
 
 enum class ESWGPobLightType : uint8 { Ambient = 0, Parallel = 1, Point = 2 };

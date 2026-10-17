@@ -77,6 +77,7 @@ bool FSWGPobReader::ReadPob(const FSWGIffReader& Reader, FSWGPobData& OutPob)
 	const FSWGIffChunk& VersionForm = PrtoChildren[0]; // "0003" or "0004"
 
 	TArray<TArray<FVector>> GlobalPortalQuads;
+	TArray<TArray<int32>> GlobalPortalIndices;
 	{
 		FSWGIffChunk PrtsForm;
 		if (!Reader.FindChildForm(VersionForm, SWG_IFF_TAG('P', 'R', 'T', 'S'), PrtsForm))
@@ -84,8 +85,35 @@ bool FSWGPobReader::ReadPob(const FSWGIffReader& Reader, FSWGPobData& OutPob)
 			return false;
 		}
 
-		for (const FSWGIffChunk& PortalChunk : Reader.FindAllChildChunks(PrtsForm, SWG_IFF_TAG('P', 'R', 'T', 'L')))
+		for (const FSWGIffChunk& PortalChunk : Reader.ReadChildren(PrtsForm))
 		{
+			if (PortalChunk.IsForm())
+			{
+				TArray<FVector>& Vertices = GlobalPortalQuads.AddDefaulted_GetRef();
+				TArray<int32>& Indices = GlobalPortalIndices.AddDefaulted_GetRef();
+				if (PortalChunk.FormType == SWG_IFF_TAG('N','U','L','L')) continue;
+				FSWGIffChunk Version, Verts, IndexChunk;
+				if (PortalChunk.FormType != SWG_IFF_TAG('I','D','T','L')
+					|| !Reader.FindChildForm(PortalChunk, SWG_IFF_TAG('0','0','0','0'), Version)
+					|| !Reader.FindChildChunk(Version, SWG_IFF_TAG('V','E','R','T'), Verts)
+					|| !Reader.FindChildChunk(Version, SWG_IFF_TAG('I','N','D','X'), IndexChunk)
+					|| Reader.GetChunkSize(Verts) % 12 != 0 || Reader.GetChunkSize(IndexChunk) % 12 != 0) return false;
+				FSWGIFFChunkReader VertexReader(Verts, Reader), IndexReader(IndexChunk, Reader);
+				for (int32 i = 0; i < Reader.GetChunkSize(Verts) / 12; ++i)
+				{
+					const FVector Vertex = VertexReader.ReadVectorLE<FVector, float>(SWGWorldScale);
+					if (Vertex.ContainsNaN()) return false;
+					Vertices.Add(Vertex);
+				}
+				for (int32 i = 0; i < Reader.GetChunkSize(IndexChunk) / 4; ++i)
+				{
+					int32 Index = 0;
+					if (!IndexReader.ReadValueLE(Index) || !Vertices.IsValidIndex(Index)) return false;
+					Indices.Add(Index);
+				}
+				continue;
+			}
+			if (PortalChunk.Tag != SWG_IFF_TAG('P','R','T','L')) return false;
 			FSWGIFFChunkReader PortalReader(PortalChunk, Reader);
 			int32 CornerCount = 0;
 			if (!PortalReader.ReadValueLE(CornerCount))
@@ -94,6 +122,8 @@ bool FSWGPobReader::ReadPob(const FSWGIffReader& Reader, FSWGPobData& OutPob)
 			}
 
 			TArray<FVector>& Corners = GlobalPortalQuads.AddDefaulted_GetRef();
+			GlobalPortalIndices.AddDefaulted();
+			if (CornerCount < 0 || CornerCount > (Reader.GetChunkSize(PortalChunk) - 4) / 12) return false;
 			Corners.Reserve(CornerCount);
 			for (int32 i = 0; i < CornerCount; ++i)
 			{
@@ -145,12 +175,12 @@ bool FSWGPobReader::ReadPob(const FSWGIffReader& Reader, FSWGPobData& OutPob)
 				|| !DataReader.ReadValueLE(CellFlags)
 				|| !DataReader.ReadTerminiatedString(Cell.CellName)
 				|| !DataReader.ReadTerminiatedString(Cell.MeshPath)
-				|| !DataReader.ReadValueLE(HasCollisionFloor)
-				|| !DataReader.ReadTerminiatedString(Cell.CollisionFloorPath))
+				|| !DataReader.ReadValueLE(HasCollisionFloor))
 			{
 				return false;
 			}
 			Cell.PortalCount = NumberOfPortals;
+			if (HasCollisionFloor && !DataReader.ReadTerminiatedString(Cell.CollisionFloorPath)) return false;
 			Cell.CanSeeParent = CellFlags != 0; // cellFlags' meaning is otherwise unconfirmed (Sheet 00 §00.2)
 		}
 
@@ -169,13 +199,15 @@ bool FSWGPobReader::ReadPob(const FSWGIffReader& Reader, FSWGPobData& OutPob)
 			}
 
 			FSWGIffChunk PortalDataChunk;
-			if (!Reader.FindChildChunk(PrtlForm, SWG_IFF_TAG('0', '0', '0', '4'), PortalDataChunk))
+			const bool bVersion5 = Reader.FindChildChunk(PrtlForm, SWG_IFF_TAG('0', '0', '0', '5'), PortalDataChunk);
+			if (!bVersion5 && !Reader.FindChildChunk(PrtlForm, SWG_IFF_TAG('0', '0', '0', '4'), PortalDataChunk))
 			{
 				return false;
 			}
 
 			FSWGIFFChunkReader PortalReader(PortalDataChunk, Reader);
 			FSWGPobPortalRef& Portal = Cell.Portals.AddDefaulted_GetRef();
+			if (bVersion5 && !PortalReader.ReadValueLE(Portal.Flags)) return false;
 
 			uint8 IsPassable = 0;
 			uint8 IsClockwise = 0;
@@ -197,6 +229,7 @@ bool FSWGPobReader::ReadPob(const FSWGIffReader& Reader, FSWGPobData& OutPob)
 			if (GlobalPortalQuads.IsValidIndex(Portal.PortalNumber))
 			{
 				Portal.OpeningVertices = GlobalPortalQuads[Portal.PortalNumber];
+				Portal.OpeningIndices = GlobalPortalIndices[Portal.PortalNumber];
 			}
 		}
 
