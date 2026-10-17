@@ -1,11 +1,16 @@
 #include "TRE/SWGTerrainFloraPlacer.h"
 
-#include "Math/RandomStream.h"
+#include "TRE/SWGTerrainNoise.h"
+
+float FSWGTerrainFloraPlacer::GetEffectiveTileSize(const FSWGTerrainData& Data, ESWGTerrainFloraTier Tier)
+{
+	// Retail's collidable path (0xb5e780) hard-codes a 16 m grid; the header tile size is unused.
+	return Tier == ESWGTerrainFloraTier::Collidable ? RetailCollidableTileSize : FMath::Max(Data.GetVegetationTier(Tier).TileSize, 0.5f);
+}
 
 float FSWGTerrainFloraPlacer::GetCellSize(const FSWGTerrainData& Data, ESWGTerrainFloraTier Tier)
 {
-	const float TileSize = Data.GetVegetationTier(Tier).TileSize;
-	return FMath::Max(TileSize, 0.5f) * SlotsPerCellAxis;
+	return GetEffectiveTileSize(Data, Tier) * SlotsPerCellAxis;
 }
 
 FIntPoint FSWGTerrainFloraPlacer::CellCoordAt(float CellSize, const FVector2D& RawPosition)
@@ -32,8 +37,11 @@ FVector FSWGTerrainFloraPlacer::SampleRawNormal(const FSWGTerrainData& Data, TAr
 void FSWGTerrainFloraPlacer::PlaceCell(const FSWGTerrainData& Data, TArrayView<const FSWGTerrainLayer> ExtraLayers, ESWGTerrainFloraTier Tier, const FIntPoint& CellCoord, float DensityScale, TFunctionRef<bool(const FVector2D&)> IsBlocked, TArray<FSWGTerrainFloraInstance>& OutInstances)
 {
 	const FSWGTerrainHeader::FVegetationTier& TierParams = Data.GetVegetationTier(Tier);
-	const float TileSize = FMath::Max(TierParams.TileSize, 0.5f);
-	const float Jitter = FMath::Clamp(TierParams.TileBorder, 0.0f, TileSize * 0.5f);
+	const bool bRetailCollidable = Tier == ESWGTerrainFloraTier::Collidable;
+	const float TileSize = GetEffectiveTileSize(Data, Tier);
+	const float Border = TierParams.TileBorder >= 0.0f && TierParams.TileBorder * 2.0f < TileSize ? TierParams.TileBorder : 0.0f;
+	const int32 RetailRowWidth = FMath::TruncToInt(Data.Header.MapSize * 0.0625f);
+	const float Span = TileSize - 2.0f * Border;
 	const bool bRadial = SWGIsRadialFloraTier(Tier);
 	const float HalfMap = Data.Header.MapSize * 0.5f;
 
@@ -44,25 +52,45 @@ void FSWGTerrainFloraPlacer::PlaceCell(const FSWGTerrainData& Data, TArrayView<c
 		{
 			const FIntPoint TileCoord = FirstTile + FIntPoint(TileOffsetX, TileOffsetY);
 
-			// Every roll is drawn whether or not the slot fills, so the outcome
-			// of one tile never shifts with its neighbours' — the stream is
-			// seeded by the tile alone and the tier's own seed.
-			FRandomStream Random((int32)HashCombine(HashCombine(TierParams.Seed, (uint32)TileCoord.X * 73856093u), (uint32)TileCoord.Y * 19349663u));
-			const float OffsetX = Random.FRandRange(-Jitter, Jitter);
-			const float OffsetY = Random.FRandRange(-Jitter, Jitter);
-			const float DensityRoll = Random.FRand();
-			const float ChildRoll = Random.FRand();
-			const float YawRoll = Random.FRand();
-			const float ScaleRoll = Random.FRand();
+			// Per-tile hashed stream. Retail's presence/child rolls come from a session-random chunk stream (time-seeded), so no seed can match them.
+			FSWGTerrainRandom Random;
+			Random.SetSeed((int32)(HashCombine(HashCombine(TierParams.Seed, (uint32)TileCoord.X * 73856093u), (uint32)TileCoord.Y * 19349663u) % 0x7fffffffu));
+			auto UnitRoll = [](FSWGTerrainRandom& Stream) { return (float)Stream.Next() * 4.656613e-10f; };
+			float OffsetX, OffsetY, YawRoll, ScaleRoll;
+			if (bRetailCollidable)
+			{
+				// Retail: ran1 seeded with -(cellX + W/2 + (cellZ + W/2) * W), W = trunc(mapSize / 16); draws are jitter X, jitter Z, yaw, scale (0xb5e780).
+				const int32 HalfRow = RetailRowWidth / 2;
+				FSWGTerrainRandom CellRandom;
+				CellRandom.SetSeed((TileCoord.X + HalfRow) + (TileCoord.Y + HalfRow) * RetailRowWidth);
+				OffsetX = Border + UnitRoll(CellRandom) * Span;
+				OffsetY = Border + UnitRoll(CellRandom) * Span;
+				YawRoll = UnitRoll(CellRandom);
+				ScaleRoll = UnitRoll(CellRandom);
+			}
+			else
+			{
+				OffsetX = Border + UnitRoll(Random) * Span;
+				OffsetY = Border + UnitRoll(Random) * Span;
+				YawRoll = 0.0f;
+				ScaleRoll = 0.0f;
+			}
+			const float DensityRoll = UnitRoll(Random);
+			const float ChildRoll = UnitRoll(Random);
+			if (!bRetailCollidable)
+			{
+				YawRoll = UnitRoll(Random);
+				ScaleRoll = UnitRoll(Random);
+			}
 
-			const FVector2D RawXY((TileCoord.X + 0.5f) * TileSize + OffsetX, (TileCoord.Y + 0.5f) * TileSize + OffsetY);
+			const FVector2D RawXY(TileCoord.X * TileSize + OffsetX, TileCoord.Y * TileSize + OffsetY);
 			if (FMath::Abs(RawXY.X) > HalfMap || FMath::Abs(RawXY.Y) > HalfMap || IsBlocked(RawXY))
 			{
 				continue;
 			}
 
 			const FSWGTerrainFloraSample Sample = FSWGTerrainEvaluator::GetFlora(Data, RawXY.X, RawXY.Y, Tier, ExtraLayers);
-			if (Sample.FamilyId == 0 || DensityRoll >= Sample.Density * DensityScale)
+			if (Sample.FamilyId == 0 || Sample.Density * DensityScale <= 0.0f || DensityRoll > Sample.Density * DensityScale)
 			{
 				continue;
 			}
@@ -90,6 +118,12 @@ void FSWGTerrainFloraPlacer::PlaceCell(const FSWGTerrainData& Data, TArrayView<c
 				Instance.ChildIndex = (int32)(Child - Family->Children.GetData());
 				Instance.Scale = Child->bShouldScale ? FMath::Lerp(Child->MinScale, Child->MaxScale, ScaleRoll) : 1.0f;
 				bAlignToTerrain = Child->bAlignToTerrain;
+				float WaterHeight;
+				if (Family->bFloatsOnWater && FSWGTerrainEvaluator::GetWaterHeight(Data, RawXY.X, RawXY.Y, WaterHeight) && WaterHeight > Sample.Height)
+				{
+					Instance.RawPosition.Z = WaterHeight;
+					bAlignToTerrain = false;
+				}
 			}
 
 			if (bAlignToTerrain)

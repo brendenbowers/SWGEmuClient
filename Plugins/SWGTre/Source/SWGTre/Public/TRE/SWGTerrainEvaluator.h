@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "TRE/SWGTerrainReader.h"
+#include "TRE/SWGTerrainTint.h"
 
 /** What one vegetation tier's affectors left at a point — see FSWGTerrainEvaluator::GetFlora. */
 struct FSWGTerrainFloraSample
@@ -40,13 +41,17 @@ public:
 	 * everything else (height affectors, road affectors) is skipped, matching
 	 * Core3's own requestedType-filtered processTerrain dispatch (see
 	 * ProceduralTerrainAppearance::getEnvironmentID for the analogous
-	 * non-height traversal this mirrors). Returns each touched shader
-	 * family's paint weight, summing to <= 1.0 — see ApplyShaderAffector for
-	 * the alpha-over compositing model (Core3 has no reference process()
-	 * implementation for these two affector types to port, since shader
-	 * painting was purely a client rendering concern).
+	 * non-height traversal this mirrors). Shader affectors hard-paint the one
+	 * family the retail client would hold at the point (weight 1.0); only a
+	 * road-surface paint can leave a second, partial entry. See ApplyShaderAffector.
 	 */
 	static void GetShaderWeights(const FSWGTerrainData& Data, float X, float Y, TMap<int32, float>& OutWeights, TArrayView<const FSWGTerrainLayer> ExtraLayers = {});
+
+	/**
+	 * The environment family id at (X,Y): the last Environment (AENV) affector whose layer reaches
+	 * the point wins, as in Core3's getEnvironmentID. 0 when none does.
+	 */
+	static int32 GetEnvironmentFamily(const FSWGTerrainData& Data, float X, float Y, TArrayView<const FSWGTerrainLayer> ExtraLayers = {});
 
 	/**
 	 * The GetHeight walk with one vegetation tier's affectors (see
@@ -58,6 +63,19 @@ public:
 	 * candidate point.
 	 */
 	static FSWGTerrainFloraSample GetFlora(const FSWGTerrainData& Data, float X, float Y, ESWGTerrainFloraTier Tier, TArrayView<const FSWGTerrainLayer> ExtraLayers = {});
+
+	/**
+	 * The GetHeight walk that also runs the retail colour affectors (ACCN/ACRH/ACRF) and AEXC, so a ramp indexed by
+	 * the running height (ACRH) sees the height of that moment, as in retail's chunk generator. Returns the height;
+	 * OutGround receives the ground tint (white when untouched) and the exclusion flag.
+	 */
+	static float GetHeightAndGround(const FSWGTerrainData& Data, float X, float Y, FSWGTerrainGroundSample& OutGround, TArrayView<const FSWGTerrainLayer> ExtraLayers = {});
+
+	/**
+	 * Retail getWaterHeight (0xb6e8c0): the highest of the global water table and every local water-table boundary
+	 * (rectangle or polygon) reaching the point. False where there is no water table.
+	 */
+	static bool GetWaterHeight(const FSWGTerrainData& Data, float X, float Y, float& OutHeight);
 
 private:
 	/** Confirmed port of ProceduralTerrainAppearance::calculateFeathering. */
@@ -82,8 +100,18 @@ private:
 		TOptional<FVector> Normal;
 	};
 
+	/** State of a GetHeightAndGround walk. */
+	struct FGroundWalk
+	{
+		const FSWGTerrainData& Data;
+		FSWGTerrainGroundSample Sample;
+	};
+
+	/** Colour affectors blend into Ground.Sample.Tint at TransformValue (retail 0xb8a470 / 0xb8aba0 / 0xb8b280); AEXC sets the exclusion flag (0xb8a250). */
+	static void ApplyGroundAffector(const FSWGTerrainAffector& Affector, float X, float Y, float Height, float TransformValue, FGroundWalk& Ground);
+
 	/** Confirmed port of ProceduralTerrainAppearance::processTerrain. Flora, when given, also applies that tier's flora affectors (ApplyFloraAffector) and tracks shader paint. */
-	static float ProcessLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup, FFloraWalk* Flora = nullptr);
+	static float ProcessLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup, FFloraWalk* Flora = nullptr, FGroundWalk* Ground = nullptr);
 
 	/** See FSWGTerrainAffector's flora fields for the remove/replace/add semantics this applies. */
 	static void ApplyFloraAffector(const FSWGTerrainAffector& Affector, float TransformValue, FFloraWalk& Flora);
@@ -112,10 +140,10 @@ private:
 	static void ApplyAffector(const FSWGTerrainAffector& Affector, float X, float Y, float TransformValue, float& Height, const FSWGMapGroup& MapGroup);
 
 	/** Confirmed port of processTerrain, specialized to the shader-weight walk (see GetShaderWeights). */
-	static float ProcessShaderLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup, TMap<int32, float>& OutWeights);
+	static float ProcessShaderLayer(const FSWGTerrainLayer& Layer, float X, float Y, float& Height, float ParentTransform, const FSWGMapGroup& MapGroup, TMap<int32, float>& OutWeights, int32* OutEnvironment = nullptr);
 
-	/** Applies one ShaderConstant/ShaderReplace affector's alpha-over paint to OutWeights — see GetShaderWeights' comment. */
-	static void ApplyShaderAffector(const FSWGTerrainAffector& Affector, float TransformValue, TMap<int32, float>& OutWeights);
+	/** Applies one ShaderConstant/ShaderReplace affector: a retail-style threshold paint that leaves OutWeights holding the single painted family at 1.0. */
+	static void ApplyShaderAffector(const FSWGTerrainAffector& Affector, float TransformValue, const FSWGMapGroup& MapGroup, TMap<int32, float>& OutWeights);
 
 	/** Confirmed port of Segment::findNearestHeight — interpolates a road's baked height profile at (X,Y). */
 	static void FindNearestRoadHeight(const FSWGTerrainRoadSegment& Segment, float& Height, float X, float Y, const FVector2D& RoadCenter, float Direction);

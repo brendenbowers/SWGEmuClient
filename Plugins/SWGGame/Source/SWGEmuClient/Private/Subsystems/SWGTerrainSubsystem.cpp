@@ -2,6 +2,7 @@
 #include "Common/SWGWorldScale.h"
 #include "HAL/IConsoleManager.h"
 #include "Subsystems/SWGTreSubsystem.h"
+#include "Subsystems/SWGAmbienceSubsystem.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
 #include "Subsystems/SWGActorSpawnHandlerRegistry.h"
 #include "Subsystems/SWGObjectGraphSubsystem.h"
@@ -12,10 +13,13 @@
 #include "Objects/Creature/SWGCreature.h"
 #include "Objects/World/SWGBuilding.h"
 #include "Objects/World/SWGCell.h"
+#include "Objects/World/SWGParticleEmitterActor.h"
+#include "Objects/World/SWGSoundEmitter.h"
 #include "TRE/SWGTerrainReader.h"
 #include "TRE/SWGTerrainEvaluator.h"
 #include "TRE/SWGWorldSnapshotReader.h"
 #include "TRE/SWGTerrainModifier.h"
+#include "TRE/SWGWaterRules.h"
 #include "Async/Async.h"
 #include "Async/ParallelFor.h"
 #include "TRE/SWGFormTagMapping.h"
@@ -192,6 +196,22 @@ namespace
 	// Terrain layers are detail textures, not a single decal for an entire
 	// 2km baked tile. Raw world coordinates keep adjacent tiles in phase.
 	constexpr float TerrainTextureRepeatWorldSize = 8.0f;
+
+	TAutoConsoleVariable<int32> CVarTerrainShaderBlend(
+		TEXT("swg.TerrainShaderBlend"), 1,
+		TEXT("Blend neighbouring shader families with retail's per-tile gradient overlay (0 = hard family edges). Takes effect on the next terrain bake."));
+
+	TAutoConsoleVariable<int32> CVarTerrainTint(
+		TEXT("swg.Terrain.TintEnabled"), 1,
+		TEXT("Apply retail's ground tint (ACCN/ACRH/ACRF colour affectors) to the terrain. Use the swg.Terrain.Tint command to toggle and re-bake loaded tiles."));
+
+	TAutoConsoleVariable<float> CVarTerrainTintScale(
+		TEXT("swg.Terrain.TintScale"), 1.0f,
+		TEXT("Brightness multiplier on the ground tint, for matching retail's lighting. Takes effect on the next terrain bake."));
+
+	TAutoConsoleVariable<int32> CVarUnderwater(
+		TEXT("swg.Water.Underwater"), 1,
+		TEXT("Retail's underwater look while the camera is below the surface: teal fog, 500 m view."));
 
 	// Interpolation across one base quad's corners, (U,V) running 0-1 from the
 	// (Col,Row) corner — exactly the surface that quad's two triangles describe.
@@ -483,6 +503,22 @@ void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const 
 		return;
 	}
 
+	// Colour-ramp images the ACRH/ACRF affectors index; a missing one just skips that affector.
+	TArray<FString> RampPaths;
+	SWGTerrainTint::CollectRampPaths(*Parsed, RampPaths);
+	for (const FString& RampPath : RampPaths)
+	{
+		FSWGTerrainColorRamp Ramp;
+		if (TreSubsystem->FileExists(RampPath) && SWGTerrainTint::DecodeTga(TreSubsystem->ExtractFile(RampPath), Ramp))
+		{
+			Parsed->ColorRamps.Add(RampPath, MoveTemp(Ramp));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: colour ramp %s missing or not a truecolour TGA"), *RampPath);
+		}
+	}
+
 	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %s — map %.0f, chunk %.0f x %u tiles (pole spacing %.2f), global water %d @ %.1f, %d top-level layer(s)"),
 		*TerrainVirtualPath, Parsed->Header.MapSize, Parsed->Header.ChunkSize, Parsed->Header.TilesPerChunk, Parsed->Header.GetPoleSpacing(),
 		Parsed->Header.bUseGlobalWaterTable ? 1 : 0, Parsed->Header.GlobalWaterTableHeight, Parsed->TopLevelLayers.Num());
@@ -490,8 +526,26 @@ void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const 
 	TMap<FIntPoint, TArray<int32>> NodesByTile;
 	TSharedPtr<const FSWGWorldSnapshotData, ESPMode::ThreadSafe> Snapshot = LoadWorldSnapshot(TerrainVirtualPath, NodesByTile);
 
+	// Retail's overlay gradients: three DXT3 alpha textures that the tile builder picks by neighbour pattern.
+	TSharedPtr<FSWGShaderBlendMasks, ESPMode::ThreadSafe> BlendMasks = MakeShared<FSWGShaderBlendMasks, ESPMode::ThreadSafe>();
+	const TPair<ESWGShaderOverlayShape, const TCHAR*> BlendMaskFiles[] = {
+		{ ESWGShaderOverlayShape::Corner, TEXT("texture/blnd_onequarter.dds") },
+		{ ESWGShaderOverlayShape::Edge, TEXT("texture/blnd_onehalf.dds") },
+		{ ESWGShaderOverlayShape::ThreeQuarter, TEXT("texture/blnd_threequarter.dds") },
+	};
+	bool bBlendMasksLoaded = true;
+	for (const TPair<ESWGShaderOverlayShape, const TCHAR*>& MaskFile : BlendMaskFiles)
+	{
+		bBlendMasksLoaded &= TreSubsystem->FileExists(MaskFile.Value) && BlendMasks->LoadFromDds(MaskFile.Key, TreSubsystem->ExtractFile(MaskFile.Value));
+	}
+	if (!bBlendMasksLoaded)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("USWGTerrainSubsystem: blnd_*.dds overlay masks missing or not DXT3 - shader families keep hard edges"));
+		BlendMasks.Reset();
+	}
+
 	// Nothing here touched a UObject; the streaming itself is game-thread work.
-	AsyncTask(ENamedThreads::GameThread, [this, TerrainVirtualPath, Parsed, Snapshot, NodesByTile = MoveTemp(NodesByTile)]() mutable
+	AsyncTask(ENamedThreads::GameThread, [this, TerrainVirtualPath, Parsed, Snapshot, BlendMasks, NodesByTile = MoveTemp(NodesByTile)]() mutable
 		{
 			if (TerrainVirtualPath != ActiveTerrainVirtualPath)
 			{
@@ -500,6 +554,7 @@ void USWGTerrainSubsystem::LoadTerrain(const FString& TerrainVirtualPath, const 
 			}
 
 			PlanetData = Parsed;
+			ShaderBlendMasks = BlendMasks;
 			SnapshotData = Snapshot;
 			SnapshotNodesByTile = MoveTemp(NodesByTile);
 			bTerrainDataCached = true;
@@ -601,6 +656,11 @@ void USWGTerrainSubsystem::ResetZone()
 	AmbientLight = nullptr;
 	HeightFog = nullptr;
 	bHasColorRamp = false;
+	BaseRamp.Reset();
+	RampFrom.Reset();
+	RampTo.Reset();
+	RampCache.Reset();
+	GradientCache.Reset();
 	SkyDomeMaterial = nullptr;
 	SkyActor = nullptr;
 	StarFieldMaterial = nullptr;
@@ -610,6 +670,7 @@ void USWGTerrainSubsystem::ResetZone()
 	CloudMaterials.Reset();
 
 	PlanetData.Reset();
+	ShaderBlendMasks.Reset();
 	SnapshotData.Reset();
 	SnapshotNodesByTile.Reset();
 
@@ -631,6 +692,7 @@ void USWGTerrainSubsystem::Tick(float DeltaTime)
 	{
 		ApplyTimeOfDay(GetDayFraction());
 	}
+	UpdateUnderwater();
 
 	TimeUntilNextSweep -= DeltaTime;
 	if (TimeUntilNextSweep > 0.0f)
@@ -689,8 +751,24 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 	// datatables/environment/<planet>.iff names the ramp, the gradient sky
 	// and the fog for each environment family and weather state.
 	const FString ZoneName = FPaths::GetBaseFilename(TerrainVirtualPath).ToLower();
-	Environment = LoadPlanetEnvironment(ZoneName);
-	bHasColorRamp = LoadPlanetColorRamp(ZoneName, ColorRamp);
+	Environment = FSWGEnvironmentRow();
+	LoadPlanetEnvironment(ZoneName, Environment);
+	FSWGColorRamp PlanetRamp;
+	bHasColorRamp = LoadPlanetColorRamp(ZoneName, PlanetRamp);
+	BaseRamp.Reset();
+	if (bHasColorRamp)
+	{
+		BaseRamp = MakeShared<FSWGColorRamp>(MoveTemp(PlanetRamp));
+	}
+	RampFrom = BaseRamp;
+	RampTo.Reset();
+	RampAlpha = 0.0f;
+	RampCache.Reset();
+	GradientCache.Reset();
+	AppliedGradientSky = Environment.GradientSky;
+	AppliedCloudKey = MakeCloudKey(Environment);
+	CloudFade = 1.0f;
+	++EnvironmentRevision;
 
 	SunLight = Sun;
 	if (Sun)
@@ -763,7 +841,7 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 		SkyActor->SetRootComponent(SkyRoot);
 		SkyRoot->RegisterComponent();
 	}
-	UTexture2D* GradientTexture = Environment.GradientSkyTexture.IsEmpty() ? nullptr : LoadGradientSkyTexture(Environment.GradientSkyTexture);
+	UTexture2D* GradientTexture = Environment.GradientSky.IsEmpty() ? nullptr : LoadGradientSkyTexture(Environment.GradientSky);
 	if (GradientTexture && SkyActor)
 	{
 		UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/EngineSky/SM_SkySphere.SM_SkySphere"));
@@ -786,7 +864,7 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 		}
 	}
 	SpawnCelestialSprites(LoadPlanetCelestials(ZoneName));
-	SpawnCloudLayers();
+	SpawnCloudLayers(Environment);
 	// No star dome: the extra sphere showed through the sky. Stars are still to be done another way.
 	if (!SkyDomeMaterial)
 	{
@@ -809,9 +887,8 @@ void USWGTerrainSubsystem::SetupPlanetLighting(const FString& TerrainVirtualPath
 	{
 		Fog->Tags.Add(PlanetLightingTag);
 		// The table's minimum density is the clear-weather value; heavier
-		// weather states raise it towards the maximum.
-		const float Density = Environment.bFogEnabled ? Environment.MinFogDensity : 0.0f;
-		Fog->GetComponent()->SetFogDensity(Density * CVarFogDensityScale.GetValueOnGameThread());
+		// weather states raise it towards the maximum (see GetFogDensity).
+		Fog->GetComponent()->SetFogDensity(Environment.GetFogDensity() * CVarFogDensityScale.GetValueOnGameThread());
 	}
 
 	ApplyTimeOfDay(GetDayFraction(), /*bLog=*/true);
@@ -887,9 +964,19 @@ void USWGTerrainSubsystem::ApplyTimeOfDay(float DayFraction, bool bLog)
 	// axis tilted by swg.SkyLatitude. Sunrise is in the east (UE +Y).
 	const float HourAngle = HourAngleForDayFraction(DayFraction);
 	const float RampFraction = RampFractionForHourAngle(HourAngle);
-	const FLinearColor AmbientColor = bHasColorRamp ? ColorRamp.Sample(FSWGColorRamp::Ambient, RampFraction) : FLinearColor(0.35f, 0.35f, 0.4f);
-	const FLinearColor SunColor = bHasColorRamp ? ColorRamp.Sample(FSWGColorRamp::SunDiffuse, RampFraction) : FLinearColor::White;
-	const FLinearColor FogColor = bHasColorRamp ? ColorRamp.Sample(FSWGColorRamp::Fog, RampFraction) : FLinearColor(0.60f, 0.72f, 0.78f);
+	// During a weather change the ramp is a blend of the old and new rows' ramps.
+	auto SampleRamp = [&](FSWGColorRamp::ERow Row, const FLinearColor& Fallback) -> FLinearColor
+		{
+			if (!RampFrom.IsValid())
+			{
+				return Fallback;
+			}
+			const FLinearColor FromColor = RampFrom->Sample(Row, RampFraction);
+			return RampTo.IsValid() ? FMath::Lerp(FromColor, RampTo->Sample(Row, RampFraction), RampAlpha) : FromColor;
+		};
+	const FLinearColor AmbientColor = SampleRamp(FSWGColorRamp::Ambient, FLinearColor(0.35f, 0.35f, 0.4f));
+	const FLinearColor SunColor = SampleRamp(FSWGColorRamp::SunDiffuse, FLinearColor::White);
+	const FLinearColor FogColor = SampleRamp(FSWGColorRamp::Fog, FLinearColor(0.60f, 0.72f, 0.78f));
 	const FVector SunDirection = CelestialDirection(HourAngle, 0.0f, 0.0f);
 	const float TrueSunElevation = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(SunDirection.Z, -1.0f, 1.0f)));
 	const bool bDaytime = TrueSunElevation > 0.0f;
@@ -1050,58 +1137,112 @@ UTextureCube* USWGTerrainSubsystem::MakeUniformCubemap()
 	return Cube;
 }
 
-USWGTerrainSubsystem::FSWGPlanetEnvironment USWGTerrainSubsystem::LoadPlanetEnvironment(const FString& ZoneName) const
+bool USWGTerrainSubsystem::LoadPlanetEnvironment(const FString& ZoneName, FSWGEnvironmentRow& OutRow) const
 {
-	FSWGPlanetEnvironment Result;
-	const FString TablePath = FString::Printf(TEXT("datatables/environment/%s.iff"), *ZoneName);
-	FSWGDataTableData Table;
-	if (!TreSubsystem || !TreSubsystem->FileExists(TablePath) || !FSWGDataTableReader::ReadDataTable(TreSubsystem->CreateIffReader(TablePath), Table))
+	// One row per (environment family, weather index); the planet-wide base is "global" in clear weather.
+	// Per-region families and weather rows are applied later through BlendEnvironment.
+	TArray<FSWGEnvironmentRow> Rows;
+	if (!TreSubsystem || !USWGAmbienceSubsystem::LoadEnvironmentTable(*TreSubsystem, ZoneName, Rows))
 	{
-		UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: no environment table at %s"), *TablePath);
-		return Result;
+		UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: no environment table for %s"), *ZoneName);
+		return false;
 	}
-
-	// One row per (environment family, weather index). The planet-wide
-	// "global" family in clear weather (index 0) for now; per-region
-	// families come from the .trn's AENV affector, weather from the server.
-	const int32 FamilyColumn = Table.GetColumnIndex(TEXT("Environment Family Name"));
-	const int32 WeatherColumn = Table.GetColumnIndex(TEXT("Weather Index"));
-	const FSWGDataTableRow* Row = Table.Rows.FindByPredicate([&](const FSWGDataTableRow& Candidate)
-		{
-			return Candidate.Cells.IsValidIndex(FamilyColumn) && Candidate.Cells[FamilyColumn] == TEXT("global")
-				&& Candidate.Cells.IsValidIndex(WeatherColumn) && FCString::Atoi(*Candidate.Cells[WeatherColumn]) == 0;
-		});
+	const FSWGEnvironmentRow* Row = USWGAmbienceSubsystem::FindEnvironmentRow(Rows, TEXT("global"), 0);
 	if (!Row)
 	{
-		Row = Table.Rows.Num() > 0 ? &Table.Rows[0] : nullptr;
-	}
-	if (!Row)
-	{
-		return Result;
+		return false;
 	}
 
-	auto Cell = [&](const TCHAR* Column) -> FString
-		{
-			const int32 Index = Table.GetColumnIndex(Column);
-			return Row->Cells.IsValidIndex(Index) ? Row->Cells[Index] : FString();
-		};
-	Result.bValid = true;
-	Result.GradientSkyTexture = Cell(TEXT("Gradient Sky Texture (256x256 dds)")).Replace(TEXT("\\"), TEXT("/"));
-	Result.ColorRampPath = Cell(TEXT("Lighting Color Ramps (256x8 tga)")).Replace(TEXT("\\"), TEXT("/"));
-	Result.bFogEnabled = FCString::Atoi(*Cell(TEXT("Fog Enabled"))) != 0;
-	Result.MinFogDensity = FCString::Atof(*Cell(TEXT("Minimum Fog Density")));
-	Result.MaxFogDensity = FCString::Atof(*Cell(TEXT("Maximum Fog Density")));
-	Result.DayEnvironmentMap = Cell(TEXT("Day Environment Map (dds)")).Replace(TEXT("\\"), TEXT("/"));
-	Result.NightEnvironmentMap = Cell(TEXT("Night Environment Map (dds)")).Replace(TEXT("\\"), TEXT("/"));
-	Result.CloudTopShader = Cell(TEXT("Cloud Layer Top Shader (sht)")).Replace(TEXT("\\"), TEXT("/"));
-	Result.CloudTopShaderSize = FCString::Atof(*Cell(TEXT("Cloud Layer Top Shader Size")));
-	Result.CloudTopSpeed = FCString::Atof(*Cell(TEXT("Cloud Layer Top Speed")));
-	Result.CloudBottomShader = Cell(TEXT("Cloud Layer Bottom Shader (sht)")).Replace(TEXT("\\"), TEXT("/"));
-	Result.CloudBottomShaderSize = FCString::Atof(*Cell(TEXT("Cloud Layer Bottom Shader Size")));
-	Result.CloudBottomSpeed = FCString::Atof(*Cell(TEXT("Cloud Layer Bottom Speed")));
+	OutRow = *Row;
 	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: environment '%s' — sky %s, ramp %s, fog %s %.4f..%.4f, clouds %s"),
-		*ZoneName, *Result.GradientSkyTexture, *Result.ColorRampPath, Result.bFogEnabled ? TEXT("on") : TEXT("off"), Result.MinFogDensity, Result.MaxFogDensity, *Result.CloudTopShader);
+		*ZoneName, *OutRow.GradientSky, *OutRow.ColorRamp, OutRow.bFogEnabled ? TEXT("on") : TEXT("off"), OutRow.MinFogDensity, OutRow.MaxFogDensity, *OutRow.CloudTopShader);
+	return true;
+}
+
+TSharedPtr<const FSWGColorRamp> USWGTerrainSubsystem::ResolveRamp(const FString& Path)
+{
+	if (Path.IsEmpty() || !TreSubsystem)
+	{
+		return BaseRamp;
+	}
+	if (const TSharedPtr<const FSWGColorRamp>* Cached = RampCache.Find(Path))
+	{
+		return *Cached;
+	}
+
+	TSharedPtr<const FSWGColorRamp> Result = BaseRamp;
+	FSWGColorRamp Loaded;
+	if (TreSubsystem->FileExists(Path) && FSWGColorRampReader::ReadTga(TreSubsystem->ExtractFile(Path), Loaded))
+	{
+		Result = MakeShared<FSWGColorRamp>(MoveTemp(Loaded));
+	}
+	RampCache.Add(Path, Result);
 	return Result;
+}
+
+FString USWGTerrainSubsystem::MakeCloudKey(const FSWGEnvironmentRow& Row)
+{
+	return FString::Printf(TEXT("%s|%.2f|%.2f|%s|%.2f|%.2f"), *Row.CloudBottomShader, Row.CloudBottomSize, Row.CloudBottomSpeed, *Row.CloudTopShader, Row.CloudTopSize, Row.CloudTopSpeed);
+}
+
+const FSWGEnvironmentRow& USWGTerrainSubsystem::ResolveCloudRow(const FSWGEnvironmentRow& Row) const
+{
+	// Storm rows leave the clouds blank on purpose (the overcast sky replaces them); a clear row of
+	// another family that does so just has no row of its own for them.
+	const bool bBlank = Row.CloudBottomShader.IsEmpty() && Row.CloudTopShader.IsEmpty();
+	return bBlank && Row.WeatherIndex == 0 ? Environment : Row;
+}
+
+void USWGTerrainSubsystem::BlendEnvironment(const FSWGEnvironmentRow* FromRow, const FSWGEnvironmentRow& ToRow, float Alpha)
+{
+	const FSWGEnvironmentRow& From = FromRow ? *FromRow : Environment;
+	Alpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
+
+	if (IsValid(HeightFog))
+	{
+		const float Density = FMath::Lerp(From.GetFogDensity(), ToRow.GetFogDensity(), Alpha);
+		HeightFog->GetComponent()->SetFogDensity(Density * CVarFogDensityScale.GetValueOnGameThread());
+	}
+
+	// The ramp itself is sampled and lerped in ApplyTimeOfDay.
+	const bool bSettled = Alpha >= 1.0f;
+	RampFrom = ResolveRamp(bSettled ? ToRow.ColorRamp : From.ColorRamp);
+	RampTo = bSettled ? nullptr : ResolveRamp(ToRow.ColorRamp);
+	RampAlpha = Alpha;
+
+	// A texture or cloud set cannot be lerped, so each switches at the midpoint.
+	const FSWGEnvironmentRow& Midpoint = Alpha < 0.5f ? From : ToRow;
+	const FString& WantedGradient = Midpoint.GradientSky.IsEmpty() ? Environment.GradientSky : Midpoint.GradientSky;
+	if (IsValid(SkyDomeMaterial) && WantedGradient != AppliedGradientSky && !WantedGradient.IsEmpty())
+	{
+		TObjectPtr<UTexture2D>* Cached = GradientCache.Find(WantedGradient);
+		UTexture2D* Gradient = Cached ? Cached->Get() : LoadGradientSkyTexture(WantedGradient);
+		if (Gradient)
+		{
+			GradientCache.Add(WantedGradient, Gradient);
+			SkyDomeMaterial->SetTextureParameterValue(TEXT("Gradient"), Gradient);
+			AppliedGradientSky = WantedGradient;
+		}
+	}
+
+	const FSWGEnvironmentRow& FromClouds = ResolveCloudRow(From);
+	const FSWGEnvironmentRow& ToClouds = ResolveCloudRow(ToRow);
+	const FString WantedCloudKey = MakeCloudKey(Alpha < 0.5f ? FromClouds : ToClouds);
+	if (IsValid(SkyActor) && WantedCloudKey != AppliedCloudKey)
+	{
+		ClearCloudLayers();
+		SpawnCloudLayers(Alpha < 0.5f ? FromClouds : ToClouds);
+		AppliedCloudKey = WantedCloudKey;
+	}
+	// Dip to nothing at the midpoint so the swap is hidden; rows with the same clouds keep them.
+	CloudFade = MakeCloudKey(FromClouds) == MakeCloudKey(ToClouds) ? 1.0f : FMath::Abs(Alpha * 2.0f - 1.0f);
+	for (const TObjectPtr<UMaterialInstanceDynamic>& CloudMaterial : CloudMaterials)
+	{
+		if (IsValid(CloudMaterial))
+		{
+			CloudMaterial->SetScalarParameterValue(TEXT("Opacity"), CVarCloudOpacity.GetValueOnGameThread() * CloudFade);
+		}
+	}
 }
 
 TArray<USWGTerrainSubsystem::FSWGCelestialDefinition> USWGTerrainSubsystem::LoadPlanetCelestials(const FString& ZoneName) const
@@ -1236,7 +1377,20 @@ void USWGTerrainSubsystem::SpawnCelestialSprites(const TArray<FSWGCelestialDefin
 	UE_LOG(LogTemp, Log, TEXT("USWGTerrainSubsystem: %d celestial sprite(s) in the sky"), CelestialSprites.Num());
 }
 
-void USWGTerrainSubsystem::SpawnCloudLayers()
+void USWGTerrainSubsystem::ClearCloudLayers()
+{
+	for (UStaticMeshComponent* Cloud : CloudLayers)
+	{
+		if (IsValid(Cloud))
+		{
+			Cloud->DestroyComponent();
+		}
+	}
+	CloudLayers.Reset();
+	CloudMaterials.Reset();
+}
+
+void USWGTerrainSubsystem::SpawnCloudLayers(const FSWGEnvironmentRow& Row)
 {
 	UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
 	UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/SWGEmu/Materials/M_SWGCloudLayer.M_SWGCloudLayer"));
@@ -1247,8 +1401,8 @@ void USWGTerrainSubsystem::SpawnCloudLayers()
 
 	struct FLayer { const FString* Shader; float Size; float Speed; float AltitudeMetres; };
 	const FLayer Layers[] = {
-		{ &Environment.CloudBottomShader, Environment.CloudBottomShaderSize, Environment.CloudBottomSpeed, 900.0f },
-		{ &Environment.CloudTopShader, Environment.CloudTopShaderSize, Environment.CloudTopSpeed, 1400.0f },
+		{ &Row.CloudBottomShader, Row.CloudBottomSize, Row.CloudBottomSpeed, 900.0f },
+		{ &Row.CloudTopShader, Row.CloudTopSize, Row.CloudTopSpeed, 1400.0f },
 	};
 	for (const FLayer& Layer : Layers)
 	{
@@ -1278,7 +1432,7 @@ void USWGTerrainSubsystem::SpawnCloudLayers()
 		// repeat — retail projected it onto a dome — so it is scaled up here.
 		MID->SetScalarParameterValue(TEXT("TileSize"), SWGToUnrealSpace(FMath::Max(Layer.Size, 1.0f) * CVarCloudTileScale.GetValueOnGameThread()));
 		MID->SetScalarParameterValue(TEXT("Speed"), Layer.Speed);
-		MID->SetScalarParameterValue(TEXT("Opacity"), CVarCloudOpacity.GetValueOnGameThread());
+		MID->SetScalarParameterValue(TEXT("Opacity"), CVarCloudOpacity.GetValueOnGameThread() * CloudFade);
 		Cloud->SetMaterial(0, MID);
 		Cloud->RegisterComponent();
 		CloudLayers.Add(Cloud);
@@ -1477,7 +1631,7 @@ bool USWGTerrainSubsystem::LoadPlanetColorRamp(const FString& ZoneName, FSWGColo
 	// The environment table names the ramp; the naming-convention guesses
 	// below only cover planets without a table.
 	const TArray<FString> Candidates = {
-		Environment.ColorRampPath,
+		Environment.ColorRamp,
 		FString::Printf(TEXT("terrain/colorramp/%s_global0.tga"), *ZoneName),
 		FString::Printf(TEXT("terrain/colorramp/%s_%s_global0.tga"), *ZoneName, *ZoneName),
 		TEXT("terrain/colorramp/09_default0.tga"),
@@ -1564,6 +1718,30 @@ bool USWGTerrainSubsystem::ResolveWorldSnapshotNode(const FSWGWorldSnapshotNode&
 
 	const FString& TemplateName = Snapshot.ObjectTemplateNames[(int32)Node.NameID];
 
+	// Sound objects are STAT templates (a prop class would give them an empty mesh); they get an emitter instead.
+	if (ASWGSoundEmitter::IsSoundObjectTemplate(TemplateName))
+	{
+		OutInfo.ObjectId = (int64)Node.ObjectID;
+		OutInfo.CellNumber = (int32)Node.CellID;
+		OutInfo.ActorClass = ASWGSoundEmitter::StaticClass();
+		OutInfo.Position = Node.Position;
+		OutInfo.Rotation = Node.Direction;
+		OutInfo.TemplateName = TemplateName;
+		return true;
+	}
+
+	// Particle objects are STAT too, but their appearance is a .prt, not a mesh.
+	if (ASWGParticleEmitterActor::IsParticleObjectTemplate(TemplateName))
+	{
+		OutInfo.ObjectId = (int64)Node.ObjectID;
+		OutInfo.CellNumber = (int32)Node.CellID;
+		OutInfo.ActorClass = ASWGParticleEmitterActor::StaticClass();
+		OutInfo.Position = Node.Position;
+		OutInfo.Rotation = Node.Direction;
+		OutInfo.TemplateName = TemplateName;
+		return true;
+	}
+
 	FSWGIffReader TemplateReader = TreSubsystem->CreateIffReader(TemplateName);
 	if (!TemplateReader.IsValid())
 		return false;
@@ -1582,6 +1760,12 @@ bool USWGTerrainSubsystem::ResolveWorldSnapshotNode(const FSWGWorldSnapshotNode&
 	OutInfo.ObjectId = (int64)Node.ObjectID;
 	OutInfo.CellNumber = (int32)Node.CellID;
 	OutInfo.ActorClass = Mapping->ActorClass;
+	// A STAT whose appearance is a .prt (a waterfall) is an emitter, not a meshless prop.
+	FString ParticlePath;
+	if (Mapping->ActorClass == ASWGStaticProp::StaticClass() && ASWGParticleEmitterActor::ResolveParticlePath(*TreSubsystem, TemplateName, ParticlePath))
+	{
+		OutInfo.ActorClass = ASWGParticleEmitterActor::StaticClass();
+	}
 	OutInfo.Position = Node.Position;
 	OutInfo.Rotation = Node.Direction;
 	OutInfo.TemplateName = TemplateName;
@@ -1826,6 +2010,14 @@ AActor* USWGTerrainSubsystem::SpawnWorldSnapshotNode(const FSWGWorldSnapshotSpaw
 			ObjectGraph->RegisterStaticObject(Info.ObjectId, Actor, ParentObjectId);
 		}
 	}
+	else if (ASWGSoundEmitter* Emitter = Cast<ASWGSoundEmitter>(Actor))
+	{
+		Emitter->InitFromTemplate(Info.TemplateName);
+	}
+	else if (ASWGParticleEmitterActor* ParticleObject = Cast<ASWGParticleEmitterActor>(Actor))
+	{
+		ParticleObject->InitFromTemplate(Info.TemplateName);
+	}
 	else if (MeshGenerator)
 	{
 		// A registered handler (buildings — see FSWGActorSpawnHandlerRegistry)
@@ -1969,6 +2161,90 @@ namespace
 
 		return false;
 	}
+}
+
+FString USWGTerrainSubsystem::GetEnvironmentFamilyAt(const FVector& UnrealLocation) const
+{
+	if (!bTerrainDataCached || !PlanetData.IsValid())
+	{
+		return FString();
+	}
+
+	const FVector Raw = SWGToRawSpace(UnrealLocation);
+	const TArrayView<const FSWGTerrainLayer> Edits = PublishedEditLayers.IsValid() ? MakeArrayView(*PublishedEditLayers) : TArrayView<const FSWGTerrainLayer>();
+	const int32 FamilyId = FSWGTerrainEvaluator::GetEnvironmentFamily(*PlanetData, static_cast<float>(Raw.X), static_cast<float>(Raw.Y), Edits);
+	// No AENV layer reaching the point leaves 0; the planet's base family is then the first one (id 1).
+	const FSWGEnvironmentFamily* Family = PlanetData->FindEnvironmentFamily(FamilyId);
+	if (!Family && !PlanetData->EnvironmentFamilies.IsEmpty())
+	{
+		Family = PlanetData->FindEnvironmentFamily(1) ? PlanetData->FindEnvironmentFamily(1) : &PlanetData->EnvironmentFamilies[0];
+	}
+	return Family ? Family->Name : FString(TEXT("global"));
+}
+
+void USWGTerrainSubsystem::GetSunriseSunsetFractions(float& OutSunrise, float& OutSunset)
+{
+	OutSunrise = FMath::Frac(CVarSunriseFraction.GetValueOnGameThread());
+	OutSunset = FMath::Frac(CVarSunsetFraction.GetValueOnGameThread());
+}
+
+bool USWGTerrainSubsystem::IsDaytime() const
+{
+	float Sunrise, Sunset;
+	GetSunriseSunsetFractions(Sunrise, Sunset);
+	const float NightSpan = FMath::Frac(Sunrise - Sunset + 1.0f);
+	return FMath::Frac(GetDayFraction() - Sunset + 1.0f) >= NightSpan;
+}
+
+FString USWGTerrainSubsystem::GetSurfaceTypeAt(const FVector& UnrealLocation)
+{
+	if (!bTerrainDataCached || !PlanetData.IsValid())
+	{
+		return FString();
+	}
+
+	const FVector Raw = SWGToRawSpace(UnrealLocation);
+
+	// Retail's footstep surface (0x6231b0) is "water" while the feet are below the surface.
+	float WaterHeight = 0.0f;
+	if (SWGWaterRules::IsInWater(GetWaterHeightAt(static_cast<float>(Raw.X), static_cast<float>(Raw.Y), WaterHeight), WaterHeight, static_cast<float>(Raw.Z)))
+	{
+		return TEXT("water");
+	}
+
+	const TArrayView<const FSWGTerrainLayer> Edits = PublishedEditLayers.IsValid() ? MakeArrayView(*PublishedEditLayers) : TArrayView<const FSWGTerrainLayer>();
+	TMap<int32, float> Weights;
+	FSWGTerrainEvaluator::GetShaderWeights(*PlanetData, static_cast<float>(Raw.X), static_cast<float>(Raw.Y), Weights, Edits);
+
+	int32 DominantFamily = INDEX_NONE;
+	float DominantWeight = 0.0f;
+	for (const TPair<int32, float>& Pair : Weights)
+	{
+		if (Pair.Value > DominantWeight)
+		{
+			DominantFamily = Pair.Key;
+			DominantWeight = Pair.Value;
+		}
+	}
+
+	const FSWGShaderFamily* Family = DominantFamily != INDEX_NONE ? PlanetData->FindShaderFamily(DominantFamily) : nullptr;
+	if (!Family || Family->SurfaceFileName.IsEmpty())
+	{
+		return FString();
+	}
+
+	if (const FString* Cached = SurfaceTypeByFile.Find(Family->SurfaceFileName))
+	{
+		return *Cached;
+	}
+
+	FString SurfaceType;
+	if (!FindTemplateStringField(TreSubsystem, Family->SurfaceFileName, TEXT("surfaceType"), SurfaceType))
+	{
+		SurfaceType = FPaths::GetBaseFilename(Family->SurfaceFileName);
+	}
+	SurfaceTypeByFile.Add(Family->SurfaceFileName, SurfaceType);
+	return SurfaceType;
 }
 
 bool USWGTerrainSubsystem::BuildObjectTerrainLayers(const FString& TemplatePath, const FVector& WorldPosition, float YawRadians, TArray<FSWGTerrainLayer>& OutLayers)
@@ -2237,6 +2513,7 @@ USWGTerrainSubsystem::FSWGTerrainBakeSource USWGTerrainSubsystem::MakeBakeSource
 {
 	FSWGTerrainBakeSource Source;
 	Source.Planet = PlanetData;
+	Source.ShaderBlendMasks = ShaderBlendMasks;
 	Source.EditLayers = PublishedEditLayers;
 	Source.Holes = TerrainHoles;
 	Source.EditVersion = EditVersion;
@@ -2272,6 +2549,14 @@ FSWGBakedHeightmap USWGTerrainSubsystem::BakeHeightmap(const FSWGTerrainBakeSour
 	Heightmap.Spacing = Spacing;
 	Heightmap.Heights.SetNumUninitialized(Resolution * Resolution);
 
+	// The colour affectors need the running height of the same walk, so the tint rides along with the height bake.
+	const bool bTint = CVarTerrainTint.GetValueOnAnyThread() != 0;
+	const float TintScale = CVarTerrainTintScale.GetValueOnAnyThread();
+	if (bTint)
+	{
+		Heightmap.TintColors.SetNumUninitialized(Resolution * Resolution);
+	}
+
 	// Tracks min/max/out-of-range height values from this component's evaluator
 	// calls — catches GetHeight diverging to huge values, which GetTexHeight's
 	// Clamp would otherwise silently flatten to the +/-2048 ceiling/floor.
@@ -2287,7 +2572,18 @@ FSWGBakedHeightmap USWGTerrainSubsystem::BakeHeightmap(const FSWGTerrainBakeSour
 		for (int32 Col = 0; Col < Resolution; ++Col)
 		{
 			const float WorldX = RegionOrigin.X + Col * Spacing;
-			float Height = FSWGTerrainEvaluator::GetHeight(*Source.Planet, WorldX, WorldY, Edits);
+			float Height;
+			if (bTint)
+			{
+				FSWGTerrainGroundSample Ground;
+				Height = FSWGTerrainEvaluator::GetHeightAndGround(*Source.Planet, WorldX, WorldY, Ground, Edits);
+				const FLinearColor Linear = FLinearColor::FromSRGBColor(Ground.Tint);
+				Heightmap.TintColors[Row * Resolution + Col] = FVector3f(Linear.R, Linear.G, Linear.B) * TintScale;
+			}
+			else
+			{
+				Height = FSWGTerrainEvaluator::GetHeight(*Source.Planet, WorldX, WorldY, Edits);
+			}
 			// Safety net: a NaN/Inf height here bakes straight into the landscape's
 			// uint16 heightmap and comes out as an extreme spike (this is what was
 			// actually happening — see FSWGMapFractal::GetNoise's Pow() fix for the
@@ -2330,6 +2626,45 @@ void USWGTerrainSubsystem::BakeShaderWeights(const FSWGTerrainBakeSource& Source
 
 	TMap<int32, float> TotalWeightByFamily;
 
+	// Retail paints one family per tile and fades neighbours in through gradient overlays
+	// (FSWGTerrainShaderBlend); the vertex weights below are that composite sampled per vertex.
+	const FSWGTerrainHeader& Header = Source.Planet->Header;
+	const bool bRetailBlend = CVarTerrainShaderBlend.GetValueOnAnyThread() != 0 && Source.ShaderBlendMasks.IsValid()
+		&& Source.ShaderBlendMasks->IsReady() && Header.TilesPerChunk > 0 && Header.ChunkSize > 0.0f;
+	const float TileWidth = bRetailBlend ? Header.ChunkSize / Header.TilesPerChunk : 1.0f;
+	TMap<FIntPoint, FSWGShaderTileCell> TileCells;
+	auto GetTileCell = [&](int32 TileX, int32 TileY)
+	{
+		if (const FSWGShaderTileCell* Cached = TileCells.Find(FIntPoint(TileX, TileY)))
+		{
+			return *Cached;
+		}
+
+		TMap<int32, float> TileWeights;
+		FSWGTerrainEvaluator::GetShaderWeights(*Source.Planet, FSWGTerrainShaderBlend::GetTileSampleCoordinate(TileX, TileWidth),
+			FSWGTerrainShaderBlend::GetTileSampleCoordinate(TileY, TileWidth), TileWeights, Edits);
+
+		// A road paint can leave a partial second entry; the tile keeps the painted (dominant) family.
+		FSWGShaderTileCell Cell;
+		Cell.GroupIndex = -1; // unpainted ranks below every family
+		float DominantWeight = 0.0f;
+		for (const TPair<int32, float>& Pair : TileWeights)
+		{
+			if (Pair.Value > DominantWeight)
+			{
+				Cell.Family = Pair.Key;
+				DominantWeight = Pair.Value;
+			}
+		}
+		if (Cell.Family != 0)
+		{
+			const int32 GroupIndex = Source.Planet->ShaderFamilies.IndexOfByPredicate([&Cell](const FSWGShaderFamily& Family) { return Family.FamilyId == Cell.Family; });
+			Cell.GroupIndex = FMath::Max(GroupIndex, 0);
+		}
+		TileCells.Add(FIntPoint(TileX, TileY), Cell);
+		return Cell;
+	};
+
 	for (int32 Row = 0; Row < Resolution; ++Row)
 	{
 		const float WorldY = Heightmap.Origin.Y + Row * Heightmap.Spacing;
@@ -2337,7 +2672,41 @@ void USWGTerrainSubsystem::BakeShaderWeights(const FSWGTerrainBakeSource& Source
 		{
 			const float WorldX = Heightmap.Origin.X + Col * Heightmap.Spacing;
 			TMap<int32, float>& Weights = PerVertexWeights[Row * Resolution + Col];
-			FSWGTerrainEvaluator::GetShaderWeights(*Source.Planet, WorldX, WorldY, Weights, Edits);
+			if (bRetailBlend)
+			{
+				// A retail tile (4 m on most planets) is about one mesh quad, so a lone point sample would alias
+				// against the grid; average a 3x3 footprint of the quad around the vertex instead.
+				constexpr int32 FootprintSamples = 3;
+				for (int32 SampleY = 0; SampleY < FootprintSamples; ++SampleY)
+				{
+					for (int32 SampleX = 0; SampleX < FootprintSamples; ++SampleX)
+					{
+						const float SampleWorldX = WorldX + (SampleX - 1) * Heightmap.Spacing * 0.5f;
+						const float SampleWorldY = WorldY + (SampleY - 1) * Heightmap.Spacing * 0.5f;
+						const int32 TileX = FMath::FloorToInt(SampleWorldX / TileWidth);
+						const int32 TileY = FMath::FloorToInt(SampleWorldY / TileWidth);
+						FSWGShaderTileCell Cells[FSWGTerrainShaderBlend::CellCount];
+						for (int32 OffsetY = -1; OffsetY <= 1; ++OffsetY)
+						{
+							for (int32 OffsetX = -1; OffsetX <= 1; ++OffsetX)
+							{
+								Cells[FSWGTerrainShaderBlend::CellIndex(OffsetX, OffsetY)] = GetTileCell(TileX + OffsetX, TileY + OffsetY);
+							}
+						}
+						TMap<int32, float> SampleWeights;
+						FSWGTerrainShaderBlend::ComposeWeights(Cells, *Source.ShaderBlendMasks,
+							SampleWorldX / TileWidth - TileX, 1.0f - (SampleWorldY / TileWidth - TileY), SampleWeights);
+						for (const TPair<int32, float>& Pair : SampleWeights)
+						{
+							Weights.FindOrAdd(Pair.Key) += Pair.Value / (FootprintSamples * FootprintSamples);
+						}
+					}
+				}
+			}
+			else
+			{
+				FSWGTerrainEvaluator::GetShaderWeights(*Source.Planet, WorldX, WorldY, Weights, Edits);
+			}
 
 			for (const TPair<int32, float>& Pair : Weights)
 			{
@@ -2439,32 +2808,111 @@ namespace
 
 bool USWGTerrainSubsystem::GetWaterHeightAt(float X, float Y, float& OutHeight) const
 {
-	if (!PlanetData.IsValid()) { return false; }
-	const FSWGTerrainHeader& Header = PlanetData->Header;
-	bool bFound = Header.bUseGlobalWaterTable;
-	OutHeight = bFound ? Header.GlobalWaterTableHeight : -TNumericLimits<float>::Max();
-	TArray<const FSWGTerrainBoundary*> Boundaries;
-	for (const FSWGTerrainLayer& Layer : PlanetData->TopLevelLayers) { CollectWaterBoundaries(Layer, Boundaries); }
-	for (const FSWGTerrainBoundary* Boundary : Boundaries)
+	return PlanetData.IsValid() && FSWGTerrainEvaluator::GetWaterHeight(*PlanetData, X, Y, OutHeight);
+}
+
+FSWGWaterInfo USWGTerrainSubsystem::GetWaterInfoAt(float X, float Y, float PointHeight, float SwimHeight) const
+{
+	FSWGWaterInfo Info;
+	Info.PointHeight = PointHeight;
+	Info.SwimHeight = SwimHeight;
+	if (!bTerrainDataCached || !PlanetData.IsValid())
 	{
-		bool bInside = false;
-		if (Boundary->Type == ESWGTerrainBoundaryType::Rectangle)
-		{
-			bInside = X >= FMath::Min(Boundary->X0, Boundary->X1) && X <= FMath::Max(Boundary->X0, Boundary->X1)
-				&& Y >= FMath::Min(Boundary->Y0, Boundary->Y1) && Y <= FMath::Max(Boundary->Y0, Boundary->Y1);
-		}
-		else
-		{
-			const TArray<FVector2D>& V = Boundary->Vertices;
-			for (int32 I = 0, J = V.Num() - 1; I < V.Num(); J = I++)
-			{
-				if ((V[I].Y > Y) != (V[J].Y > Y)
-					&& X < (V[J].X - V[I].X) * (Y - V[I].Y) / (V[J].Y - V[I].Y) + V[I].X) { bInside = !bInside; }
-			}
-		}
-		if (bInside) { OutHeight = FMath::Max(OutHeight, Boundary->LocalWaterTableHeight); bFound = true; }
+		return Info;
 	}
-	return bFound;
+
+	// The water table is cheap and most points have none; the ground height is a full layer walk.
+	Info.bHasWater = GetWaterHeightAt(X, Y, Info.WaterHeight);
+	if (!Info.bHasWater)
+	{
+		return Info;
+	}
+	Info.GroundHeight = GetHeightAt(X, Y);
+	Info.bPointInWater = SWGWaterRules::IsInWater(Info.bHasWater, Info.WaterHeight, PointHeight);
+	Info.bSwimming = SWGWaterRules::IsSwimming(Info.bHasWater, Info.WaterHeight, Info.GroundHeight, SwimHeight);
+	Info.bWading = SWGWaterRules::IsWading(Info.bHasWater, Info.WaterHeight, Info.GroundHeight, SwimHeight);
+	Info.bServerWouldSwim = SWGWaterRules::ServerWouldSwim(Info.bHasWater, Info.WaterHeight, Info.GroundHeight, SwimHeight);
+	Info.Depth = SWGWaterRules::GetDepth(Info.bHasWater, Info.WaterHeight, Info.GroundHeight);
+	return Info;
+}
+
+bool USWGTerrainSubsystem::GetGroundSampleAt(float X, float Y, FSWGTerrainGroundSample& OutSample) const
+{
+	if (!bTerrainDataCached || !PlanetData.IsValid())
+	{
+		return false;
+	}
+	const TArrayView<const FSWGTerrainLayer> Edits = PublishedEditLayers.IsValid() ? MakeArrayView(*PublishedEditLayers) : TArrayView<const FSWGTerrainLayer>();
+	FSWGTerrainEvaluator::GetHeightAndGround(*PlanetData, X, Y, OutSample, Edits);
+	return true;
+}
+
+void USWGTerrainSubsystem::RebakeAllTiles()
+{
+	check(IsInGameThread());
+
+	++EditVersion;
+	for (TPair<FIntPoint, FSWGTerrainTile>& Pair : Tiles)
+	{
+		Pair.Value.WantedEditVersion = EditVersion;
+		if (!Pair.Value.bBakeInFlight)
+		{
+			BakeQueue.Add(Pair.Key);
+		}
+	}
+	PumpBakeQueue();
+}
+
+void USWGTerrainSubsystem::UpdateUnderwater()
+{
+	const UWorld* World = GetWorld();
+	APlayerCameraManager* Camera = World ? UGameplayStatics::GetPlayerCameraManager(World, 0) : nullptr;
+	UExponentialHeightFogComponent* Fog = IsValid(HeightFog) ? HeightFog->GetComponent() : nullptr;
+	if (!Camera || !Fog)
+	{
+		return;
+	}
+
+	bool bUnderwater = false;
+	if (CVarUnderwater.GetValueOnGameThread() != 0 && PlanetData.IsValid())
+	{
+		// Retail 0x51b770: Terrain::isWater at the camera, i.e. strictly below the surface.
+		const FVector Raw = SWGToRawSpace(Camera->GetCameraLocation());
+		float WaterHeight = 0.0f;
+		bUnderwater = SWGWaterRules::IsInWater(GetWaterHeightAt(static_cast<float>(Raw.X), static_cast<float>(Raw.Y), WaterHeight), WaterHeight, static_cast<float>(Raw.Z));
+	}
+
+	if (bUnderwater && !bCameraUnderwater)
+	{
+		SavedFogDensity = Fog->FogDensity;
+		SavedFogHeightFalloff = Fog->FogHeightFalloff;
+		SavedFogMaxOpacity = Fog->FogMaxOpacity;
+		SavedFogStartDistance = Fog->StartDistance;
+	}
+
+	if (bUnderwater)
+	{
+		// The ApplyTimeOfDay tick re-tints the fog every frame, so this re-applies each frame too. Retail clears the
+		// screen to (77,115,113) and cuts the far plane to 500 m; fog that is opaque by 500 m reads the same.
+		const FColor Water = SWGWaterRules::GetUnderwaterColor();
+		Fog->SetFogInscatteringColor(FLinearColor::FromSRGBColor(Water));
+		Fog->SetFogDensity(0.09f);
+		Fog->SetFogHeightFalloff(0.001f);
+		Fog->SetFogMaxOpacity(1.0f);
+		Fog->SetStartDistance(0.0f);
+	}
+	else if (bCameraUnderwater)
+	{
+		Fog->SetFogDensity(SavedFogDensity);
+		Fog->SetFogHeightFalloff(SavedFogHeightFalloff);
+		Fog->SetFogMaxOpacity(SavedFogMaxOpacity);
+		Fog->SetStartDistance(SavedFogStartDistance);
+		if (IsValid(SunLight))
+		{
+			ApplyTimeOfDay(GetDayFraction());
+		}
+	}
+	bCameraUnderwater = bUnderwater;
 }
 
 void USWGTerrainSubsystem::SpawnWaterBodies()
@@ -2940,6 +3388,8 @@ namespace
 		int32 Normal = INDEX_NONE;
 		int32 UV = INDEX_NONE;
 		int32 Color = INDEX_NONE;
+		int32 TintRg = INDEX_NONE;
+		int32 TintB = INDEX_NONE;
 	};
 
 	/**
@@ -2982,9 +3432,21 @@ namespace
 		}
 		FDynamicMeshColorOverlay* Colors = bHasShaderWeights ? Mesh.Attributes()->PrimaryColors() : nullptr;
 
+		// Ground tint (retail's colour map) rides in UV layers 1 (R,G) and 2 (B): the colour overlay is full with the
+		// shader weights. M_SWGTerrainBlend multiplies its base colour by it (see SWGTerrainTintBuilder).
+		const bool bHasTint = bHasShaderWeights && Heightmap.TintColors.Num() == Resolution * Resolution;
+		FDynamicMeshUVOverlay* TintRgUVs = nullptr;
+		FDynamicMeshUVOverlay* TintBUVs = nullptr;
+		if (bHasTint)
+		{
+			Mesh.Attributes()->SetNumUVLayers(3);
+			TintRgUVs = Mesh.Attributes()->GetUVLayer(1);
+			TintBUVs = Mesh.Attributes()->GetUVLayer(2);
+		}
+
 		// Grid coordinates rather than indices: the hole-cutting path appends
 		// samples at fractional (Col, Row).
-		auto AppendSample = [&](double Col, double Row, float Height, const FVector3f& Weight)
+		auto AppendSample = [&](double Col, double Row, float Height, const FVector3f& Weight, const FVector3f& Tint)
 		{
 			FSWGTerrainVertex Ids;
 
@@ -3007,6 +3469,11 @@ namespace
 			{
 				Ids.Color = Colors->AppendElement(FVector4f(Weight.X, Weight.Y, Weight.Z, 1.0f));
 			}
+			if (TintRgUVs)
+			{
+				Ids.TintRg = TintRgUVs->AppendElement(FVector2f(Tint.X, Tint.Y));
+				Ids.TintB = TintBUVs->AppendElement(FVector2f(Tint.Z, 0.0f));
+			}
 
 			return Ids;
 		};
@@ -3025,6 +3492,11 @@ namespace
 			{
 				Colors->SetTriangle(Tri, FIndex3i(A.Color, B.Color, C.Color));
 			}
+			if (TintRgUVs)
+			{
+				TintRgUVs->SetTriangle(Tri, FIndex3i(A.TintRg, B.TintRg, C.TintRg));
+				TintBUVs->SetTriangle(Tri, FIndex3i(A.TintB, B.TintB, C.TintB));
+			}
 		};
 
 		TArray<FSWGTerrainVertex> GridSamples;
@@ -3036,7 +3508,8 @@ namespace
 			{
 				const int32 Idx = Row * Resolution + Col;
 				GridSamples[Idx] = AppendSample(Col, Row, Heightmap.Heights[Idx],
-					bHasShaderWeights ? Heightmap.ShaderWeightColors[Idx] : FVector3f::ZeroVector);
+					bHasShaderWeights ? Heightmap.ShaderWeightColors[Idx] : FVector3f::ZeroVector,
+					bHasTint ? Heightmap.TintColors[Idx] : FVector3f::OneVector);
 			}
 		}
 
@@ -3094,7 +3567,13 @@ namespace
 								Heightmap.ShaderWeightColors[I01], Heightmap.ShaderWeightColors[I11], U, V)
 							: FVector3f::ZeroVector;
 
-						Sub[SubRow * (N + 1) + SubCol] = AppendSample(Col + U, Row + V, Height, Weight);
+						const FVector3f Tint = bHasTint
+							? BilinearSample(
+								Heightmap.TintColors[I00], Heightmap.TintColors[I10],
+								Heightmap.TintColors[I01], Heightmap.TintColors[I11], U, V)
+							: FVector3f::OneVector;
+
+						Sub[SubRow * (N + 1) + SubCol] = AppendSample(Col + U, Row + V, Height, Weight, Tint);
 					}
 				}
 

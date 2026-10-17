@@ -89,5 +89,9 @@ struct SWGTRE_API FSWGMapGroup
 {
 	TMap<int32, FSWGMapFractal> Fractals;
 
+	/** Shader family id -> SFAM paint threshold, carried here so the evaluator's walks (which only see the map group) can gate shader affectors. */
+	TMap<int32, float> ShaderThresholds;
+
 	const FSWGMapFractal* FindFractal(int32 FractalId) const { return Fractals.Find(FractalId); }
+	float FindShaderThreshold(int32 FamilyId) const { const float* Threshold = ShaderThresholds.Find(FamilyId); return Threshold ? *Threshold : 1.0f; }
 };

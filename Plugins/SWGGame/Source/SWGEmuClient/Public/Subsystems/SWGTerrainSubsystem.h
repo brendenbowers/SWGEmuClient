@@ -4,8 +4,11 @@
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
 #include "TRE/SWGTerrainReader.h"
+#include "TRE/SWGTerrainTint.h"
+#include "TRE/SWGTerrainShaderBlend.h"
 #include "TRE/SWGWorldSnapshotReader.h"
 #include "TRE/SWGColorRampReader.h"
+#include "Subsystems/SWGEnvironmentRow.h"
 #include "SWGTerrainSubsystem.generated.h"
 
 class USWGTreSubsystem;
@@ -77,6 +80,31 @@ struct FSWGBakedHeightmap
 
 	/** Row-major, same layout as Heights — VertexColors[i].X/Y/Z are family [1]/[2]/[3]'s paint weight at that vertex. */
 	TArray<FVector3f> ShaderWeightColors;
+
+	/**
+	 * Row-major like Heights: the retail ground tint (ACCN/ACRH/ACRF colour map) in linear light, already multiplied by
+	 * swg.Terrain.TintScale. Empty when swg.Terrain.Tint is off; the mesh then carries no tint.
+	 */
+	TArray<FVector3f> TintColors;
+};
+
+/** What the water table does at one raw point - see USWGTerrainSubsystem::GetWaterInfoAt. */
+struct FSWGWaterInfo
+{
+	bool bHasWater = false;
+	float WaterHeight = 0.0f;
+	float GroundHeight = 0.0f;
+	float PointHeight = 0.0f;
+	float SwimHeight = 0.0f;
+	/** Point strictly below the surface (retail Terrain::isWater). */
+	bool bPointInWater = false;
+	/** Ground deeper than SwimHeight below the surface (retail controller swim flag). */
+	bool bSwimming = false;
+	/** Feet in water but not swimming. */
+	bool bWading = false;
+	/** Core3's SWIMMING rule, for comparison with the state the server sends. */
+	bool bServerWouldSwim = false;
+	float Depth = 0.0f;
 };
 
 /**
@@ -185,8 +213,56 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SWGEmu|Terrain")
 	float GetHeightAt(float X, float Y) const;
 
+	/**
+	 * Footstep surface ("grass", "sand", "stone", ...) under a UE-space location: the dominant terrain
+	 * shader family's abstract/terrain_surface surfaceType. Empty before the terrain has loaded or
+	 * where no shader paints. Game thread only.
+	 */
+	FString GetSurfaceTypeAt(const FVector& UnrealLocation);
+
+	/**
+	 * The .trn environment family (EGRP name, "global", "moseisley"...) at a UE-space location: the key
+	 * into datatables/environment/<planet>.iff. Empty before the terrain has loaded; the planet's base
+	 * family (id 1) where no AENV layer reaches. Game thread only.
+	 */
+	FString GetEnvironmentFamilyAt(const FVector& UnrealLocation) const;
+
+	/**
+	 * Shows the environment between two weather rows (null FromRow = the planet's base row): fog density and
+	 * colour ramp lerp by Alpha, while the gradient sky and cloud set switch at Alpha 0.5 (clouds fade out and
+	 * back in around the switch). Call every frame of a blend, and once with Alpha 1 to settle. Game thread.
+	 */
+	void BlendEnvironment(const FSWGEnvironmentRow* FromRow, const FSWGEnvironmentRow& ToRow, float Alpha);
+
+	/** The planet's base row, which BlendEnvironment treats as the start state. */
+	const FSWGEnvironmentRow& GetBaseEnvironment() const { return Environment; }
+
+	/** Bumps whenever the planet's lighting is (re)built, which resets any blended weather state. */
+	int32 GetEnvironmentRevision() const { return EnvironmentRevision; }
+
+	/** Whether the sun is up at the current day fraction (between swg.SunriseFraction and swg.SunsetFraction). */
+	bool IsDaytime() const;
+
+	/** Day-cycle fractions the sun rises and sets at. */
+	static void GetSunriseSunsetFractions(float& OutSunrise, float& OutSunset);
+
 	/** Highest authored water surface at a raw world point. False where there is no water table. */
 	bool GetWaterHeightAt(float X, float Y, float& OutHeight) const;
+
+	/**
+	 * Water state at a raw point: ground and surface heights, retail's in-water / swimming / wading tests and Core3's
+	 * swim rule. SwimHeight is the creature's swimHeight times its scale (a default human is about 1.0 m). Game thread.
+	 */
+	FSWGWaterInfo GetWaterInfoAt(float X, float Y, float PointHeight, float SwimHeight) const;
+
+	/** True while the player camera is below a water surface (swg.Water.Underwater). */
+	bool IsCameraUnderwater() const { return bCameraUnderwater; }
+
+	/** Ground tint (retail colour map) and AEXC flag at a raw point; false before a planet has loaded. Walks the layer tree, so not per-frame. */
+	bool GetGroundSampleAt(float X, float Y, FSWGTerrainGroundSample& OutSample) const;
+
+	/** Re-bakes every loaded tile, for toggles that change the bake (swg.Terrain.Tint). */
+	void RebakeAllTiles();
 
 	/**
 	 * Stamps a runtime-placed object's terrain modification into the live
@@ -242,6 +318,8 @@ public:
 		TSharedPtr<const FSWGTerrainData, ESPMode::ThreadSafe> Planet;
 		TSharedPtr<const TArray<FSWGTerrainLayer>, ESPMode::ThreadSafe> EditLayers;
 		TArray<FSWGTerrainHole> Holes;
+		/** Retail blnd_*.dds gradients for the neighbour-family overlay; null until loaded (hard family edges then). */
+		TSharedPtr<const FSWGShaderBlendMasks, ESPMode::ThreadSafe> ShaderBlendMasks;
 		int32 EditVersion = 0;
 
 		/** Whether a raw XY lies under any registered hole. */
@@ -336,31 +414,8 @@ private:
 	/** Creates the outdoor sky, sun, and ambient fill for the active planet, coloured from its colour ramp at swg.TimeOfDay. */
 	void SetupPlanetLighting(const FString& TerrainVirtualPath);
 
-	/**
-	 * One row of datatables/environment/<planet>.iff — what an environment
-	 * family looks like in one weather state: its gradient sky, colour ramp,
-	 * fog range, clouds, and reflection maps.
-	 */
-	struct FSWGPlanetEnvironment
-	{
-		bool bValid = false;
-		FString GradientSkyTexture;
-		FString ColorRampPath;
-		bool bFogEnabled = true;
-		float MinFogDensity = 0.0f;
-		float MaxFogDensity = 0.0f;
-		FString DayEnvironmentMap;
-		FString NightEnvironmentMap;
-		FString CloudTopShader;
-		float CloudTopShaderSize = 0.0f;
-		float CloudTopSpeed = 0.0f;
-		FString CloudBottomShader;
-		float CloudBottomShaderSize = 0.0f;
-		float CloudBottomSpeed = 0.0f;
-	};
-
-	/** The planet's "global" family in clear weather from its environment table; bValid false when the planet has none. */
-	FSWGPlanetEnvironment LoadPlanetEnvironment(const FString& ZoneName) const;
+	/** The planet's base ("global" family, clear weather) row of its environment table; false when the planet has none. */
+	bool LoadPlanetEnvironment(const FString& ZoneName, FSWGEnvironmentRow& OutRow) const;
 
 	/** How a celestial sprite moves: with the sun's arc, with the moon's (opposite) arc, or pinned to the sky. */
 	enum class ESWGCelestialKind : uint8 { Sun, Moon, Fixed };
@@ -399,8 +454,20 @@ private:
 	/** One camera-facing sprite in the sky on the engine plane — additive (M_SWGSkySprite) for suns/glows, alpha (M_SWGSkySpriteAlpha) for moons and props. */
 	UStaticMeshComponent* CreateSkySprite(const FString& ShaderName, bool bAdditive);
 
-	/** The environment's cloud layers: camera-following planes high above the ground with a scrolling cloud texture (M_SWGCloudLayer). */
-	void SpawnCloudLayers();
+	/** The row's cloud layers: camera-following planes high above the ground with a scrolling cloud texture (M_SWGCloudLayer). Adds to any existing. */
+	void SpawnCloudLayers(const FSWGEnvironmentRow& Row);
+
+	/** Destroys the cloud planes (a weather change swaps the set). */
+	void ClearCloudLayers();
+
+	/** Identity of a row's cloud set, to tell whether two rows draw the same clouds. */
+	static FString MakeCloudKey(const FSWGEnvironmentRow& Row);
+
+	/** The row's own cloud fields, or the planet base row's for a clear-weather row that leaves them blank. */
+	const FSWGEnvironmentRow& ResolveCloudRow(const FSWGEnvironmentRow& Row) const;
+
+	/** A ramp from the TRE by path (cached); the planet's own ramp when the path is empty or unreadable. */
+	TSharedPtr<const FSWGColorRamp> ResolveRamp(const FString& Path);
 
 	/**
 	 * The night sky's stars: the environment file's STAR chunk names a
@@ -651,9 +718,22 @@ private:
 	UPROPERTY()
 	TObjectPtr<AExponentialHeightFog> HeightFog;
 
-	FSWGColorRamp ColorRamp;
+	/** The planet's own ramp, plus the pair ApplyTimeOfDay blends between while the weather changes (RampTo null when settled). */
+	TSharedPtr<const FSWGColorRamp> BaseRamp;
+	TSharedPtr<const FSWGColorRamp> RampFrom;
+	TSharedPtr<const FSWGColorRamp> RampTo;
+	float RampAlpha = 0.0f;
 	bool bHasColorRamp = false;
-	FSWGPlanetEnvironment Environment;
+	FSWGEnvironmentRow Environment;
+
+	/** Weather state applied by BlendEnvironment: what the dome and cloud planes currently show. */
+	TMap<FString, TSharedPtr<const FSWGColorRamp>> RampCache;
+	UPROPERTY()
+	TMap<FString, TObjectPtr<UTexture2D>> GradientCache;
+	FString AppliedGradientSky;
+	FString AppliedCloudKey;
+	float CloudFade = 1.0f;
+	int32 EnvironmentRevision = 0;
 
 	/** The gradient sky dome's instance; DayFraction is pushed to it each tick. Null when the planet has no gradient (SkyAtmosphere instead). */
 	UPROPERTY()
@@ -728,6 +808,20 @@ private:
 	// once with nothing ever writing to it.
 	TSharedPtr<const FSWGTerrainData, ESPMode::ThreadSafe> PlanetData;
 	bool bTerrainDataCached = false;
+
+	/** Underwater camera state (UpdateUnderwater): the fog values to restore on surfacing. */
+	bool bCameraUnderwater = false;
+	float SavedFogDensity = 0.0f;
+	float SavedFogHeightFalloff = 0.0f;
+	float SavedFogMaxOpacity = 1.0f;
+	float SavedFogStartDistance = 0.0f;
+	void UpdateUnderwater();
+
+	/** The three retail overlay gradients, loaded with the planet (see FSWGTerrainShaderBlend). */
+	TSharedPtr<const FSWGShaderBlendMasks, ESPMode::ThreadSafe> ShaderBlendMasks;
+
+	/** terrain_surface .iff path -> its surfaceType string, filled lazily by GetSurfaceTypeAt. */
+	TMap<FString, FString> SurfaceTypeByFile;
 
 	// Runtime edits. OwnedEditLayers is the game thread's editable record;
 	// PublishedEditLayers is the immutable copy jobs capture (rebuilt by
