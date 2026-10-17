@@ -85,6 +85,7 @@ TSWGListChanges<T> ReadListChanges(FSWGPacket& Packet, FReadChange ReadChange)
 	TSWGListChanges<T> Out;
 	const int32 Count = Packet.ReadInt32();
 	Out.UpdateCounter = Packet.ReadUInt32();
+	if (Packet.IsError() || Count < 0 || Count > Packet.GetRemaining()) { Packet.SetError(); return Out; }
 	Out.Changes.Reserve(Count);
 	for (int32 i = 0; i < Count; ++i)
 	{
@@ -131,6 +132,7 @@ TSWGListChanges<T> ReadDeltaVectorChanges(FSWGPacket& Packet, FReadItem ReadItem
 			{
 				Change.Operation = ESWGListChangeOperation::ResetAll;
 				const int16 Count = P.ReadInt16();
+				if (Count < 0 || Count > P.GetRemaining()) { P.SetError(); return Change; }
 				Change.Values.Reserve(Count);
 				for (int16 i = 0; i < Count; ++i)
 				{
@@ -143,6 +145,7 @@ TSWGListChanges<T> ReadDeltaVectorChanges(FSWGPacket& Packet, FReadItem ReadItem
 				break;
 			default:
 				UE_LOG(LogTemp, Warning, TEXT("ReadDeltaVectorChanges: unknown list change operation 0x%02X — stopping"), Op);
+				P.SetError();
 				break;
 		}
 
@@ -219,6 +222,7 @@ TSWGListChanges<T> ReadDeltaVectorMapChanges(FSWGPacket& Packet, FReadItem ReadI
 				break;
 			default:
 				UE_LOG(LogTemp, Warning, TEXT("ReadDeltaVectorMapChanges: unknown list change operation 0x%02X — stopping"), Op);
+				P.SetError();
 				break;
 		}
 

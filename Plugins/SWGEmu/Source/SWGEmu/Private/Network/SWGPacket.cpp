@@ -167,7 +167,7 @@ FString FSWGPacket::ReadUnicodeString()
 	// SWG unicode strings: int32 character count (4 bytes LE) + count*2 bytes UCS-2 LE
 	int32 Len = 0;
 	*this << Len;
-	if (IsError() || Len < 0 || Pos + (int64)(Len * 2) > (int64)Data.Num())
+	if (IsError() || Len < 0 || Pos + int64(Len) * 2 > int64(Data.Num()))
 	{
 		SetError();
 		return FString();
