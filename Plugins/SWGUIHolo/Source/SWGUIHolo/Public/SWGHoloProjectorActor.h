@@ -2,13 +2,36 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "SWGSpaceHudModel.h"
 #include "SWGHoloProjectorActor.generated.h"
 
+class APlayerController;
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class UPointLightComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
+
+/**
+ * Where a HUD hologram floats on screen. The actor re-places itself from this every frame after the camera manager has updated, so
+ * it stays locked to the view at any ship speed.
+ */
+struct FSWGHoloHudAnchor
+{
+	FVector2D ScreenCentre = FVector2D::ZeroVector;
+	float RadiusPixels = 0.f;
+	/** The hologram's authored radius and the height of its centre above the actor origin, at scale 1. */
+	float NominalRadius = 1.f;
+	float CentreLift = 0.f;
+	/** Distance in front of the camera, world units. */
+	double Distance = 60.0;
+	FVector2D ViewSize = FVector2D::ZeroVector;
+	/** The live camera to follow; unset uses FixedView (tests and captures). */
+	TWeakObjectPtr<const APlayerController> Controller;
+	FSWGSpaceHudView FixedView;
+	/** Faces with this actor (the radar turns with the ship); unset stays upright to the camera yaw. */
+	TWeakObjectPtr<const AActor> OrientationActor;
+};
 
 /**
  * What every hologram shares: a faint light disc under the image, a hovering
@@ -37,6 +60,12 @@ public:
 	/** Hides the disc and its own rays while the droid projects onto the world. */
 	void SetProjectionSurfaceVisible(bool bVisible);
 	void SetExtraRayRadius(float Radius);
+
+	/** Locks the hologram to a HUD screen region and places it now; it re-places itself each frame from the final camera view. */
+	void SetHudAnchor(const FSWGHoloHudAnchor& InAnchor);
+	bool HasHudAnchor() const { return HudAnchor.IsSet(); }
+	/** The view the anchor places against this frame; false when unanchored or no camera. */
+	bool GetAnchorView(FSWGSpaceHudView& OutView) const;
 
 	/** Where the projecting droid is, world space. */
 	FVector GetDroidLocation() const;
@@ -68,6 +97,9 @@ public:
 	float HoloIntensity = 0.7f;
 
 protected:
+	/** Swaps the parent of every hologram material this actor makes (default M_SWGHologram); call before the first MakeHoloMaterial. */
+	void UseHoloMaterial(UMaterialInterface* Parent) { if (Parent) HoloMaterial = Parent; }
+
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
@@ -145,6 +177,8 @@ protected:
 	double LastProjectionChangeTime = 0.0;
 
 private:
+	void ApplyHudAnchor();
+	TOptional<FSWGHoloHudAnchor> HudAnchor;
 	void RequestDroid();
 	void UpdateDroid();
 	/** Stretches an engine cylinder from Origin to Target. */

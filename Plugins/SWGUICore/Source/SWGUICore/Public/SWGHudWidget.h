@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "CommonActivatableWidget.h"
 #include "CommonInputTypeEnum.h"
+#include "TimerManager.h"
 #include "SWGHudWidget.generated.h"
 
 class USWGConditionWidget;
@@ -55,6 +56,7 @@ public:
 	static USWGHudWidget* GetActiveHud();
 
 protected:
+	virtual TOptional<FUIInputConfig> GetDesiredInputConfig() const override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 
@@ -75,6 +77,10 @@ protected:
 	TObjectPtr<USWGWaypointMarkerWidget> WaypointMarkers;
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FSWGShipHudTest;
+	friend class FSWGSpaceHudTest;
+#endif
 	UFUNCTION()
 	void HandlePossessedPawnChanged(APawn* OldPawn, APawn* NewPawn);
 
@@ -88,6 +94,21 @@ private:
 	/** Damage numbers. Lives on the player screen under the layout, not in this tree, so the Blueprint needn't know about it. */
 	UPROPERTY()
 	TObjectPtr<class USWGFloatingTextWidget> FloatingText;
+	UPROPERTY()
+	TObjectPtr<class UTextBlock> ShipFlightText;
+	UPROPERTY()
+	TObjectPtr<class UBorder> ShipFlightPanel;
+	UPROPERTY()
+	TObjectPtr<class UProgressBar> ShipSpeedGauge;
+	UPROPERTY()
+	TObjectPtr<class UTextBlock> ShipThrottleText;
+	UPROPERTY()
+	TObjectPtr<class UProgressBar> ShipThrottleGauge;
+	UPROPERTY()
+	TObjectPtr<class UTextBlock> ShipControlsText;
+	ECommonInputType FlightInputType = ECommonInputType::MouseAndKeyboard;
+	FTimerHandle FlightReadoutTimer;
+	void UpdateFlightReadout();
 
 	TWeakObjectPtr<class ASWGPlayer> HotkeySource;
 	FDelegateHandle InputMethodChangedHandle;

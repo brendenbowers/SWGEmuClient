@@ -4,6 +4,8 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/GameInstance.h"
 #include "Engine/StaticMesh.h"
+#include "Camera/PlayerCameraManager.h"
+#include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Subsystems/SWGMeshGeneratorSubsystem.h"
 #include "TRE/SWGCrc32.h"
@@ -22,6 +24,8 @@ namespace
 ASWGHoloProjectorActor::ASWGHoloProjectorActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	// After the camera manager (PrePhysics), so an anchored hologram uses this frame's view.
+	PrimaryActorTick.TickGroup = TG_PostUpdateWork;
 	SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Projector")));
 
 	BaseComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Base"));
@@ -131,8 +135,46 @@ void ASWGHoloProjectorActor::BeginPlay()
 	UpdateDroid();
 }
 
+bool ASWGHoloProjectorActor::GetAnchorView(FSWGSpaceHudView& OutView) const
+{
+	if (!HudAnchor.IsSet()) return false;
+	if (const APlayerController* Controller = HudAnchor->Controller.Get())
+	{
+		const APlayerCameraManager* Camera = Controller->PlayerCameraManager.Get();
+		if (!Camera) return false;
+		const FMinimalViewInfo& Pov = Camera->GetCameraCacheView();
+		OutView.Location = Pov.Location;
+		OutView.Rotation = Pov.Rotation;
+		OutView.HorizontalFovDegrees = Pov.FOV;
+	}
+	else
+	{
+		OutView = HudAnchor->FixedView;
+	}
+	OutView.Size = HudAnchor->ViewSize;
+	return true;
+}
+
+void ASWGHoloProjectorActor::SetHudAnchor(const FSWGHoloHudAnchor& InAnchor)
+{
+	HudAnchor = InAnchor;
+	ApplyHudAnchor();
+}
+
+void ASWGHoloProjectorActor::ApplyHudAnchor()
+{
+	FSWGSpaceHudView View;
+	if (!GetAnchorView(View)) return;
+	const FSWGHoloHudAnchor& Anchor = *HudAnchor;
+	const FQuat Orientation = Anchor.OrientationActor.IsValid() ? Anchor.OrientationActor->GetActorQuat() : FQuat(FRotator(0.f, View.Rotation.Yaw, 0.f));
+	const float Scale = float(SWGSpaceHud::WorldSizeForPixels(View, Anchor.RadiusPixels, Anchor.Distance) / Anchor.NominalRadius);
+	const FVector Centre = SWGSpaceHud::Deproject(View, Anchor.ScreenCentre, Anchor.Distance);
+	SetActorTransform(FTransform(Orientation, Centre - Orientation.RotateVector(FVector(0.0, 0.0, Anchor.CentreLift * Scale)), FVector(Scale)));
+}
+
 void ASWGHoloProjectorActor::Tick(float DeltaSeconds)
 {
+	ApplyHudAnchor();
 	Super::Tick(DeltaSeconds);
 	FadeAlpha = FMath::Min(1.f, FadeAlpha + DeltaSeconds / FadeInSeconds);
 	DroidTime += DeltaSeconds;
@@ -143,8 +185,11 @@ void ASWGHoloProjectorActor::Tick(float DeltaSeconds)
 	// The material fades anything too far from here.
 	const FVector Centre = GetActorLocation();
 	HoloMaterials.RemoveAll([](const TObjectPtr<UMaterialInstanceDynamic>& Material) { return !Material; });
+	// The fade radius is in world units, so a scaled hologram (the piloting HUD's) carries its scale into it.
+	const float ActorScale = GetActorScale3D().X;
 	for (UMaterialInstanceDynamic* Material : HoloMaterials)
 	{
+		if (!FMath::IsNearlyEqual(ActorScale, 1.f)) Material->SetScalarParameterValue(TEXT("Radius"), GetFadeRadius() * ActorScale);
 		Material->SetVectorParameterValue(TEXT("Center"), FLinearColor(Centre.X, Centre.Y, Centre.Z, 0.f));
 		Material->SetScalarParameterValue(TEXT("Fade"), FadeAlpha);
 	}

@@ -7,6 +7,7 @@
 #include "Subsystems/SWGExamineSubsystem.h"
 #include "Subsystems/SWGMissionSubsystem.h"
 #include "Subsystems/SWGTravelSubsystem.h"
+#include "Subsystems/SWGShipLaunchSubsystem.h"
 #include "Engine/DataTable.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
@@ -48,6 +49,7 @@ void USWGUISubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	{
 		Travel->OnTravelWindowRequested.AddDynamic(this, &USWGUISubsystem::HandleTravelWindowRequested);
 	}
+	if (auto* Launch = GameInstance->GetSubsystem<USWGShipLaunchSubsystem>()) Launch->OnWindowRequested.AddDynamic(this, &USWGUISubsystem::HandleShipLaunchWindowRequested);
 	if (USWGSurveySubsystem* Survey = GameInstance->GetSubsystem<USWGSurveySubsystem>())
 	{
 		Survey->OnSurveyWindowRequested.AddDynamic(this, &USWGUISubsystem::HandleSurveyWindowRequested);
@@ -79,6 +81,7 @@ void USWGUISubsystem::Deinitialize()
 		{
 			Travel->OnTravelWindowRequested.RemoveAll(this);
 		}
+		if (auto* Launch = GameInstance->GetSubsystem<USWGShipLaunchSubsystem>()) Launch->OnWindowRequested.RemoveAll(this);
 		if (USWGSurveySubsystem* Survey = GameInstance->GetSubsystem<USWGSurveySubsystem>())
 		{
 			Survey->OnSurveyWindowRequested.RemoveAll(this);
@@ -119,7 +122,8 @@ ESWGUIPresentation USWGUISubsystem::GetPresentation(ESWGUIFeature Feature) const
 	{
 		return *Found;
 	}
-	// The HUD has one form; the rest default to windows.
+	// The HUD has one form and the piloting HUD only exists as a hologram; the rest default to windows.
+	if (Feature == ESWGUIFeature::SpaceHud) return ESWGUIPresentation::Holo;
 	return Feature == ESWGUIFeature::Hud ? ESWGUIPresentation::Core : ESWGUIPresentation::Window;
 }
 
@@ -291,6 +295,11 @@ void USWGUISubsystem::HandleMissionListChanged()
 void USWGUISubsystem::HandleTravelWindowRequested()
 {
 	OpenFeature(ESWGUIFeature::Travel, FSWGUIFeatureRequest());
+}
+
+void USWGUISubsystem::HandleShipLaunchWindowRequested()
+{
+	OpenFeature(ESWGUIFeature::ShipLaunch, FSWGUIFeatureRequest());
 }
 
 void USWGUISubsystem::HandleSurveyWindowRequested()

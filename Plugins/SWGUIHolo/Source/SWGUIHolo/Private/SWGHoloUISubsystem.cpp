@@ -5,6 +5,7 @@
 #include "SWGHoloInventoryWidget.h"
 #include "SWGHoloSurveyWidget.h"
 #include "SWGHoloCraftingWidget.h"
+#include "SWGSpaceHudWidget.h"
 #include "Subsystems/SWGCraftingSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
@@ -14,6 +15,8 @@ namespace
 {
 	/** Under the layout (100) and windows, over the world. */
 	constexpr int32 HoloZOrder = 90;
+	/** The piloting HUD sits under the holograms and the layout, over damage numbers. */
+	constexpr int32 SpaceHudZOrder = 60;
 }
 
 void USWGHoloUISubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -28,6 +31,7 @@ void USWGHoloUISubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void USWGHoloUISubsystem::Deinitialize()
 {
+	CloseSpaceHud();
 	if (USWGUISubsystem* Router = GetRouter())
 	{
 		Router->UnregisterPresenter(*this);
@@ -48,11 +52,16 @@ APlayerController* USWGHoloUISubsystem::GetController() const
 bool USWGHoloUISubsystem::SupportsFeature(ESWGUIFeature Feature) const
 {
 	return Feature == ESWGUIFeature::Inventory || Feature == ESWGUIFeature::PlanetMap
-		|| Feature == ESWGUIFeature::Survey || Feature == ESWGUIFeature::Crafting;
+		|| Feature == ESWGUIFeature::Survey || Feature == ESWGUIFeature::Crafting || Feature == ESWGUIFeature::SpaceHud;
 }
 
 bool USWGHoloUISubsystem::CanOpenFeature(ESWGUIFeature Feature) const
 {
+	// The piloting HUD needs its generated materials and the retail sprites; without them the HUD keeps its flat panel.
+	if (Feature == ESWGUIFeature::SpaceHud)
+	{
+		return SpaceHud || USWGSpaceHudWidget::CanBuild(GetLocalPlayer() ? GetLocalPlayer()->GetGameInstance() : nullptr);
+	}
 	if (Feature != ESWGUIFeature::Crafting)
 	{
 		return SupportsFeature(Feature);
@@ -76,6 +85,7 @@ void USWGHoloUISubsystem::OpenFeature(ESWGUIFeature Feature, const FSWGUIFeature
 		if (HoloSurvey) { HoloSurvey->ShowPicker(); } else { OpenSurvey(); }
 		break;
 	case ESWGUIFeature::Crafting: if (!HoloCrafting) { OpenCrafting(); } break;
+	case ESWGUIFeature::SpaceHud: OpenSpaceHud(); break;
 	default: break;
 	}
 }
@@ -88,6 +98,7 @@ void USWGHoloUISubsystem::CloseFeature(ESWGUIFeature Feature)
 	case ESWGUIFeature::PlanetMap: if (HoloMap) { HoloMap->Close(); } break;
 	case ESWGUIFeature::Survey: if (HoloSurvey) { HoloSurvey->Close(); } break;
 	case ESWGUIFeature::Crafting: if (HoloCrafting) { HoloCrafting->Dismiss(); } break;
+	case ESWGUIFeature::SpaceHud: CloseSpaceHud(); break;
 	default: break;
 	}
 }
@@ -100,6 +111,7 @@ bool USWGHoloUISubsystem::IsFeatureOpen(ESWGUIFeature Feature) const
 	case ESWGUIFeature::PlanetMap: return HoloMap != nullptr;
 	case ESWGUIFeature::Survey: return HoloSurvey != nullptr;
 	case ESWGUIFeature::Crafting: return HoloCrafting != nullptr;
+	case ESWGUIFeature::SpaceHud: return SpaceHud != nullptr;
 	default: return false;
 	}
 }
@@ -242,4 +254,21 @@ void USWGHoloUISubsystem::OpenCrafting()
 		if (USWGUISubsystem* Router = GetRouter()) { Router->SetPresentation(ESWGUIFeature::Crafting, ESWGUIPresentation::Window); }
 	});
 	HoloCrafting->AddToPlayerScreen(HoloZOrder);
+}
+
+void USWGHoloUISubsystem::OpenSpaceHud()
+{
+	APlayerController* PlayerController = GetController();
+	if (!PlayerController || SpaceHud) { return; }
+	SpaceHud = CreateWidget<USWGSpaceHudWidget>(PlayerController, USWGSpaceHudWidget::StaticClass());
+	SpaceHud->AddToPlayerScreen(SpaceHudZOrder);
+}
+
+void USWGHoloUISubsystem::CloseSpaceHud()
+{
+	if (SpaceHud)
+	{
+		SpaceHud->RemoveFromParent();
+		SpaceHud = nullptr;
+	}
 }
