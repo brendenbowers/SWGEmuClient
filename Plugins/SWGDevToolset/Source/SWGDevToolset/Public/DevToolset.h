@@ -27,6 +27,10 @@ public:
 	UFUNCTION(meta = (AICallable), Category = "DevToolset")
 	static FString ExecuteConsoleCommand(const FString& Command);
 
+	/** Press or release a button through the active PIE player's input path. Returns false for invalid/analog keys or no active player. Release held buttons after testing. */
+	UFUNCTION(meta = (AICallable), Category = "DevToolset")
+	static bool SetGameKey(const FString& KeyName, bool bPressed);
+
 	/**
 	 * Triggers a Live Coding recompile and blocks until it completes.
 	 * @return True if the compile succeeded or there were no changes to compile;

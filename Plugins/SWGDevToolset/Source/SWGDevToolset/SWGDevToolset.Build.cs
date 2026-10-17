@@ -20,6 +20,7 @@ public class SWGDevToolset : ModuleRules
 			{
 				"CoreUObject",
 				"Engine",
+				"InputCore",
 				"SWGEmuClient",
 				"SWGTre",
 				"ToolsetRegistry",
