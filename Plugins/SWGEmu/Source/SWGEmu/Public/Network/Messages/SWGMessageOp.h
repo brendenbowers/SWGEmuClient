@@ -89,6 +89,9 @@ enum class ESWGMessageOp : uint32
 	ServerWeatherMessage = 0x486356EAu,          // Server: weather index (0-4) and wind vector
 
 	// Add more as needed during implementation
+	ShipUpdateTransform = 0x76026FB9u,
+	ShipUpdateTransformCollision = 0x763648D0u,
+	CreateMissileMessage = 0x721CF08Bu,          // Server: a missile launched at a target (space)
 	Null = 0x0u,
 	Multi = 0x2u
 };

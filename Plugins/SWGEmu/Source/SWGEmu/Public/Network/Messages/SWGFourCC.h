@@ -38,6 +38,7 @@ enum class ESWGObjectType : uint32
 	ITNO = SWGFourCC("ITNO"),  // Intangible (datapad contents, pets in storage)
 	STAO = SWGFourCC("STAO"),  // Static (prop)
 	BUIO = SWGFourCC("BUIO"),  // Building
+	SHIP = SWGFourCC("SHIP"),  // Ship
 	HINO = SWGFourCC("HINO"),  // Harvester/house installation
 	INSO = SWGFourCC("INSO"),  // Installation (factory/harvester)
 	SCLT = SWGFourCC("SCLT"),  // Cell (building interior)
